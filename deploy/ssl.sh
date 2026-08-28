@@ -112,6 +112,16 @@ apt-get update -qq
 apt-get install -y -qq nginx curl openssl >/dev/null
 mkdir -p "$WEBROOT"
 
+# Отдельная директива http2 появилась в nginx 1.25.1; в более старых версиях
+# (в Ubuntu 24.04 идёт 1.24) http2 включается параметром listen.
+NGINX_VERSION=$(nginx -v 2>&1 | sed 's#.*nginx/##; s# .*##')
+if [ "$(printf '%s\n1.25.1\n' "$NGINX_VERSION" | sort -V | head -1)" = "1.25.1" ] && [ "$NGINX_VERSION" != "1.25.0" ]; then
+  HTTP2_STYLE=directive
+else
+  HTTP2_STYLE=listen
+fi
+info "nginx $NGINX_VERSION"
+
 CERT_DIR=/etc/letsencrypt/live/$DOMAIN
 if [ "$SELF_SIGNED" = "1" ]; then
   CERT_DIR=/etc/ssl/ozon-pack
@@ -142,9 +152,9 @@ CONF
 }
 
 server {
-    listen 443 ssl;
-$( [ "$HAS_IPV6" = "1" ] && echo "    listen [::]:443 ssl;" )
-    http2 on;
+    listen 443 ssl$( [ "$HTTP2_STYLE" = "listen" ] && echo " http2" );
+$( [ "$HAS_IPV6" = "1" ] && echo "    listen [::]:443 ssl$( [ "$HTTP2_STYLE" = "listen" ] && echo " http2" );" )
+$( [ "$HTTP2_STYLE" = "directive" ] && echo "    http2 on;" )
     server_name $DOMAIN;
 
     ssl_certificate     $CERT_DIR/fullchain.pem;
@@ -203,7 +213,18 @@ CONF
   ln -sf "/etc/nginx/sites-available/$SITE" "/etc/nginx/sites-enabled/$SITE"
   rm -f /etc/nginx/sites-enabled/default
   nginx -t >/dev/null 2>&1 || { nginx -t; die "Ошибка в конфигурации nginx"; }
-  systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
+  reload_nginx
+}
+
+reload_nginx() {
+  # На systemd-хосте достаточно reload; если nginx не запущен, его надо поднять.
+  if systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null; then
+    return 0
+  fi
+  if pgrep -x nginx >/dev/null 2>&1; then
+    nginx -s reload 2>/dev/null && return 0
+  fi
+  nginx 2>/dev/null || warn "Не удалось запустить nginx — проверьте: nginx -t"
 }
 
 step "Конфигурация nginx (пока http, для проверки Let's Encrypt)"
@@ -326,16 +347,24 @@ info "nginx слушает 443"
 # ------------------------------------------------------------------ закрываем прямой доступ
 if [ "$KEEP_OPEN" = "0" ]; then
   step "Панель закрывается от прямого доступа"
-  if grep -q '^HOST=' "$APP_DIR/.env"; then
-    sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
-  else
-    echo "HOST=127.0.0.1" >> "$APP_DIR/.env"
-  fi
-  info "HOST=127.0.0.1 — снаружи панель доступна только через nginx"
   if systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"; then
+    if grep -q '^HOST=' "$APP_DIR/.env"; then
+      sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
+    else
+      echo "HOST=127.0.0.1" >> "$APP_DIR/.env"
+    fi
+    info "HOST=127.0.0.1 — снаружи панель доступна только через nginx"
     systemctl restart "$SERVICE"
+  elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ozon-pack$'; then
+    # В контейнере HOST=127.0.0.1 сделал бы панель недоступной и для nginx —
+    # прямой доступ там закрывается привязкой опубликованного порта.
+    warn "Панель работает в Docker — HOST в .env не меняем."
+    warn "Чтобы закрыть прямой доступ, в docker-compose.yml замените"
+    warn "  ports: [\"$APP_PORT:8080\"]  ->  ports: [\"127.0.0.1:$APP_PORT:8080\"]"
+    warn "и выполните: docker compose up -d"
   else
-    warn "Служба $SERVICE не найдена — перезапустите панель вручную"
+    warn "Служба $SERVICE не найдена и контейнер не запущен."
+    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапуск панели."
   fi
 fi
 
@@ -354,8 +383,16 @@ sleep 2
 CURL_OPTS=(-fsS --max-time 10)
 [ "$SELF_SIGNED" = "1" ] && CURL_OPTS+=(-k)
 case "$DOMAIN" in *:*) URL_HOST="[$DOMAIN]" ;; *) URL_HOST="$DOMAIN" ;; esac
+HEALTHY=0
 if curl "${CURL_OPTS[@]}" "https://$URL_HOST/healthz" >/dev/null 2>&1; then
+  HEALTHY=1
   info "${GREEN}https работает${OFF}"
+elif curl "${CURL_OPTS[@]}" -H "Host: $DOMAIN" "https://127.0.0.1/healthz" >/dev/null 2>&1; then
+  # Снаружи адрес может быть недоступен с самого сервера (NAT, закрытый файрвол),
+  # но локально всё поднято — это не ошибка настройки.
+  HEALTHY=1
+  info "${GREEN}https работает локально${OFF}"
+  warn "Снаружи по https://$URL_HOST сервер сам себя не видит — проверьте с рабочего места"
 else
   warn "Панель не ответила по https://$URL_HOST/healthz"
   warn "Проверьте: systemctl status nginx; systemctl status $SERVICE; journalctl -u $SERVICE -n 30"
@@ -384,3 +421,4 @@ else
 SUMMARY
 fi
 echo
+[ "$HEALTHY" = "1" ] || exit 1
