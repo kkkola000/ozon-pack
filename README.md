@@ -103,7 +103,34 @@ echo "ADMIN_PASSWORD=admin123" >> .env
 
 ## Развёртывание на VPS
 
-### Вариант A. Docker (рекомендуемый)
+### Вариант A. Одной командой (Ubuntu/Debian)
+
+На чистом сервере под root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh | sudo bash
+```
+
+Скрипт сам поставит пакеты, заберёт код с GitHub в `/opt/ozon-pack`, создаст
+системного пользователя и venv, спросит ключи Ozon (можно пропустить — тогда
+поднимется демо-режим), сгенерирует пароль администратора, запустит службу
+systemd, откроет порт в ufw и проверит, что панель отвечает. В конце печатает
+адрес и логин с паролем.
+
+Без вопросов и с готовыми ключами:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh -o install.sh
+sudo OZON_CLIENT_ID=123456 OZON_API_KEY=xxxxxxxx ADMIN_PASSWORD='свой-пароль' bash install.sh --yes
+```
+
+Полезные флаги: `--port 9000`, `--dir /srv/ozon-pack`, `--branch main`,
+`--demo`, `--no-firewall`, `--no-service`, `--help`.
+
+**Обновление** — тот же скрипт ещё раз: он подтянет свежий коммит и перезапустит
+службу, не трогая `.env`, базу и журнал сборки.
+
+### Вариант B. Docker
 
 ```bash
 git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack
@@ -118,18 +145,27 @@ ufw allow 8080/tcp
 
 Панель: `http://IP-сервера:8080`.
 
-### Вариант B. Без Docker (systemd)
+### Вариант C. Вручную (systemd)
 
 ```bash
-git clone https://github.com/kkkola000/ozon-pack.git && cd ozon-pack
-sudo ./deploy/install.sh          # venv + служба + правило файрвола
-sudo nano /opt/ozon-pack/.env     # ключи Ozon
-sudo systemctl restart ozon-pack
+git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack && cd /opt/ozon-pack
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env && nano .env
+sudo cp deploy/ozon-pack.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now ozon-pack
 sudo journalctl -u ozon-pack -f
 ```
 
 Чтобы открыть панель на 80 порту, положите `deploy/nginx.conf` в nginx
 (инструкция — в первых строках файла).
+
+### Полезные команды
+
+```bash
+systemctl status ozon-pack        # состояние службы
+journalctl -u ozon-pack -f        # живой журнал
+systemctl restart ozon-pack       # после правки .env
+```
 
 ### Ключи Ozon Seller API
 
