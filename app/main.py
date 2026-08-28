@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from . import db, security, sync
 from .credentials import is_demo
 from .config import BASE_DIR, settings
-from .routes import admin, auth, orders, pack, returns
+from .routes import admin, auth, orders, pack, printing as printing_routes, returns
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +19,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("app")
 
-PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico")
+# /api/print/* — для агента печати: он приходит с ключом, а не с сессией
+PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico", "/api/print/")
 
 
 @asynccontextmanager
@@ -82,4 +83,5 @@ app.include_router(auth.router)
 app.include_router(pack.router)
 app.include_router(orders.router)
 app.include_router(returns.router)
+app.include_router(printing_routes.router)
 app.include_router(admin.router)
