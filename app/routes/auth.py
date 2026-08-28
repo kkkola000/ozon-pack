@@ -52,6 +52,9 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         token,
         max_age=settings.session_ttl_hours * 3600,
         httponly=True,
+        # За nginx с TLS (uvicorn --proxy-headers) схема приходит https — тогда
+        # помечаем куку Secure, чтобы она не ушла по открытому каналу.
+        secure=request.url.scheme == "https",
         samesite="lax",
         path="/",
     )
