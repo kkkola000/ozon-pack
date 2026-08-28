@@ -19,6 +19,7 @@ APP_DIR=${APP_DIR:-/opt/ozon-pack}
 APP_USER=${APP_USER:-ozon}
 SERVICE=${SERVICE:-ozon-pack}
 PORT=${PORT:-8080}
+PORT_EXPLICIT=0
 OZON_CLIENT_ID=${OZON_CLIENT_ID:-}
 OZON_API_KEY=${OZON_API_KEY:-}
 ADMIN_LOGIN=${ADMIN_LOGIN:-admin}
@@ -60,7 +61,7 @@ while [ $# -gt 0 ]; do
     --repo) REPO_URL=$2; shift 2 ;;
     --branch) BRANCH=$2; shift 2 ;;
     --dir) APP_DIR=$2; shift 2 ;;
-    --port) PORT=$2; shift 2 ;;
+    --port) PORT=$2; PORT_EXPLICIT=1; shift 2 ;;
     --user) APP_USER=$2; shift 2 ;;
     --demo) OZON_DEMO=1; shift ;;
     --no-firewall) SKIP_FIREWALL=1; shift ;;
@@ -107,13 +108,17 @@ step "Пользователь $APP_USER и каталог $APP_DIR"
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin "$APP_USER"
 mkdir -p "$APP_DIR"
 
+# Каталог принадлежит $APP_USER, а скрипт работает от root — без safe.directory
+# git отказывается с «dubious ownership». Задаём его точечно, не трогая ~/.gitconfig.
+git_app() { git -c safe.directory="$APP_DIR" -C "$APP_DIR" "$@"; }
+
 if [ "$UPDATE" -eq 1 ]; then
   step "Обновление кода"
-  git -C "$APP_DIR" remote set-url origin "$REPO_URL"
-  git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
+  git_app remote set-url origin "$REPO_URL"
+  git_app fetch --depth 1 origin "$BRANCH"
   # .env, data/ и .venv не в индексе — reset их не затрагивает
-  git -C "$APP_DIR" checkout -B "$BRANCH" FETCH_HEAD
-  git -C "$APP_DIR" reset --hard FETCH_HEAD
+  git_app checkout -B "$BRANCH" FETCH_HEAD
+  git_app reset --hard FETCH_HEAD
 else
   step "Загрузка кода"
   if [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
@@ -121,7 +126,7 @@ else
   fi
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 fi
-info "коммит: $(git -C "$APP_DIR" log --oneline -1)"
+info "коммит: $(git_app log --oneline -1)"
 mkdir -p "$APP_DIR/data"
 
 # ------------------------------------------------------------------ окружение python
@@ -137,7 +142,13 @@ if [ -f "$APP_DIR/.env" ]; then
   info "существующий .env сохранён без изменений"
   ADMIN_PASSWORD=""
   CURRENT_PORT=$(awk -F= '/^PORT=/{print $2}' "$APP_DIR/.env" | tail -1)
-  [ -n "$CURRENT_PORT" ] && PORT=$CURRENT_PORT
+  if [ -n "$CURRENT_PORT" ]; then
+    if [ "$PORT_EXPLICIT" = "1" ] && [ "$CURRENT_PORT" != "$PORT" ]; then
+      warn "Порт берётся из .env ($CURRENT_PORT), флаг --port $PORT игнорируется."
+      warn "Чтобы сменить порт: измените PORT в $APP_DIR/.env и запустите скрипт снова."
+    fi
+    PORT=$CURRENT_PORT
+  fi
 else
   # Ключи можно ввести с терминала, даже когда скрипт пришёл через curl | bash
   if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ] && [ "$OZON_DEMO" != "1" ] && [ "$NONINTERACTIVE" != "1" ] && [ -r /dev/tty ]; then
