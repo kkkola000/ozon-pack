@@ -109,9 +109,35 @@ echo "ADMIN_PASSWORD=admin123" >> .env
 
 ## Развёртывание на VPS
 
-### Вариант A. Одной командой (Ubuntu/Debian)
+### Вариант A. Панель и HTTPS одной командой (рекомендуется)
 
-На чистом сервере под root:
+На чистом сервере Ubuntu/Debian:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/setup.sh \
+  | sudo bash -s -- --domain panel.example.com --email admin@example.com
+```
+
+Скрипт ставит панель, службу systemd и nginx, выпускает бесплатный сертификат
+Let's Encrypt, закрывает прямой доступ к панели по http и печатает адрес с
+логином и паролем администратора. Повторный запуск обновляет установку.
+
+Без домена — сертификат на IP-адрес сервера: `--ip`. Другие флаги:
+`--self-signed` (закрытая сеть), `--no-ssl` (только панель), `--port`, `--dir`,
+`--demo`, `--help`. Если запустить без флагов режима, скрипт спросит домен
+с терминала.
+
+Ключи Ozon можно передать сразу:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/setup.sh -o setup.sh
+sudo OZON_CLIENT_ID=123456 OZON_API_KEY=xxxxxxxx bash setup.sh \
+  --domain panel.example.com --email admin@example.com
+```
+
+— или внести их потом в самой панели: **Настройки → Ключи Seller API**.
+
+### Вариант B. Только панель, без HTTPS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh | sudo bash
@@ -136,7 +162,7 @@ sudo OZON_CLIENT_ID=123456 OZON_API_KEY=xxxxxxxx ADMIN_PASSWORD='свой-пар
 **Обновление** — тот же скрипт ещё раз: он подтянет свежий коммит и перезапустит
 службу, не трогая `.env`, базу и журнал сборки.
 
-### Вариант B. Docker
+### Вариант C. Docker
 
 ```bash
 git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack
@@ -151,7 +177,7 @@ ufw allow 8080/tcp
 
 Панель: `http://IP-сервера:8080`.
 
-### Вариант C. Вручную (systemd)
+### Вариант D. Вручную (systemd)
 
 ```bash
 git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack && cd /opt/ozon-pack
@@ -173,10 +199,10 @@ journalctl -u ozon-pack -f        # живой журнал
 systemctl restart ozon-pack       # после правки .env
 ```
 
-### HTTPS (бесплатный сертификат)
+### HTTPS отдельно (если панель уже установлена)
 
 ```bash
-sudo bash /opt/ozon-pack/deploy/ssl.sh --domain seller.example.com --email admin@example.com
+sudo bash /opt/ozon-pack/deploy/ssl.sh --domain panel.example.com --email admin@example.com
 ```
 
 Скрипт ставит nginx перед панелью, выпускает сертификат Let's Encrypt, включает
