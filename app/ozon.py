@@ -60,13 +60,22 @@ def _iso(dt: datetime) -> str:
 class OzonClient:
     """Синхронный клиент: приложение работает в пуле потоков, async не нужен."""
 
-    def __init__(self, client_id: str | None = None, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self,
+        client_id: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        *,
+        max_retries: int = MAX_RETRIES,
+        timeout: int | None = None,
+    ):
         self.client_id = client_id or settings.ozon_client_id
         self.api_key = api_key or settings.ozon_api_key
         self.base_url = (base_url or settings.ozon_base_url).rstrip("/")
+        self.max_retries = max(1, max_retries)
         self._client = httpx.Client(
             base_url=self.base_url,
-            timeout=httpx.Timeout(settings.ozon_timeout),
+            timeout=httpx.Timeout(timeout or settings.ozon_timeout),
             headers={
                 "Client-Id": self.client_id,
                 "Api-Key": self.api_key,
@@ -79,14 +88,14 @@ class OzonClient:
     # ------------------------------------------------------------------ низкий уровень
     def _request(self, path: str, payload: dict | None = None) -> httpx.Response:
         last_error: Exception | None = None
-        for attempt in range(MAX_RETRIES):
+        for attempt in range(self.max_retries):
             try:
                 response = self._client.post(path, content=json.dumps(payload or {}, ensure_ascii=False).encode())
             except httpx.HTTPError as exc:  # сеть/таймаут
                 last_error = exc
                 time.sleep(min(2 ** attempt, 10))
                 continue
-            if response.status_code in RETRY_STATUSES and attempt < MAX_RETRIES - 1:
+            if response.status_code in RETRY_STATUSES and attempt < self.max_retries - 1:
                 delay = float(response.headers.get("Retry-After") or min(2 ** attempt, 10))
                 log.warning("Ozon %s -> %s, повтор через %.0fс", path, response.status_code, delay)
                 time.sleep(delay)
@@ -306,6 +315,7 @@ class DemoOzonClient(OzonClient):
         self.client_id = "demo"
         self.api_key = "demo"
         self.base_url = "demo://ozon"
+        self.max_retries = 1
         self._lock = threading.Lock()
         self._rnd = random.Random(20240501)
         self._postings: dict[str, dict] = {}
@@ -388,7 +398,7 @@ class DemoOzonClient(OzonClient):
         sku, offer, name, _bc = rnd.choice(DEMO_PRODUCTS)
         ready = index % 4 != 3
         status = ("ArrivedAtReturnPlace" if ready else "MovingToSeller")
-        display = "Готов к выдаче" if ready else "Едет к продавцу"
+        display = "В пункте выдачи" if ready else "Едет к продавцу"
         arrived = now - timedelta(days=rnd.randrange(0, 12))
         return {
             "id": 90000000 + index,
@@ -496,6 +506,9 @@ class DemoOzonClient(OzonClient):
 
     def returns_list(self, *, limit=500, last_id=0, filter_=None):  # type: ignore[override]
         items = [json.loads(json.dumps(r)) for r in self._returns]
+        wanted = (filter_ or {}).get("visual_status_name")
+        if wanted:
+            items = [r for r in items if (r["visual"]["status"]["sys_name"] == wanted)]
         start = 0
         if last_id:
             ids = [r["id"] for r in items]
@@ -526,10 +539,17 @@ _client_lock = threading.Lock()
 
 
 def get_client() -> OzonClient:
+    """Клиент по актуальным ключам: из настроек панели или из .env."""
+    from .credentials import get_credentials, is_demo
+
     global _client
     with _client_lock:
         if _client is None:
-            _client = DemoOzonClient() if settings.demo else OzonClient()
+            if is_demo():
+                _client = DemoOzonClient()
+            else:
+                client_id, api_key, _source = get_credentials()
+                _client = OzonClient(client_id=client_id, api_key=api_key)
         return _client
 
 

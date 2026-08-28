@@ -80,3 +80,51 @@ def test_label_pdf(client):
     response = client.get(f"/api/label/{number}.pdf")
     assert response.status_code == 200
     assert response.content[:4] == b"%PDF"
+
+
+def test_credentials_form_requires_admin(client):
+    from app.security import hash_password
+
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer2', ?, 'packer', 1, ?)",
+        (hash_password("packer123"), db.now_iso()),
+    )
+    client.post("/login", data={"login": "packer2", "password": "packer123", "next": "/pack"})
+    response = client.post("/api/ozon/credentials", json={"client_id": "1", "api_key": "2", "skip_test": True})
+    assert response.status_code in (403, 401)
+
+
+def test_save_credentials_from_settings(client):
+    csrf = login(client)
+    response = client.post(
+        "/api/ozon/credentials",
+        json={"client_id": "123456", "api_key": "secret-key-value", "skip_test": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["ozon"]["source"] == "panel"
+    assert db.kv_get("ozon_client_id") == "123456"
+
+    page = client.get("/settings")
+    assert "123456" in page.text
+    assert "secret-key-value" not in page.text, "ключ не должен показываться целиком"
+
+
+def test_save_credentials_validates_input(client):
+    csrf = login(client)
+    response = client.post(
+        "/api/ozon/credentials", json={"client_id": "", "api_key": ""}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 400
+
+
+def test_clear_credentials(client):
+    csrf = login(client)
+    client.post(
+        "/api/ozon/credentials",
+        json={"client_id": "123456", "api_key": "secret", "skip_test": True},
+        headers={"X-CSRF-Token": csrf},
+    )
+    response = client.post("/api/ozon/credentials/clear", headers={"X-CSRF-Token": csrf}, json={})
+    assert response.status_code == 200
+    assert not db.kv_get("ozon_client_id")

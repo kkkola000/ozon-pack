@@ -47,6 +47,7 @@ def test_urgency_buckets():
 
 
 def test_returns_readiness(demo_data):
+    """Готов к выдаче — только «В пункте выдачи» (ArrivedAtReturnPlace)."""
     ready = db.query("SELECT status_sys FROM returns WHERE is_ready = 1")
     assert ready, "должны быть возвраты, готовые к выдаче"
     for row in ready:
@@ -55,6 +56,46 @@ def test_returns_readiness(demo_data):
     not_ready = db.query("SELECT status_sys FROM returns WHERE is_ready = 0")
     for row in not_ready:
         assert row["status_sys"] not in settings.returns_ready_statuses
+
+
+def test_returns_loaded_only_in_wanted_status(demo_data):
+    """Синхронизация забирает у Ozon именно нужный статус, а не всё подряд."""
+    statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
+    assert statuses == {"ArrivedAtReturnPlace"}, statuses
+
+
+def test_return_leaving_pickup_point_is_dropped(demo_data):
+    """Возврат забрали — Ozon его больше не отдаёт, значит из выдачи он уходит."""
+    from app import sync
+
+    client = demo_data
+    target = client._returns[0]
+    assert target["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"
+    return_id = str(target["id"])
+    assert db.query_one("SELECT is_ready FROM returns WHERE id = ?", (return_id,))["is_ready"] == 1
+
+    target["visual"]["status"]["sys_name"] = "ReceivedBySeller"
+    target["visual"]["status"]["display_name"] = "Получен продавцом"
+    sync.sync_returns()
+
+    assert db.query_one("SELECT is_ready FROM returns WHERE id = ?", (return_id,))["is_ready"] == 0
+
+
+def test_network_error_does_not_clear_pickup_list(demo_data, monkeypatch):
+    """Сбой связи не должен обнулять список готовых к выдаче."""
+    from app import sync
+    from app.ozon import OzonError
+
+    before = db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 1")["c"]
+    assert before > 0
+
+    def boom(*args, **kwargs):
+        raise OzonError("Сеть недоступна")
+
+    monkeypatch.setattr(demo_data, "returns_list", boom)
+    sync.sync_returns()
+
+    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 1")["c"] == before
 
 
 def test_products_have_barcodes(demo_data):

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import db, store
 from .config import settings
+from .credentials import is_demo
 from .ozon import OzonError, get_client
 
 log = logging.getLogger("sync")
@@ -112,42 +113,75 @@ def sync_products(limit: int = 500) -> dict:
     return {"products": total}
 
 
-def sync_returns(*, full: bool = False, days: int | None = None) -> dict:
+def sync_returns(*, full: bool = False, statuses: list[str] | None = None) -> dict:
     """Возвраты FBO и FBS: /v1/returns/list.
 
-    В фильтре метода допускается только одно поле, поэтому берём окно по дате
-    изменения статуса; full=True обходит весь список без фильтра.
+    Обычный проход забирает возвраты в рабочих статусах (по умолчанию
+    ArrivedAtReturnPlace — «В пункте выдачи») и сверяет список: то, что раньше
+    числилось готовым к выдаче, а теперь в выдаче не значится, снимается с учёта.
+    full=True обходит все возвраты без фильтра — для истории.
     """
     client = get_client()
-    filter_ = None
-    if not full:
-        window_days = days or int(db.kv_get("returns_window_days", "180") or 180)
-        now = datetime.now(timezone.utc)
-        filter_ = {
-            "visual_status_change_moment": {
-                "time_from": (now - timedelta(days=window_days)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-                "time_to": (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
-            }
-        }
-
-    last_id = 0
     saved = 0
-    for _page in range(RETURNS_MAX_PAGES):
-        try:
-            returns, has_next = client.returns_list(limit=RETURNS_PAGE_LIMIT, last_id=last_id, filter_=filter_)
-        except OzonError as exc:
-            log.warning("Возвраты недоступны: %s", exc)
-            break
-        if not returns:
-            break
-        with db.write() as conn:
-            for raw in returns:
-                store.upsert_return(conn, raw)
-                saved += 1
-        last_id = returns[-1].get("id") or 0
-        if not has_next or not last_id:
-            break
-    return {"returns": saved}
+
+    if full:
+        last_id = 0
+        for _page in range(RETURNS_MAX_PAGES):
+            try:
+                returns, has_next = client.returns_list(limit=RETURNS_PAGE_LIMIT, last_id=last_id)
+            except OzonError as exc:
+                log.warning("Возвраты недоступны: %s", exc)
+                break
+            if not returns:
+                break
+            with db.write() as conn:
+                for raw in returns:
+                    store.upsert_return(conn, raw)
+                    saved += 1
+            last_id = returns[-1].get("id") or 0
+            if not has_next or not last_id:
+                break
+        return {"returns": saved}
+
+    wanted = statuses or settings.returns_ready_statuses
+    seen: set[str] = set()
+    complete = True
+    for status in wanted:
+        last_id = 0
+        for _page in range(RETURNS_MAX_PAGES):
+            try:
+                # В фильтре /v1/returns/list допускается только одно поле,
+                # поэтому статусы запрашиваем по очереди.
+                returns, has_next = client.returns_list(
+                    limit=RETURNS_PAGE_LIMIT,
+                    last_id=last_id,
+                    filter_={"visual_status_name": status},
+                )
+            except OzonError as exc:
+                log.warning("Возвраты в статусе %s недоступны: %s", status, exc)
+                complete = False
+                break
+            if not returns:
+                break
+            with db.write() as conn:
+                for raw in returns:
+                    seen.add(store.upsert_return(conn, raw))
+                    saved += 1
+            last_id = returns[-1].get("id") or 0
+            if not has_next or not last_id:
+                break
+
+    gone = 0
+    if complete:
+        # Возврат забрали или он уехал дальше — Ozon его в этом статусе больше
+        # не отдаёт. Сверку делаем только после полностью успешного обхода,
+        # иначе сетевая ошибка очистила бы список выдачи.
+        stale = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1") if row["id"] not in seen]
+        if stale:
+            placeholders = ",".join("?" for _ in stale)
+            db.execute(f"UPDATE returns SET is_ready = 0, updated_at = ? WHERE id IN ({placeholders})", [db.now_iso()] + stale)
+            gone = len(stale)
+    return {"returns": saved, "returns_gone": gone}
 
 
 def sync_all(*, returns: bool = True) -> dict:
@@ -235,5 +269,5 @@ def status() -> dict:
         "duration": db.kv_get("sync_last_duration"),
         "interval": settings.sync_interval,
         "enabled": settings.sync_enabled,
-        "demo": settings.demo,
+        "demo": is_demo(),
     }

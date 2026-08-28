@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import db, security, sync
+from .credentials import is_demo
 from .config import BASE_DIR, settings
 from .routes import admin, auth, orders, pack, returns
 
@@ -24,7 +25,7 @@ PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    if settings.demo:
+    if is_demo():
         log.warning("Демо-режим: данные сгенерированы локально, Ozon не опрашивается")
     sync.start_worker()
     yield
@@ -69,7 +70,7 @@ def favicon():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "demo": settings.demo}
+    return {"status": "ok", "demo": is_demo()}
 
 
 @app.get("/")

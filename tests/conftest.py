@@ -15,7 +15,7 @@ from app.config import settings  # noqa: E402
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
-    monkeypatch.setattr(settings, "demo", True)
+    monkeypatch.setattr(settings, "demo_forced", True)
     monkeypatch.setattr(settings, "require_all_items", True)
     monkeypatch.setattr(settings, "autoprint", True)
     monkeypatch.setattr(settings, "auto_ship_on_scan", False)

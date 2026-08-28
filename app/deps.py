@@ -68,4 +68,11 @@ def nav_counters() -> dict:
     }
 
 
+def demo_mode() -> bool:
+    from .credentials import is_demo
+
+    return is_demo()
+
+
 templates.env.globals["nav_counters"] = nav_counters
+templates.env.globals["demo_mode"] = demo_mode

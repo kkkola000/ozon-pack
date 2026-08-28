@@ -4,10 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import db, security, store, sync
+from .. import credentials, db, security, store, sync
 from ..config import settings
 from ..deps import check_csrf, current_user, require_admin, templates
-from ..ozon import OzonError, get_client
+from ..ozon import OzonClient, OzonError, get_client
 
 router = APIRouter()
 
@@ -35,6 +35,8 @@ EVENT_LABELS = {
     "returns_taken": "Возвраты забраны",
     "returns_untaken": "Отметка снята",
     "returns_giveout": "Штрихкод выдачи",
+    "ozon_credentials_set": "Сохранены ключи Ozon",
+    "ozon_credentials_cleared": "Удалены ключи Ozon",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
 }
@@ -99,6 +101,7 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "user": user,
             "users": users,
             "stats": stats,
+            "ozon": credentials.status(),
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
@@ -163,9 +166,63 @@ def api_ozon_test(request: Request, admin: dict = Depends(require_admin)):
         raise HTTPException(status_code=502, detail=f"Ozon недоступен: {exc}") from exc
     return {
         "status": "ok",
-        "message": "Демо-режим: ключи не используются" if settings.demo else "Ключи Ozon работают",
+        "message": "Демо-режим: ключи не используются" if credentials.is_demo() else "Ключи Ozon работают",
         "result": result,
     }
+
+
+@router.post("/api/ozon/credentials")
+def api_ozon_credentials(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Сохранить ключи Seller API прямо из панели — без правки .env и перезапуска."""
+    check_csrf(request)
+    client_id = str(payload.get("client_id") or "").strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    problem = credentials.validate(client_id, api_key)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+
+    # Сначала проверяем ключи и только потом сохраняем: иначе опечатка
+    # оставит склад без данных до следующей правки.
+    if not payload.get("skip_test"):
+        # Без повторов и с коротким таймаутом: оператор ждёт ответа здесь и сейчас.
+        probe = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+        try:
+            probe.ping()
+        except OzonError as exc:
+            if exc.status in (401, 403):
+                detail = f"Ozon отклонил ключи: {exc.message}. Проверьте Client-Id и Api-Key в личном кабинете."
+            elif exc.status is None:
+                detail = (
+                    f"Не удалось связаться с Ozon: {exc.message}. Проверьте доступ в интернет с сервера; "
+                    "если он есть, сохраните ключи без проверки."
+                )
+            else:
+                detail = f"Ozon ответил ошибкой: {exc.message}"
+            raise HTTPException(status_code=400, detail=detail) from exc
+        finally:
+            probe.close()
+
+    credentials.set_credentials(client_id, api_key, user=admin)
+    worker = sync.get_worker()
+    if worker:
+        worker.request_sync()
+    return {
+        "status": "ok",
+        "message": "Ключи сохранены, панель переключена на боевой режим. Данные загружаются.",
+        "ozon": credentials.status(),
+    }
+
+
+@router.post("/api/ozon/credentials/clear")
+def api_ozon_credentials_clear(request: Request, admin: dict = Depends(require_admin)):
+    """Убрать ключи из панели: вернуться к .env или в демо-режим."""
+    check_csrf(request)
+    credentials.clear_credentials(user=admin)
+    state = credentials.status()
+    message = "Ключи удалены. " + (
+        "Панель работает в демо-режиме." if state["demo"] else "Используются ключи из файла .env."
+    )
+    return {"status": "ok", "message": message, "ozon": state}
 
 
 @router.post("/api/postings/{posting_number}/reset")

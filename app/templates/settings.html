@@ -5,27 +5,68 @@
 <div class="panel">
   <div class="row between">
     <h2 style="margin:0">Подключение к Ozon</h2>
-    <button class="btn" id="btn-test">Проверить ключи</button>
+    <div class="row">
+      <button class="btn" id="btn-test">Проверить связь</button>
+      {% if ozon.source == 'panel' %}<button class="btn danger" id="btn-clear-keys">Удалить ключи</button>{% endif %}
+    </div>
   </div>
+
   <dl class="kv" style="margin-top:12px">
-    <dt>Режим</dt><dd>{% if settings.demo %}<span class="badge warn">ДЕМО</span> данные генерируются локально{% else %}<span class="badge ok">Боевой</span> {{ settings.ozon_base_url }}{% endif %}</dd>
-    <dt>Client-Id</dt><dd class="mono">{{ settings.ozon_client_id or '— не задан —' }}</dd>
-    <dt>Api-Key</dt><dd class="mono">{% if settings.ozon_api_key %}••••{{ settings.ozon_api_key[-4:] }}{% else %}— не задан —{% endif %}</dd>
-    <dt>Синхронизация</dt><dd>
-      каждые {{ sync.interval }} с ·
-      статус: <b>{{ sync.last_status }}</b>{% if sync.last_ok %} · последняя: {{ sync.last_ok | local_dt('%d.%m %H:%M:%S') }}{% endif %}
+    <dt>Режим</dt>
+    <dd>
+      {% if ozon.demo %}<span class="badge warn">ДЕМО</span> данные генерируются локально, Ozon не опрашивается
+      {% else %}<span class="badge ok">Боевой</span> {{ ozon.base_url }}{% endif %}
+    </dd>
+    <dt>Ключи</dt>
+    <dd>
+      {{ ozon.source_label }}
+      {% if ozon.client_id %}<div class="mono small">Client-Id: {{ ozon.client_id }} · Api-Key: {{ ozon.api_key_masked }}</div>{% endif %}
+    </dd>
+    <dt>Синхронизация</dt>
+    <dd>
+      каждые {{ sync.interval }} с · статус: <b>{{ sync.last_status }}</b>
+      {% if sync.last_ok %} · последняя: {{ sync.last_ok | local_dt('%d.%m %H:%M:%S') }}{% endif %}
       {% if sync.last_result %}<div class="muted small">{{ sync.last_result }}</div>{% endif %}
       {% if sync.last_error %}<div class="small" style="color:var(--err)">{{ sync.last_error }}</div>{% endif %}
     </dd>
-    <dt>Правила сборки</dt><dd class="small">
+    <dt>Правила сборки</dt>
+    <dd class="small">
       Скан всех товаров обязателен: <b>{{ 'да' if settings.require_all_items else 'нет' }}</b> ·
       Автопечать стикера: <b>{{ 'да' if settings.autoprint else 'нет' }}</b> ·
       Автосборка при скане: <b>{{ 'да' if settings.auto_ship_on_scan else 'нет' }}</b> ·
       Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>
-      <div class="muted">Меняется в файле .env, затем перезапуск сервиса.</div>
+      <div class="muted">Меняется в файле .env, затем перезапуск службы.</div>
+    </dd>
+    <dt>Возвраты</dt>
+    <dd class="small">
+      Загружаются в статусах: <b>{{ settings.returns_ready_statuses | join(', ') }}</b>
+      <div class="muted">ArrivedAtReturnPlace — «В пункте выдачи». Меняется в .env (RETURNS_READY_STATUSES).</div>
     </dd>
   </dl>
-  <div class="row" style="margin-top:12px">
+
+  {% if ozon.demo_forced %}
+    <div class="banner warning" style="font-size:14px;margin-top:12px">
+      В файле .env стоит OZON_DEMO=1 — панель принудительно работает на тестовых данных.
+      Уберите этот флаг и перезапустите службу, чтобы ключи заработали.
+    </div>
+  {% endif %}
+
+  <h2 style="margin-top:18px">Ключи Seller API</h2>
+  <p class="muted small" style="margin-top:0">
+    Личный кабинет Ozon → Настройки → Seller API → «Сгенерировать ключ».
+    Ключи сохраняются в панели и применяются сразу, перезапуск не нужен.
+  </p>
+  <div class="row">
+    <input type="text" id="ozon-client-id" placeholder="Client-Id" autocomplete="off"
+           value="{{ ozon.client_id if ozon.source == 'panel' else '' }}" style="width:220px">
+    <input type="password" id="ozon-api-key" placeholder="Api-Key" autocomplete="new-password" style="width:340px">
+    <button class="btn primary" id="btn-save-keys">Проверить и сохранить</button>
+  </div>
+  <label class="check small muted" style="margin-top:10px">
+    <input type="checkbox" id="ozon-skip-test"> сохранить без проверки связи
+  </label>
+
+  <div class="row" style="margin-top:16px">
     {% for key, value in stats.items() %}
       <div><div class="muted small">{{ key }}</div><div style="font-size:20px;font-weight:700">{{ value }}</div></div>
     {% endfor %}
@@ -68,6 +109,40 @@
 
 {% block scripts %}
 <script>
+document.getElementById('btn-save-keys').onclick = async (event) => {
+  const clientId = document.getElementById('ozon-client-id').value.trim();
+  const apiKey = document.getElementById('ozon-api-key').value.trim();
+  if (!clientId || !apiKey) { toast('Заполните Client-Id и Api-Key', 'error'); return; }
+  event.target.disabled = true;
+  event.target.textContent = 'Проверяем…';
+  try {
+    const result = await api('/api/ozon/credentials', {
+      client_id: clientId,
+      api_key: apiKey,
+      skip_test: document.getElementById('ozon-skip-test').checked,
+    });
+    toast(result.message, 'ok', 8000);
+    setTimeout(() => window.location.reload(), 1200);
+  } catch (error) {
+    toast(error.message, 'error', 15000);
+    event.target.disabled = false;
+    event.target.textContent = 'Проверить и сохранить';
+  }
+};
+
+document.getElementById('btn-clear-keys')?.addEventListener('click', async (event) => {
+  if (!confirm('Удалить ключи из панели? Она вернётся к ключам из .env или в демо-режим.')) return;
+  event.target.disabled = true;
+  try {
+    const result = await api('/api/ozon/credentials/clear', {});
+    toast(result.message, 'ok');
+    setTimeout(() => window.location.reload(), 1000);
+  } catch (error) {
+    toast(error.message, 'error');
+    event.target.disabled = false;
+  }
+});
+
 document.getElementById('btn-test').onclick = async (event) => {
   event.target.disabled = true;
   try { toast((await api('/api/ozon/test', {})).message, 'ok'); }

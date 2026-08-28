@@ -249,13 +249,9 @@ def upsert_return(conn: sqlite3.Connection, raw: dict) -> str:
     price = product.get("price") or {}
 
     sys_name = _text(status.get("sys_name")) or ""
-    ready_statuses = set(settings.returns_ready_statuses)
-    is_ready = 0
-    if sys_name in ready_statuses:
-        is_ready = 1
-    elif sys_name not in RETURN_TAKEN_STATUSES and storage.get("arrived_moment"):
-        # Возврат физически лежит в пункте выдачи — значит, его можно забрать.
-        is_ready = 1
+    # Готов к выдаче ровно тогда, когда Ozon сообщает нужный статус
+    # (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»).
+    is_ready = 1 if sys_name in set(settings.returns_ready_statuses) else 0
 
     now = db.now_iso()
     existing = conn.execute("SELECT first_seen_at, taken_at FROM returns WHERE id = ?", (return_id,)).fetchone()

@@ -53,8 +53,9 @@ class Settings:
     ozon_base_url: str = field(default_factory=lambda: os.getenv("OZON_API_URL", "https://api-seller.ozon.ru").rstrip("/"))
     ozon_timeout: int = field(default_factory=lambda: _int("OZON_TIMEOUT", 60))
 
-    # Демо-режим: работа без реальных ключей на сгенерированных данных.
-    demo: bool = field(default_factory=lambda: _bool("OZON_DEMO", False))
+    # Демо-режим включён принудительно через OZON_DEMO=1. Если ключей нет,
+    # панель уходит в демо и без этого флага — см. credentials.is_demo().
+    demo_forced: bool = field(default_factory=lambda: _bool("OZON_DEMO", False))
 
     # --- Приложение ---
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", "").strip())
@@ -85,9 +86,11 @@ class Settings:
     # Статусы возвратов, считающиеся «готов к выдаче» (sys_name из API, через запятую).
     returns_ready_statuses: list[str] = field(
         default_factory=lambda: _list(
-            # sys_name из /v1/returns/list: возврат физически лежит в пункте выдачи.
+            # sys_name из /v1/returns/list. «В пункте выдачи» = ArrivedAtReturnPlace:
+            # именно эти возвраты сборщик может забрать. Эти же статусы
+            # запрашиваются у Ozon при синхронизации.
             "RETURNS_READY_STATUSES",
-            "ArrivedAtReturnPlace,WaitingShipment",
+            "ArrivedAtReturnPlace",
         )
     )
     timezone_offset: int = field(default_factory=lambda: _int("TZ_OFFSET_HOURS", 3))
@@ -103,10 +106,6 @@ class Settings:
                 self.secret_key = secrets.token_urlsafe(48)
                 key_file.write_text(self.secret_key, encoding="utf-8")
                 key_file.chmod(0o600)
-        if not self.demo and not (self.ozon_client_id and self.ozon_api_key):
-            # Без ключей единственный рабочий режим — демонстрационный.
-            self.demo = True
-
     @property
     def configured(self) -> bool:
         return bool(self.ozon_client_id and self.ozon_api_key)

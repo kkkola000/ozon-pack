@@ -27,7 +27,7 @@
       <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
     {% endif %}
   </nav>
-  {% if settings.demo %}<span class="badge warn" title="Работа на сгенерированных данных, Ozon не опрашивается">ДЕМО</span>{% endif %}
+  {% if demo_mode() %}<span class="badge warn" title="Работа на сгенерированных данных, Ozon не опрашивается">ДЕМО</span>{% endif %}
   <div class="user">{% if user %}<b>{{ user.login }}</b> · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 

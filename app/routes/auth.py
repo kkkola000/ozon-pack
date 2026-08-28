@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, security
 from ..config import settings
+from ..credentials import is_demo
 from ..deps import templates
 
 router = APIRouter()
@@ -16,7 +17,7 @@ def login_form(request: Request, next: str = "/pack", error: str | None = None):
     if getattr(request.state, "user", None):
         return RedirectResponse(next or "/pack", status_code=303)
     return templates.TemplateResponse(
-        request, "login.html", {"request": request, "next": next, "error": error, "demo": settings.demo}
+        request, "login.html", {"request": request, "next": next, "error": error, "demo": is_demo()}
     )
 
 
@@ -27,7 +28,7 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"request": request, "next": next, "error": "Слишком много попыток. Подождите 5 минут.", "demo": settings.demo},
+            {"request": request, "next": next, "error": "Слишком много попыток. Подождите 5 минут.", "demo": is_demo()},
             status_code=429,
         )
 
@@ -38,7 +39,7 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"request": request, "next": next, "error": "Неверный логин или пароль", "demo": settings.demo},
+            {"request": request, "next": next, "error": "Неверный логин или пароль", "demo": is_demo()},
             status_code=401,
         )
 
