@@ -101,6 +101,10 @@ esac
 
 step "Панель: $APP_DIR, порт $APP_PORT; адрес: $DOMAIN"
 
+# На серверах с отключённым IPv6 строка listen [::] роняет весь nginx,
+# поэтому добавляем её только когда стек действительно есть.
+if [ -f /proc/net/if_inet6 ]; then HAS_IPV6=1; else HAS_IPV6=0; info "IPv6 не обнаружен — nginx будет слушать только IPv4"; fi
+
 # ------------------------------------------------------------------ пакеты
 step "nginx"
 export DEBIAN_FRONTEND=noninteractive
@@ -121,7 +125,7 @@ write_nginx() {
 # Создано deploy/ssl.sh для Ozon Pack. Правки перезапишутся при повторном запуске.
 server {
     listen 80;
-    listen [::]:80;
+$( [ "$HAS_IPV6" = "1" ] && echo "    listen [::]:80;" )
     server_name $DOMAIN;
 
     # Проверка Let's Encrypt при выпуске и продлении
@@ -139,7 +143,7 @@ CONF
 
 server {
     listen 443 ssl;
-    listen [::]:443 ssl;
+$( [ "$HAS_IPV6" = "1" ] && echo "    listen [::]:443 ssl;" )
     http2 on;
     server_name $DOMAIN;
 
