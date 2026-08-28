@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import credentials, db, security, store, sync
+from .. import credentials, db, options, security, store, sync
 from ..config import settings
 from ..deps import check_csrf, current_user, require_admin, templates
 from ..ozon import OzonClient, OzonError, get_client
@@ -36,6 +36,7 @@ EVENT_LABELS = {
     "returns_untaken": "Отметка снята",
     "returns_giveout": "Штрихкод выдачи",
     "ozon_credentials_set": "Сохранены ключи Ozon",
+    "returns_statuses_set": "Изменены статусы возвратов",
     "ozon_credentials_cleared": "Удалены ключи Ozon",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
@@ -102,6 +103,9 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "users": users,
             "stats": stats,
             "ozon": credentials.status(),
+            "returns_statuses": options.get_returns_statuses(),
+            "returns_choices": options.RETURN_STATUS_CHOICES,
+            "returns_source": options.returns_source(),
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
@@ -240,3 +244,26 @@ def api_reset_posting(posting_number: str, request: Request, admin: dict = Depen
     )
     db.log_event("posting_reset", level="warn", user=admin, posting_number=posting_number, message="Сброшена отметка сборки")
     return {"status": "ok", "message": f"{posting_number}: отметка сборки снята"}
+
+
+@router.post("/api/returns/statuses")
+def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Какие статусы возвратов панель загружает и показывает как доступные."""
+    check_csrf(request)
+    raw = payload.get("statuses") or []
+    known = {code for code, _label, _hint in options.RETURN_STATUS_CHOICES}
+    statuses = [str(s).strip() for s in raw if str(s).strip() in known]
+    if not statuses:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы один статус")
+
+    options.set_returns_statuses(statuses, user=admin)
+    try:
+        result = sync.sync_returns()
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
+    names = ", ".join(options.status_label(code) for code in statuses)
+    return {
+        "status": "ok",
+        "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
+        "result": result,
+    }

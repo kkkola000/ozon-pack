@@ -1,6 +1,7 @@
 """Фоновая синхронизация с Ozon: отправления, товары, возвраты."""
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -116,72 +117,117 @@ def sync_products(limit: int = 500) -> dict:
 def sync_returns(*, full: bool = False, statuses: list[str] | None = None) -> dict:
     """Возвраты FBO и FBS: /v1/returns/list.
 
-    Обычный проход забирает возвраты в рабочих статусах (по умолчанию
-    ArrivedAtReturnPlace — «В пункте выдачи») и сверяет список: то, что раньше
-    числилось готовым к выдаче, а теперь в выдаче не значится, снимается с учёта.
-    full=True обходит все возвраты без фильтра — для истории.
+    Забираем только те статусы, в которых возврат реально можно получить
+    (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»). Фильтр уходит в
+    запрос, но на него не полагаемся: всё, что пришло с другим статусом,
+    отбрасывается на нашей стороне. Иначе достаточно одной перемены в API,
+    чтобы сборщик снова увидел лишнее.
     """
+    from .options import get_returns_statuses
+
     client = get_client()
+    wanted = list(statuses or get_returns_statuses())
+    wanted_set = set(wanted)
     saved = 0
+    skipped = 0
+    seen: set[str] = set()
+    histogram: dict[str, int] = {}
+    complete = True
+
+    def remember(raw: dict) -> None:
+        """Учитываем, что именно вернул Ozon, — histogram виден в интерфейсе."""
+        nonlocal skipped
+        sys_name = (((raw.get("visual") or {}).get("status") or {}).get("sys_name")) or "—"
+        histogram[sys_name] = histogram.get(sys_name, 0) + 1
+        if sys_name not in wanted_set:
+            skipped += 1
+
+    def store_page(returns: list[dict]) -> int:
+        nonlocal saved
+        keep = []
+        for raw in returns:
+            remember(raw)
+            sys_name = (((raw.get("visual") or {}).get("status") or {}).get("sys_name")) or ""
+            if sys_name in wanted_set:
+                keep.append(raw)
+        if keep:
+            with db.write() as conn:
+                for raw in keep:
+                    seen.add(store.upsert_return(conn, raw))
+                    saved += 1
+        return len(keep)
 
     if full:
+        # Полный обход без фильтра — чтобы увидеть, что вообще есть в Ozon.
         last_id = 0
         for _page in range(RETURNS_MAX_PAGES):
             try:
                 returns, has_next = client.returns_list(limit=RETURNS_PAGE_LIMIT, last_id=last_id)
             except OzonError as exc:
                 log.warning("Возвраты недоступны: %s", exc)
-                break
-            if not returns:
-                break
-            with db.write() as conn:
-                for raw in returns:
-                    store.upsert_return(conn, raw)
-                    saved += 1
-            last_id = returns[-1].get("id") or 0
-            if not has_next or not last_id:
-                break
-        return {"returns": saved}
-
-    wanted = statuses or settings.returns_ready_statuses
-    seen: set[str] = set()
-    complete = True
-    for status in wanted:
-        last_id = 0
-        for _page in range(RETURNS_MAX_PAGES):
-            try:
-                # В фильтре /v1/returns/list допускается только одно поле,
-                # поэтому статусы запрашиваем по очереди.
-                returns, has_next = client.returns_list(
-                    limit=RETURNS_PAGE_LIMIT,
-                    last_id=last_id,
-                    filter_={"visual_status_name": status},
-                )
-            except OzonError as exc:
-                log.warning("Возвраты в статусе %s недоступны: %s", status, exc)
                 complete = False
                 break
             if not returns:
                 break
-            with db.write() as conn:
-                for raw in returns:
-                    seen.add(store.upsert_return(conn, raw))
-                    saved += 1
+            store_page(returns)
             last_id = returns[-1].get("id") or 0
             if not has_next or not last_id:
                 break
+    else:
+        for status in wanted:
+            last_id = 0
+            for _page in range(RETURNS_MAX_PAGES):
+                try:
+                    # В фильтре /v1/returns/list допускается только одно поле,
+                    # поэтому статусы запрашиваем по очереди.
+                    returns, has_next = client.returns_list(
+                        limit=RETURNS_PAGE_LIMIT,
+                        last_id=last_id,
+                        filter_={"visual_status_name": status},
+                    )
+                except OzonError as exc:
+                    log.warning("Возвраты в статусе %s недоступны: %s", status, exc)
+                    complete = False
+                    break
+                if not returns:
+                    break
+                store_page(returns)
+                last_id = returns[-1].get("id") or 0
+                if not has_next or not last_id:
+                    break
 
     gone = 0
+    removed = 0
     if complete:
-        # Возврат забрали или он уехал дальше — Ozon его в этом статусе больше
+        # Возврат забрали или он уехал дальше — Ozon его в этих статусах больше
         # не отдаёт. Сверку делаем только после полностью успешного обхода,
         # иначе сетевая ошибка очистила бы список выдачи.
         stale = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1") if row["id"] not in seen]
         if stale:
             placeholders = ",".join("?" for _ in stale)
-            db.execute(f"UPDATE returns SET is_ready = 0, updated_at = ? WHERE id IN ({placeholders})", [db.now_iso()] + stale)
+            db.execute(
+                f"UPDATE returns SET is_ready = 0, updated_at = ? WHERE id IN ({placeholders})",
+                [db.now_iso()] + stale,
+            )
             gone = len(stale)
-    return {"returns": saved, "returns_gone": gone}
+        # Записи в ненужных статусах, оставшиеся от прошлых версий или прошлых
+        # настроек, убираем совсем — кроме тех, что отмечены как забранные.
+        placeholders = ",".join("?" for _ in wanted) or "''"
+        removed = db.execute(
+            f"DELETE FROM returns WHERE taken_at IS NULL AND (status_sys IS NULL OR status_sys NOT IN ({placeholders}))",
+            wanted,
+        ).rowcount or 0
+
+    db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
+    db.kv_set("returns_last_wanted", ",".join(wanted))
+    result = {"returns": saved}
+    if skipped:
+        result["returns_skipped"] = skipped
+    if gone:
+        result["returns_gone"] = gone
+    if removed:
+        result["returns_removed"] = removed
+    return result
 
 
 def sync_all(*, returns: bool = True) -> dict:

@@ -128,3 +128,33 @@ def test_clear_credentials(client):
     response = client.post("/api/ozon/credentials/clear", headers={"X-CSRF-Token": csrf}, json={})
     assert response.status_code == 200
     assert not db.kv_get("ozon_client_id")
+
+
+def test_returns_statuses_endpoint(client):
+    csrf = login(client)
+    response = client.post(
+        "/api/returns/statuses",
+        json={"statuses": ["ArrivedAtReturnPlace", "MovingToSeller"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    from app import options
+
+    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
+    assert "В пункте выдачи" in response.json()["message"]
+
+
+def test_returns_statuses_rejects_empty_and_unknown(client):
+    csrf = login(client)
+    for payload in ({"statuses": []}, {"statuses": ["ЧтоТоНеТо"]}):
+        response = client.post("/api/returns/statuses", json=payload, headers={"X-CSRF-Token": csrf})
+        assert response.status_code == 400, payload
+
+
+def test_returns_page_shows_hidden_statuses(client):
+    csrf = login(client)
+    # Полный обход возвращает все статусы — панель должна сказать, что скрыла лишнее
+    client.post("/api/returns/sync", json={"full": True}, headers={"X-CSRF-Token": csrf})
+    page = client.get("/returns")
+    assert page.status_code == 200
+    assert "В пункте выдачи" in page.text

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import db, store, sync
+from .. import db, options, store, sync
 from ..deps import check_csrf, current_user, templates
 from ..ozon import OzonError, get_client
 
@@ -71,6 +71,15 @@ def returns_page(
         "fbo": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL AND (type = 'FBO' OR scheme = 'FBO')")["c"],
         "fbs": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL AND (type = 'FBS' OR scheme = 'FBS')")["c"],
     }
+    import json as _json
+
+    wanted = options.get_returns_statuses()
+    try:
+        histogram = _json.loads(db.kv_get("returns_last_statuses") or "{}")
+    except ValueError:
+        histogram = {}
+    hidden = {code: count for code, count in histogram.items() if code not in set(wanted)}
+
     return templates.TemplateResponse(
         request,
         "returns.html",
@@ -78,6 +87,8 @@ def returns_page(
             "request": request,
             "user": user,
             "items": items,
+            "wanted_labels": [options.status_label(code) for code in wanted],
+            "hidden_statuses": [(options.status_label(code), count) for code, count in sorted(hidden.items())],
             "places": _places(),
             "scheme": scheme,
             "place": place,

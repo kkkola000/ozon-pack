@@ -39,8 +39,8 @@
     </dd>
     <dt>Возвраты</dt>
     <dd class="small">
-      Загружаются в статусах: <b>{{ settings.returns_ready_statuses | join(', ') }}</b>
-      <div class="muted">ArrivedAtReturnPlace — «В пункте выдачи». Меняется в .env (RETURNS_READY_STATUSES).</div>
+      Загружаются в статусах: <b>{{ returns_statuses | join(', ') }}</b>
+      <div class="muted">{{ 'задано в панели' if returns_source == 'panel' else 'значение из файла .env' }} — меняется ниже</div>
     </dd>
   </dl>
 
@@ -65,6 +65,21 @@
   <label class="check small muted" style="margin-top:10px">
     <input type="checkbox" id="ozon-skip-test"> сохранить без проверки связи
   </label>
+
+  <h2 style="margin-top:18px">Какие возвраты загружать</h2>
+  <p class="muted small" style="margin-top:0">
+    Сборщик должен видеть только то, что реально может получить. Панель забирает из Ozon
+    возвраты в отмеченных статусах, остальные не сохраняет и не показывает.
+  </p>
+  <div style="display:grid; gap:6px; max-width:640px">
+    {% for code, label, hint in returns_choices %}
+      <label class="check">
+        <input type="checkbox" class="return-status" value="{{ code }}" {{ 'checked' if code in returns_statuses }}>
+        <span><b>{{ label }}</b> <span class="muted small">— {{ hint }} ({{ code }})</span></span>
+      </label>
+    {% endfor %}
+  </div>
+  <button class="btn primary" id="btn-save-statuses" style="margin-top:12px">Сохранить и обновить возвраты</button>
 
   <div class="row" style="margin-top:16px">
     {% for key, value in stats.items() %}
@@ -109,6 +124,22 @@
 
 {% block scripts %}
 <script>
+document.getElementById('btn-save-statuses').onclick = async (event) => {
+  const statuses = Array.from(document.querySelectorAll('.return-status:checked')).map((box) => box.value);
+  if (!statuses.length) { toast('Отметьте хотя бы один статус', 'error'); return; }
+  event.target.disabled = true;
+  event.target.textContent = 'Обновляем…';
+  try {
+    const result = await api('/api/returns/statuses', { statuses });
+    toast(result.message, 'ok', 9000);
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    event.target.disabled = false;
+    event.target.textContent = 'Сохранить и обновить возвраты';
+  }
+};
+
 document.getElementById('btn-save-keys').onclick = async (event) => {
   const clientId = document.getElementById('ozon-client-id').value.trim();
   const apiKey = document.getElementById('ozon-api-key').value.trim();

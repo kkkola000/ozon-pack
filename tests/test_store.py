@@ -102,3 +102,80 @@ def test_products_have_barcodes(demo_data):
     assert db.query_one("SELECT COUNT(*) c FROM product_barcodes")["c"] > 0
     row = db.query_one("SELECT sku, barcodes FROM products WHERE barcodes != '[]' LIMIT 1")
     assert row is not None
+
+
+def test_ignored_api_filter_still_filters_locally(demo_data, monkeypatch):
+    """Если Ozon вернёт всё подряд, лишнее не должно попасть в список выдачи."""
+    from app import sync
+
+    client = demo_data
+    original = client.returns_list
+
+    def ignores_filter(*, limit=500, last_id=0, filter_=None):
+        # Отдаём всё, как будто фильтр по статусу не поддержан
+        return original(limit=limit, last_id=last_id, filter_=None)
+
+    monkeypatch.setattr(client, "returns_list", ignores_filter)
+    result = sync.sync_returns()
+
+    statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
+    assert statuses == {"ArrivedAtReturnPlace"}, statuses
+    assert result.get("returns_skipped"), "отброшенные возвраты должны быть посчитаны"
+    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 0")["c"] == 0
+
+
+def test_returns_in_other_statuses_are_cleaned_up(demo_data):
+    """Записи, оставшиеся от прежних настроек, удаляются при синхронизации."""
+    from app import sync
+
+    db.execute(
+        "INSERT INTO returns(id, type, status_sys, status_name, product_name, quantity, is_ready, first_seen_at, updated_at)"
+        " VALUES('old-1', 'FBS', 'MovingToSeller', 'Едет к продавцу', 'Старый возврат', 1, 1, ?, ?)",
+        (db.now_iso(), db.now_iso()),
+    )
+    sync.sync_returns()
+    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'old-1'")["c"] == 0
+
+
+def test_taken_returns_survive_cleanup(demo_data):
+    """Забранные возвраты остаются в истории, даже если статус уже другой."""
+    from app import sync
+
+    db.execute(
+        "INSERT INTO returns(id, type, status_sys, status_name, product_name, quantity, is_ready, taken_at, taken_by,"
+        " first_seen_at, updated_at) VALUES('taken-1', 'FBS', 'ReceivedBySeller', 'Получен продавцом', 'Забранный', 1, 0, ?, 'admin', ?, ?)",
+        (db.now_iso(), db.now_iso(), db.now_iso()),
+    )
+    sync.sync_returns()
+    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'taken-1'")["c"] == 1
+
+
+def test_statuses_can_be_changed_from_panel(demo_data):
+    """Список статусов задаётся в интерфейсе и переопределяет .env."""
+    from app import options, sync
+
+    options.set_returns_statuses(["ArrivedAtReturnPlace", "MovingToSeller"])
+    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
+    sync.sync_returns()
+
+    statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
+    assert "MovingToSeller" in statuses
+
+
+def test_legacy_env_value_is_upgraded(monkeypatch):
+    """Старое значение из .env, записанное прежним установщиком, не должно
+    возвращать в список выдачи возвраты, которые нельзя забрать."""
+    from app import options
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "returns_ready_statuses", ["ArrivedAtReturnPlace", "WaitingShipment"])
+    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+
+    # Осознанно выбранное значение уважаем
+    monkeypatch.setattr(settings, "returns_ready_statuses", ["WaitingShipment"])
+    assert options.get_returns_statuses() == ["WaitingShipment"]
+
+    # Выбор в панели важнее файла
+    monkeypatch.setattr(settings, "returns_ready_statuses", ["WaitingShipment"])
+    options.set_returns_statuses(["ArrivedAtReturnPlace"])
+    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]

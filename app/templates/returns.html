@@ -16,6 +16,16 @@
     </div>
   </div>
 
+  <div class="small muted no-print" style="margin-top:10px">
+    Загружаются возвраты в статусе <b>{{ wanted_labels | join(', ') }}</b> — то, что можно забрать в пункте выдачи.
+    {% if hidden_statuses %}
+      <br>При последней синхронизации Ozon вернул и другие:
+      {% for label, count in hidden_statuses %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
+      — они скрыты и в панель не попадают.
+    {% endif %}
+    {% if user.role == 'admin' %} <a href="/settings">Изменить статусы</a>{% endif %}
+  </div>
+
   <form class="row no-print" method="get" action="/returns" style="margin-top:14px">
     <select name="show">
       <option value="ready" {{ 'selected' if show == 'ready' }}>Готовы к выдаче</option>
