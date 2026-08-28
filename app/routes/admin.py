@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import credentials, db, options, security, store, sync
+from .. import credentials, db, options, pdfrender, security, store, sync
 from ..config import settings
 from ..deps import check_csrf, current_user, require_admin, templates
 from ..ozon import OzonClient, OzonError, get_client
@@ -37,6 +37,7 @@ EVENT_LABELS = {
     "returns_giveout": "Штрихкод выдачи",
     "ozon_credentials_set": "Сохранены ключи Ozon",
     "returns_statuses_set": "Изменены статусы возвратов",
+    "print_mode_set": "Изменён режим печати",
     "ozon_credentials_cleared": "Удалены ключи Ozon",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
@@ -104,6 +105,9 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "stats": stats,
             "ozon": credentials.status(),
             "returns_statuses": options.get_returns_statuses(),
+            "current_print_mode": options.get_print_mode(),
+            "print_modes": options.PRINT_MODES,
+            "labels_render_available": pdfrender.is_available(),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
             "sync": sync.status(),
@@ -267,3 +271,21 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
         "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
         "result": result,
     }
+
+
+@router.post("/api/print-mode")
+def api_print_mode(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Чем печатать стикер: PDF или картинкой (Safari печатает PDF пустым листом)."""
+    check_csrf(request)
+    mode = str(payload.get("mode") or "").strip()
+    try:
+        options.set_print_mode(mode, user=admin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if mode == "image" and not pdfrender.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail="Печать картинкой недоступна: на сервере нет библиотеки pypdfium2. Обновите панель.",
+        )
+    label = next((title for code, title, _hint in options.PRINT_MODES if code == mode), mode)
+    return {"status": "ok", "message": f"Режим печати: {label}"}

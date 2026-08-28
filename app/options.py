@@ -9,6 +9,31 @@ from . import db
 from .config import settings
 
 KV_RETURNS_STATUSES = "returns_ready_statuses"
+KV_PRINT_MODE = "print_mode"
+
+# Как печатать стикер:
+#   auto  — PDF везде, кроме Safari (он печатает PDF во фрейме пустым листом);
+#   pdf   — всегда исходный PDF от Ozon;
+#   image — всегда HTML-страница с картинкой стикера.
+PRINT_MODES = [
+    ("auto", "Автоматически", "PDF, а в Safari — картинка"),
+    ("pdf", "Всегда PDF", "исходный файл Ozon"),
+    ("image", "Всегда картинкой", "надёжнее в Safari и на старых браузерах"),
+]
+DEFAULT_PRINT_MODE = "auto"
+
+
+def get_print_mode() -> str:
+    value = (db.kv_get(KV_PRINT_MODE) or "").strip()
+    return value if value in {code for code, _l, _h in PRINT_MODES} else DEFAULT_PRINT_MODE
+
+
+def set_print_mode(mode: str, user: dict | None = None) -> str:
+    if mode not in {code for code, _l, _h in PRINT_MODES}:
+        raise ValueError(f"Неизвестный режим печати: {mode}")
+    db.kv_set(KV_PRINT_MODE, mode)
+    db.log_event("print_mode_set", user=user, message=mode)
+    return mode
 
 # Статусы возвратов из /v1/returns/list (visual.status.sys_name).
 # Забрать со стороны продавца можно только те, что физически лежат в пункте выдачи.

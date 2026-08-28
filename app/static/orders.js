@@ -40,6 +40,15 @@ document.getElementById('btn-labels')?.addEventListener('click', async (event) =
   if (!numbers.length) return;
   event.target.disabled = true;
   try {
+    const name = `Стикеры (${numbers.length} шт)`;
+    if (window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+      const ok = await printLabelDocument({
+        htmlUrl: `/api/labels/print?numbers=${encodeURIComponent(numbers.join(','))}`,
+        name,
+      });
+      if (ok) toast(`${name} отправлены на печать`, 'ok');
+      return;
+    }
     const response = await fetch('/api/labels.pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
@@ -50,8 +59,8 @@ document.getElementById('btn-labels')?.addEventListener('click', async (event) =
       throw new Error(data.detail || `Ошибка ${response.status}`);
     }
     const url = URL.createObjectURL(await response.blob());
-    printPdf(url);
-    toast(`Стикеры (${numbers.length} шт) отправлены на печать`, 'ok');
+    await printPdf(url, { name, asBlob: false });
+    toast(`${name} отправлены на печать`, 'ok');
   } catch (error) {
     toast(error.message, 'error', 10000);
   } finally {

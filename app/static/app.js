@@ -54,26 +54,149 @@ function beep(kind = 'ok') {
   } catch (e) { /* звук не критичен */ }
 }
 
-/* Печать PDF: скрытый iframe печатает напрямую, иначе открываем вкладку. */
-function printPdf(url, { fallbackTab = true } = {}) {
-  const frame = document.getElementById('print-frame');
-  if (!frame) { if (fallbackTab) window.open(url, '_blank'); return; }
+/* Печать PDF.
+
+   Тонкое место: iframe со style="display:none" браузер не отрисовывает, и
+   команда печати уходит в пустой документ — на бумагу выходит чистый лист.
+   Поэтому фрейм остаётся в разметке (просто прозрачный), а сам PDF сначала
+   скачивается через fetch: так видно ошибку от Ozon вместо печати страницы
+   с текстом ошибки, а blob-адрес печатается стабильнее прямой ссылки. */
+let printBlobUrl = null;
+let printFallbackTimer = null;
+
+function releasePrintBlob() {
+  if (printBlobUrl) {
+    URL.revokeObjectURL(printBlobUrl);
+    printBlobUrl = null;
+  }
+}
+
+function offerManualPrint(url, name) {
+  const box = document.getElementById('toasts');
+  if (!box) { window.open(url, '_blank'); return; }
+  const element = document.createElement('div');
+  element.className = 'toast warning';
+  element.innerHTML = `<div>${name}: окно печати не открылось.</div>`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.textContent = 'Открыть и напечатать вручную';
+  link.style.cssText = 'display:inline-block;margin-top:6px;font-weight:700';
+  /* Переход по ссылке — жест пользователя, всплывающее окно не блокируется. */
+  link.onclick = () => setTimeout(() => element.remove(), 500);
+  element.appendChild(link);
+  box.appendChild(element);
+  setTimeout(() => element.remove(), 30000);
+}
+
+/* Safari печатает PDF во фрейме пустым листом — для него готовим HTML с
+   картинкой стикера. Определяем именно Safari, а не WebKit вообще: Chrome и
+   Edge на macOS тоже содержат Safari в строке браузера. */
+const IS_SAFARI = /^((?!chrome|chromium|crios|edg|android|fxios).)*safari/i.test(navigator.userAgent);
+
+function shouldPrintAsImage() {
+  const mode = window.OZP?.printMode || 'auto';
+  if (mode === 'pdf') return false;
+  if (mode === 'image') return true;
+  return IS_SAFARI;
+}
+
+/* Печать стикера: сам выбирает надёжный для этого браузера способ. */
+async function printLabelDocument({ pdfUrl, htmlUrl, name = 'Стикер' }) {
+  if (htmlUrl && window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+    return printHtmlDocument(htmlUrl, name, pdfUrl);
+  }
+  return printPdf(pdfUrl, { name });
+}
+
+/* HTML-страница печатает себя сама и сообщает об этом через postMessage —
+   так видно разницу между «печать пошла» и «фрейм не загрузился». */
+function printHtmlDocument(url, name, fallbackUrl) {
+  return new Promise((resolve) => {
+    document.getElementById('print-frame')?.remove();
+    const frame = document.createElement('iframe');
+    frame.id = 'print-frame';
+    frame.title = 'Печать';
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText =
+      'position:fixed;inset:0;width:100vw;height:100vh;opacity:0;pointer-events:none;border:0;z-index:-1';
+
+    let ready = false;
+    const onMessage = (event) => {
+      if (event.origin === window.location.origin && event.data?.type === 'ozp-print-ready') {
+        ready = true;
+        window.removeEventListener('message', onMessage);
+        resolve(true);
+      }
+    };
+    window.addEventListener('message', onMessage);
+
+    frame.onerror = () => { offerManualPrint(fallbackUrl || url, name); resolve(false); };
+    document.body.appendChild(frame);
+    frame.src = url;
+
+    clearTimeout(printFallbackTimer);
+    printFallbackTimer = setTimeout(() => {
+      if (!ready) {
+        window.removeEventListener('message', onMessage);
+        offerManualPrint(fallbackUrl || url, name);
+        resolve(false);
+      }
+    }, 8000);
+  });
+}
+
+async function printPdf(url, { name = 'Стикер', asBlob = true } = {}) {
+  let printUrl = url;
+  if (asBlob && !url.startsWith('blob:')) {
+    try {
+      const response = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
+      if (!response.ok) {
+        let detail = `Ошибка ${response.status}`;
+        try { detail = (await response.json()).detail || detail; } catch (e) { /* не JSON */ }
+        toast(`${name}: ${detail}`, 'error', 15000);
+        return false;
+      }
+      releasePrintBlob();
+      printBlobUrl = URL.createObjectURL(await response.blob());
+      printUrl = printBlobUrl;
+    } catch (error) {
+      toast(`${name}: не удалось получить файл — ${error.message}`, 'error', 12000);
+      return false;
+    }
+  }
+
+  document.getElementById('print-frame')?.remove();
+  const frame = document.createElement('iframe');
+  frame.id = 'print-frame';
+  frame.title = 'Печать';
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText =
+    'position:fixed;inset:0;width:100vw;height:100vh;opacity:0;pointer-events:none;border:0;z-index:-1';
+
   let printed = false;
   frame.onload = () => {
-    try {
-      frame.contentWindow.focus();
-      frame.contentWindow.print();
-      printed = true;
-    } catch (e) {
-      if (fallbackTab) window.open(url, '_blank');
-    }
+    /* Плагину PDF нужно время на отрисовку, иначе печатается пустая страница. */
+    setTimeout(() => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+        printed = true;
+      } catch (error) {
+        offerManualPrint(printUrl, name);
+      }
+    }, 500);
   };
-  frame.src = url;
-  setTimeout(() => {
-    if (!printed && fallbackTab && frame.dataset.opened !== url) {
-      /* Некоторые браузеры не печатают PDF из iframe — открываем вкладку. */
-    }
-  }, 4000);
+  frame.onerror = () => offerManualPrint(printUrl, name);
+  document.body.appendChild(frame);
+  frame.src = printUrl;
+
+  clearTimeout(printFallbackTimer);
+  printFallbackTimer = setTimeout(() => {
+    if (!printed) offerManualPrint(printUrl, name);
+  }, 8000);
+  return true;
 }
 
 function plural(n, one, few, many) {

@@ -77,6 +77,8 @@ function renderActive(state) {
         </div>
         <div class="row">
           <button class="btn" id="btn-print">Печать стикера</button>
+          <a class="btn" id="btn-open-label" href="/api/label/${encodeURIComponent(posting.posting_number)}.pdf"
+             target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>
           <button class="btn danger" id="btn-release">Отменить сборку</button>
         </div>
       </div>
@@ -215,9 +217,14 @@ async function forceComplete() {
   }
 }
 
-function printLabel(postingNumber) {
-  printPdf(`/api/label/${encodeURIComponent(postingNumber)}.pdf`);
-  toast(`Стикер ${postingNumber} отправлен на печать`, 'ok', 3500);
+async function printLabel(postingNumber) {
+  const encoded = encodeURIComponent(postingNumber);
+  const ok = await printLabelDocument({
+    pdfUrl: `/api/label/${encoded}.pdf`,
+    htmlUrl: `/api/label/${encoded}/print`,
+    name: `Стикер ${postingNumber}`,
+  });
+  if (ok) toast(`Стикер ${postingNumber} отправлен на печать`, 'ok', 3500);
 }
 
 input.addEventListener('keydown', (event) => {

@@ -68,6 +68,26 @@ def nav_counters() -> dict:
     }
 
 
+def static_version() -> str:
+    """Метка версии статики — по времени изменения файлов в app/static.
+
+    Без неё браузер сборщика может месяцами держать закешированный скрипт и не
+    увидеть исправление.
+    """
+    global _static_version
+    if _static_version is None:
+        static_dir = BASE_DIR / "app" / "static"
+        try:
+            newest = max(path.stat().st_mtime for path in static_dir.iterdir() if path.is_file())
+        except (OSError, ValueError):
+            newest = 0
+        _static_version = str(int(newest))
+    return _static_version
+
+
+_static_version: str | None = None
+
+
 def demo_mode() -> bool:
     from .credentials import is_demo
 
@@ -76,3 +96,20 @@ def demo_mode() -> bool:
 
 templates.env.globals["nav_counters"] = nav_counters
 templates.env.globals["demo_mode"] = demo_mode
+templates.env.globals["static_version"] = static_version
+
+
+def can_render_labels() -> bool:
+    from .pdfrender import is_available
+
+    return is_available()
+
+
+def print_mode() -> str:
+    from .options import get_print_mode
+
+    return get_print_mode()
+
+
+templates.env.globals["can_render_labels"] = can_render_labels
+templates.env.globals["print_mode"] = print_mode
