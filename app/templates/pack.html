@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Сборка · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="scanbar">
+    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Сканируйте штрихкод товара или стикер отправления…" autofocus>
+    <button class="btn big" id="btn-clear" title="Очистить поле">Очистить</button>
+  </div>
+  <div id="banner" class="banner idle">
+    Отсканируйте штрихкод товара — система сама найдёт отправление и отправит стикер на печать.
+  </div>
+  <div id="candidates" class="candidates"></div>
+</div>
+
+<div id="active-panel"></div>
+
+<div class="panel" id="idle-panel">
+  <div class="row between">
+    <h2 style="margin:0">Очередь</h2>
+    <div class="row small muted">
+      <span>Обновлено: <span id="sync-time">—</span></span>
+      <button class="btn small" id="btn-sync">Обновить из Ozon</button>
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px; gap:22px">
+    <div><div class="muted small">Ожидает сборки</div><div style="font-size:30px;font-weight:800" id="c-packaging">{{ counters.awaiting_packaging }}</div></div>
+    <div><div class="muted small">Ожидает отгрузки</div><div style="font-size:30px;font-weight:800" id="c-deliver">{{ counters.awaiting_deliver }}</div></div>
+    <div><div class="muted small">Собрано сегодня</div><div style="font-size:30px;font-weight:800;color:#7ee2a8" id="c-packed">{{ counters.packed_today }}</div></div>
+    <div><div class="muted small">Возвраты к выдаче</div><div style="font-size:30px;font-weight:800" id="c-returns">{{ counters.returns_ready }}</div></div>
+  </div>
+  <p class="muted small" style="margin:14px 0 0">
+    Порядок работы: сканируете товар → система показывает отправление и его состав, стикер уходит на печать →
+    упаковали, наклеили стикер → сканируете стикер → отправление закрыто.
+    Товар не из отправления и повторная сборка блокируются.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Последние сканы</h2>
+  <div id="history" class="small muted">Пока пусто.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/pack.js?v=2"></script>
+{% endblock %}

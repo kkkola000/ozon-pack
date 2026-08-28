@@ -1,0 +1,27 @@
+# Установка без Docker:
+#   sudo cp deploy/ozon-pack.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ozon-pack
+[Unit]
+Description=Ozon Pack — панель сборки FBS и возвратов
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ozon
+Group=ozon
+WorkingDirectory=/opt/ozon-pack
+EnvironmentFile=/opt/ozon-pack/.env
+ExecStart=/opt/ozon-pack/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers
+Restart=always
+RestartSec=5
+
+# Ограничения: сервису нужен только свой каталог
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ozon-pack/data
+
+[Install]
+WantedBy=multi-user.target

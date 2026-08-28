@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Заказы FBS · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="tabs no-print">
+  {% for key, meta in tabs.items() %}
+    <a href="/orders?tab={{ key }}{% if search %}&q={{ search }}{% endif %}" class="{{ 'active' if tab == key }}">
+      {{ meta[0] }} <span class="badge">{{ counts[key] }}</span>
+    </a>
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <div class="row between no-print">
+    <form class="row" method="get" action="/orders">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <input type="search" name="q" value="{{ search }}" placeholder="Номер, город, товар, артикул…" style="width:280px">
+      <button class="btn" type="submit">Найти</button>
+      {% if search %}<a class="btn" href="/orders?tab={{ tab }}">Сбросить</a>{% endif %}
+    </form>
+    <div class="row">
+      <span class="small muted">
+        {% if sync.last_status == 'ok' %}Обновлено: {{ sync.last_ok | local_dt }}{% else %}Синхронизация: {{ sync.last_status }}{% endif %}
+      </span>
+      <button class="btn" id="btn-sync">Обновить из Ozon</button>
+    </div>
+  </div>
+
+  {% if sync.last_error %}
+    <div class="banner warning" style="font-size:14px;margin:12px 0">Ошибка синхронизации: {{ sync.last_error }}</div>
+  {% endif %}
+
+  <div class="row no-print" style="margin:14px 0 6px">
+    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
+    <span class="muted small" id="selected-count">выбрано: 0</span>
+    <span class="grow"></span>
+    {% if tab == 'packaging' %}
+      <button class="btn primary" id="btn-ship" disabled>Собрать выбранные → «Ожидает отгрузки»</button>
+    {% endif %}
+    <button class="btn" id="btn-labels" disabled>Печать стикеров</button>
+  </div>
+
+  {% if postings %}
+  <table>
+    <thead>
+      <tr>
+        <th style="width:34px"></th>
+        <th style="width:190px">Отправление</th>
+        <th style="width:150px">Отгрузка</th>
+        <th>Состав</th>
+        <th style="width:190px">Доставка</th>
+        <th style="width:150px">Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in postings %}
+      <tr class="{{ 'done' if p.local_state == 'packed' }}">
+        <td><input type="checkbox" class="pick" value="{{ p.posting_number }}"></td>
+        <td>
+          <div class="mono" style="font-weight:700">{{ p.posting_number }}</div>
+          <div class="muted small mono">{{ p.order_number or '' }}</div>
+          <div class="tags" style="margin-top:4px">
+            {% if p.is_express %}<span class="tag express">Express</span>{% endif %}
+            {% if p.requires_mark %}<span class="tag mark">Маркировка</span>{% endif %}
+            {% if p.is_multibox %}<span class="tag">Мест: {{ p.multi_box_qty }}</span>{% endif %}
+            {% if p.claim_active %}<span class="tag urgent">Собирает {{ p.claim_login }}</span>{% endif %}
+          </div>
+        </td>
+        <td>
+          <div>{{ p.shipment_date_local or '—' }}</div>
+          {% if p.urgency == 'overdue' %}<span class="tag overdue">Просрочено</span>
+          {% elif p.urgency == 'urgent' %}<span class="tag urgent">≤ 6 ч</span>
+          {% elif p.urgency == 'soon' %}<span class="tag soon">сегодня</span>{% endif %}
+        </td>
+        <td>
+          {% for item in p['items'] %}
+            <div>
+              <b>{{ item.quantity }} ×</b> {{ item.name or 'Без названия' }}
+              <span class="muted small mono">({{ item.offer_id or item.sku }})</span>
+            </div>
+          {% endfor %}
+        </td>
+        <td class="small">
+          <div>{{ p.city or '' }}</div>
+          <div class="muted">{{ p.delivery_method or '' }}</div>
+          <div class="muted">{{ p.tpl_provider or '' }}</div>
+        </td>
+        <td class="small">
+          <div>{{ p.status_label }}</div>
+          {% if p.local_state == 'packed' %}
+            <div class="muted">Собрал: {{ p.packed_by }}<br>{{ p.packed_at_local }}</div>
+            {% if user.role == 'admin' %}
+              <button class="btn small no-print" data-reset="{{ p.posting_number }}" style="margin-top:4px">Снять отметку</button>
+            {% endif %}
+          {% elif p.printed_at %}
+            <div class="muted">Стикер печатался ({{ p.print_count }})</div>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">Ничего не найдено. {% if not search %}Нажмите «Обновить из Ozon», если ждёте новые заказы.{% endif %}</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/orders.js?v=2"></script>
+{% endblock %}

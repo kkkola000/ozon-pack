@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Возвраты FBO/FBS · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between no-print">
+    <div class="row">
+      <div><div class="muted small">Готовы к выдаче</div><div style="font-size:26px;font-weight:800">{{ totals.ready }}</div></div>
+      <div><div class="muted small">FBO</div><div style="font-size:26px;font-weight:800">{{ totals.fbo }}</div></div>
+      <div><div class="muted small">FBS</div><div style="font-size:26px;font-weight:800">{{ totals.fbs }}</div></div>
+      <div><div class="muted small">Забрано</div><div style="font-size:26px;font-weight:800" class="muted">{{ totals.taken }}</div></div>
+    </div>
+    <div class="row">
+      <span class="small muted">{% if sync.last_ok %}Обновлено: {{ sync.last_ok | local_dt }}{% endif %}</span>
+      <button class="btn" id="btn-sync-returns">Обновить возвраты</button>
+    </div>
+  </div>
+
+  <form class="row no-print" method="get" action="/returns" style="margin-top:14px">
+    <select name="show">
+      <option value="ready" {{ 'selected' if show == 'ready' }}>Готовы к выдаче</option>
+      <option value="taken" {{ 'selected' if show == 'taken' }}>Забранные</option>
+      <option value="all" {{ 'selected' if show == 'all' }}>Все</option>
+    </select>
+    <select name="scheme">
+      <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
+      <option value="FBO" {{ 'selected' if scheme == 'FBO' }}>Только FBO</option>
+      <option value="FBS" {{ 'selected' if scheme == 'FBS' }}>Только FBS</option>
+    </select>
+    <select name="place">
+      <option value="">Все пункты выдачи</option>
+      {% for name in places %}<option value="{{ name }}" {{ 'selected' if place == name }}>{{ name }}</option>{% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="Товар, артикул, заказ, штрихкод…" style="width:240px">
+    <button class="btn" type="submit">Показать</button>
+    {% if q or place or scheme != 'all' or show != 'ready' %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
+  </form>
+
+  <div class="row no-print" style="margin-top:12px">
+    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
+    <span class="muted small" id="selected-count">выбрано: 0</span>
+    <span class="grow"></span>
+    <button class="btn" id="btn-taken" disabled>Отметить забранными</button>
+    <a class="btn primary" id="btn-print"
+       href="/returns/print?show={{ show }}&scheme={{ scheme }}&place={{ place }}&q={{ q }}" target="_blank">
+      Печать листа ({{ items | length }})
+    </a>
+  </div>
+
+  {% if items %}
+  <table style="margin-top:10px">
+    <thead>
+      <tr>
+        <th style="width:34px"></th>
+        <th style="width:130px">Возврат</th>
+        <th>Товар</th>
+        <th style="width:130px">Артикул / SKU</th>
+        <th style="width:70px">Кол-во</th>
+        <th style="width:200px">Где лежит</th>
+        <th style="width:170px">Статус</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr class="{{ 'done' if r.taken_at }}">
+        <td><input type="checkbox" class="pick" value="{{ r.id }}"></td>
+        <td>
+          <div class="mono">{{ r.id }}</div>
+          <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
+          {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
+        </td>
+        <td>
+          <div>{{ r.product_name or 'Без названия' }}</div>
+          <div class="muted small">
+            {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
+            {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
+          </div>
+        </td>
+        <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
+        <td style="font-weight:700">{{ r.quantity }}</td>
+        <td class="small">
+          <div>{{ r.place_name or '—' }}</div>
+          <div class="muted">{{ r.place_address or '' }}</div>
+        </td>
+        <td class="small">
+          <div>{{ r.status_label or '—' }}</div>
+          {% if r.taken_at %}<div class="muted">Забрал: {{ r.taken_by }} {{ r.taken_at | local_dt }}</div>{% endif %}
+          {% if r.storage_sum %}<div class="muted">Хранение: {{ r.storage_sum }} ₽</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">Возвратов не найдено.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/returns.js?v=2"></script>
+{% endblock %}

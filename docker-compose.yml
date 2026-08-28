@@ -1,0 +1,21 @@
+services:
+  ozon-pack:
+    build: .
+    image: ozon-pack:latest
+    container_name: ozon-pack
+    restart: unless-stopped
+    # Панель слушает 8080 на всех интерфейсах — открывается по http://IP-сервера:8080
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # База, журнал сборки и ключ сессий переживают пересборку образа.
+      # Контейнер работает под uid 10001, поэтому перед первым запуском:
+      #   mkdir -p data && sudo chown -R 10001:10001 data
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

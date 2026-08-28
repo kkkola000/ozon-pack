@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · Ozon Pack</title>
+  <link rel="stylesheet" href="/static/app.css?v=2">
+</head>
+<body>
+  <div class="wrap narrow" style="max-width:400px; margin-top:12vh">
+    <div class="panel">
+      <h2 style="font-size:22px">📦 Ozon<span style="color:var(--accent)">Pack</span></h2>
+      <p class="muted small">Панель сборки FBS и возвратов</p>
+      {% if error %}<div class="banner error" style="font-size:15px">{{ error }}</div>{% endif %}
+      {% if demo %}<div class="banner warning" style="font-size:14px">Демо-режим: данные сгенерированы, Ozon не опрашивается.</div>{% endif %}
+      <form method="post" action="/login" style="display:grid; gap:12px; margin-top:14px">
+        <input type="hidden" name="next" value="{{ next }}">
+        <input type="text" name="login" placeholder="Логин" autocomplete="username" autofocus required>
+        <input type="password" name="password" placeholder="Пароль" autocomplete="current-password" required>
+        <button class="btn primary big" type="submit">Войти</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Настройки · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Подключение к Ozon</h2>
+    <button class="btn" id="btn-test">Проверить ключи</button>
+  </div>
+  <dl class="kv" style="margin-top:12px">
+    <dt>Режим</dt><dd>{% if settings.demo %}<span class="badge warn">ДЕМО</span> данные генерируются локально{% else %}<span class="badge ok">Боевой</span> {{ settings.ozon_base_url }}{% endif %}</dd>
+    <dt>Client-Id</dt><dd class="mono">{{ settings.ozon_client_id or '— не задан —' }}</dd>
+    <dt>Api-Key</dt><dd class="mono">{% if settings.ozon_api_key %}••••{{ settings.ozon_api_key[-4:] }}{% else %}— не задан —{% endif %}</dd>
+    <dt>Синхронизация</dt><dd>
+      каждые {{ sync.interval }} с ·
+      статус: <b>{{ sync.last_status }}</b>{% if sync.last_ok %} · последняя: {{ sync.last_ok | local_dt('%d.%m %H:%M:%S') }}{% endif %}
+      {% if sync.last_result %}<div class="muted small">{{ sync.last_result }}</div>{% endif %}
+      {% if sync.last_error %}<div class="small" style="color:var(--err)">{{ sync.last_error }}</div>{% endif %}
+    </dd>
+    <dt>Правила сборки</dt><dd class="small">
+      Скан всех товаров обязателен: <b>{{ 'да' if settings.require_all_items else 'нет' }}</b> ·
+      Автопечать стикера: <b>{{ 'да' if settings.autoprint else 'нет' }}</b> ·
+      Автосборка при скане: <b>{{ 'да' if settings.auto_ship_on_scan else 'нет' }}</b> ·
+      Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>
+      <div class="muted">Меняется в файле .env, затем перезапуск сервиса.</div>
+    </dd>
+  </dl>
+  <div class="row" style="margin-top:12px">
+    {% for key, value in stats.items() %}
+      <div><div class="muted small">{{ key }}</div><div style="font-size:20px;font-weight:700">{{ value }}</div></div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Сотрудники</h2>
+  <table>
+    <thead><tr><th>Логин</th><th style="width:130px">Роль</th><th style="width:110px">Статус</th><th style="width:330px">Действия</th></tr></thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td><b>{{ u.login }}</b></td>
+        <td>{{ 'Администратор' if u.role == 'admin' else 'Сборщик' }}</td>
+        <td>{% if u.active %}<span class="badge ok">активен</span>{% else %}<span class="badge">отключён</span>{% endif %}</td>
+        <td class="row">
+          <button class="btn small" data-toggle="{{ u.id }}" data-active="{{ 0 if u.active else 1 }}">
+            {{ 'Отключить' if u.active else 'Включить' }}
+          </button>
+          <button class="btn small" data-password="{{ u.id }}" data-login="{{ u.login }}">Сменить пароль</button>
+          <button class="btn small" data-role="{{ u.id }}" data-new-role="{{ 'packer' if u.role == 'admin' else 'admin' }}">
+            Сделать {{ 'сборщиком' if u.role == 'admin' else 'администратором' }}
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2 style="margin-top:18px">Добавить сотрудника</h2>
+  <div class="row">
+    <input type="text" id="new-login" placeholder="Логин" autocomplete="off">
+    <input type="text" id="new-password" placeholder="Пароль (от 6 символов)" autocomplete="off">
+    <select id="new-role"><option value="packer">Сборщик</option><option value="admin">Администратор</option></select>
+    <button class="btn primary" id="btn-add">Создать</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('btn-test').onclick = async (event) => {
+  event.target.disabled = true;
+  try { toast((await api('/api/ozon/test', {})).message, 'ok'); }
+  catch (error) { toast(error.message, 'error', 12000); }
+  finally { event.target.disabled = false; }
+};
+
+document.getElementById('btn-add').onclick = async () => {
+  try {
+    const result = await api('/api/users', {
+      login: document.getElementById('new-login').value,
+      password: document.getElementById('new-password').value,
+      role: document.getElementById('new-role').value,
+    });
+    toast(result.message, 'ok');
+    setTimeout(() => window.location.reload(), 800);
+  } catch (error) { toast(error.message, 'error'); }
+};
+
+async function updateUser(id, payload) {
+  try {
+    const result = await api(`/api/users/${id}`, payload);
+    toast(result.message, 'ok');
+    setTimeout(() => window.location.reload(), 800);
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+document.querySelectorAll('[data-toggle]').forEach((button) => {
+  button.onclick = () => updateUser(button.dataset.toggle, { active: button.dataset.active === '1' });
+});
+document.querySelectorAll('[data-role]').forEach((button) => {
+  button.onclick = () => updateUser(button.dataset.role, { role: button.dataset.newRole });
+});
+document.querySelectorAll('[data-password]').forEach((button) => {
+  button.onclick = () => {
+    const password = prompt(`Новый пароль для ${button.dataset.login} (от 6 символов):`);
+    if (password) updateUser(button.dataset.password, { password });
+  };
+});
+</script>
+{% endblock %}

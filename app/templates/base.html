@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Ozon Pack{% endblock %}</title>
+  <meta name="csrf-token" content="{{ csrf or '' }}">
+  <link rel="stylesheet" href="/static/app.css?v=2">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📦</text></svg>">
+</head>
+<body data-page="{{ active_tab or '' }}">
+{% set c = nav_counters() %}
+<header class="topbar no-print">
+  <div class="brand">📦 Ozon<span>Pack</span></div>
+  <nav>
+    <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
+    <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
+      Заказы FBS
+      {% if c.packaging %}<span class="badge warn" title="Ожидает сборки">{{ c.packaging }}</span>{% endif %}
+      {% if c.deliver %}<span class="badge accent" title="Ожидает отгрузки">{{ c.deliver }}</span>{% endif %}
+    </a>
+    <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
+      Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
+    </a>
+    <a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>
+    {% if user and user.role == 'admin' %}
+      <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
+    {% endif %}
+  </nav>
+  {% if settings.demo %}<span class="badge warn" title="Работа на сгенерированных данных, Ozon не опрашивается">ДЕМО</span>{% endif %}
+  <div class="user">{% if user %}<b>{{ user.login }}</b> · <a href="/logout">выход</a>{% endif %}</div>
+</header>
+
+<main class="wrap {% block wrap_class %}{% endblock %}">
+  {% block content %}{% endblock %}
+</main>
+
+<div id="toasts"></div>
+<iframe id="print-frame" style="display:none" title="Печать"></iframe>
+<script src="/static/app.js?v=2"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

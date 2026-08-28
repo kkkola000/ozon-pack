@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Журнал · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Журнал действий</h2>
+    <form class="row" method="get" action="/logs">
+      <select name="kind">
+        <option value="">Все события</option>
+        {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if kind == k }}>{{ labels.get(k, k) }}</option>{% endfor %}
+      </select>
+      <select name="level">
+        <option value="">Любая важность</option>
+        <option value="info" {{ 'selected' if level == 'info' }}>Обычные</option>
+        <option value="warn" {{ 'selected' if level == 'warn' }}>Предупреждения</option>
+        <option value="error" {{ 'selected' if level == 'error' }}>Ошибки</option>
+      </select>
+      <input type="search" name="posting" value="{{ posting }}" placeholder="Отправление, SKU, штрихкод">
+      <button class="btn" type="submit">Показать</button>
+    </form>
+  </div>
+
+  <p class="muted small">Здесь видно, кто и что сканировал: по этой ленте разбираются спорные случаи с пересортом.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:130px">Время</th>
+        <th style="width:120px">Сотрудник</th>
+        <th style="width:190px">Событие</th>
+        <th style="width:170px">Отправление</th>
+        <th>Детали</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+      <tr>
+        <td class="small mono">{{ e.at | local_dt('%d.%m %H:%M:%S') }}</td>
+        <td class="small">{{ e.login or '—' }}</td>
+        <td class="small">
+          {% if e.level == 'error' %}<span class="badge err">!</span>
+          {% elif e.level == 'warn' %}<span class="badge warn">!</span>{% endif %}
+          {{ labels.get(e.kind, e.kind) }}
+        </td>
+        <td class="small mono">{{ e.posting_number or '' }}</td>
+        <td class="small muted">
+          {{ e.message or '' }}
+          {% if e.barcode %}<span class="mono"> · ШК {{ e.barcode }}</span>{% endif %}
+          {% if e.sku %}<span class="mono"> · SKU {{ e.sku }}</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">Событий нет.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
