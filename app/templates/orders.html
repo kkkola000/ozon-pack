@@ -47,6 +47,7 @@
         <th style="width:34px"></th>
         <th style="width:190px">Отправление</th>
         <th style="width:150px">Отгрузка</th>
+        <th style="width:60px">Фото</th>
         <th>Состав</th>
         <th style="width:190px">Доставка</th>
         <th style="width:150px">Статус</th>
@@ -73,6 +74,14 @@
           {% elif p.urgency == 'soon' %}<span class="tag soon">сегодня</span>{% endif %}
         </td>
         <td>
+          {% set first = p['items'][0] if p['items'] else none %}
+          {% if first and first.image %}
+            <img class="thumb" src="{{ first.image }}" alt="" loading="lazy">
+          {% else %}
+            <div class="thumb blank">🖼</div>
+          {% endif %}
+        </td>
+        <td>
           {% for item in p['items'] %}
             <div>
               <b>{{ item.quantity }} ×</b> {{ item.name or 'Без названия' }}
@@ -86,7 +95,10 @@
           <div class="muted">{{ p.tpl_provider or '' }}</div>
         </td>
         <td class="small">
-          <div>{{ p.status_label }}</div>
+          {% if p.local_state == 'packed' %}<span class="tag success">Собрано</span>
+          {% elif p.status == 'awaiting_packaging' %}<span class="tag urgent">Ожидает сборки</span>
+          {% elif p.status == 'awaiting_deliver' %}<span class="tag soon">Ожидает отгрузки</span>
+          {% else %}<span class="tag">{{ p.status_label }}</span>{% endif %}
           {% if p.local_state == 'packed' %}
             <div class="muted">Собрал: {{ p.packed_by }}<br>{{ p.packed_at_local }}</div>
             {% if user.role == 'admin' %}

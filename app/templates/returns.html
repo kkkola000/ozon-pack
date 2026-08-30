@@ -4,11 +4,11 @@
 {% block content %}
 <div class="panel">
   <div class="row between no-print">
-    <div class="row">
-      <div><div class="muted small">Готовы к выдаче</div><div style="font-size:26px;font-weight:800">{{ totals.ready }}</div></div>
-      <div><div class="muted small">FBO</div><div style="font-size:26px;font-weight:800">{{ totals.fbo }}</div></div>
-      <div><div class="muted small">FBS</div><div style="font-size:26px;font-weight:800">{{ totals.fbs }}</div></div>
-      <div><div class="muted small">Забрано</div><div style="font-size:26px;font-weight:800" class="muted">{{ totals.taken }}</div></div>
+    <div class="row" style="gap:28px">
+      <div class="stat"><div class="muted small">Готовы к выдаче</div><div class="value">{{ totals.ready }}</div></div>
+      <div class="stat"><div class="muted small">FBO</div><div class="value">{{ totals.fbo }}</div></div>
+      <div class="stat"><div class="muted small">FBS</div><div class="value">{{ totals.fbs }}</div></div>
+      <div class="stat"><div class="muted small">Забрано</div><div class="value muted">{{ totals.taken }}</div></div>
     </div>
     <div class="row">
       <span class="small muted">{% if sync.last_ok %}Обновлено: {{ sync.last_ok | local_dt }}{% endif %}</span>

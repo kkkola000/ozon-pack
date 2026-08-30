@@ -58,7 +58,7 @@ function renderActive(state) {
           ${item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : ''}
         </div>
       </div>
-      ${item.ok ? '<div style="font-size:26px;color:#7ee2a8">✔</div>' : ''}
+      ${item.ok ? '<div class="check">✔</div>' : ''}
     </div>`).join('');
 
   activePanel.innerHTML = `
@@ -142,7 +142,7 @@ function pushHistory(code, result) {
     <div style="padding:4px 0;border-bottom:1px solid var(--line)">
       <span class="mono">${entry.at.toLocaleTimeString('ru-RU')}</span> ·
       <span class="mono">${escapeHtml(entry.code)}</span> ·
-      <span style="color:${entry.status === 'error' ? 'var(--err)' : entry.status === 'warning' ? 'var(--warn)' : 'var(--ok)'}">
+      <span style="color:${entry.status === 'error' ? 'var(--err)' : entry.status === 'warning' ? '#b06a00' : 'var(--ok)'}">
         ${escapeHtml(entry.message)}
       </span>
     </div>`).join('');

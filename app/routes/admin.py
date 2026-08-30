@@ -94,12 +94,12 @@ def logs_page(
 def settings_page(request: Request, user: dict = Depends(require_admin)):
     users = [dict(row) for row in db.query("SELECT id, login, role, active, created_at FROM users ORDER BY login")]
     stats = {
-        "postings": db.query_one("SELECT COUNT(*) AS c FROM postings")["c"],
-        "packed": db.query_one("SELECT COUNT(*) AS c FROM postings WHERE local_state = 'packed'")["c"],
-        "products": db.query_one("SELECT COUNT(*) AS c FROM products")["c"],
-        "barcodes": db.query_one("SELECT COUNT(*) AS c FROM product_barcodes")["c"],
-        "returns": db.query_one("SELECT COUNT(*) AS c FROM returns")["c"],
-        "events": db.query_one("SELECT COUNT(*) AS c FROM events")["c"],
+        "Отправлений": db.query_one("SELECT COUNT(*) AS c FROM postings")["c"],
+        "Собрано": db.query_one("SELECT COUNT(*) AS c FROM postings WHERE local_state = 'packed'")["c"],
+        "Товаров": db.query_one("SELECT COUNT(*) AS c FROM products")["c"],
+        "Штрихкодов": db.query_one("SELECT COUNT(*) AS c FROM product_barcodes")["c"],
+        "Возвратов": db.query_one("SELECT COUNT(*) AS c FROM returns")["c"],
+        "Событий": db.query_one("SELECT COUNT(*) AS c FROM events")["c"],
     }
     return templates.TemplateResponse(
         request,

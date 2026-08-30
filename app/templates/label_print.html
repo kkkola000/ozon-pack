@@ -10,10 +10,10 @@
     .label { display: block; width: {{ page_width }}mm; height: {{ page_height }}mm; }
     .label + .label { page-break-before: always; }
     @media screen {
-      body { background: #2a2f3a; padding: 16px; font: 14px system-ui, sans-serif; color: #eee; }
-      .label { background: #fff; margin: 0 auto 16px; box-shadow: 0 4px 18px rgba(0,0,0,.5); }
+      body { background: #f7f8fa; padding: 16px; font: 14px system-ui, sans-serif; color: #001a34; }
+      .label { background: #fff; margin: 0 auto 16px; box-shadow: 0 4px 18px rgba(0,26,52,.15); }
       .hint { text-align: center; margin-bottom: 14px; }
-      .hint button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 0; cursor: pointer; }
+      .hint button { font: inherit; padding: 8px 16px; border-radius: 10px; border: 0; cursor: pointer; background: #005bff; color: #fff; font-weight: 600; }
     }
     @media print { .hint { display: none; } }
   </style>

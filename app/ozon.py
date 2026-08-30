@@ -397,6 +397,7 @@ class DemoOzonClient(OzonClient):
         rnd = self._rnd
         sku, offer, name, _bc = rnd.choice(DEMO_PRODUCTS)
         ready = index % 4 != 3
+        scheme = rnd.choice(["FBO", "FBS"])
         status = ("ArrivedAtReturnPlace" if ready else "MovingToSeller")
         display = "В пункте выдачи" if ready else "Едет к продавцу"
         arrived = now - timedelta(days=rnd.randrange(0, 12))
@@ -406,8 +407,8 @@ class DemoOzonClient(OzonClient):
             "return_reason_name": rnd.choice(
                 ["Не подошёл размер", "Товар повреждён", "Не соответствует описанию", "Передумал"]
             ),
-            "type": rnd.choice(["FBO", "FBS"]),
-            "schema": rnd.choice(["FBO", "FBS"]),
+            "type": scheme,
+            "schema": scheme,
             "order_id": 700000000 + index,
             "order_number": f"{48000000 + index * 5}-{1200 + index}",
             "posting_number": f"{48000000 + index * 5}-{1200 + index}-1",

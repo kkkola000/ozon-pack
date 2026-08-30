@@ -25,10 +25,10 @@
     </div>
   </div>
   <div class="row" style="margin-top:12px; gap:22px">
-    <div><div class="muted small">Ожидает сборки</div><div style="font-size:30px;font-weight:800" id="c-packaging">{{ counters.awaiting_packaging }}</div></div>
-    <div><div class="muted small">Ожидает отгрузки</div><div style="font-size:30px;font-weight:800" id="c-deliver">{{ counters.awaiting_deliver }}</div></div>
-    <div><div class="muted small">Собрано сегодня</div><div style="font-size:30px;font-weight:800;color:#7ee2a8" id="c-packed">{{ counters.packed_today }}</div></div>
-    <div><div class="muted small">Возвраты к выдаче</div><div style="font-size:30px;font-weight:800" id="c-returns">{{ counters.returns_ready }}</div></div>
+    <div class="stat"><div class="muted small">Ожидает сборки</div><div class="value" id="c-packaging">{{ counters.awaiting_packaging }}</div></div>
+    <div class="stat"><div class="muted small">Ожидает отгрузки</div><div class="value" id="c-deliver">{{ counters.awaiting_deliver }}</div></div>
+    <div class="stat"><div class="muted small">Собрано сегодня</div><div class="value ok" id="c-packed">{{ counters.packed_today }}</div></div>
+    <div class="stat"><div class="muted small">Возвраты к выдаче</div><div class="value" id="c-returns">{{ counters.returns_ready }}</div></div>
   </div>
   <p class="muted small" style="margin:14px 0 0">
     Порядок работы: сканируете товар → система показывает отправление и его состав, стикер уходит на печать →
