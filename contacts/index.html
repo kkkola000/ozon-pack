@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Контакты магазина</title>
+<meta name="description" content="Связаться с магазином: чат на Ozon, чат на Яндекс Маркете, контакты на сайте, гарантийное обслуживание, видео.">
+<meta name="theme-color" content="#f4f6fb">
+
+<!-- ЗАГЛУШКА: иконка вкладки. Замените на свой favicon.ico / favicon.png -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📦</text></svg>">
+
+<style>
+/* ---------- Палитра ---------- */
+:root {
+  --bg: #f4f6fb;
+  --card: #ffffff;
+  --line: #e4e8f0;
+  --text: #161d2b;
+  --muted: #6b7688;
+  --accent: #2f6fed;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 8px 24px rgba(16, 24, 40, .06);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1420;
+    --card: #182031;
+    --line: #2a3450;
+    --text: #e8edf7;
+    --muted: #93a1bd;
+    --accent: #6fa0ff;
+    --shadow: none;
+  }
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  margin: 0;
+  padding: 24px 16px calc(40px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap { max-width: 560px; margin: 0 auto; }
+
+/* ---------- Шапка ---------- */
+.head { text-align: center; margin-bottom: 22px; }
+
+/* ЗАГЛУШКА: логотип. Замените блок .logo на <img class="logo" src="logo.png" alt="Логотип магазина"> */
+.logo {
+  width: 84px; height: 84px; margin: 0 auto 14px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 22px; background: var(--card); border: 1px solid var(--line);
+  box-shadow: var(--shadow); font-size: 38px; object-fit: cover;
+}
+
+h1 { margin: 0 0 6px; font-size: 24px; line-height: 1.25; letter-spacing: -.01em; }
+.head p { margin: 0; color: var(--muted); font-size: 15px; }
+
+/* ---------- Ссылки ---------- */
+.links { display: grid; gap: 10px; }
+
+.link {
+  display: flex; align-items: center; gap: 14px;
+  padding: 15px 16px;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  color: inherit; text-decoration: none;
+  min-height: 64px; /* удобная зона нажатия на телефоне */
+  transition: transform .12s ease, border-color .12s ease;
+}
+.link:active { transform: scale(.985); }
+@media (hover: hover) {
+  .link:hover { border-color: var(--accent); }
+}
+.link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.ico {
+  flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; background: rgba(47, 111, 237, .10); color: var(--accent);
+}
+.ico.ozon    { background: rgba(0, 91, 255, .12);   color: #005bff; }
+.ico.yandex  { background: rgba(252, 60, 0, .12);   color: #fc3c00; }
+.ico.site    { background: rgba(47, 111, 237, .12); color: var(--accent); }
+.ico.warranty{ background: rgba(39, 174, 96, .14);  color: #1e9b56; }
+.ico.vk      { background: rgba(0, 119, 255, .12);  color: #07f;    }
+.ico.rutube  { background: rgba(139, 92, 246, .14); color: #8b5cf6; }
+@media (prefers-color-scheme: dark) {
+  .ico.ozon { color: #6c9bff; } .ico.yandex { color: #ff7043; }
+  .ico.vk { color: #6ea8ff; } .ico.warranty { color: #4ecb8b; }
+}
+
+.txt { min-width: 0; flex: 1; }
+.txt b { display: block; font-size: 16px; font-weight: 600; }
+.txt span { display: block; color: var(--muted); font-size: 13.5px; margin-top: 2px; }
+
+.chev { flex: 0 0 auto; color: var(--muted); }
+
+/* ---------- Подвал ---------- */
+footer {
+  margin-top: 26px; text-align: center;
+  color: var(--muted); font-size: 13px; line-height: 1.6;
+}
+footer a { color: var(--accent); }
+
+/* ---------- Узкие экраны ---------- */
+@media (max-width: 380px) {
+  body { padding: 18px 12px 32px; }
+  h1 { font-size: 21px; }
+  .link { padding: 13px 13px; gap: 11px; min-height: 60px; }
+  .ico { width: 40px; height: 40px; font-size: 20px; }
+  .txt b { font-size: 15px; }
+  .txt span { font-size: 12.5px; }
+}
+</style>
+</head>
+
+<body>
+<main class="wrap">
+
+  <header class="head">
+    <!-- ЗАГЛУШКА ЛОГОТИПА: замените на <img class="logo" src="logo.png" alt="Название магазина"> -->
+    <div class="logo" role="img" aria-label="Логотип магазина">📦</div>
+
+    <h1>Название магазина</h1>
+    <p>Мы на связи ежедневно с 9:00 до 21:00 (МСК)</p>
+  </header>
+
+  <nav class="links">
+
+    <!-- 1. Чат на Ozon -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico ozon" aria-hidden="true">💬</span>
+      <span class="txt">
+        <b>Чат на Ozon</b>
+        <span>Вопросы по заказу в личном кабинете Ozon</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+    <!-- 2. Чат на Яндексе -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico yandex" aria-hidden="true">💬</span>
+      <span class="txt">
+        <b>Чат на Яндекс Маркете</b>
+        <span>Написать нам через Яндекс Маркет</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+    <!-- 3. Контакты на сайте -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico site" aria-hidden="true">🌐</span>
+      <span class="txt">
+        <b>Наши контакты на сайте</b>
+        <span>Телефон, почта, реквизиты и адрес</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+    <!-- 4. Гарантийное обслуживание -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico warranty" aria-hidden="true">🛡️</span>
+      <span class="txt">
+        <b>Заявка на гарантийное обслуживание</b>
+        <span>Оформить обращение по гарантии</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+    <!-- 5. ВК Видео -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico vk" aria-hidden="true">▶</span>
+      <span class="txt">
+        <b>ВК Видео</b>
+        <span>Обзоры, инструкции и распаковки</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+    <!-- 6. Rutube -->
+    <a class="link" href="#" target="_blank" rel="noopener">
+      <span class="ico rutube" aria-hidden="true">▶</span>
+      <span class="txt">
+        <b>Rutube</b>
+        <span>Наш канал с видео о товарах</span>
+      </span>
+      <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+    </a>
+
+  </nav>
+
+  <footer>
+    <!-- ЗАГЛУШКА: подставьте название и реквизиты -->
+    ИП / ООО «Название» · ИНН 000000000000<br>
+    Отвечаем на сообщения в течение рабочего дня
+  </footer>
+
+</main>
+</body>
+</html>
