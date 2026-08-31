@@ -68,26 +68,23 @@
 
   <h2 style="margin-top:18px">Печать стикеров</h2>
   <p class="muted small" style="margin-top:0">
-    На принтер уходит файл, который отдал Ozon, без каких-либо изменений.
-    В Chrome и Edge он печатается сам; в Safari открывается в отдельной вкладке —
-    печатать PDF из скрытого окна Safari не умеет, выходит пустой лист.
+    По умолчанию печатается файл, который отдал Ozon, без изменений. В Chrome и Edge
+    он уходит на принтер сам; в Safari открывается во вкладке, потому что печатать
+    PDF из скрытого окна Safari не умеет — выходит пустой лист.
+    Режим «Картинкой» печатает изображение стикера: он подходит, когда нужна
+    автоматическая печать в Safari, но печатается уже не сам файл Ozon.
   </p>
-  {% if demo_mode() %}
-    <div class="banner warning" style="font-size:14px; margin: 12px 0">
-      Панель работает в демо-режиме — печатается тестовый стикер, а не файл Ozon.
-      Внесите ключи Seller API выше, и стикеры пойдут настоящие.
-    </div>
-  {% else %}
-    <div class="banner ok" style="font-size:14px; margin: 12px 0">
-      Печатается оригинальный стикер Ozon.
-    </div>
-  {% endif %}
-  <p class="muted small">
-    Если на бумаге стикер выглядит иначе, дело в настройках печати браузера:
-    размер бумаги должен совпадать с этикеткой, масштаб 100 %, поля «нет»,
-    колонтитулы выключены. Проверить сам файл можно кнопкой «Открыть PDF»
-    у отправления на рабочем месте сборщика.
-  </p>
+  <div class="row">
+    <select id="print-mode" style="min-width:280px">
+      {% for code, label, hint in print_modes %}
+        <option value="{{ code }}" {{ 'selected' if current_print_mode == code }}>{{ label }} — {{ hint }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" id="btn-save-print-mode">Сохранить</button>
+    {% if not labels_render_available %}
+      <span class="tag urgent">Библиотека рендера не установлена — доступен только PDF</span>
+    {% endif %}
+  </div>
 
   <h2 style="margin-top:18px">Какие возвраты загружать</h2>
   <p class="muted small" style="margin-top:0">
@@ -147,9 +144,18 @@
 
 {% block scripts %}
 <script>
-
-
-
+document.getElementById('btn-save-print-mode').onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    const result = await api('/api/print-mode', { mode: document.getElementById('print-mode').value });
+    toast(result.message, 'ok');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+  } finally {
+    event.target.disabled = false;
+  }
+};
 
 document.getElementById('btn-save-statuses').onclick = async (event) => {
   const statuses = Array.from(document.querySelectorAll('.return-status:checked')).map((box) => box.value);

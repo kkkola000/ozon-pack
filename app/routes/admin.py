@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import credentials, db, options, security, store, sync
+from .. import credentials, db, options, pdfrender, printing, security, store, sync
 from ..config import settings
 from ..deps import check_csrf, current_user, require_admin, templates
 from ..ozon import OzonClient, OzonError, get_client
@@ -37,6 +37,13 @@ EVENT_LABELS = {
     "returns_giveout": "Штрихкод выдачи",
     "ozon_credentials_set": "Сохранены ключи Ozon",
     "returns_statuses_set": "Изменены статусы возвратов",
+    "print_mode_set": "Изменён режим печати",
+    "printer_config_set": "Настроен принтер этикеток",
+    "print_agent_token_reset": "Заменён ключ агента печати",
+    "print_queued": "Стикер в очереди принтера",
+    "print_done": "Стикер напечатан",
+    "print_failed": "Ошибка печати",
+    "print_enqueue_error": "Не удалось поставить в очередь",
     "ozon_credentials_cleared": "Удалены ключи Ozon",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
@@ -104,6 +111,13 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "stats": stats,
             "ozon": credentials.status(),
             "returns_statuses": options.get_returns_statuses(),
+            "current_print_mode": options.get_print_mode(),
+            "print_modes": options.PRINT_MODES,
+            "labels_render_available": pdfrender.is_available(),
+            "printer": options.get_printer_config(),
+            "printer_status": printing.status(),
+            "agent_token": options.get_agent_token(),
+            "agent_seen": db.kv_get("print_agent_seen"),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
             "sync": sync.status(),
@@ -267,3 +281,76 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
         "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
         "result": result,
     }
+
+
+@router.post("/api/print-mode")
+def api_print_mode(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Чем печатать стикер: PDF или картинкой (Safari печатает PDF пустым листом)."""
+    check_csrf(request)
+    mode = str(payload.get("mode") or "").strip()
+    try:
+        options.set_print_mode(mode, user=admin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if mode == "image" and not pdfrender.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail="Печать картинкой недоступна: на сервере нет библиотеки pypdfium2. Обновите панель.",
+        )
+    label = next((title for code, title, _hint in options.PRINT_MODES if code == mode), mode)
+    return {"status": "ok", "message": f"Режим печати: {label}"}
+
+
+@router.post("/api/printer/config")
+def api_printer_config(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Настройки принтера этикеток: печать идёт через агента в складской сети."""
+    check_csrf(request)
+    # Куда именно отдавать байты — USB или сеть — знает агент на складе.
+    # Панель хранит только параметры самой этикетки.
+    host = str(payload.get("host") or "").strip()
+    if payload.get("enabled") and not pdfrender.is_available():
+        raise HTTPException(
+            status_code=400,
+            detail="Нужна библиотека pypdfium2 для подготовки этикетки — обновите панель",
+        )
+    values = options.set_printer_config(
+        {
+            "enabled": bool(payload.get("enabled")),
+            "host": host,
+            "port": payload.get("port", 9100),
+            "copies": payload.get("copies", 1),
+            "gap_mm": payload.get("gap_mm", 2),
+            "gap_offset_mm": payload.get("gap_offset_mm", 0),
+            "direction": payload.get("direction", 1),
+            "invert": bool(payload.get("invert")),
+            "threshold": payload.get("threshold", 160),
+        },
+        user=admin,
+    )
+    state = "включена" if values["enabled"] else "выключена"
+    return {"status": "ok", "message": f"Печать через агента {state}", "printer": values}
+
+
+@router.post("/api/printer/test")
+def api_printer_test(request: Request, admin: dict = Depends(require_admin)):
+    """Поставить в очередь тестовую этикетку — проверить агента и принтер."""
+    check_csrf(request)
+    result = printing.enqueue_test(admin)
+    return {
+        "status": "ok",
+        "message": f"Тестовая этикетка поставлена в очередь (задание #{result['job_id']}). "
+        "Если агент запущен, она напечатается в течение пары секунд.",
+        "result": result,
+    }
+
+
+@router.post("/api/printer/token")
+def api_printer_token(request: Request, admin: dict = Depends(require_admin)):
+    check_csrf(request)
+    token = options.reset_agent_token(user=admin)
+    return {"status": "ok", "message": "Ключ агента заменён — обновите его в настройках агента", "token": token}
+
+
+@router.get("/api/printer/status")
+def api_printer_status(user: dict = Depends(current_user)):
+    return {"printer": printing.status(), "agent_seen": db.kv_get("print_agent_seen")}

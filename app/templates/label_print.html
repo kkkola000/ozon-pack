@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Стикер {{ title }}</title>
+  <style>
+    /* Размер страницы берём из самого стикера, поля нулевые: печать один в один */
+    @page { size: {{ page_width }}mm {{ page_height }}mm; margin: 0; }
+    html, body { margin: 0; padding: 0; background: #fff; }
+    .label { display: block; width: {{ page_width }}mm; height: {{ page_height }}mm; }
+    .label + .label { page-break-before: always; }
+    @media screen {
+      body { background: #f7f8fa; padding: 16px; font: 14px system-ui, sans-serif; color: #001a34; }
+      .label { background: #fff; margin: 0 auto 16px; box-shadow: 0 4px 18px rgba(0,26,52,.15); }
+      .hint { text-align: center; margin-bottom: 14px; }
+      .hint button { font: inherit; padding: 8px 16px; border-radius: 10px; border: 0; cursor: pointer; background: #005bff; color: #fff; font-weight: 600; }
+    }
+    @media print { .hint { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="hint">
+    Если окно печати не открылось — <button onclick="window.print()">напечатать</button>
+  </div>
+  {% for page in pages %}
+    <img class="label" src="data:image/png;base64,{{ page.data }}" alt="Стикер {{ title }}">
+  {% endfor %}
+  <script>
+    window.addEventListener('load', () => {
+      // Сообщаем открывшей странице, что документ готов: иначе она не отличит
+      // «печать пошла» от «фрейм не загрузился» и покажет лишнюю подсказку.
+      try { parent.postMessage({ type: 'ozp-print-ready' }, window.location.origin); } catch (e) {}
+      setTimeout(() => window.print(), 250);
+    });
+  </script>
+</body>
+</html>

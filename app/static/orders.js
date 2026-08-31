@@ -39,8 +39,18 @@ document.getElementById('btn-labels')?.addEventListener('click', async (event) =
   const numbers = selected();
   if (!numbers.length) return;
   event.target.disabled = true;
-  const name = `Стикеры (${numbers.length} шт)`;
   try {
+    const name = `Стикеры (${numbers.length} шт)`;
+    if (window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+      const list = encodeURIComponent(numbers.join(','));
+      const ok = await printLabelDocument({
+        imageUrl: `/api/labels/image?numbers=${list}`,
+        htmlUrl: `/api/labels/print?numbers=${list}`,
+        name,
+      });
+      if (ok) toast(`${name} отправлены на печать`, 'ok');
+      return;
+    }
     const response = await fetch('/api/labels.pdf', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },

@@ -36,6 +36,12 @@
 </main>
 
 <div id="toasts"></div>
+<script>
+  window.OZP = {
+    canRenderLabels: {{ 'true' if can_render_labels() else 'false' }},
+    printMode: "{{ print_mode() }}",
+  };
+</script>
 <script src="/static/app.js?v={{ static_version() }}"></script>
 {% block scripts %}{% endblock %}
 </body>
