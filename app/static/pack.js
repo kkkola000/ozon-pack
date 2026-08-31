@@ -50,6 +50,11 @@ function renderActive(state) {
   const items = state.items.map((item) => `
     <div class="item-row ${item.ok ? 'ok' : ''}">
       <div class="qty">${item.scanned} / ${item.need}</div>
+      ${item.image
+        ? `<img class="item-photo" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name || '')}"
+                data-zoom="${escapeHtml(item.image)}" data-name="${escapeHtml(item.name || '')}" loading="lazy"
+                onerror="this.replaceWith(Object.assign(document.createElement('div'), {className: 'item-photo blank', textContent: '🖼'}))">`
+        : '<div class="item-photo blank">🖼</div>'}
       <div class="name">
         ${escapeHtml(item.name || 'Без названия')}
         <div class="meta">
@@ -151,6 +156,7 @@ function pushHistory(code, result) {
 }
 
 function applyResult(result, code, printWindow = null) {
+  document.getElementById('photo-zoom')?.classList.remove('open');
   setBanner(result.status, result.message);
   beep(result.sound || result.status);
   renderActive(result.state || { active: null });
@@ -262,6 +268,31 @@ document.addEventListener('keydown', (event) => {
     event.preventDefault();
     selectPosting(posting.posting_number, lastChoice.sku, reservePrintWindow());
   }
+});
+
+/* Фото товара по клику открывается крупно — рассмотреть мелкую деталь. */
+const photoZoom = document.createElement('div');
+photoZoom.id = 'photo-zoom';
+photoZoom.innerHTML = '<img alt=""><div class="caption"></div>';
+document.body.appendChild(photoZoom);
+
+function closePhotoZoom() {
+  photoZoom.classList.remove('open');
+  input.focus();
+}
+
+document.addEventListener('click', (event) => {
+  const photo = event.target.closest('.item-photo[data-zoom]');
+  if (photo) {
+    photoZoom.querySelector('img').src = photo.dataset.zoom;
+    photoZoom.querySelector('.caption').textContent = photo.dataset.name || '';
+    photoZoom.classList.add('open');
+    return;
+  }
+  if (photoZoom.classList.contains('open')) closePhotoZoom();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && photoZoom.classList.contains('open')) closePhotoZoom();
 });
 
 document.getElementById('btn-clear').onclick = () => { input.value = ''; input.focus(); };
