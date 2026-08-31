@@ -128,6 +128,23 @@ if [ "$SELF_SIGNED" = "1" ]; then
 fi
 
 # ------------------------------------------------------------------ конфиг nginx
+ACCESS_SNIPPET=/etc/nginx/snippets/ozon-pack-access.conf
+
+ensure_access_snippet() {
+  # Списком доступа управляет deploy/access.sh. Здесь только создаём файл,
+  # если его нет: перезаписывать нельзя, иначе повторный запуск ssl.sh
+  # молча открыл бы панель всему интернету.
+  mkdir -p "$(dirname "$ACCESS_SNIPPET")"
+  [ -f "$ACCESS_SNIPPET" ] && return
+  cat > "$ACCESS_SNIPPET" <<'SNIPPET'
+# Кто может открыть панель. Файлом управляет deploy/access.sh:
+#   sudo bash access.sh --allow 10.8.0.0/24   — пускать только из этой сети
+#   sudo bash access.sh --open                — вернуть публичный доступ
+# Сейчас: доступ открыт всем.
+allow all;
+SNIPPET
+}
+
 write_nginx() {
   local with_tls=$1
   {
@@ -182,6 +199,9 @@ CONF
     }
 
     location / {
+        # Список тех, кому открыта панель (deploy/access.sh)
+        include $ACCESS_SNIPPET;
+
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -227,6 +247,7 @@ reload_nginx() {
   nginx 2>/dev/null || warn "Не удалось запустить nginx — проверьте: nginx -t"
 }
 
+ensure_access_snippet
 step "Конфигурация nginx (пока http, для проверки Let's Encrypt)"
 write_nginx 0
 info "сайт /etc/nginx/sites-available/$SITE"
@@ -398,10 +419,16 @@ else
   warn "Проверьте: systemctl status nginx; systemctl status $SERVICE; journalctl -u $SERVICE -n 30"
 fi
 
+ACCESS_NOTE="открыта всем"
+if [ -f "$ACCESS_SNIPPET" ] && grep -qE '^\s*deny all;' "$ACCESS_SNIPPET"; then
+  ACCESS_NOTE="только для $(grep -E '^\s*allow' "$ACCESS_SNIPPET" | sed 's/^\s*allow //; s/;$//' | tr '\n' ' ')"
+fi
+
 cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово.${OFF}
   Адрес панели:  ${BOLD}https://$URL_HOST${OFF}
+  Доступ:        $ACCESS_NOTE
   Сертификат:    $CERT_DIR
   Конфиг nginx:  /etc/nginx/sites-available/$SITE
 SUMMARY
