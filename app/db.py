@@ -161,22 +161,6 @@ CREATE TABLE IF NOT EXISTS returns (
 );
 CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(is_ready, type);
 
-CREATE TABLE IF NOT EXISTS print_jobs (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind           TEXT NOT NULL DEFAULT 'label',
-    posting_number TEXT,
-    title          TEXT,
-    payload        BLOB NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'queued',
-    attempts       INTEGER NOT NULL DEFAULT 0,
-    error          TEXT,
-    created_by     TEXT,
-    created_at     TEXT NOT NULL,
-    taken_at       TEXT,
-    done_at        TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, id);
-
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT

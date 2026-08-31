@@ -238,8 +238,6 @@ async function printLabel(postingNumber, printWindow = null) {
   const encoded = encodeURIComponent(postingNumber);
   const ok = await printLabelDocument({
     pdfUrl: `/api/label/${encoded}.pdf`,
-    imageUrl: `/api/label/${encoded}/image`,
-    htmlUrl: `/api/label/${encoded}/print`,
     name: `Стикер ${postingNumber}`,
     window: printWindow,
   });

@@ -99,17 +99,3 @@ templates.env.globals["demo_mode"] = demo_mode
 templates.env.globals["static_version"] = static_version
 
 
-def can_render_labels() -> bool:
-    from .pdfrender import is_available
-
-    return is_available()
-
-
-def print_mode() -> str:
-    from .options import get_print_mode
-
-    return get_print_mode()
-
-
-templates.env.globals["can_render_labels"] = can_render_labels
-templates.env.globals["print_mode"] = print_mode
