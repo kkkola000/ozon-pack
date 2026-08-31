@@ -74,6 +74,24 @@
     Режим «Картинкой» печатает изображение стикера: он подходит, когда нужна
     автоматическая печать в Safari, но печатается уже не сам файл Ozon.
   </p>
+  {% if demo_mode() %}
+    <div class="banner warning" style="font-size:14px; margin: 12px 0">
+      Панель работает в демо-режиме — печатается тестовый стикер, а не файл Ozon.
+      Внесите ключи Seller API выше, и стикеры пойдут настоящие.
+    </div>
+  {% elif current_print_mode == 'image' %}
+    <div class="banner warning" style="font-size:14px; margin: 12px 0">
+      <div>
+        Сейчас печатается <b>изображение</b> стикера, а не сам файл Ozon.
+        <button class="btn small primary" id="btn-print-original" style="margin-left:10px">Печатать оригинал</button>
+      </div>
+    </div>
+  {% else %}
+    <div class="banner ok" style="font-size:14px; margin: 12px 0">
+      Сейчас на печать уходит оригинальный PDF от Ozon, без изменений.
+    </div>
+  {% endif %}
+
   <div class="row">
     <select id="print-mode" style="min-width:280px">
       {% for code, label, hint in print_modes %}
@@ -145,6 +163,17 @@
 {% block scripts %}
 <script>
 
+
+document.getElementById('btn-print-original')?.addEventListener('click', async (event) => {
+  event.target.disabled = true;
+  try {
+    toast((await api('/api/print-mode', { mode: 'pdf' })).message, 'ok');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    toast(error.message, 'error');
+    event.target.disabled = false;
+  }
+});
 
 document.getElementById('btn-save-print-mode').onclick = async (event) => {
   event.target.disabled = true;
