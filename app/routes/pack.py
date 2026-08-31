@@ -168,3 +168,43 @@ def api_label_print(posting_number: str, request: Request, user: dict = Depends(
 def api_labels_print(request: Request, numbers: str = "", user: dict = Depends(current_user)):
     posting_numbers = [n.strip() for n in numbers.split(",") if n.strip()]
     return _label_print_page(request, posting_numbers, user)
+
+
+def _label_images(posting_numbers: list[str], dpi: int, user: dict) -> dict:
+    import base64
+
+    if not posting_numbers:
+        raise HTTPException(status_code=400, detail="Не выбрано ни одного отправления")
+    if not pdfrender.is_available():
+        raise HTTPException(status_code=501, detail="На сервере нет библиотеки рендера PDF (pypdfium2)")
+    try:
+        pdf, _filename = packing.label_pdf(user, posting_numbers)
+    except OzonError as exc:
+        raise HTTPException(status_code=502, detail=f"Ozon не отдал стикер: {exc.message}") from exc
+
+    pages = pdfrender.render_pdf(pdf, dpi=max(150, min(600, dpi)))
+    if not pages:
+        raise HTTPException(status_code=502, detail="Не удалось преобразовать стикер в картинку")
+    return {
+        "posting_numbers": posting_numbers,
+        "width_mm": pages[0].width_mm,
+        "height_mm": pages[0].height_mm,
+        "pages": ["data:image/png;base64," + base64.b64encode(page.png).decode() for page in pages],
+    }
+
+
+@router.get("/api/labels/image")
+def api_labels_image(numbers: str = "", dpi: int = 300, user: dict = Depends(current_user)):
+    """Пачка стикеров картинками — для печати нескольких отправлений сразу."""
+    return _label_images([n.strip() for n in numbers.split(",") if n.strip()], dpi, user)
+
+
+@router.get("/api/label/{posting_number}/image")
+def api_label_image(posting_number: str, request: Request, dpi: int = 300, user: dict = Depends(current_user)):
+    """Стикер картинками — печатаются прямо на странице панели.
+
+    Печать из отдельного окна ведёт себя по-разному в браузерах (Safari умеет
+    показать два окна печати подряд), а печать основного документа одинакова
+    везде. Поэтому отдаём картинки, а страница подставляет их себе и печатает.
+    """
+    return _label_images([posting_number], dpi, user)

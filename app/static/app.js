@@ -103,48 +103,94 @@ function shouldPrintAsImage() {
 }
 
 /* Печать стикера: сам выбирает надёжный для этого браузера способ. */
-async function printLabelDocument({ pdfUrl, htmlUrl, name = 'Стикер' }) {
-  if (htmlUrl && window.OZP?.canRenderLabels && shouldPrintAsImage()) {
-    return printHtmlDocument(htmlUrl, name, pdfUrl);
+async function printLabelDocument({ pdfUrl, imageUrl, htmlUrl, name = 'Стикер' }) {
+  if (imageUrl && window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+    return printLabelImages(imageUrl, name, htmlUrl || pdfUrl);
   }
   return printPdf(pdfUrl, { name });
 }
 
-/* HTML-страница печатает себя сама и сообщает об этом через postMessage —
-   так видно разницу между «печать пошла» и «фрейм не загрузился». */
-function printHtmlDocument(url, name, fallbackUrl) {
-  return new Promise((resolve) => {
-    document.getElementById('print-frame')?.remove();
-    const frame = document.createElement('iframe');
-    frame.id = 'print-frame';
-    frame.title = 'Печать';
-    frame.setAttribute('aria-hidden', 'true');
-    frame.style.cssText =
-      'position:fixed;inset:0;width:100vw;height:100vh;opacity:0;pointer-events:none;border:0;z-index:-1';
+/* Печать картинки стикера прямо в основном документе.
 
-    let ready = false;
-    const onMessage = (event) => {
-      if (event.origin === window.location.origin && event.data?.type === 'ozp-print-ready') {
-        ready = true;
-        window.removeEventListener('message', onMessage);
-        resolve(true);
+   Раньше страница печати открывалась во встроенном фрейме и печатала себя сама.
+   Safari при этом успевал показать окно печати дважды: свой документ он
+   печатает по-своему. Печать основного окна ведёт себя одинаково во всех
+   браузерах, поэтому картинки подставляются прямо на страницу панели, а всё
+   остальное на время печати скрывается. */
+const PRINT_LAYER_ID = 'label-print-layer';
+const PRINT_STYLE_ID = 'label-print-style';
+let printCleanupTimer = null;
+
+function clearPrintLayer() {
+  clearTimeout(printCleanupTimer);
+  document.getElementById(PRINT_LAYER_ID)?.remove();
+  document.getElementById(PRINT_STYLE_ID)?.remove();
+}
+
+async function printLabelImages(url, name, fallbackUrl) {
+  let data;
+  try {
+    const response = await fetch(url, { headers: { 'X-Requested-With': 'fetch' } });
+    if (!response.ok) {
+      let detail = `Ошибка ${response.status}`;
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* не JSON */ }
+      toast(`${name}: ${detail}`, 'error', 15000);
+      return false;
+    }
+    data = await response.json();
+  } catch (error) {
+    toast(`${name}: не удалось получить стикер — ${error.message}`, 'error', 12000);
+    if (fallbackUrl) offerManualPrint(fallbackUrl, name);
+    return false;
+  }
+
+  clearPrintLayer();
+
+  const style = document.createElement('style');
+  style.id = PRINT_STYLE_ID;
+  style.textContent = `
+    @page { size: ${data.width_mm}mm ${data.height_mm}mm; margin: 0; }
+    #${PRINT_LAYER_ID} { display: none; }
+    @media print {
+      html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; }
+      body > *:not(#${PRINT_LAYER_ID}) { display: none !important; }
+      #${PRINT_LAYER_ID} { display: block; }
+      #${PRINT_LAYER_ID} img {
+        display: block; width: 100%; height: auto; max-height: ${data.height_mm}mm;
+        page-break-inside: avoid;
       }
-    };
-    window.addEventListener('message', onMessage);
+      #${PRINT_LAYER_ID} img + img { page-break-before: always; }
+    }`;
+  document.head.appendChild(style);
 
-    frame.onerror = () => { offerManualPrint(fallbackUrl || url, name); resolve(false); };
-    document.body.appendChild(frame);
-    frame.src = url;
+  const layer = document.createElement('div');
+  layer.id = PRINT_LAYER_ID;
+  for (const source of data.pages) {
+    const image = document.createElement('img');
+    image.src = source;
+    image.alt = name;
+    layer.appendChild(image);
+  }
+  document.body.appendChild(layer);
 
-    clearTimeout(printFallbackTimer);
-    printFallbackTimer = setTimeout(() => {
-      if (!ready) {
-        window.removeEventListener('message', onMessage);
-        offerManualPrint(fallbackUrl || url, name);
-        resolve(false);
-      }
-    }, 8000);
-  });
+  /* Ждём, пока картинки действительно отрисуются: иначе на бумагу уйдёт пустой лист. */
+  await Promise.all(
+    Array.from(layer.querySelectorAll('img')).map(
+      (image) => image.complete ? Promise.resolve() : new Promise((done) => {
+        image.onload = done;
+        image.onerror = done;
+      })
+    )
+  );
+  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+
+  const cleanup = () => { window.removeEventListener('afterprint', cleanup); clearPrintLayer(); };
+  window.addEventListener('afterprint', cleanup);
+  /* Safari не всегда шлёт afterprint — подчищаем и по времени. */
+  printCleanupTimer = setTimeout(clearPrintLayer, 60000);
+
+  window.print();
+  return true;
 }
 
 async function printPdf(url, { name = 'Стикер', asBlob = true } = {}) {

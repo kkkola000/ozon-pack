@@ -42,8 +42,10 @@ document.getElementById('btn-labels')?.addEventListener('click', async (event) =
   try {
     const name = `Стикеры (${numbers.length} шт)`;
     if (window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+      const list = encodeURIComponent(numbers.join(','));
       const ok = await printLabelDocument({
-        htmlUrl: `/api/labels/print?numbers=${encodeURIComponent(numbers.join(','))}`,
+        imageUrl: `/api/labels/image?numbers=${list}`,
+        htmlUrl: `/api/labels/print?numbers=${list}`,
         name,
       });
       if (ok) toast(`${name} отправлены на печать`, 'ok');

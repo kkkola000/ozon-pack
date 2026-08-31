@@ -158,3 +158,28 @@ def test_returns_page_shows_hidden_statuses(client):
     page = client.get("/returns")
     assert page.status_code == 200
     assert "В пункте выдачи" in page.text
+
+
+def test_label_image_endpoint(client):
+    """Стикер картинками: панель печатает их прямо на странице."""
+    login(client)
+    number = db.query_one("SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' LIMIT 1")["posting_number"]
+    response = client.get(f"/api/label/{number}/image")
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["pages"] and data["pages"][0].startswith("data:image/png;base64,")
+    assert data["width_mm"] > 0 and data["height_mm"] > 0
+
+
+def test_labels_image_bulk(client):
+    login(client)
+    numbers = [row["posting_number"] for row in db.query(
+        "SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' LIMIT 2")]
+    response = client.get("/api/labels/image", params={"numbers": ",".join(numbers)})
+    assert response.status_code == 200
+    assert len(response.json()["pages"]) == len(numbers)
+
+
+def test_labels_image_requires_selection(client):
+    login(client)
+    assert client.get("/api/labels/image", params={"numbers": ""}).status_code == 400
