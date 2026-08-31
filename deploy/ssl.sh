@@ -128,23 +128,6 @@ if [ "$SELF_SIGNED" = "1" ]; then
 fi
 
 # ------------------------------------------------------------------ конфиг nginx
-ACCESS_SNIPPET=/etc/nginx/snippets/ozon-pack-access.conf
-
-ensure_access_snippet() {
-  # Списком доступа управляет deploy/access.sh. Здесь только создаём файл,
-  # если его нет: перезаписывать нельзя, иначе повторный запуск ssl.sh
-  # молча открыл бы панель всему интернету.
-  mkdir -p "$(dirname "$ACCESS_SNIPPET")"
-  [ -f "$ACCESS_SNIPPET" ] && return
-  cat > "$ACCESS_SNIPPET" <<'SNIPPET'
-# Кто может открыть панель. Файлом управляет deploy/access.sh:
-#   sudo bash access.sh --allow 10.8.0.0/24   — пускать только из этой сети
-#   sudo bash access.sh --open                — вернуть публичный доступ
-# Сейчас: доступ открыт всем.
-allow all;
-SNIPPET
-}
-
 write_nginx() {
   local with_tls=$1
   {
@@ -199,9 +182,6 @@ CONF
     }
 
     location / {
-        # Список тех, кому открыта панель (deploy/access.sh)
-        include $ACCESS_SNIPPET;
-
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -247,7 +227,6 @@ reload_nginx() {
   nginx 2>/dev/null || warn "Не удалось запустить nginx — проверьте: nginx -t"
 }
 
-ensure_access_snippet
 step "Конфигурация nginx (пока http, для проверки Let's Encrypt)"
 write_nginx 0
 info "сайт /etc/nginx/sites-available/$SITE"
@@ -368,8 +347,7 @@ info "nginx слушает 443"
 # ------------------------------------------------------------------ закрываем прямой доступ
 if [ "$KEEP_OPEN" = "0" ]; then
   step "Панель закрывается от прямого доступа"
-  # Файл юнита — более надёжный признак, чем разбор вывода systemctl
-  if [ -f "/etc/systemd/system/$SERVICE.service" ] || systemctl cat "$SERVICE.service" >/dev/null 2>&1; then
+  if systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"; then
     if grep -q '^HOST=' "$APP_DIR/.env"; then
       sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
     else
@@ -386,13 +364,7 @@ if [ "$KEEP_OPEN" = "0" ]; then
     warn "и выполните: docker compose up -d"
   else
     warn "Служба $SERVICE не найдена и контейнер не запущен."
-    if curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1; then
-      warn "Но панель отвечает на порту $APP_PORT — значит она запущена как-то иначе."
-      warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапустите её."
-    else
-      warn "И на порту $APP_PORT она не отвечает — похоже, панель вообще не запущена."
-      warn "Что запущено, покажет: sudo bash $APP_DIR/deploy/doctor.sh"
-    fi
+    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапуск панели."
   fi
 fi
 
@@ -412,42 +384,24 @@ CURL_OPTS=(-fsS --max-time 10)
 [ "$SELF_SIGNED" = "1" ] && CURL_OPTS+=(-k)
 case "$DOMAIN" in *:*) URL_HOST="[$DOMAIN]" ;; *) URL_HOST="$DOMAIN" ;; esac
 HEALTHY=0
-CODE_OPTS=(-sk -o /dev/null -w '%{http_code}' --max-time 10)
-HTTP_CODE=$(curl "${CODE_OPTS[@]}" "https://$URL_HOST/healthz" 2>/dev/null); HTTP_CODE=${HTTP_CODE:-000}
-if [ "$HTTP_CODE" = "000" ]; then
-  HTTP_CODE=$(curl "${CODE_OPTS[@]}" -H "Host: $DOMAIN" "https://127.0.0.1/healthz" 2>/dev/null); HTTP_CODE=${HTTP_CODE:-000}
-fi
-BACKEND_OK=0
-curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1 && BACKEND_OK=1
-
-if [ "$HTTP_CODE" = "200" ]; then
+if curl "${CURL_OPTS[@]}" "https://$URL_HOST/healthz" >/dev/null 2>&1; then
   HEALTHY=1
   info "${GREEN}https работает${OFF}"
-elif [ "$HTTP_CODE" = "403" ] && [ -f "$ACCESS_SNIPPET" ] && grep -qE '^\s*deny all;' "$ACCESS_SNIPPET"; then
-  # Доступ намеренно ограничен (deploy/access.sh) — сам сервер в список не
-  # входит, поэтому отказ здесь ожидаем и поломкой не является.
+elif curl "${CURL_OPTS[@]}" -H "Host: $DOMAIN" "https://127.0.0.1/healthz" >/dev/null 2>&1; then
+  # Снаружи адрес может быть недоступен с самого сервера (NAT, закрытый файрвол),
+  # но локально всё поднято — это не ошибка настройки.
   HEALTHY=1
-  info "${GREEN}https работает, доступ ограничен списком${OFF}"
-  info "Сервер получает «доступ закрыт» — так и задумано. Проверьте панель через VPN."
-elif [ "$BACKEND_OK" = "1" ]; then
-  warn "nginx не отдал панель (код $HTTP_CODE), хотя сама панель на порту $APP_PORT работает."
-  warn "Проверьте конфигурацию: nginx -t; systemctl status nginx"
+  info "${GREEN}https работает локально${OFF}"
+  warn "Снаружи по https://$URL_HOST сервер сам себя не видит — проверьте с рабочего места"
 else
-  warn "Панель не ответила по https://$URL_HOST/healthz (код $HTTP_CODE)"
-  warn "На порту $APP_PORT она тоже молчит — похоже, сама панель не запущена."
-  warn "Что происходит, покажет: sudo bash $APP_DIR/deploy/doctor.sh"
-fi
-
-ACCESS_NOTE="открыта всем"
-if [ -f "$ACCESS_SNIPPET" ] && grep -qE '^\s*deny all;' "$ACCESS_SNIPPET"; then
-  ACCESS_NOTE="только для $(grep -E '^\s*allow' "$ACCESS_SNIPPET" | sed 's/^\s*allow //; s/;$//' | tr '\n' ' ')"
+  warn "Панель не ответила по https://$URL_HOST/healthz"
+  warn "Проверьте: systemctl status nginx; systemctl status $SERVICE; journalctl -u $SERVICE -n 30"
 fi
 
 cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово.${OFF}
   Адрес панели:  ${BOLD}https://$URL_HOST${OFF}
-  Доступ:        $ACCESS_NOTE
   Сертификат:    $CERT_DIR
   Конфиг nginx:  /etc/nginx/sites-available/$SITE
 SUMMARY
