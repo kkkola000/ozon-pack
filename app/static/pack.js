@@ -106,7 +106,7 @@ function renderActive(state) {
       </div>
     </div>`;
 
-  document.getElementById('btn-print').onclick = () => printLabel(posting.posting_number);
+  document.getElementById('btn-print').onclick = () => printLabel(posting.posting_number, reservePrintWindow());
   document.getElementById('btn-release').onclick = releaseActive;
   document.getElementById('btn-force').onclick = forceComplete;
 }
@@ -131,7 +131,9 @@ function renderCandidates(result) {
       <div class="tags">${urgencyTag(posting)}</div>
     </div>`).join('');
   candidatesBox.querySelectorAll('.candidate').forEach((element) => {
-    element.onclick = () => selectPosting(element.dataset.number, result.sku);
+    // Вкладку под стикер резервируем прямо в обработчике клика: позже Safari
+    // сочтёт её всплывающим окном и заблокирует
+    element.onclick = () => selectPosting(element.dataset.number, result.sku, reservePrintWindow());
   });
 }
 
@@ -148,14 +150,24 @@ function pushHistory(code, result) {
     </div>`).join('');
 }
 
-function applyResult(result, code) {
+function applyResult(result, code, printWindow = null) {
   setBanner(result.status, result.message);
   beep(result.sound || result.status);
   renderActive(result.state || { active: null });
   renderCandidates(result);
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(code, result);
-  if (result.print?.posting_number) printLabel(result.print.posting_number);
+  if (result.print?.posting_number) {
+    printLabel(result.print.posting_number, printWindow);
+  } else if (printWindow) {
+    // Вкладка не понадобилась. Пустую закрываем, а вкладку с прошлым стикером
+    // оставляем: оператор мог не успеть её напечатать.
+    try {
+      if ((printWindow.location.href || 'about:blank') === 'about:blank') printWindow.close();
+    } catch (error) {
+      printWindow.close();
+    }
+  }
 }
 
 function applyCounters(counters) {
@@ -171,13 +183,17 @@ function applyCounters(counters) {
   }
 }
 
-async function submitScan(code) {
-  if (busy || !code) return;
+async function submitScan(code, printWindow = null) {
+  if (busy || !code) {
+    printWindow?.close();
+    return;
+  }
   busy = true;
   try {
     const result = await api('/api/scan', { code });
-    applyResult(result, code);
+    applyResult(result, code, printWindow);
   } catch (error) {
+    printWindow?.close();
     setBanner('error', error.message);
     beep('error');
     toast(error.message, 'error');
@@ -188,11 +204,12 @@ async function submitScan(code) {
   }
 }
 
-async function selectPosting(postingNumber, sku) {
+async function selectPosting(postingNumber, sku, printWindow = null) {
   try {
     const result = await api('/api/select', { posting_number: postingNumber, sku });
-    applyResult(result);
+    applyResult(result, null, printWindow);
   } catch (error) {
+    printWindow?.close();
     toast(error.message, 'error');
   }
 }
@@ -217,13 +234,14 @@ async function forceComplete() {
   }
 }
 
-async function printLabel(postingNumber) {
+async function printLabel(postingNumber, printWindow = null) {
   const encoded = encodeURIComponent(postingNumber);
   const ok = await printLabelDocument({
     pdfUrl: `/api/label/${encoded}.pdf`,
     imageUrl: `/api/label/${encoded}/image`,
     htmlUrl: `/api/label/${encoded}/print`,
     name: `Стикер ${postingNumber}`,
+    window: printWindow,
   });
   if (ok) toast(`Стикер ${postingNumber} отправлен на печать`, 'ok', 3500);
 }
@@ -231,7 +249,10 @@ async function printLabel(postingNumber) {
 input.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') {
     event.preventDefault();
-    submitScan(input.value.trim());
+    /* Скан от сканера — это нажатие клавиши, то есть действие пользователя.
+       Пользуемся моментом и резервируем вкладку под стикер: после запроса к
+       серверу Safari открыть её уже не даст. Не пригодится — закроем. */
+    submitScan(input.value.trim(), reservePrintWindow());
   }
 });
 
@@ -241,7 +262,7 @@ document.addEventListener('keydown', (event) => {
   const posting = lastChoice.candidates[Number(event.key) - 1];
   if (posting) {
     event.preventDefault();
-    selectPosting(posting.posting_number, lastChoice.sku);
+    selectPosting(posting.posting_number, lastChoice.sku, reservePrintWindow());
   }
 });
 

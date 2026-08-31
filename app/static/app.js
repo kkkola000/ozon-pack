@@ -96,18 +96,27 @@ function offerManualPrint(url, name) {
 const IS_SAFARI = /^((?!chrome|chromium|crios|edg|android|fxios).)*safari/i.test(navigator.userAgent);
 
 function shouldPrintAsImage() {
-  const mode = window.OZP?.printMode || 'auto';
-  if (mode === 'pdf') return false;
-  if (mode === 'image') return true;
-  return IS_SAFARI;
+  /* По умолчанию печатаем сам файл Ozon. Картинка — только если её выбрали. */
+  return (window.OZP?.printMode || 'pdf') === 'image';
 }
 
 /* Печать стикера: сам выбирает надёжный для этого браузера способ. */
-async function printLabelDocument({ pdfUrl, imageUrl, htmlUrl, name = 'Стикер' }) {
+async function printLabelDocument({ pdfUrl, imageUrl, htmlUrl, name = 'Стикер', window: preopened = null }) {
   if (imageUrl && window.OZP?.canRenderLabels && shouldPrintAsImage()) {
+    if (preopened) preopened.close();
     return printLabelImages(imageUrl, name, htmlUrl || pdfUrl);
   }
-  return printPdf(pdfUrl, { name });
+  return printPdf(pdfUrl, { name, window: preopened });
+}
+
+/* Вкладку под стикер надо открыть, пока Safari видит нажатие клавиши.
+   Имя окна делает вкладку одной на все стикеры: иначе за смену их накопятся
+   десятки. */
+const LABEL_WINDOW_NAME = 'ozp-label';
+
+function reservePrintWindow() {
+  if (!IS_SAFARI || shouldPrintAsImage()) return null;
+  try { return window.open('', LABEL_WINDOW_NAME); } catch (error) { return null; }
 }
 
 /* Печать картинки стикера прямо в основном документе.
@@ -193,7 +202,24 @@ async function printLabelImages(url, name, fallbackUrl) {
   return true;
 }
 
-async function printPdf(url, { name = 'Стикер', asBlob = true } = {}) {
+async function printPdf(url, { name = 'Стикер', asBlob = true, window: preopened = null } = {}) {
+  /* Safari не печатает PDF из скрытого фрейма — выходит пустой лист. Открываем
+     файл в отдельной вкладке: печатается именно то, что отдал Ozon. Вкладку
+     заготавливает вызывающий код в момент нажатия клавиши, иначе Safari сочтёт
+     её всплывающим окном и заблокирует. */
+  if (IS_SAFARI) {
+    const target = preopened || window.open(url, LABEL_WINDOW_NAME);
+    if (!target) {
+      offerManualPrint(url, name);
+      return false;
+    }
+    if (preopened) target.location = url;
+    setTimeout(() => {
+      try { target.focus(); target.print(); } catch (error) { /* оператор нажмёт Cmd+P */ }
+    }, 1200);
+    return true;
+  }
+
   let printUrl = url;
   if (asBlob && !url.startsWith('blob:')) {
     try {

@@ -15,19 +15,22 @@ KV_RETURNS_STATUSES = "returns_ready_statuses"
 KV_PRINT_MODE = "print_mode"
 
 # Как печатать стикер:
-#   auto  — PDF везде, кроме Safari (он печатает PDF во фрейме пустым листом);
-#   pdf   — всегда исходный PDF от Ozon;
-#   image — всегда HTML-страница с картинкой стикера.
+#   pdf   — исходный файл от Ozon, без каких-либо преобразований (по умолчанию);
+#   image — стикер отрисовывается в картинку; нужен там, где браузер не умеет
+#           печатать PDF автоматически (Safari), ценой того, что печатается
+#           не сам файл Ozon, а его изображение.
 PRINT_MODES = [
-    ("auto", "Автоматически", "PDF, а в Safari — картинка"),
-    ("pdf", "Всегда PDF", "исходный файл Ozon"),
-    ("image", "Всегда картинкой", "надёжнее в Safari и на старых браузерах"),
+    ("pdf", "Оригинальный PDF от Ozon", "файл печатается как есть, без изменений"),
+    ("image", "Картинкой", "запасной путь для Safari: печатается изображение стикера"),
 ]
-DEFAULT_PRINT_MODE = "auto"
+DEFAULT_PRINT_MODE = "pdf"
 
 
 def get_print_mode() -> str:
     value = (db.kv_get(KV_PRINT_MODE) or "").strip()
+    if value == "auto":
+        # Прежний режим «автоматически» подменял PDF картинкой в Safari
+        return "pdf"
     return value if value in {code for code, _l, _h in PRINT_MODES} else DEFAULT_PRINT_MODE
 
 
