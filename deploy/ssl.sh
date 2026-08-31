@@ -368,7 +368,8 @@ info "nginx слушает 443"
 # ------------------------------------------------------------------ закрываем прямой доступ
 if [ "$KEEP_OPEN" = "0" ]; then
   step "Панель закрывается от прямого доступа"
-  if systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"; then
+  # Файл юнита — более надёжный признак, чем разбор вывода systemctl
+  if [ -f "/etc/systemd/system/$SERVICE.service" ] || systemctl cat "$SERVICE.service" >/dev/null 2>&1; then
     if grep -q '^HOST=' "$APP_DIR/.env"; then
       sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
     else
@@ -385,7 +386,13 @@ if [ "$KEEP_OPEN" = "0" ]; then
     warn "и выполните: docker compose up -d"
   else
     warn "Служба $SERVICE не найдена и контейнер не запущен."
-    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапуск панели."
+    if curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1; then
+      warn "Но панель отвечает на порту $APP_PORT — значит она запущена как-то иначе."
+      warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапустите её."
+    else
+      warn "И на порту $APP_PORT она не отвечает — похоже, панель вообще не запущена."
+      warn "Что запущено, покажет: sudo bash $APP_DIR/deploy/doctor.sh"
+    fi
   fi
 fi
 
@@ -405,18 +412,30 @@ CURL_OPTS=(-fsS --max-time 10)
 [ "$SELF_SIGNED" = "1" ] && CURL_OPTS+=(-k)
 case "$DOMAIN" in *:*) URL_HOST="[$DOMAIN]" ;; *) URL_HOST="$DOMAIN" ;; esac
 HEALTHY=0
-if curl "${CURL_OPTS[@]}" "https://$URL_HOST/healthz" >/dev/null 2>&1; then
+CODE_OPTS=(-sk -o /dev/null -w '%{http_code}' --max-time 10)
+HTTP_CODE=$(curl "${CODE_OPTS[@]}" "https://$URL_HOST/healthz" 2>/dev/null); HTTP_CODE=${HTTP_CODE:-000}
+if [ "$HTTP_CODE" = "000" ]; then
+  HTTP_CODE=$(curl "${CODE_OPTS[@]}" -H "Host: $DOMAIN" "https://127.0.0.1/healthz" 2>/dev/null); HTTP_CODE=${HTTP_CODE:-000}
+fi
+BACKEND_OK=0
+curl -fsS --max-time 5 "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1 && BACKEND_OK=1
+
+if [ "$HTTP_CODE" = "200" ]; then
   HEALTHY=1
   info "${GREEN}https работает${OFF}"
-elif curl "${CURL_OPTS[@]}" -H "Host: $DOMAIN" "https://127.0.0.1/healthz" >/dev/null 2>&1; then
-  # Снаружи адрес может быть недоступен с самого сервера (NAT, закрытый файрвол),
-  # но локально всё поднято — это не ошибка настройки.
+elif [ "$HTTP_CODE" = "403" ] && [ -f "$ACCESS_SNIPPET" ] && grep -qE '^\s*deny all;' "$ACCESS_SNIPPET"; then
+  # Доступ намеренно ограничен (deploy/access.sh) — сам сервер в список не
+  # входит, поэтому отказ здесь ожидаем и поломкой не является.
   HEALTHY=1
-  info "${GREEN}https работает локально${OFF}"
-  warn "Снаружи по https://$URL_HOST сервер сам себя не видит — проверьте с рабочего места"
+  info "${GREEN}https работает, доступ ограничен списком${OFF}"
+  info "Сервер получает «доступ закрыт» — так и задумано. Проверьте панель через VPN."
+elif [ "$BACKEND_OK" = "1" ]; then
+  warn "nginx не отдал панель (код $HTTP_CODE), хотя сама панель на порту $APP_PORT работает."
+  warn "Проверьте конфигурацию: nginx -t; systemctl status nginx"
 else
-  warn "Панель не ответила по https://$URL_HOST/healthz"
-  warn "Проверьте: systemctl status nginx; systemctl status $SERVICE; journalctl -u $SERVICE -n 30"
+  warn "Панель не ответила по https://$URL_HOST/healthz (код $HTTP_CODE)"
+  warn "На порту $APP_PORT она тоже молчит — похоже, сама панель не запущена."
+  warn "Что происходит, покажет: sudo bash $APP_DIR/deploy/doctor.sh"
 fi
 
 ACCESS_NOTE="открыта всем"

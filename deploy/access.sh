@@ -85,7 +85,11 @@ reload_nginx() {
 }
 
 local_code() {
-  curl -sk -o /dev/null -w '%{http_code}' --max-time 5 https://127.0.0.1/ 2>/dev/null || echo 000
+  # curl сам печатает код (000, если не достучался); ветка "|| echo" добавляла
+  # второй и ломала сравнение
+  local code
+  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 5 https://127.0.0.1/ 2>/dev/null)
+  printf '%s' "${code:-000}"
 }
 
 wait_for_state() {
