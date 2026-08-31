@@ -43,7 +43,9 @@ def check_token(token: str | None) -> bool:
     expected = options.get_agent_token(create=False)
     if not expected or not token:
         return False
-    return hmac.compare_digest(token, expected)
+    # Сравниваем байты: на строке с кириллицей compare_digest бросает
+    # исключение, и вместо отказа в доступе получилась бы ошибка сервера.
+    return hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8"))
 
 
 # ------------------------------------------------------------------ постановка в очередь

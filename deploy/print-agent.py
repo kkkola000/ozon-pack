@@ -6,6 +6,10 @@
 (подойдёт тот же Mac, с которого работает сборщик), сам забирает задания у
 панели и отдаёт их принтеру по TCP. Открывать порты наружу не нужно.
 
+Адрес принтера обычно задаётся в самой панели (Настройки -> Принтер этикеток),
+и агент забирает его оттуда. Флаг --printer нужен, только если хочется задать
+принтер прямо здесь.
+
 Куда печатать (--printer):
     win:Xprinter XP-420B   принтер Windows по имени (USB) — печать без обработки
     cups:XP-420B           принтер macOS или Linux по имени очереди (USB)
@@ -199,7 +203,8 @@ def main() -> int:
     parser.add_argument("--url", default=os.getenv("OZP_URL", ""), help="адрес панели, например https://panel.example.com")
     parser.add_argument("--token", default=os.getenv("OZP_TOKEN", ""), help="ключ агента из настроек панели")
     parser.add_argument("--printer", default=os.getenv("OZP_PRINTER", ""),
-                        help="cups:ИМЯ для USB-принтера, IP[:порт] для сетевого, либо путь к устройству")
+                        help="переопределить принтер: IP[:порт] для сетевого, win:ИМЯ или cups:ИМЯ для USB, "
+                             "путь к устройству. По умолчанию берётся из настроек панели")
     parser.add_argument("--list-printers", action="store_true", help="показать очереди печати и выйти")
     parser.add_argument("--interval", type=float, default=float(os.getenv("OZP_INTERVAL", DEFAULT_INTERVAL)),
                         help="как часто спрашивать задания, секунд")
@@ -210,17 +215,44 @@ def main() -> int:
     if args.list_printers:
         return list_printers()
 
-    if not args.url or not args.token or not args.printer:
+    if not args.url or not args.token:
         parser.print_help()
-        print("\nНе хватает --url, --token или --printer", file=sys.stderr)
+        print("\nНе хватает --url или --token", file=sys.stderr)
         return 2
 
     base = args.url.rstrip("/")
-    printer_label, send = make_sender(args.printer)
     token = urllib.parse.quote(args.token, safe="")
 
     log(f"Панель: {base}")
-    log(f"Принтер: {printer_label}")
+
+    printer_target = args.printer
+    printer_label, send = (make_sender(printer_target) if printer_target else (None, None))
+    if printer_target:
+        log(f"Принтер (задан ключом): {printer_label}")
+
+    def refresh_printer() -> None:
+        """Забрать адрес принтера из настроек панели."""
+        nonlocal printer_target, printer_label, send
+        if args.printer:
+            return
+        try:
+            with http_request(f"{base}/api/print/config?token={token}", insecure=args.insecure) as response:
+                data = json.loads(response.read() or b"{}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"Не удалось получить настройки принтера: {exc}")
+            return
+        printer = data.get("printer") or {}
+        host = (printer.get("host") or "").strip()
+        target = f"{host}:{printer.get('port') or 9100}" if host else ""
+        if target == printer_target:
+            return
+        printer_target = target
+        if target:
+            printer_label, send = make_sender(target)
+            log(f"Принтер из настроек панели: {printer_label}")
+        else:
+            printer_label, send = None, None
+            log("В настройках панели не указан адрес принтера")
 
     # Проверка связи с панелью — сразу видно, верен ли ключ
     try:
@@ -234,8 +266,23 @@ def main() -> int:
         log(f"Панель недоступна: {exc}")
         return 1
 
+    refresh_printer()
+    config_checked = time.time()
+
     idle_logged = False
     while True:
+        # Адрес принтера могли поменять в панели — перечитываем настройки
+        if time.time() - config_checked > 120:
+            refresh_printer()
+            config_checked = time.time()
+
+        if send is None:
+            log("Жду адрес принтера в настройках панели…")
+            time.sleep(max(5.0, args.interval * 5))
+            refresh_printer()
+            config_checked = time.time()
+            continue
+
         try:
             with http_request(f"{base}/api/print/next?token={token}", insecure=args.insecure) as response:
                 if response.status == 204:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .. import db, printing
+from .. import db, options, printing
 
 router = APIRouter(prefix="/api/print")
 
@@ -46,6 +46,18 @@ def ack(payload: dict = Body(...)):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Не указан номер задания") from None
     return printing.ack(job_id, bool(payload.get("ok")), str(payload.get("error") or "") or None)
+
+
+@router.get("/config")
+def config(token: str = Query(default="")):
+    """Куда печатать. Адрес принтера задаётся в панели, а не на складском ПК."""
+    _require_token(token)
+    values = options.get_printer_config()
+    return {
+        "printer": {"host": values["host"], "port": values["port"]},
+        "enabled": values["enabled"],
+        "poll_interval": 2,
+    }
 
 
 @router.get("/ping")

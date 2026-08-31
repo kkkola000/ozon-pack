@@ -105,8 +105,15 @@ def build_label_job(
     return b"".join(chunks)
 
 
-def build_test_job(config: PrinterConfig, *, text: str = "OZON PACK") -> bytes:
-    """Тестовая этикетка встроенным шрифтом — проверить связь и подачу ленты."""
+def build_test_job(config: PrinterConfig, *, text: str = "") -> bytes:
+    """Тестовая этикетка встроенным шрифтом — проверить связь и подачу ленты.
+
+    Печатается время: так видно, свежая это этикетка или осталась от прошлой
+    проверки. Только латиница — встроенные шрифты принтера кириллицу не знают.
+    """
+    from datetime import datetime
+
+    stamp = text or datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     lines = [
         "SIZE 75 mm,120 mm",
         f"GAP {config.gap_mm:g} mm,{config.gap_offset_mm:g} mm",
@@ -114,8 +121,8 @@ def build_test_job(config: PrinterConfig, *, text: str = "OZON PACK") -> bytes:
         "REFERENCE 0,0",
         "CLS",
         'TEXT 30,60,"3",0,1,1,"OZON PACK"',
-        f'TEXT 30,140,"2",0,1,1,"{text[:32]}"',
-        'TEXT 30,200,"2",0,1,1,"TEST PRINT / TESTOVAYA PECHAT"',
+        'TEXT 30,140,"2",0,1,1,"TEST PRINT / TESTOVAYA PECHAT"',
+        f'TEXT 30,200,"2",0,1,1,"{stamp[:32]}"',
         'BARCODE 30,260,"128",80,1,0,2,2,"OZONPACK-TEST"',
         f'TEXT 30,380,"2",0,1,1,"{config.dpi} dpi, {config.host}:{config.port}"',
         "PRINT 1,1",

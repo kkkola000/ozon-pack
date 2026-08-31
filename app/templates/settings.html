@@ -86,6 +86,84 @@
     {% endif %}
   </div>
 
+  <h2 style="margin-top:18px">Принтер этикеток</h2>
+  <p class="muted small" style="margin-top:0">
+    Печать без окна печати: панель готовит команды принтера, а маленькая программа
+    на складе (агент) забирает их и отдаёт принтеру по сети. Сервер в интернете не
+    может достучаться до адреса 192.168.х.х напрямую, поэтому нужен агент — но
+    открывать порты наружу не требуется.
+  </p>
+
+  <div class="row">
+    <label class="check">
+      <input type="checkbox" id="printer-enabled" {{ 'checked' if printer.enabled }}>
+      <b>Печатать на принтер этикеток</b>
+    </label>
+    {% if printer.enabled %}
+      <span class="muted small">окно печати в браузере не открывается — стикер уходит на принтер</span>
+    {% else %}
+      <span class="muted small">пока выключено: стикер печатается браузером</span>
+    {% endif %}
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <label class="small muted">IP принтера<br>
+      <input type="text" id="printer-host" value="{{ printer.host }}" placeholder="192.168.1.50" style="width:180px"></label>
+    <label class="small muted">Порт<br>
+      <input type="number" id="printer-port" value="{{ printer.port }}" style="width:100px"></label>
+    <label class="small muted">Копий<br>
+      <input type="number" id="printer-copies" value="{{ printer.copies }}" min="1" max="10" style="width:90px"></label>
+    <label class="small muted">Зазор между этикетками, мм<br>
+      <input type="number" id="printer-gap" value="{{ printer.gap_mm }}" step="0.5" min="0" max="10" style="width:130px"></label>
+    <label class="small muted">Направление<br>
+      <select id="printer-direction" style="width:150px">
+        <option value="1" {{ 'selected' if printer.direction == 1 }}>Обычное</option>
+        <option value="0" {{ 'selected' if printer.direction == 0 }}>Перевёрнутое</option>
+      </select></label>
+    <label class="small muted">Порог черноты<br>
+      <input type="number" id="printer-threshold" value="{{ printer.threshold }}" min="1" max="254" style="width:120px"></label>
+    <label class="check" style="margin-top:16px">
+      <input type="checkbox" id="printer-invert" {{ 'checked' if printer.invert }}> инверсия
+    </label>
+  </div>
+  <div class="muted small" style="margin-top:8px">
+    XP-420B: порт 9100, зазор 2 мм для этикеток с просечкой. Если печать выходит
+    негативом — включите инверсию; если бледная или залитая — подберите порог черноты.
+  </div>
+
+  <div class="row" style="margin-top:14px">
+    <button class="btn primary" id="btn-save-printer">Сохранить</button>
+    <button class="btn" id="btn-test-print">Тестовая печать</button>
+    <span class="small muted" id="printer-state">
+      {% if printer_status.enabled %}
+        Очередь: {{ printer_status.queued }} · напечатано: {{ printer_status.done }}
+        {% if printer_status.failed %} · с ошибкой: {{ printer_status.failed }}{% endif %}
+        {% if agent_seen %} · агент был на связи {{ agent_seen | local_dt('%d.%m %H:%M:%S') }}
+        {% else %} · <b>агент ещё не подключался</b>{% endif %}
+      {% endif %}
+    </span>
+  </div>
+  {% if printer_status.last_error %}
+    <div class="small" style="color:var(--err); margin-top:8px">Последняя ошибка печати: {{ printer_status.last_error }}</div>
+  {% endif %}
+
+  <h2 style="margin-top:18px">Агент печати</h2>
+  <p class="muted small" style="margin-top:0">
+    Запустите на любом компьютере склада — он должен видеть принтер по сети.
+    Нужен только Python, устанавливать ничего не надо. Скачать:
+    <a href="https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/print-agent.py" target="_blank" rel="noopener">print-agent.py</a>
+  </p>
+  <div class="row">
+    <input type="text" id="agent-command" readonly class="mono small" style="flex:1; min-width:420px"
+           value="python print-agent.py --url {{ request.url.scheme }}://{{ request.url.hostname }}{% if request.url.port and request.url.port not in (80, 443) %}:{{ request.url.port }}{% endif %} --token {{ agent_token }}">
+    <button class="btn" id="btn-copy-agent">Скопировать</button>
+    <button class="btn danger" id="btn-reset-token">Сменить ключ</button>
+  </div>
+  <div class="muted small" style="margin-top:8px">
+    Адрес принтера агент возьмёт из этих настроек — менять его на складском
+    компьютере не нужно. Ключ никому не передавайте: он даёт доступ к очереди печати.
+  </div>
+
   <h2 style="margin-top:18px">Какие возвраты загружать</h2>
   <p class="muted small" style="margin-top:0">
     Сборщик должен видеть только то, что реально может получить. Панель забирает из Ozon
@@ -144,6 +222,63 @@
 
 {% block scripts %}
 <script>
+document.getElementById('btn-save-printer').onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    const result = await api('/api/printer/config', {
+      enabled: document.getElementById('printer-enabled').checked,
+      host: document.getElementById('printer-host').value.trim(),
+      port: Number(document.getElementById('printer-port').value) || 9100,
+      copies: Number(document.getElementById('printer-copies').value) || 1,
+      gap_mm: Number(document.getElementById('printer-gap').value) || 0,
+      direction: Number(document.getElementById('printer-direction').value),
+      threshold: Number(document.getElementById('printer-threshold').value) || 160,
+      invert: document.getElementById('printer-invert').checked,
+    });
+    toast(result.message, 'ok');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+  } finally {
+    event.target.disabled = false;
+  }
+};
+
+document.getElementById('btn-test-print').onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    toast((await api('/api/printer/test', {})).message, 'ok', 10000);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+  } finally {
+    event.target.disabled = false;
+  }
+};
+
+document.getElementById('btn-copy-agent').onclick = async () => {
+  const field = document.getElementById('agent-command');
+  field.select();
+  try {
+    await navigator.clipboard.writeText(field.value);
+    toast('Команда скопирована', 'ok', 3000);
+  } catch (error) {
+    document.execCommand('copy');
+    toast('Команда скопирована', 'ok', 3000);
+  }
+};
+
+document.getElementById('btn-reset-token').onclick = async (event) => {
+  if (!confirm('Сменить ключ агента? Придётся обновить команду запуска на складском компьютере.')) return;
+  event.target.disabled = true;
+  try {
+    toast((await api('/api/printer/token', {})).message, 'ok', 10000);
+    setTimeout(() => window.location.reload(), 1200);
+  } catch (error) {
+    toast(error.message, 'error');
+    event.target.disabled = false;
+  }
+};
+
 document.getElementById('btn-save-print-mode').onclick = async (event) => {
   event.target.disabled = true;
   try {

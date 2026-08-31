@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import db, options, packing, pdfrender, store
+from .. import db, options, packing, pdfrender, printing, store
 from ..config import settings
 from ..deps import check_csrf, current_user, templates
 from ..ozon import OzonError
@@ -208,3 +208,25 @@ def api_label_image(posting_number: str, request: Request, dpi: int = 300, user:
     везде. Поэтому отдаём картинки, а страница подставляет их себе и печатает.
     """
     return _label_images([posting_number], dpi, user)
+
+
+@router.post("/api/labels/queue")
+def api_labels_queue(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+    """Отправить стикер на принтер этикеток через локального агента."""
+    check_csrf(request)
+    numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
+    if not numbers:
+        raise HTTPException(status_code=400, detail="Не выбрано ни одного отправления")
+    if not printing.is_enabled():
+        raise HTTPException(status_code=400, detail="Печать на принтер выключена в настройках")
+    try:
+        result = printing.enqueue_label(user, numbers)
+    except OzonError as exc:
+        raise HTTPException(status_code=502, detail=f"Ozon не отдал стикер: {exc.message}") from exc
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Не удалось подготовить стикер: {exc}") from exc
+    return {
+        "status": "ok",
+        "message": f"Стикер отправлен на принтер (задание #{result['job_id']})",
+        "result": result,
+    }

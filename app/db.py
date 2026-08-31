@@ -281,6 +281,7 @@ def init_db() -> None:
     conn = connect()
     conn.executescript(SCHEMA)
     _seed_admin()
+    _seed_print_agent_token()
 
 
 def _seed_admin() -> None:
@@ -301,3 +302,10 @@ def _seed_admin() -> None:
             "Сохраните пароль — он показывается один раз (или задайте ADMIN_PASSWORD в .env).\n",
             flush=True,
         )
+
+
+def _seed_print_agent_token() -> None:
+    """Ключ агента печати нужен ещё до того, как кто-то откроет настройки."""
+    from .options import get_agent_token
+
+    get_agent_token(create=True)

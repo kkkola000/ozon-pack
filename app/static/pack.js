@@ -157,6 +157,14 @@ function applyResult(result, code, printWindow = null) {
   renderCandidates(result);
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(code, result);
+  if (result.queued_print) {
+    // Стикер уже поставлен в очередь принтера на сервере — браузер не участвует
+    if (result.queued_print.error) {
+      toast(`Принтер: ${result.queued_print.error}`, 'error', 15000);
+    } else {
+      toast(`Стикер отправлен на принтер (задание #${result.queued_print.job_id})`, 'ok', 3500);
+    }
+  }
   if (result.print?.posting_number) {
     printLabel(result.print.posting_number, printWindow);
   } else if (printWindow) {
@@ -235,6 +243,19 @@ async function forceComplete() {
 }
 
 async function printLabel(postingNumber, printWindow = null) {
+  if (window.OZP?.agentPrinting) {
+    // Печать идёт через агента на складе: окно печати не нужно
+    printWindow?.close();
+    try {
+      const result = await api('/api/labels/queue', { posting_numbers: [postingNumber] });
+      toast(result.message, 'ok', 4000);
+      return true;
+    } catch (error) {
+      toast(`Принтер: ${error.message}`, 'error', 15000);
+      return false;
+    }
+  }
+
   const encoded = encodeURIComponent(postingNumber);
   const ok = await printLabelDocument({
     pdfUrl: `/api/label/${encoded}.pdf`,
