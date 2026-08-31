@@ -488,24 +488,6 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
 
     state = load_state(user)
     should_print = settings.autoprint
-    queued_print = None
-    if should_print:
-        # Печать через локального агента: браузер не участвует, окна печати нет
-        from . import printing
-
-        if printing.is_enabled():
-            try:
-                queued_print = printing.enqueue_label(user, [posting_number])
-                should_print = False
-            except Exception as exc:  # noqa: BLE001 - сборку из-за печати не останавливаем
-                db.log_event(
-                    "print_enqueue_error",
-                    level="error",
-                    user=user,
-                    posting_number=posting_number,
-                    message=str(exc),
-                )
-                queued_print = {"error": str(exc)}
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте стикер отправления."
     else:
@@ -517,7 +499,6 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
         sound="ok",
         state=state,
         print=({"posting_number": posting_number} if should_print else None),
-        queued_print=queued_print,
     )
 
 

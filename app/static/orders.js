@@ -41,11 +41,6 @@ document.getElementById('btn-labels')?.addEventListener('click', async (event) =
   event.target.disabled = true;
   try {
     const name = `Стикеры (${numbers.length} шт)`;
-    if (window.OZP?.agentPrinting) {
-      const result = await api('/api/labels/queue', { posting_numbers: numbers });
-      toast(result.message, 'ok', 5000);
-      return;
-    }
     if (window.OZP?.canRenderLabels && shouldPrintAsImage()) {
       const list = encodeURIComponent(numbers.join(','));
       const ok = await printLabelDocument({

@@ -111,13 +111,5 @@ def print_mode() -> str:
     return get_print_mode()
 
 
-def agent_printing() -> bool:
-    """Печать идёт на принтер этикеток через локального агента."""
-    from .printing import is_enabled
-
-    return is_enabled()
-
-
-templates.env.globals["agent_printing"] = agent_printing
 templates.env.globals["can_render_labels"] = can_render_labels
 templates.env.globals["print_mode"] = print_mode

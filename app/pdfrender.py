@@ -22,9 +22,6 @@ class RenderedPage:
     png: bytes
     width_mm: float
     height_mm: float
-    gray: bytes = b""   # 8 бит на точку, построчно — исходник для принтера
-    width: int = 0
-    height: int = 0
 
 
 def is_available() -> bool:
@@ -67,9 +64,6 @@ def render_pdf(pdf_bytes: bytes, *, dpi: int = DEFAULT_DPI, max_pages: int = 50)
                     png=write_png(gray, width, height, grayscale=True),
                     width_mm=round(width_pt * MM_PER_POINT, 1),
                     height_mm=round(height_pt * MM_PER_POINT, 1),
-                    gray=gray,
-                    width=width,
-                    height=height,
                 )
             )
     finally:

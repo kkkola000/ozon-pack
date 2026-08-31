@@ -161,22 +161,6 @@ CREATE TABLE IF NOT EXISTS returns (
 );
 CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(is_ready, type);
 
-CREATE TABLE IF NOT EXISTS print_jobs (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    kind           TEXT NOT NULL DEFAULT 'label',
-    posting_number TEXT,
-    title          TEXT,
-    payload        BLOB NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'queued',
-    attempts       INTEGER NOT NULL DEFAULT 0,
-    error          TEXT,
-    created_by     TEXT,
-    created_at     TEXT NOT NULL,
-    taken_at       TEXT,
-    done_at        TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_print_jobs_status ON print_jobs(status, id);
-
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -281,7 +265,6 @@ def init_db() -> None:
     conn = connect()
     conn.executescript(SCHEMA)
     _seed_admin()
-    _seed_print_agent_token()
 
 
 def _seed_admin() -> None:
@@ -302,10 +285,3 @@ def _seed_admin() -> None:
             "Сохраните пароль — он показывается один раз (или задайте ADMIN_PASSWORD в .env).\n",
             flush=True,
         )
-
-
-def _seed_print_agent_token() -> None:
-    """Ключ агента печати нужен ещё до того, как кто-то откроет настройки."""
-    from .options import get_agent_token
-
-    get_agent_token(create=True)

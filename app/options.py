@@ -5,9 +5,6 @@
 """
 from __future__ import annotations
 
-import json
-import secrets
-
 from . import db
 from .config import settings
 
@@ -91,63 +88,3 @@ def status_label(sys_name: str) -> str:
         if code == sys_name:
             return label
     return sys_name
-
-
-# ------------------------------------------------------------------ принтер этикеток
-KV_PRINTER = "printer_config"
-KV_AGENT_TOKEN = "print_agent_token"
-
-
-def get_printer_config() -> dict:
-    """Настройки принтера этикеток (печать через локального агента)."""
-    raw = db.kv_get(KV_PRINTER) or ""
-    data = {}
-    if raw:
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            data = {}
-    return {
-        "enabled": bool(data.get("enabled")),
-        "host": str(data.get("host") or ""),
-        "port": int(data.get("port") or 9100),
-        "dpi": int(data.get("dpi") or 203),
-        "gap_mm": float(data.get("gap_mm", 2)),
-        "gap_offset_mm": float(data.get("gap_offset_mm", 0)),
-        "direction": int(data.get("direction", 1)),
-        "copies": int(data.get("copies") or 1),
-        "invert": bool(data.get("invert")),
-        "threshold": int(data.get("threshold") or 160),
-    }
-
-
-def set_printer_config(values: dict, user: dict | None = None) -> dict:
-    current = get_printer_config()
-    current.update({key: value for key, value in values.items() if key in current})
-    current["port"] = max(1, min(65535, int(current["port"])))
-    current["dpi"] = 203 if int(current["dpi"]) not in (203, 300) else int(current["dpi"])
-    current["copies"] = max(1, min(10, int(current["copies"])))
-    current["threshold"] = max(1, min(254, int(current["threshold"])))
-    current["direction"] = 1 if int(current["direction"]) else 0
-    db.kv_set(KV_PRINTER, json.dumps(current, ensure_ascii=False))
-    db.log_event(
-        "printer_config_set",
-        user=user,
-        message=f"{'включена' if current['enabled'] else 'выключена'}, {current['host']}:{current['port']}",
-    )
-    return current
-
-
-def get_agent_token(create: bool = True) -> str:
-    token = (db.kv_get(KV_AGENT_TOKEN) or "").strip()
-    if not token and create:
-        token = secrets.token_urlsafe(32)
-        db.kv_set(KV_AGENT_TOKEN, token)
-    return token
-
-
-def reset_agent_token(user: dict | None = None) -> str:
-    token = secrets.token_urlsafe(32)
-    db.kv_set(KV_AGENT_TOKEN, token)
-    db.log_event("print_agent_token_reset", level="warn", user=user, message="Ключ агента печати заменён")
-    return token
