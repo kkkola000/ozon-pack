@@ -9,10 +9,13 @@ from ..deps import check_csrf, current_user, templates
 
 router = APIRouter()
 
+# «Собранные» — это очередь на отгрузку, а не архив: как только Ozon переводит
+# отправление дальше (отгружено, доставляется, доставлено), оно уходит из списка.
+# История сборки при этом остаётся в журнале и в самой записи отправления.
 TABS = {
     "packaging": ("Ожидает сборки", "p.status = 'awaiting_packaging'"),
     "deliver": ("Ожидает отгрузки", "p.status = 'awaiting_deliver' AND p.local_state = 'new'"),
-    "packed": ("Собранные", "p.local_state = 'packed'"),
+    "packed": ("Собранные", "p.local_state = 'packed' AND p.status = 'awaiting_deliver'"),
 }
 
 

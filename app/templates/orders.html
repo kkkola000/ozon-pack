@@ -26,6 +26,13 @@
     </div>
   </div>
 
+  {% if tab == 'packed' %}
+    <p class="muted small" style="margin:10px 0 0">
+      Собранные отправления, ожидающие отгрузки. После отгрузки в Ozon они уходят отсюда —
+      кто и когда их собрал, остаётся в журнале.
+    </p>
+  {% endif %}
+
   {% if sync.last_error %}
     <div class="banner warning" style="font-size:14px;margin:12px 0">Ошибка синхронизации: {{ sync.last_error }}</div>
   {% endif %}

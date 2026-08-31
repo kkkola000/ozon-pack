@@ -192,3 +192,51 @@ def test_switching_posting_releases_previous(demo_data, user, other_user):
     assert packing.load_state(user)["active"]["posting_number"] == second
     # первое отправление снова свободно
     assert packing.select_posting(other_user, first["posting_number"])["action"] == "posting_selected"
+
+
+def test_packed_posting_leaves_list_after_shipment(demo_data, user):
+    """Отгруженное отправление не должно оставаться во вкладке «Собранные»."""
+    from app import sync
+    from app.routes.orders import _list_postings
+
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+    packing.select_posting(user, number)
+    scan_all_items(user, posting)
+    packing.scan(user, number)
+
+    packed = [p["posting_number"] for p in _list_postings("packed")]
+    assert number in packed, "сразу после сборки отправление должно быть в списке"
+
+    # Ozon отгрузил отправление — статус ушёл из «Ожидает отгрузки»
+    demo_data._postings[number]["status"] = "delivering"
+    sync.sync_postings()
+
+    assert db.query_one("SELECT status FROM postings WHERE posting_number = ?", (number,))["status"] == "delivering"
+    packed_after = [p["posting_number"] for p in _list_postings("packed")]
+    assert number not in packed_after, "после отгрузки отправление должно уйти из списка"
+
+    # Отметка о сборке и её автор сохраняются: это нужно для разбора спорных случаев
+    row = db.query_one("SELECT local_state, packed_by FROM postings WHERE posting_number = ?", (number,))
+    assert row["local_state"] == "packed" and row["packed_by"] == user["login"]
+
+
+def test_cancelled_posting_leaves_packed_list(demo_data, user):
+    """Отменённое отправление тоже не место в очереди на отгрузку."""
+    import json
+
+    from app import store
+    from app.routes.orders import _list_postings
+
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+    packing.select_posting(user, number)
+    scan_all_items(user, posting)
+    packing.scan(user, number)
+
+    raw = json.loads(db.query_one("SELECT raw FROM postings WHERE posting_number = ?", (number,))["raw"])
+    raw["status"] = "cancelled"
+    with db.write() as conn:
+        store.upsert_posting(conn, raw)
+
+    assert number not in [p["posting_number"] for p in _list_postings("packed")]
