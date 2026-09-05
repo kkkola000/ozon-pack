@@ -17,10 +17,14 @@ LEGACY_COMMIT = "0410a34"
 
 
 def legacy_schema() -> str:
-    source = subprocess.run(
-        ["git", "-C", str(BASE_DIR), "show", f"{LEGACY_COMMIT}:app/db.py"],
-        capture_output=True, text=True, check=True,
-    ).stdout
+    try:
+        source = subprocess.run(
+            ["git", "-C", str(BASE_DIR), "show", f"{LEGACY_COMMIT}:app/db.py"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        # В распакованном архиве истории нет — проверять нечего, но и падать незачем.
+        pytest.skip(f"нет истории git для схемы {LEGACY_COMMIT}: {exc}")
     start = source.index('SCHEMA = """') + len('SCHEMA = """')
     end = source.index('"""', start)
     return source[start:end]
