@@ -2,19 +2,21 @@
 #
 # Автоустановка Ozon Pack на Ubuntu/Debian прямо с GitHub.
 #
-#   curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/main/deploy/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh | sudo bash
 #
 # Повторный запуск обновляет код до свежего коммита и перезапускает службу,
 # не трогая .env, базу и журнал сборки.
 #
 # Настройки — переменными окружения или флагами:
 #   OZON_CLIENT_ID=123 OZON_API_KEY=xxx PORT=8080 sudo -E bash install.sh
-#   sudo bash install.sh --port 9000 --branch main --demo
+#   sudo bash install.sh --port 9000 --branch ИМЯ-ВЕТКИ --demo
 #
 set -Eeuo pipefail
 
 REPO_URL=${REPO_URL:-https://github.com/kkkola000/ozon-pack.git}
 BRANCH=${BRANCH:-}
+BRANCH_EXPLICIT=0
+[ -n "$BRANCH" ] && BRANCH_EXPLICIT=1
 APP_DIR=${APP_DIR:-/opt/ozon-pack}
 APP_USER=${APP_USER:-ozon}
 SERVICE=${SERVICE:-ozon-pack}
@@ -38,7 +40,7 @@ die()  { printf '%s[x] %s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 trap 'die "Установка прервана на строке $LINENO. Вывод выше объясняет причину."' ERR
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  [ -r "$0" ] && sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'USAGE'
 
 Флаги:
@@ -59,7 +61,7 @@ USAGE
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO_URL=$2; shift 2 ;;
-    --branch) BRANCH=$2; shift 2 ;;
+    --branch) BRANCH=$2; BRANCH_EXPLICIT=1; shift 2 ;;
     --dir) APP_DIR=$2; shift 2 ;;
     --port) PORT=$2; PORT_EXPLICIT=1; shift 2 ;;
     --user) APP_USER=$2; shift 2 ;;
@@ -102,6 +104,11 @@ if [ -z "$BRANCH" ]; then
   fi
 fi
 info "ветка: $BRANCH"
+# Адрес этого же скрипта на GitHub — пригодится в подсказке про обновление.
+# Без явной ветки берём HEAD: он всегда указывает на ветку по умолчанию.
+RAW_REF=HEAD
+[ "$BRANCH_EXPLICIT" = "1" ] && RAW_REF=$BRANCH
+RAW_URL="$(echo "$REPO_URL" | sed 's#github.com#raw.githubusercontent.com#; s#\.git$##')/$RAW_REF/deploy/install.sh"
 
 # ------------------------------------------------------------------ пользователь и код
 step "Пользователь $APP_USER и каталог $APP_DIR"
@@ -127,6 +134,7 @@ else
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 fi
 info "коммит: $(git_app log --oneline -1)"
+BUILD="$(cat "$APP_DIR/VERSION" 2>/dev/null || true) ($(git_app rev-parse --short HEAD))"
 mkdir -p "$APP_DIR/data"
 
 # ------------------------------------------------------------------ окружение python
@@ -234,6 +242,7 @@ cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово.${OFF}
   Адрес:    ${BOLD}http://${IP:-IP-сервера}:$PORT${OFF}
+  Версия:   $BUILD
   Каталог:  $APP_DIR
   Настройки: $APP_DIR/.env
 SUMMARY
@@ -264,7 +273,7 @@ if [ "${SERVICE_INSTALLED:-0}" = "1" ]; then
   systemctl status $SERVICE      journalctl -u $SERVICE -f
   systemctl restart $SERVICE     systemctl stop $SERVICE
 Обновление до свежей версии — этот же скрипт ещё раз:
-  curl -fsSL $(echo "$REPO_URL" | sed 's#github.com#raw.githubusercontent.com#; s#\.git$##')/$BRANCH/deploy/install.sh | sudo bash
+  curl -fsSL $RAW_URL | sudo bash
 SUMMARY
 fi
 echo
