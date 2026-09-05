@@ -340,3 +340,49 @@ def test_returns_section_is_closed_for_ozon_cabinet(client):
     ozon_account = accounts.all_accounts()[0]
     client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/pack"})
     assert client.get("/avito/returns").status_code == 409
+
+
+def test_old_order_returned_today_is_not_lost(avito_account):
+    """Покупку сделали давно, вернули сейчас — возврат обязан попасть в панель.
+
+    dateFrom у Avito отсекает по дате создания заказа, поэтому окно
+    AVITO_DAYS_BACK к возвратам применять нельзя.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.config import settings
+
+    client = avito.get_client(avito_account)
+    returns = [o for o in client._orders.values() if o["status"] == avito.STATUS_ON_RETURN]
+    assert returns, "в демо-данных нет возвратов"
+
+    long_ago = datetime.now(timezone.utc) - timedelta(days=settings.avito_days_back + 60)
+    for order in returns:
+        order["createdAt"] = long_ago.isoformat().replace("+00:00", "Z")
+        order["returnPolicy"] = {"returnStatus": avito.RETURN_READY, "trackingNumber": "RT-OLD"}
+
+    sync.sync_avito(avito_account)
+    stored = db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+        (avito_account["id"], avito.STATUS_ON_RETURN),
+    )["c"]
+    assert stored == len(returns), "старые заказы с возвратом потерялись"
+
+
+def test_returns_are_requested_without_creation_window(avito_account, monkeypatch):
+    """Возвраты запрашиваются отдельно и без dateFrom — иначе они теряются."""
+    calls = []
+
+    def fake_orders_all(self, *, statuses=None, date_from=None, max_pages=50):
+        calls.append({"statuses": list(statuses or []), "date_from": date_from})
+        return []
+
+    monkeypatch.setattr(avito.DemoAvitoClient, "orders_all", fake_orders_all)
+    sync.sync_avito(avito_account)
+
+    assert len(calls) == 2, "рабочие статусы и возвраты должны запрашиваться отдельно"
+    work, returns = calls
+    assert set(work["statuses"]) == set(avito.WORK_STATUSES)
+    assert work["date_from"] is not None
+    assert set(returns["statuses"]) == set(avito.RETURN_STATUSES)
+    assert returns["date_from"] is None

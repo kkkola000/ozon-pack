@@ -285,7 +285,12 @@ def sync_avito(account: dict | None = None) -> dict:
     # Что именно вернул Avito по возвратам — видно на странице возвратов.
     returns_seen: dict[str, int] = {}
     try:
-        orders = client.orders_all(statuses=list(avito.SYNC_STATUSES), date_from=date_from)
+        # Два запроса, а не один. dateFrom у Avito отсекает по дате СОЗДАНИЯ
+        # заказа: покупку сделали два месяца назад, вернули сегодня — с окном
+        # в 30 дней такой возврат в панель бы не попал. Плюс возвраты не
+        # должны конкурировать с текущими заказами за страницы выдачи.
+        orders = client.orders_all(statuses=list(avito.WORK_STATUSES), date_from=date_from)
+        orders += client.orders_all(statuses=list(avito.RETURN_STATUSES))
     except AvitoError as exc:
         log.warning("Заказы Avito недоступны: %s", exc)
         raise

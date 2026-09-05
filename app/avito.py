@@ -380,6 +380,9 @@ class DemoAvitoClient(AvitoClient):
         total = sum(item["prices"]["total"] for item in items)
         buyer_name, buyer_phone = DEMO_BUYERS[index % len(DEMO_BUYERS)]
         created = now - timedelta(hours=rnd.randint(1, 40))
+        if status == STATUS_ON_RETURN:
+            # Возврат приезжает через недели и месяцы после покупки.
+            created = now - timedelta(days=rnd.randint(45, 150))
         return_policy = None
         if status == STATUS_ON_RETURN:
             # Первый — уже в пункте выдачи, остальные ещё едут.
@@ -438,9 +441,21 @@ class DemoAvitoClient(AvitoClient):
     def orders(self, *, statuses=None, ids=None, date_from=None, page=1, limit=20):  # type: ignore[override]
         wanted = set(statuses or [])
         wanted_ids = {str(i) for i in (ids or [])}
+
+        def fresh_enough(order: dict) -> bool:
+            # dateFrom у Avito отсекает по дате СОЗДАНИЯ заказа, а не по дате
+            # события. Подделка обязана вести себя так же, иначе слишком
+            # узкое окно в синхронизации останется незамеченным.
+            if date_from is None:
+                return True
+            created = datetime.fromisoformat(order["createdAt"].replace("Z", "+00:00"))
+            return created >= date_from
+
         rows = [
             o for o in self._orders.values()
-            if (not wanted or o["status"] in wanted) and (not wanted_ids or o["id"] in wanted_ids)
+            if (not wanted or o["status"] in wanted)
+            and (not wanted_ids or o["id"] in wanted_ids)
+            and fresh_enough(o)
         ]
         rows.sort(key=lambda o: o["createdAt"])
         start = (max(page, 1) - 1) * limit
