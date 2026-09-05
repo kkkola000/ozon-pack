@@ -75,7 +75,7 @@ def _dt(value: Any) -> str | None:
     return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
+def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     """Сохранить отправление, не затирая локальное состояние сборки."""
     number = raw.get("posting_number")
     if not number:
@@ -91,7 +91,8 @@ def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
     items_count = sum(int(p.get("quantity") or 0) for p in products)
     now = db.now_iso()
     existing = conn.execute(
-        "SELECT status, local_state, first_seen_at FROM postings WHERE posting_number = ?", (number,)
+        "SELECT status, local_state, first_seen_at FROM postings WHERE account_id = ? AND posting_number = ?",
+        (account_id, number),
     ).fetchone()
 
     status = _text(raw.get("status"))
@@ -104,13 +105,13 @@ def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
     conn.execute(
         """
         INSERT INTO postings (
-            posting_number, order_id, order_number, status, substatus, in_process_at, shipment_date,
+            account_id, posting_number, order_id, order_number, status, substatus, in_process_at, shipment_date,
             delivering_date, delivery_method, warehouse_id, warehouse_name, tpl_provider, tracking_number,
             is_express, is_multibox, multi_box_qty, barcode_upper, barcode_lower, region, city,
             delivery_type, payment_type, is_premium, requires_mark, requires_gtd, items_count,
             positions_count, cancel_reason, raw, local_state, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(posting_number) DO UPDATE SET
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account_id, posting_number) DO UPDATE SET
             order_id = excluded.order_id,
             order_number = excluded.order_number,
             status = excluded.status,
@@ -143,6 +144,7 @@ def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
             updated_at = excluded.updated_at
         """,
         (
+            account_id,
             number,
             raw.get("order_id"),
             _text(raw.get("order_number")),
@@ -179,20 +181,21 @@ def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
     )
 
     mandatory = {str(s) for s in (requirements.get("products_requiring_mandatory_mark") or [])}
-    conn.execute("DELETE FROM posting_items WHERE posting_number = ?", (number,))
+    conn.execute("DELETE FROM posting_items WHERE account_id = ? AND posting_number = ?", (account_id, number))
     for product in products:
         sku = str(product.get("sku") or "")
         if not sku:
             continue
         conn.execute(
             """
-            INSERT INTO posting_items(posting_number, sku, offer_id, name, quantity, price, currency, mandatory_mark)
-            VALUES(?,?,?,?,?,?,?,?)
-            ON CONFLICT(posting_number, sku) DO UPDATE SET
+            INSERT INTO posting_items(account_id, posting_number, sku, offer_id, name, quantity, price, currency, mandatory_mark)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, posting_number, sku) DO UPDATE SET
                 offer_id = excluded.offer_id, name = excluded.name, quantity = excluded.quantity,
                 price = excluded.price, currency = excluded.currency, mandatory_mark = excluded.mandatory_mark
             """,
             (
+                account_id,
                 number,
                 sku,
                 _text(product.get("offer_id")),
@@ -206,7 +209,7 @@ def upsert_posting(conn: sqlite3.Connection, raw: dict) -> str:
     return number
 
 
-def upsert_products(conn: sqlite3.Connection, items: Iterable[dict]) -> int:
+def upsert_products(conn: sqlite3.Connection, account_id: int, items: Iterable[dict]) -> int:
     """Карточки товаров: имя, фото и штрихкоды для сканирования."""
     count = 0
     for item in items:
@@ -218,22 +221,24 @@ def upsert_products(conn: sqlite3.Connection, items: Iterable[dict]) -> int:
         image = primary[0] if isinstance(primary, list) and primary else _text(primary if isinstance(primary, str) else None)
         conn.execute(
             """
-            INSERT INTO products(sku, offer_id, name, image, barcodes, updated_at) VALUES(?,?,?,?,?,?)
-            ON CONFLICT(sku) DO UPDATE SET offer_id = excluded.offer_id, name = excluded.name,
+            INSERT INTO products(account_id, sku, offer_id, name, image, barcodes, updated_at) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, sku) DO UPDATE SET offer_id = excluded.offer_id, name = excluded.name,
                 image = excluded.image, barcodes = excluded.barcodes, updated_at = excluded.updated_at
             """,
-            (sku, _text(item.get("offer_id")), _text(item.get("name")), image, json.dumps(barcodes, ensure_ascii=False), db.now_iso()),
+            (account_id, sku, _text(item.get("offer_id")), _text(item.get("name")), image,
+             json.dumps(barcodes, ensure_ascii=False), db.now_iso()),
         )
         for barcode in barcodes:
             conn.execute(
-                "INSERT INTO product_barcodes(barcode, sku) VALUES(?, ?) ON CONFLICT(barcode) DO UPDATE SET sku = excluded.sku",
-                (barcode, sku),
+                "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, ?) "
+                "ON CONFLICT(account_id, barcode) DO UPDATE SET sku = excluded.sku",
+                (account_id, barcode, sku),
             )
         count += 1
     return count
 
 
-def upsert_return(conn: sqlite3.Connection, raw: dict) -> str:
+def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     """Возврат из /v1/returns/list (единый метод для FBO и FBS)."""
     return_id = str(raw.get("id") or "")
     if not return_id:
@@ -256,15 +261,17 @@ def upsert_return(conn: sqlite3.Connection, raw: dict) -> str:
     is_ready = 1 if sys_name in set(get_returns_statuses()) else 0
 
     now = db.now_iso()
-    existing = conn.execute("SELECT first_seen_at, taken_at FROM returns WHERE id = ?", (return_id,)).fetchone()
+    existing = conn.execute(
+        "SELECT first_seen_at, taken_at FROM returns WHERE account_id = ? AND id = ?", (account_id, return_id)
+    ).fetchone()
     conn.execute(
         """
         INSERT INTO returns (
-            id, type, scheme, status_sys, status_name, order_id, order_number, posting_number, sku, offer_id,
+            account_id, id, type, scheme, status_sys, status_name, order_id, order_number, posting_number, sku, offer_id,
             product_name, quantity, price, currency, place_name, place_address, target_place_name, return_reason,
             return_date, final_moment, storage_until, storage_sum, barcode, is_ready, raw, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account_id, id) DO UPDATE SET
             type = excluded.type, scheme = excluded.scheme, status_sys = excluded.status_sys,
             status_name = excluded.status_name, order_id = excluded.order_id, order_number = excluded.order_number,
             posting_number = excluded.posting_number, sku = excluded.sku, offer_id = excluded.offer_id,
@@ -276,6 +283,7 @@ def upsert_return(conn: sqlite3.Connection, raw: dict) -> str:
             is_ready = excluded.is_ready, raw = excluded.raw, updated_at = excluded.updated_at
         """,
         (
+            account_id,
             return_id,
             _text(raw.get("type")),
             _text(raw.get("schema")),
@@ -307,19 +315,19 @@ def upsert_return(conn: sqlite3.Connection, raw: dict) -> str:
     )
     # Возврат уехал из пункта выдачи — снимаем локальную отметку «забрали».
     if existing and existing["taken_at"] and sys_name in RETURN_TAKEN_STATUSES:
-        conn.execute("UPDATE returns SET is_ready = 0 WHERE id = ?", (return_id,))
+        conn.execute("UPDATE returns SET is_ready = 0 WHERE account_id = ? AND id = ?", (account_id, return_id))
     return return_id
 
 
 # ------------------------------------------------------------------ чтение для UI
-def posting_items(posting_number: str) -> list[dict]:
+def posting_items(account_id: int, posting_number: str) -> list[dict]:
     rows = db.query(
         """
         SELECT i.*, p.image, p.barcodes
-        FROM posting_items i LEFT JOIN products p ON p.sku = i.sku
-        WHERE i.posting_number = ? ORDER BY i.name
+        FROM posting_items i LEFT JOIN products p ON p.sku = i.sku AND p.account_id = i.account_id
+        WHERE i.account_id = ? AND i.posting_number = ? ORDER BY i.name
         """,
-        (posting_number,),
+        (account_id, posting_number),
     )
     items = []
     for row in rows:
@@ -378,7 +386,7 @@ def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     data["shipment_date_local"] = local_time(data.get("shipment_date"))
     data["packed_at_local"] = local_time(data.get("packed_at"))
     if with_items:
-        data["items"] = posting_items(number)
+        data["items"] = posting_items(data["account_id"], number)
     data.pop("raw", None)
     return data
 
@@ -399,4 +407,157 @@ def return_view(row: sqlite3.Row | dict) -> dict:
     data = dict(row)
     data.pop("raw", None)
     data["status_label"] = data.get("status_name") or RETURN_STATUS_LABELS.get(data.get("status_sys") or "", "")
+    return data
+
+
+# ------------------------------------------------------------------ заказы Avito
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
+    """Заказ из GET /order-management/1/orders, не затирая локальные отметки."""
+    order_id = str(raw.get("id") or "")
+    if not order_id:
+        raise ValueError("В ответе Avito нет id заказа")
+
+    delivery = raw.get("delivery") or {}
+    buyer = delivery.get("buyerInfo") or {}
+    terminal = delivery.get("terminalInfo") or {}
+    prices = raw.get("prices") or {}
+    schedules = raw.get("schedules") or {}
+    items = raw.get("items") or []
+    actions = [a.get("name") for a in (raw.get("availableActions") or []) if a.get("name")]
+
+    now = db.now_iso()
+    existing = conn.execute(
+        "SELECT first_seen_at, local_state FROM avito_orders WHERE account_id = ? AND id = ?", (account_id, order_id)
+    ).fetchone()
+
+    conn.execute(
+        """
+        INSERT INTO avito_orders (
+            account_id, id, marketplace_id, status, service_type, service_name, dispatch_number, tracking_number,
+            terminal_code, terminal_address, buyer_name, buyer_phone, confirm_till, ship_till, delivery_date,
+            price, total, delivery_price, commission, items_count, positions_count, actions,
+            created_at_api, updated_at_api, raw, first_seen_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account_id, id) DO UPDATE SET
+            marketplace_id = excluded.marketplace_id, status = excluded.status,
+            service_type = excluded.service_type, service_name = excluded.service_name,
+            dispatch_number = excluded.dispatch_number, tracking_number = excluded.tracking_number,
+            terminal_code = excluded.terminal_code, terminal_address = excluded.terminal_address,
+            buyer_name = excluded.buyer_name, buyer_phone = excluded.buyer_phone,
+            confirm_till = excluded.confirm_till, ship_till = excluded.ship_till,
+            delivery_date = excluded.delivery_date, price = excluded.price, total = excluded.total,
+            delivery_price = excluded.delivery_price, commission = excluded.commission,
+            items_count = excluded.items_count, positions_count = excluded.positions_count,
+            actions = excluded.actions, created_at_api = excluded.created_at_api,
+            updated_at_api = excluded.updated_at_api, raw = excluded.raw, updated_at = excluded.updated_at
+        """,
+        (
+            account_id,
+            order_id,
+            _text(raw.get("marketplaceId")) or order_id,
+            _text(raw.get("status")),
+            _text(delivery.get("serviceType")),
+            _text(delivery.get("serviceName")),
+            _text(delivery.get("dispatchNumber")),
+            _text(delivery.get("trackingNumber")),
+            _text(terminal.get("code")),
+            _text(terminal.get("address")),
+            _text(buyer.get("fullName")),
+            _text(buyer.get("phoneNumber")),
+            _dt(schedules.get("confirmTill")),
+            _dt(schedules.get("shipTill")),
+            _dt(schedules.get("deliveryDate")) or _dt(schedules.get("deliveryDateMax")),
+            _num(prices.get("price")),
+            _num(prices.get("total")),
+            _num(prices.get("delivery")),
+            _num(prices.get("commission")),
+            sum(int(i.get("count") or 0) for i in items),
+            len(items),
+            json.dumps(actions, ensure_ascii=False),
+            _dt(raw.get("createdAt")),
+            _dt(raw.get("updatedAt")),
+            json.dumps(raw, ensure_ascii=False),
+            (existing["first_seen_at"] if existing else now) or now,
+            now,
+        ),
+    )
+
+    conn.execute("DELETE FROM avito_order_items WHERE account_id = ? AND order_id = ?", (account_id, order_id))
+    for item in items:
+        avito_id = str(item.get("avitoId") or "")
+        if not avito_id:
+            continue
+        item_prices = item.get("prices") or {}
+        conn.execute(
+            """
+            INSERT INTO avito_order_items(account_id, order_id, avito_id, seller_id, title, quantity, price,
+                                          image, location)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, order_id, avito_id) DO UPDATE SET
+                seller_id = excluded.seller_id, title = excluded.title, quantity = excluded.quantity,
+                price = excluded.price, image = excluded.image, location = excluded.location
+            """,
+            (
+                account_id,
+                order_id,
+                avito_id,
+                _text(item.get("id")),
+                _text(item.get("title")),
+                int(item.get("count") or 1),
+                _num(item_prices.get("price")),
+                _text(item.get("image")),
+                _text(item.get("location")),
+            ),
+        )
+    return order_id
+
+
+def avito_items(account_id: int, order_id: str) -> list[dict]:
+    rows = db.query(
+        "SELECT * FROM avito_order_items WHERE account_id = ? AND order_id = ? ORDER BY title",
+        (account_id, order_id),
+    )
+    return [dict(row) for row in rows]
+
+
+def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
+    """Строка БД -> объект для шаблона: подписи статуса, срочность, действия."""
+    from .avito import SERVICE_LABELS, STATUS_LABELS
+
+    data = dict(row)
+    data.pop("raw", None)
+    status = data.get("status") or ""
+    data["status_label"] = STATUS_LABELS.get(status, status)
+    data["service_label"] = SERVICE_LABELS.get(data.get("service_type") or "", data.get("service_type") or "")
+    try:
+        data["actions"] = json.loads(data.get("actions") or "[]")
+    except ValueError:
+        data["actions"] = []
+    # Срок берём тот, который сейчас поджимает: подтверждение или отправка.
+    deadline = data.get("confirm_till") if status == "on_confirmation" else data.get("ship_till")
+    left = hours_left(deadline)
+    if left is None:
+        urgency = "none"
+    elif left < 0:
+        urgency = "overdue"
+    elif left < 6:
+        urgency = "urgent"
+    elif left < 24:
+        urgency = "soon"
+    else:
+        urgency = "ok"
+    data["deadline"] = deadline
+    data["deadline_local"] = local_time(deadline)
+    data["hours_left"] = round(left, 1) if left is not None else None
+    data["urgency"] = urgency
+    data["created_local"] = local_time(data.get("created_at_api"))
+    if with_items:
+        data["items"] = avito_items(data["account_id"], data["id"])
     return data

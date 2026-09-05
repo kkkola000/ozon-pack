@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Заказы Avito · {{ account.title }}{% endblock %}
+
+{% block content %}
+<div class="tabs no-print">
+  {% for key, meta in tabs.items() %}
+    <a href="/avito?tab={{ key }}{% if search %}&q={{ search }}{% endif %}" class="{{ 'active' if tab == key }}">
+      {{ meta[0] }} <span class="badge">{{ counts[key] }}</span>
+    </a>
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <div class="row between no-print">
+    <form class="row" method="get" action="/avito">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <input type="search" name="q" value="{{ search }}" placeholder="Номер заказа, товар, покупатель…" style="width:280px">
+      <button class="btn" type="submit">Найти</button>
+      {% if search %}<a class="btn" href="/avito?tab={{ tab }}">Сбросить</a>{% endif %}
+    </form>
+    <div class="row">
+      <span class="small muted">
+        {% if sync.last_status == 'ok' %}Обновлено: {{ sync.last_ok | local_dt }}{% else %}Синхронизация: {{ sync.last_status }}{% endif %}
+      </span>
+      <button class="btn" id="btn-avito-sync">Обновить из Avito</button>
+    </div>
+  </div>
+
+  <p class="muted small" style="margin:10px 0 0">
+    {% if tab == 'confirm' %}
+      Заказы, которые ждут подтверждения. Если не подтвердить до срока, Avito отменит заказ автоматически.
+    {% else %}
+      Подтверждённые заказы: соберите, наклейте этикетку и передайте в доставку.
+      Кнопка «Отправить» доступна для доставки курьером продавца — по остальным способам Avito
+      отмечает отправку сам, когда посылку принимают.
+    {% endif %}
+  </p>
+
+  {% if sync.last_error %}
+    <div class="banner warning" style="font-size:14px;margin:12px 0">Ошибка синхронизации: {{ sync.last_error }}</div>
+  {% endif %}
+
+  <div class="row no-print" style="margin:14px 0 6px">
+    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
+    <span class="muted small" id="selected-count">выбрано: 0</span>
+    <span class="grow"></span>
+    {% if tab == 'confirm' %}
+      <button class="btn primary" id="btn-confirm" disabled>Подтвердить выбранные</button>
+    {% else %}
+      <button class="btn primary" id="btn-ship" disabled>Отправить выбранные</button>
+    {% endif %}
+    <button class="btn" id="btn-labels" disabled>Печать этикеток</button>
+  </div>
+
+  {% if orders %}
+  <table>
+    <thead>
+      <tr>
+        <th style="width:34px"></th>
+        <th style="width:180px">Заказ</th>
+        <th style="width:150px">Срок</th>
+        <th>Состав</th>
+        <th style="width:200px">Доставка</th>
+        <th style="width:160px">Действия</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in orders %}
+      <tr>
+        <td><input type="checkbox" class="pick" value="{{ o.id }}" data-actions="{{ o.actions | join(',') }}"></td>
+        <td>
+          <div class="mono" style="font-weight:700">{{ o.marketplace_id or o.id }}</div>
+          <div class="muted small">{{ o.created_local }}</div>
+          <div class="tags" style="margin-top:4px">
+            <span class="tag">{{ o.positions_count }} поз. · {{ o.items_count }} шт</span>
+            {% if o.print_count %}<span class="tag">Этикетка ({{ o.print_count }})</span>{% endif %}
+          </div>
+        </td>
+        <td>
+          <div>{{ o.deadline_local }}</div>
+          {% if o.urgency == 'overdue' %}<span class="tag overdue">Просрочено</span>
+          {% elif o.urgency == 'urgent' %}<span class="tag urgent">≤ 6 ч</span>
+          {% elif o.urgency == 'soon' %}<span class="tag soon">сегодня</span>{% endif %}
+        </td>
+        <td>
+          {% for item in o['items'] %}
+            <div>
+              <b>{{ item.quantity }} ×</b> {{ item.title or 'Без названия' }}
+              <span class="muted small mono">({{ item.seller_id or item.avito_id }})</span>
+            </div>
+          {% endfor %}
+        </td>
+        <td class="small">
+          <div>{{ o.service_label }}</div>
+          <div class="muted">{{ o.service_name or '' }}</div>
+          {% if o.terminal_address %}<div class="muted">{{ o.terminal_address }}</div>{% endif %}
+          {% if o.buyer_name %}<div class="muted">{{ o.buyer_name }}</div>{% endif %}
+          {% if o.tracking_number %}<div class="muted mono">{{ o.tracking_number }}</div>{% endif %}
+        </td>
+        <td class="small no-print">
+          {% if 'confirm' in o.actions %}
+            <button class="btn primary small" data-confirm="{{ o.id }}">Подтвердить заказ</button>
+          {% elif 'perform' in o.actions %}
+            <button class="btn primary small" data-ship="{{ o.id }}">Отправить заказ</button>
+          {% elif o.status == 'ready_to_ship' %}
+            <span class="muted">Отправку отметит Avito при приёме посылки</span>
+          {% endif %}
+          <button class="btn small" data-label="{{ o.id }}" style="margin-top:4px">Этикетка</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">
+      Ничего не найдено.
+      {% if not search %}Нажмите «Обновить из Avito», если ждёте новые заказы.{% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/avito.js?v={{ static_version() }}"></script>
+{% endblock %}

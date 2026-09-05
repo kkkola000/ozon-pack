@@ -5,6 +5,9 @@
   2. положили не в то место  -> стикер обязан совпасть с активным отправлением;
   3. собрали дважды          -> собранные отправления исключены из подбора,
                                 повторный скан стикера даёт предупреждение.
+
+Все запросы ограничены кабинетом (account_id): товар одного магазина никогда
+не подойдёт к отправлению другого, даже если штрихкод совпадает.
 """
 from __future__ import annotations
 
@@ -64,7 +67,7 @@ def barcode_variants(code: str) -> list[str]:
     return seen
 
 
-def classify(code: str) -> tuple[str, Any]:
+def classify(account_id: int, code: str) -> tuple[str, Any]:
     """Определить, что отсканировали: стикер отправления, товар или неизвестное."""
     variants = barcode_variants(code)
     if not variants:
@@ -74,33 +77,37 @@ def classify(code: str) -> tuple[str, Any]:
     posting = db.query_one(
         f"""
         SELECT * FROM postings
-        WHERE posting_number IN ({placeholders})
-           OR barcode_upper IN ({placeholders})
-           OR barcode_lower IN ({placeholders})
+        WHERE account_id = ?
+          AND (posting_number IN ({placeholders})
+               OR barcode_upper IN ({placeholders})
+               OR barcode_lower IN ({placeholders}))
         LIMIT 1
         """,
-        variants * 3,
+        [account_id] + variants * 3,
     )
     if posting:
         return "posting", posting
 
     barcode_row = db.query_one(
-        f"SELECT sku FROM product_barcodes WHERE barcode IN ({placeholders}) LIMIT 1", variants
+        f"SELECT sku FROM product_barcodes WHERE account_id = ? AND barcode IN ({placeholders}) LIMIT 1",
+        [account_id] + variants,
     )
     if barcode_row:
         return "product", barcode_row["sku"]
 
     # Штучные случаи: отсканировали SKU или артикул продавца.
     item = db.query_one(
-        f"SELECT sku FROM posting_items WHERE sku IN ({placeholders}) OR offer_id IN ({placeholders}) LIMIT 1",
-        variants * 2,
+        f"SELECT sku FROM posting_items WHERE account_id = ? "
+        f"AND (sku IN ({placeholders}) OR offer_id IN ({placeholders})) LIMIT 1",
+        [account_id] + variants * 2,
     )
     if item:
         return "product", item["sku"]
 
     product = db.query_one(
-        f"SELECT sku FROM products WHERE sku IN ({placeholders}) OR offer_id IN ({placeholders}) LIMIT 1",
-        variants * 2,
+        f"SELECT sku FROM products WHERE account_id = ? "
+        f"AND (sku IN ({placeholders}) OR offer_id IN ({placeholders})) LIMIT 1",
+        [account_id] + variants * 2,
     )
     if product:
         return "product", product["sku"]
@@ -111,12 +118,18 @@ def classify(code: str) -> tuple[str, Any]:
 
 
 # ------------------------------------------------------------------ состояние сборки
-def load_state(user: dict) -> dict:
-    row = db.query_one("SELECT * FROM pack_state WHERE user_id = ?", (user["id"],))
+def load_state(account: dict, user: dict) -> dict:
+    """Активное отправление сборщика — только в текущем кабинете."""
+    row = db.query_one(
+        "SELECT * FROM pack_state WHERE user_id = ? AND account_id = ?", (user["id"], account["id"])
+    )
     if not row or not row["posting_number"]:
         return {"active": None, "scanned": {}, "items": [], "done": 0, "total": 0, "complete": False}
 
-    posting_row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (row["posting_number"],))
+    posting_row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?",
+        (account["id"], row["posting_number"]),
+    )
     if not posting_row:
         clear_state(user)
         return {"active": None, "scanned": {}, "items": [], "done": 0, "total": 0, "complete": False}
@@ -150,51 +163,72 @@ def clear_state(user: dict, conn=None) -> None:
         db.execute(sql, (user["id"],))
 
 
-def _save_state(conn, user: dict, posting_number: str, scanned: dict) -> None:
+def _release_previous(conn, user: dict, *, keep: tuple[int, str] | None = None) -> tuple[int, str] | None:
+    """Снять бронь с отправления, которое сборщик держал раньше.
+
+    Строка pack_state одна на сборщика, а кабинетов несколько: если человек
+    переключил кабинет посреди сборки, бронь в прежнем кабинете надо отпустить,
+    иначе отправление зависнет до истечения CLAIM_TTL_MINUTES.
+    """
+    row = conn.execute(
+        "SELECT account_id, posting_number FROM pack_state WHERE user_id = ?", (user["id"],)
+    ).fetchone()
+    if not row or not row["posting_number"]:
+        return None
+    previous = (row["account_id"], row["posting_number"])
+    if keep is not None and previous == keep:
+        return None
+    conn.execute(
+        "UPDATE postings SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
+        "WHERE account_id = ? AND posting_number = ?",
+        previous,
+    )
+    return previous
+
+
+def _save_state(conn, account: dict, user: dict, posting_number: str, scanned: dict) -> None:
     now = db.now_iso()
     conn.execute(
         """
-        INSERT INTO pack_state(user_id, posting_number, scanned, started_at, updated_at) VALUES(?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE SET posting_number = excluded.posting_number,
+        INSERT INTO pack_state(user_id, account_id, posting_number, scanned, started_at, updated_at)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET account_id = excluded.account_id,
+            posting_number = excluded.posting_number,
             scanned = excluded.scanned, updated_at = excluded.updated_at,
             started_at = CASE WHEN pack_state.posting_number = excluded.posting_number
                               THEN pack_state.started_at ELSE excluded.started_at END
         """,
-        (user["id"], posting_number, json.dumps(scanned, ensure_ascii=False), now, now),
+        (user["id"], account["id"], posting_number, json.dumps(scanned, ensure_ascii=False), now, now),
     )
 
 
-def release(user: dict, *, reason: str = "manual") -> ScanResult:
+def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
     """Отпустить активное отправление, ничего не завершая."""
-    state = load_state(user)
-    active = state["active"]
     with db.write() as conn:
-        if active:
-            conn.execute(
-                "UPDATE postings SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE posting_number = ?",
-                (active["posting_number"],),
-            )
+        released = _release_previous(conn, user)
+        if released:
             db.log_event(
                 "pack_release",
+                account_id=released[0],
                 user=user,
-                posting_number=active["posting_number"],
+                posting_number=released[1],
                 message=f"Сборка отменена ({reason})",
                 conn=conn,
             )
         clear_state(user, conn)
-    return ScanResult("ok", "Сборка отменена", action="released", state=load_state(user))
+    return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
 
 # ------------------------------------------------------------------ подбор отправлений
-def candidates_for_sku(sku: str, user: dict) -> list[dict]:
+def candidates_for_sku(account: dict, sku: str, user: dict) -> list[dict]:
     rows = db.query(
         """
         SELECT p.* FROM postings p
-        JOIN posting_items i ON i.posting_number = p.posting_number
-        WHERE i.sku = ? AND p.status = ? AND p.local_state = 'new'
+        JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
+        WHERE p.account_id = ? AND i.sku = ? AND p.status = ? AND p.local_state = 'new'
         ORDER BY (p.shipment_date IS NULL), p.shipment_date
         """,
-        (sku, store.STATUS_AWAITING_DELIVER),
+        (account["id"], sku, store.STATUS_AWAITING_DELIVER),
     )
     result = []
     for row in rows:
@@ -205,74 +239,85 @@ def candidates_for_sku(sku: str, user: dict) -> list[dict]:
     return result
 
 
-def _sku_title(sku: str) -> str:
-    row = db.query_one("SELECT name FROM products WHERE sku = ?", (sku,))
+def _sku_title(account_id: int, sku: str) -> str:
+    row = db.query_one("SELECT name FROM products WHERE account_id = ? AND sku = ?", (account_id, sku))
     if row and row["name"]:
         return row["name"]
-    row = db.query_one("SELECT name FROM posting_items WHERE sku = ? LIMIT 1", (sku,))
+    row = db.query_one(
+        "SELECT name FROM posting_items WHERE account_id = ? AND sku = ? LIMIT 1", (account_id, sku)
+    )
     return (row["name"] if row and row["name"] else f"SKU {sku}")
 
 
 # ------------------------------------------------------------------ основной вход
-def scan(user: dict, code: str) -> ScanResult:
+def scan(account: dict, user: dict, code: str) -> ScanResult:
     code = (code or "").strip()
     if not code:
-        return ScanResult("error", "Пустой скан", state=load_state(user))
+        return ScanResult("error", "Пустой скан", state=load_state(account, user))
 
-    kind, target = classify(code)
+    kind, target = classify(account["id"], code)
     if kind == "posting":
-        return _scan_posting(user, dict(target), code)
+        return _scan_posting(account, user, dict(target), code)
     if kind == "product":
-        return _scan_product(user, str(target), code)
+        return _scan_product(account, user, str(target), code)
     if kind == "posting_unknown":
-        return _scan_unknown_posting(user, target, code)
+        return _scan_unknown_posting(account, user, target, code)
 
     # Последняя попытка: спросить Ozon по штрихкоду стикера.
-    posting = _fetch_by_barcode(code)
+    posting = _fetch_by_barcode(account, code)
     if posting:
-        return _scan_posting(user, posting, code)
+        return _scan_posting(account, user, posting, code)
 
-    db.log_event("scan_unknown", level="error", user=user, barcode=code, message="Код не распознан")
+    db.log_event(
+        "scan_unknown", level="error", account_id=account["id"], user=user, barcode=code,
+        message="Код не распознан",
+    )
     return ScanResult(
         "error",
         f"Код «{code}» не найден: это не товар из заданий и не стикер отправления",
         action="unknown",
-        state=load_state(user),
+        state=load_state(account, user),
     )
 
 
-def _fetch_by_barcode(code: str) -> dict | None:
+def _fetch_by_barcode(account: dict, code: str) -> dict | None:
     """Штрихкод стикера может быть неизвестен локально — спрашиваем Ozon."""
     try:
-        raw = get_client().posting_by_barcode(code)
+        raw = get_client(account).posting_by_barcode(code)
     except OzonError:
         return None
     if not raw:
         return None
     with db.write() as conn:
-        store.upsert_posting(conn, raw)
-    row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (raw["posting_number"],))
+        store.upsert_posting(conn, account["id"], raw)
+    row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?",
+        (account["id"], raw["posting_number"]),
+    )
     return dict(row) if row else None
 
 
-def _scan_unknown_posting(user: dict, number: str, code: str) -> ScanResult:
-    posting = _fetch_by_barcode(number)
+def _scan_unknown_posting(account: dict, user: dict, number: str, code: str) -> ScanResult:
+    posting = _fetch_by_barcode(account, number)
     if posting:
-        return _scan_posting(user, posting, code)
-    db.log_event("scan_unknown_posting", level="error", user=user, barcode=code, posting_number=number)
+        return _scan_posting(account, user, posting, code)
+    db.log_event(
+        "scan_unknown_posting", level="error", account_id=account["id"], user=user,
+        barcode=code, posting_number=number,
+    )
     return ScanResult(
         "error",
         f"Отправление {number} не найдено в панели. Обновите список или проверьте склад.",
         action="unknown",
-        state=load_state(user),
+        state=load_state(account, user),
     )
 
 
 # ------------------------------------------------------------------ скан товара
-def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
-    state = load_state(user)
+def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
+    state = load_state(account, user)
     active = state["active"]
-    name = _sku_title(sku)
+    name = _sku_title(account["id"], sku)
 
     if active:
         required = {item["sku"]: item["need"] for item in state["items"]}
@@ -315,7 +360,7 @@ def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
 
         scanned[sku] = already + 1
         with db.write() as conn:
-            _save_state(conn, user, active["posting_number"], scanned)
+            _save_state(conn, account, user, active["posting_number"], scanned)
             db.log_event(
                 "scan_product",
                 user=user,
@@ -325,7 +370,7 @@ def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
                 message=f"{scanned[sku]}/{required[sku]}",
                 conn=conn,
             )
-        new_state = load_state(user)
+        new_state = load_state(account, user)
         if new_state["complete"]:
             return ScanResult(
                 "ok",
@@ -342,25 +387,30 @@ def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
         )
 
     # Свободное рабочее место: подбираем отправление под товар.
-    all_candidates = candidates_for_sku(sku, user)
+    all_candidates = candidates_for_sku(account, sku, user)
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
         packed = db.query_one(
             """
-            SELECT COUNT(*) AS c FROM postings p JOIN posting_items i ON i.posting_number = p.posting_number
-            WHERE i.sku = ? AND p.local_state = 'packed'
+            SELECT COUNT(*) AS c FROM postings p
+            JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
+            WHERE p.account_id = ? AND i.sku = ? AND p.local_state = 'packed'
             """,
-            (sku,),
+            (account["id"], sku),
         )["c"]
         waiting = db.query_one(
             """
-            SELECT COUNT(*) AS c FROM postings p JOIN posting_items i ON i.posting_number = p.posting_number
-            WHERE i.sku = ? AND p.status = ?
+            SELECT COUNT(*) AS c FROM postings p
+            JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
+            WHERE p.account_id = ? AND i.sku = ? AND p.status = ?
             """,
-            (sku, store.STATUS_AWAITING_PACKAGING),
+            (account["id"], sku, store.STATUS_AWAITING_PACKAGING),
         )["c"]
-        db.log_event("scan_no_candidates", level="warn", user=user, sku=sku, barcode=code, message=name)
+        db.log_event(
+            "scan_no_candidates", level="warn", account_id=account["id"], user=user,
+            sku=sku, barcode=code, message=name,
+        )
         if locked:
             return ScanResult(
                 "warning",
@@ -395,9 +445,12 @@ def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
         )
 
     if len(candidates) == 1:
-        return select_posting(user, candidates[0]["posting_number"], first_sku=sku, scan_code=code)
+        return select_posting(account, user, candidates[0]["posting_number"], first_sku=sku, scan_code=code)
 
-    db.log_event("scan_choice", user=user, sku=sku, barcode=code, message=f"{len(candidates)} кандидатов")
+    db.log_event(
+        "scan_choice", account_id=account["id"], user=user, sku=sku, barcode=code,
+        message=f"{len(candidates)} кандидатов",
+    )
     return ScanResult(
         "choose",
         f"«{name}» нужен в {len(candidates)} отправлениях — выберите одно (первое самое срочное).",
@@ -410,10 +463,13 @@ def _scan_product(user: dict, sku: str, code: str) -> ScanResult:
 
 
 # ------------------------------------------------------------------ выбор отправления
-def select_posting(user: dict, posting_number: str, *, first_sku: str | None = None, scan_code: str | None = None) -> ScanResult:
-    row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (posting_number,))
+def select_posting(account: dict, user: dict, posting_number: str, *, first_sku: str | None = None,
+                   scan_code: str | None = None) -> ScanResult:
+    row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
+    )
     if not row:
-        return ScanResult("error", f"Отправление {posting_number} не найдено", state=load_state(user))
+        return ScanResult("error", f"Отправление {posting_number} не найдено", state=load_state(account, user))
 
     posting = store.posting_view(row)
     if posting["local_state"] == "packed":
@@ -422,14 +478,18 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
             f"Отправление {posting_number} уже собрано ({posting.get('packed_by') or '—'}).",
             action="already_packed",
             sound="error",
-            state=load_state(user),
+            state=load_state(account, user),
         )
     if posting["status"] == store.STATUS_AWAITING_PACKAGING:
         if settings.auto_ship_on_scan:
-            ship_result = ship_posting(user, posting_number)
+            ship_result = ship_posting(account, user, posting_number)
             if ship_result["status"] != "ok":
-                return ScanResult(ship_result["status"], ship_result["message"], sound="error", state=load_state(user))
-            row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (posting_number,))
+                return ScanResult(
+                    ship_result["status"], ship_result["message"], sound="error", state=load_state(account, user)
+                )
+            row = db.query_one(
+                "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
+            )
             posting = store.posting_view(row)
         else:
             return ScanResult(
@@ -437,24 +497,24 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
                 f"Отправление {posting_number} в статусе «Ожидает сборки». Сначала соберите его на вкладке заказов.",
                 action="needs_ship",
                 sound="error",
-                state=load_state(user),
+                state=load_state(account, user),
             )
     if posting["status"] != store.STATUS_AWAITING_DELIVER:
         return ScanResult(
             "error",
             f"Отправление {posting_number} в статусе «{posting['status_label']}» — оно не в работе.",
             action="wrong_status",
-            state=load_state(user),
+            state=load_state(account, user),
         )
     if posting["claim_active"] and row["claim_user_id"] != user["id"]:
         return ScanResult(
             "error",
             f"Отправление {posting_number} уже собирает {row['claim_login']}.",
             action="locked",
-            state=load_state(user),
+            state=load_state(account, user),
         )
 
-    previous = load_state(user)
+    previous = load_state(account, user)
     scanned: dict[str, int] = {}
     if previous["active"] and previous["active"]["posting_number"] == posting_number:
         scanned = dict(previous["scanned"])
@@ -466,18 +526,16 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
 
     now = db.now_iso()
     with db.write() as conn:
-        if previous["active"] and previous["active"]["posting_number"] != posting_number:
-            conn.execute(
-                "UPDATE postings SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE posting_number = ?",
-                (previous["active"]["posting_number"],),
-            )
+        _release_previous(conn, user, keep=(account["id"], posting_number))
         conn.execute(
-            "UPDATE postings SET claim_user_id = ?, claim_login = ?, claim_at = ? WHERE posting_number = ?",
-            (user["id"], user["login"], now, posting_number),
+            "UPDATE postings SET claim_user_id = ?, claim_login = ?, claim_at = ? "
+            "WHERE account_id = ? AND posting_number = ?",
+            (user["id"], user["login"], now, account["id"], posting_number),
         )
-        _save_state(conn, user, posting_number, scanned)
+        _save_state(conn, account, user, posting_number, scanned)
         db.log_event(
             "pack_start",
+            account_id=account["id"],
             user=user,
             posting_number=posting_number,
             sku=first_sku,
@@ -486,7 +544,7 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
             conn=conn,
         )
 
-    state = load_state(user)
+    state = load_state(account, user)
     should_print = settings.autoprint
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте стикер отправления."
@@ -503,15 +561,16 @@ def select_posting(user: dict, posting_number: str, *, first_sku: str | None = N
 
 
 # ------------------------------------------------------------------ скан стикера
-def _scan_posting(user: dict, posting_row: dict, code: str) -> ScanResult:
+def _scan_posting(account: dict, user: dict, posting_row: dict, code: str) -> ScanResult:
     posting_number = posting_row["posting_number"]
-    state = load_state(user)
+    state = load_state(account, user)
     active = state["active"]
 
     if posting_row.get("local_state") == "packed":
         db.log_event(
             "scan_packed_again",
             level="warn",
+            account_id=account["id"],
             user=user,
             posting_number=posting_number,
             barcode=code,
@@ -528,12 +587,13 @@ def _scan_posting(user: dict, posting_row: dict, code: str) -> ScanResult:
         )
 
     if active is None:
-        return select_posting(user, posting_number, scan_code=code)
+        return select_posting(account, user, posting_number, scan_code=code)
 
     if active["posting_number"] != posting_number:
         db.log_event(
             "scan_wrong_label",
             level="error",
+            account_id=account["id"],
             user=user,
             posting_number=active["posting_number"],
             barcode=code,
@@ -551,6 +611,7 @@ def _scan_posting(user: dict, posting_row: dict, code: str) -> ScanResult:
         db.log_event(
             "scan_label_incomplete",
             level="warn",
+            account_id=account["id"],
             user=user,
             posting_number=posting_number,
             barcode=code,
@@ -564,22 +625,23 @@ def _scan_posting(user: dict, posting_row: dict, code: str) -> ScanResult:
             state=state,
         )
 
-    return complete(user, posting_number, code)
+    return complete(account, user, posting_number, code)
 
 
-def complete(user: dict, posting_number: str, code: str | None = None) -> ScanResult:
+def complete(account: dict, user: dict, posting_number: str, code: str | None = None) -> ScanResult:
     now = db.now_iso()
     with db.write() as conn:
         conn.execute(
             """
             UPDATE postings SET local_state = 'packed', packed_at = ?, packed_by = ?,
                 claim_user_id = NULL, claim_login = NULL, claim_at = NULL
-            WHERE posting_number = ?
+            WHERE account_id = ? AND posting_number = ?
             """,
-            (now, user["login"], posting_number),
+            (now, user["login"], account["id"], posting_number),
         )
         db.log_event(
             "pack_complete",
+            account_id=account["id"],
             user=user,
             posting_number=posting_number,
             barcode=code,
@@ -593,14 +655,16 @@ def complete(user: dict, posting_number: str, code: str | None = None) -> ScanRe
         action="completed",
         sound="done",
         completed_posting=posting_number,
-        state=load_state(user),
+        state=load_state(account, user),
     )
 
 
 # ------------------------------------------------------------------ сборка на стороне Ozon
-def ship_posting(user: dict, posting_number: str) -> dict:
+def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
     """Перевести отправление в «Ожидает отгрузки» (v4/posting/fbs/ship)."""
-    row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (posting_number,))
+    row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
+    )
     if not row:
         return {"status": "error", "message": f"Отправление {posting_number} не найдено"}
     if row["status"] == store.STATUS_AWAITING_DELIVER:
@@ -611,16 +675,19 @@ def ship_posting(user: dict, posting_number: str) -> dict:
             "message": f"{posting_number}: статус «{store.STATUS_LABELS.get(row['status'], row['status'])}», сборка невозможна",
         }
 
-    items = store.posting_items(posting_number)
+    items = store.posting_items(account["id"], posting_number)
     if not items:
         return {"status": "error", "message": f"{posting_number}: нет состава заказа, обновите данные"}
     package = [{"product_id": int(item["sku"]), "quantity": int(item["quantity"])} for item in items]
 
-    client = get_client()
+    client = get_client(account)
     try:
         result = client.ship(posting_number, [package])
     except OzonError as exc:
-        db.log_event("ship_error", level="error", user=user, posting_number=posting_number, message=str(exc))
+        db.log_event(
+            "ship_error", level="error", account_id=account["id"], user=user,
+            posting_number=posting_number, message=str(exc),
+        )
         return {"status": "error", "message": f"{posting_number}: Ozon отклонил сборку — {exc.message}"}
 
     numbers = result.get("postings") or [posting_number]
@@ -632,10 +699,11 @@ def ship_posting(user: dict, posting_number: str) -> dict:
             raw = None
         if raw:
             with db.write() as conn:
-                store.upsert_posting(conn, raw)
+                store.upsert_posting(conn, account["id"], raw)
             refreshed.append(number)
     db.log_event(
         "ship",
+        account_id=account["id"],
         user=user,
         posting_number=posting_number,
         message="Отправление собрано в Ozon",
@@ -651,15 +719,19 @@ def ship_posting(user: dict, posting_number: str) -> dict:
     }
 
 
-def label_pdf(user: dict, posting_numbers: list[str]) -> tuple[bytes, str]:
+def label_pdf(account: dict, user: dict, posting_numbers: list[str]) -> tuple[bytes, str]:
     """Стикер(ы) отправления + отметка о печати."""
-    pdf, filename = get_client().package_label(posting_numbers)
+    pdf, filename = get_client(account).package_label(posting_numbers)
     now = db.now_iso()
     with db.write() as conn:
         for number in posting_numbers:
             conn.execute(
-                "UPDATE postings SET printed_at = ?, print_count = print_count + 1 WHERE posting_number = ?",
-                (now, number),
+                "UPDATE postings SET printed_at = ?, print_count = print_count + 1 "
+                "WHERE account_id = ? AND posting_number = ?",
+                (now, account["id"], number),
             )
-            db.log_event("label_print", user=user, posting_number=number, message="Стикер отправлен на печать", conn=conn)
+            db.log_event(
+                "label_print", account_id=account["id"], user=user, posting_number=number,
+                message="Стикер отправлен на печать", conn=conn,
+            )
     return pdf, filename

@@ -4,9 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import credentials, db, options, security, store, sync
-from ..config import settings
-from ..deps import check_csrf, current_user, require_admin, templates
+from .. import accounts, db, options, security, sync
+from ..avito import AvitoClient, AvitoError
+from ..deps import check_csrf, current_account, current_user, require_admin, require_ozon_account, templates
 from ..ozon import OzonClient, OzonError, get_client
 
 router = APIRouter()
@@ -35,11 +35,18 @@ EVENT_LABELS = {
     "returns_taken": "Возвраты забраны",
     "returns_untaken": "Отметка снята",
     "returns_giveout": "Штрихкод выдачи",
-    "ozon_credentials_set": "Сохранены ключи Ozon",
     "returns_statuses_set": "Изменены статусы возвратов",
-    "ozon_credentials_cleared": "Удалены ключи Ozon",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
+    "account_created": "Добавлен кабинет",
+    "account_updated": "Изменён кабинет",
+    "account_credentials_set": "Сохранены ключи кабинета",
+    "account_deleted": "Удалён кабинет",
+    "account_switch": "Переключение кабинета",
+    "avito_confirm": "Заказ Avito подтверждён",
+    "avito_ship": "Заказ Avito отправлен",
+    "avito_label_print": "Печать этикетки Avito",
+    "avito_error": "Ошибка Avito",
 }
 
 
@@ -52,7 +59,9 @@ def logs_page(
     limit: int = 300,
     user: dict = Depends(current_user),
 ):
-    conditions, params = [], []
+    account = current_account(request)
+    # Журнал показываем по текущему кабинету; общие события (вход, польз.) — всегда.
+    conditions, params = ["(account_id IS NULL OR account_id = ?)"], [account["id"] if account else 0]
     if kind:
         conditions.append("kind = ?")
         params.append(kind)
@@ -62,7 +71,7 @@ def logs_page(
     if posting:
         conditions.append("(posting_number LIKE ? OR barcode LIKE ? OR sku LIKE ?)")
         params += [f"%{posting}%"] * 3
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    where = " WHERE " + " AND ".join(conditions)
     events = db.query(f"SELECT * FROM events{where} ORDER BY id DESC LIMIT ?", params + [min(limit, 2000)])
     kinds = [row["kind"] for row in db.query("SELECT DISTINCT kind FROM events ORDER BY kind")]
     return templates.TemplateResponse(
@@ -72,6 +81,7 @@ def logs_page(
             "request": request,
             "user": user,
             "events": [dict(e) for e in events],
+            "account": account,
             "labels": EVENT_LABELS,
             "kinds": kinds,
             "kind": kind,
@@ -86,14 +96,36 @@ def logs_page(
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, user: dict = Depends(require_admin)):
     users = [dict(row) for row in db.query("SELECT id, login, role, active, created_at FROM users ORDER BY login")]
-    stats = {
-        "Отправлений": db.query_one("SELECT COUNT(*) AS c FROM postings")["c"],
-        "Собрано": db.query_one("SELECT COUNT(*) AS c FROM postings WHERE local_state = 'packed'")["c"],
-        "Товаров": db.query_one("SELECT COUNT(*) AS c FROM products")["c"],
-        "Штрихкодов": db.query_one("SELECT COUNT(*) AS c FROM product_barcodes")["c"],
-        "Возвратов": db.query_one("SELECT COUNT(*) AS c FROM returns")["c"],
-        "Событий": db.query_one("SELECT COUNT(*) AS c FROM events")["c"],
-    }
+    account = current_account(request)
+    aid = (account["id"] if account else 0,)
+    # Показываем счётчики текущего кабинета — и только те, что для его площадки.
+    if account and account["marketplace"] == "avito":
+        stats = {
+            "Ждут подтверждения": db.query_one(
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid
+            )["c"],
+            "Ждут отправки": db.query_one(
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'", aid
+            )["c"],
+            "Позиций в заказах": db.query_one(
+                "SELECT COUNT(*) AS c FROM avito_order_items WHERE account_id = ?", aid
+            )["c"],
+        }
+    else:
+        stats = {
+            "Отправлений": db.query_one("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", aid)["c"],
+            "Собрано": db.query_one(
+                "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed'", aid
+            )["c"],
+            "Товаров": db.query_one("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid)["c"],
+            "Штрихкодов": db.query_one("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid)["c"],
+            "Возвратов": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid)["c"],
+        }
+    stats["Событий"] = db.query_one("SELECT COUNT(*) AS c FROM events")["c"]
+    cabinets = [
+        {**item, **{"status": accounts.status(item)}}
+        for item in accounts.all_accounts()
+    ]
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -102,7 +134,10 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "user": user,
             "users": users,
             "stats": stats,
-            "ozon": credentials.status(),
+            "account": account,
+            "cabinets": cabinets,
+            "marketplaces": accounts.MARKETPLACES,
+            "ozon": accounts.status(account),
             "returns_statuses": options.get_returns_statuses(),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
@@ -161,93 +196,198 @@ def api_update_user(user_id: int, request: Request, payload: dict = Body(...), a
     return {"status": "ok", "message": f"{row['login']}: {', '.join(changes) or 'без изменений'}"}
 
 
-@router.post("/api/ozon/test")
-def api_ozon_test(request: Request, admin: dict = Depends(require_admin)):
-    check_csrf(request)
-    try:
-        result = get_client().ping()
-    except OzonError as exc:
-        raise HTTPException(status_code=502, detail=f"Ozon недоступен: {exc}") from exc
-    return {
-        "status": "ok",
-        "message": "Демо-режим: ключи не используются" if credentials.is_demo() else "Ключи Ozon работают",
-        "result": result,
-    }
-
-
-@router.post("/api/ozon/credentials")
-def api_ozon_credentials(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
-    """Сохранить ключи Seller API прямо из панели — без правки .env и перезапуска."""
-    check_csrf(request)
-    client_id = str(payload.get("client_id") or "").strip()
-    api_key = str(payload.get("api_key") or "").strip()
-    problem = credentials.validate(client_id, api_key)
-    if problem:
-        raise HTTPException(status_code=400, detail=problem)
-
-    # Сначала проверяем ключи и только потом сохраняем: иначе опечатка
-    # оставит склад без данных до следующей правки.
-    if not payload.get("skip_test"):
-        # Без повторов и с коротким таймаутом: оператор ждёт ответа здесь и сейчас.
-        probe = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+def _probe(marketplace: str, client_id: str, api_key: str) -> None:
+    """Проверить ключи до сохранения: опечатка не должна оставить склад без данных."""
+    # Без повторов и с коротким таймаутом: оператор ждёт ответа здесь и сейчас.
+    if marketplace == "avito":
+        probe = AvitoClient(client_id=client_id, client_secret=api_key, max_retries=1, timeout=20)
         try:
             probe.ping()
-        except OzonError as exc:
+        except AvitoError as exc:
             if exc.status in (401, 403):
-                detail = f"Ozon отклонил ключи: {exc.message}. Проверьте Client-Id и Api-Key в личном кабинете."
+                detail = (
+                    f"Avito отклонил ключи: {exc.message}. "
+                    "Проверьте client_id и client_secret в личном кабинете."
+                )
             elif exc.status is None:
                 detail = (
-                    f"Не удалось связаться с Ozon: {exc.message}. Проверьте доступ в интернет с сервера; "
+                    f"Не удалось связаться с Avito: {exc.message}. Проверьте доступ в интернет с сервера; "
                     "если он есть, сохраните ключи без проверки."
                 )
             else:
-                detail = f"Ozon ответил ошибкой: {exc.message}"
+                detail = f"Avito ответил ошибкой: {exc.message}"
             raise HTTPException(status_code=400, detail=detail) from exc
         finally:
             probe.close()
+        return
 
-    credentials.set_credentials(client_id, api_key, user=admin)
+    probe = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+    try:
+        probe.ping()
+    except OzonError as exc:
+        if exc.status in (401, 403):
+            detail = f"Ozon отклонил ключи: {exc.message}. Проверьте Client-Id и Api-Key в личном кабинете."
+        elif exc.status is None:
+            detail = (
+                f"Не удалось связаться с Ozon: {exc.message}. Проверьте доступ в интернет с сервера; "
+                "если он есть, сохраните ключи без проверки."
+            )
+        else:
+            detail = f"Ozon ответил ошибкой: {exc.message}"
+        raise HTTPException(status_code=400, detail=detail) from exc
+    finally:
+        probe.close()
+
+
+@router.post("/api/accounts")
+def api_create_account(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Добавить кабинет магазина. Ключи проверяются до сохранения."""
+    check_csrf(request)
+    marketplace = str(payload.get("marketplace") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    client_id = str(payload.get("client_id") or "").strip()
+    api_key = str(payload.get("api_key") or "").strip()
+    problem = accounts.validate(marketplace, title, client_id, api_key)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    if client_id and api_key and not payload.get("skip_test"):
+        _probe(marketplace, client_id, api_key)
+
+    account_id = accounts.create(marketplace, title, client_id, api_key, user=admin)
+    worker = sync.get_worker()
+    if worker:
+        worker.request_sync()
+    hint = "" if client_id else " Кабинет пока в демо-режиме: добавьте ключи."
+    return {
+        "status": "ok",
+        "message": f"Кабинет «{title}» добавлен.{hint}",
+        "account_id": account_id,
+    }
+
+
+@router.post("/api/accounts/{account_id}")
+def api_update_account(account_id: int, request: Request, payload: dict = Body(...),
+                       admin: dict = Depends(require_admin)):
+    """Изменить название, ключи или включённость кабинета."""
+    check_csrf(request)
+    account = accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Кабинет не найден")
+
+    title = payload.get("title")
+    title = str(title).strip() if title is not None else None
+    client_id = payload.get("client_id")
+    api_key = payload.get("api_key")
+    changes = []
+
+    if client_id is not None or api_key is not None:
+        client_id = str(client_id or "").strip()
+        api_key = str(api_key or "").strip()
+        problem = accounts.validate(
+            account["marketplace"], title if title is not None else account["title"], client_id, api_key
+        )
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+        if client_id and api_key and not payload.get("skip_test"):
+            _probe(account["marketplace"], client_id, api_key)
+        changes.append("ключи")
+    elif title is not None:
+        problem = accounts.validate(account["marketplace"], title, "", "")
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+
+    active = payload.get("active")
+    if active is not None:
+        active = bool(active)
+        if not active:
+            others = [a for a in accounts.all_accounts(active_only=True) if a["id"] != account_id]
+            if not others:
+                raise HTTPException(status_code=400, detail="Нельзя выключить единственный кабинет")
+        changes.append("включён" if active else "выключен")
+    if title is not None and title != account["title"]:
+        changes.append(f"название «{title}»")
+
+    accounts.update(
+        account_id,
+        title=title,
+        client_id=client_id,
+        api_key=api_key,
+        active=active,
+        user=admin,
+    )
+    db.log_event(
+        "account_updated", account_id=account_id, user=admin,
+        message=f"{account['title']}: {', '.join(changes) or 'без изменений'}",
+    )
     worker = sync.get_worker()
     if worker:
         worker.request_sync()
     return {
         "status": "ok",
-        "message": "Ключи сохранены, панель переключена на боевой режим. Данные загружаются.",
-        "ozon": credentials.status(),
+        "message": f"Кабинет «{title or account['title']}»: {', '.join(changes) or 'без изменений'}",
     }
 
 
-@router.post("/api/ozon/credentials/clear")
-def api_ozon_credentials_clear(request: Request, admin: dict = Depends(require_admin)):
-    """Убрать ключи из панели: вернуться к .env или в демо-режим."""
+@router.post("/api/accounts/{account_id}/delete")
+def api_delete_account(account_id: int, request: Request, admin: dict = Depends(require_admin)):
+    """Удалить кабинет вместе с его заказами и товарами."""
     check_csrf(request)
-    credentials.clear_credentials(user=admin)
-    state = credentials.status()
-    message = "Ключи удалены. " + (
-        "Панель работает в демо-режиме." if state["demo"] else "Используются ключи из файла .env."
-    )
-    return {"status": "ok", "message": message, "ozon": state}
+    account = accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Кабинет не найден")
+    if len(accounts.all_accounts()) < 2:
+        raise HTTPException(status_code=400, detail="Нельзя удалить единственный кабинет")
+    accounts.delete(account_id, user=admin)
+    return {"status": "ok", "message": f"Кабинет «{account['title']}» удалён вместе с его данными"}
+
+
+@router.post("/api/accounts/{account_id}/test")
+def api_test_account(account_id: int, request: Request, admin: dict = Depends(require_admin)):
+    """Проверить связь с площадкой ключами кабинета."""
+    check_csrf(request)
+    account = accounts.get(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Кабинет не найден")
+    if accounts.is_demo(account):
+        return {"status": "ok", "message": f"«{account['title']}»: демо-режим, ключи не используются"}
+    try:
+        if account["marketplace"] == "avito":
+            from ..avito import get_client as get_avito_client
+
+            result = get_avito_client(account).ping()
+        else:
+            result = get_client(account).ping()
+    except (OzonError, AvitoError) as exc:
+        raise HTTPException(status_code=502, detail=f"{account['title']}: {exc}") from exc
+    return {"status": "ok", "message": f"«{account['title']}»: ключи работают", "result": result}
 
 
 @router.post("/api/postings/{posting_number}/reset")
-def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_admin)):
+def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_admin),
+                      account: dict = Depends(require_ozon_account)):
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
     check_csrf(request)
-    row = db.query_one("SELECT * FROM postings WHERE posting_number = ?", (posting_number,))
+    row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Отправление не найдено")
     state = "cancelled" if row["status"] == "cancelled" else "new"
     db.execute(
         "UPDATE postings SET local_state = ?, packed_at = NULL, packed_by = NULL,"
-        " claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE posting_number = ?",
-        (state, posting_number),
+        " claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE account_id = ? AND posting_number = ?",
+        (state, account["id"], posting_number),
     )
-    db.log_event("posting_reset", level="warn", user=admin, posting_number=posting_number, message="Сброшена отметка сборки")
+    db.log_event(
+        "posting_reset", level="warn", account_id=account["id"], user=admin,
+        posting_number=posting_number, message="Сброшена отметка сборки",
+    )
     return {"status": "ok", "message": f"{posting_number}: отметка сборки снята"}
 
 
 @router.post("/api/returns/statuses")
-def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin),
+                         account: dict = Depends(require_ozon_account)):
     """Какие статусы возвратов панель загружает и показывает как доступные."""
     check_csrf(request)
     raw = payload.get("statuses") or []
@@ -258,7 +398,7 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
 
     options.set_returns_statuses(statuses, user=admin)
     try:
-        result = sync.sync_returns()
+        result = sync.sync_returns(account)
     except Exception as exc:  # noqa: BLE001 - причину показываем оператору
         raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
     names = ", ".join(options.status_label(code) for code in statuses)

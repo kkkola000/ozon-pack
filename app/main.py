@@ -8,10 +8,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import db, security, sync
+from . import accounts, db, deps, security, sync
 from .config import BASE_DIR, settings
-from .credentials import is_demo
-from .routes import admin, auth, orders, pack, returns
+from .routes import admin, auth, avito, orders, pack, returns
 from .version import get_commit, get_version
 
 logging.basicConfig(
@@ -26,8 +25,9 @@ PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    if is_demo():
-        log.warning("Демо-режим: данные сгенерированы локально, Ozon не опрашивается")
+    demo = [a["title"] for a in accounts.all_accounts(active_only=True) if accounts.is_demo(a)]
+    if demo:
+        log.warning("Демо-режим (данные генерируются локально): %s", ", ".join(demo))
     sync.start_worker()
     yield
     worker = sync.get_worker()
@@ -71,11 +71,22 @@ def favicon():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "demo": is_demo(), "version": get_version(), "commit": get_commit()}
+    active = accounts.all_accounts(active_only=True)
+    return {
+        "status": "ok",
+        "demo": all(accounts.is_demo(a) for a in active) if active else True,
+        "accounts": len(active),
+        "version": get_version(),
+        "commit": get_commit(),
+    }
 
 
 @app.get("/")
-def index():
+def index(request: Request):
+    """Стартовая страница зависит от кабинета: у Avito своя сборка заказов."""
+    account = deps.current_account(request)
+    if account and account["marketplace"] == "avito":
+        return RedirectResponse("/avito", status_code=303)
     return RedirectResponse("/pack", status_code=303)
 
 
@@ -83,4 +94,5 @@ app.include_router(auth.router)
 app.include_router(pack.router)
 app.include_router(orders.router)
 app.include_router(returns.router)
+app.include_router(avito.router)
 app.include_router(admin.router)

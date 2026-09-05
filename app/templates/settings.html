@@ -3,26 +3,72 @@
 
 {% block content %}
 <div class="panel">
-  <div class="row between">
-    <h2 style="margin:0">Подключение к Ozon</h2>
-    <div class="row">
-      <button class="btn" id="btn-test">Проверить связь</button>
-      {% if ozon.source == 'panel' %}<button class="btn danger" id="btn-clear-keys">Удалить ключи</button>{% endif %}
-    </div>
+  <h2 style="margin:0">Кабинеты</h2>
+  <p class="muted small">
+    Кабинет — это магазин на площадке со своими ключами. Заказы, товары и штрихкоды
+    у кабинетов не пересекаются, поэтому товар одного магазина невозможно положить
+    в отправление другого. Переключаются кабинеты списком в шапке панели.
+  </p>
+
+  <div class="cabinets">
+    {% for cab in cabinets %}
+      <div class="cabinet-card {{ 'current' if account and cab.id == account.id }} {{ '' if cab.active else 'off' }}"
+           data-account="{{ cab.id }}">
+        <div class="head">
+          <b>{{ cab.title }}</b>
+          <span class="tag">{{ cab.marketplace_title }}</span>
+          {% if cab.status.demo %}<span class="badge warn">ДЕМО</span>{% else %}<span class="badge ok">Боевой</span>{% endif %}
+          {% if account and cab.id == account.id %}<span class="tag success">текущий</span>{% endif %}
+          {% if not cab.active %}<span class="tag">выключен</span>{% endif %}
+          <span class="grow"></span>
+          <button class="btn small" data-cab-test="{{ cab.id }}">Проверить связь</button>
+          <button class="btn small" data-cab-toggle="{{ cab.id }}" data-active="{{ 1 if cab.active else 0 }}">
+            {{ 'Выключить' if cab.active else 'Включить' }}
+          </button>
+          <button class="btn small danger" data-cab-delete="{{ cab.id }}">Удалить</button>
+        </div>
+        <div class="muted small" style="margin-top:6px">
+          Ключи: {{ cab.status.source_label }}
+          {% if cab.status.client_id %}
+            · <span class="mono">{{ marketplaces[cab.marketplace].id_label }}: {{ cab.status.client_id }}</span>
+            · <span class="mono">{{ marketplaces[cab.marketplace].key_label }}: {{ cab.status.api_key_masked }}</span>
+          {% endif %}
+        </div>
+        <div class="fields">
+          <input type="text" class="cab-title" placeholder="Название кабинета" value="{{ cab.title }}">
+          <input type="text" class="cab-client-id" autocomplete="off"
+                 placeholder="{{ marketplaces[cab.marketplace].id_label }}"
+                 value="{{ cab.status.client_id if cab.status.source == 'panel' else '' }}">
+          <input type="password" class="cab-api-key" autocomplete="new-password"
+                 placeholder="{{ marketplaces[cab.marketplace].key_label }}">
+          <div class="row">
+            <button class="btn primary" data-cab-save="{{ cab.id }}">Сохранить</button>
+            <label class="check small muted"><input type="checkbox" class="cab-skip-test"> без проверки</label>
+          </div>
+        </div>
+        <div class="muted small">{{ marketplaces[cab.marketplace].hint }}</div>
+      </div>
+    {% endfor %}
   </div>
 
-  <dl class="kv" style="margin-top:12px">
+  <h2 style="margin-top:18px">Добавить кабинет</h2>
+  <div class="row">
+    <select id="new-marketplace">
+      {% for code, meta in marketplaces.items() %}
+        <option value="{{ code }}">{{ meta.title }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" id="new-title" placeholder="Название (например «ИП Иванов»)" style="width:220px">
+    <input type="text" id="new-client-id" placeholder="Client-Id / client_id" autocomplete="off" style="width:200px">
+    <input type="password" id="new-api-key" placeholder="Api-Key / client_secret" autocomplete="new-password" style="width:280px">
+    <button class="btn primary" id="btn-add-account">Проверить и добавить</button>
+  </div>
+  <label class="check small muted" style="margin-top:10px">
+    <input type="checkbox" id="new-skip-test"> добавить без проверки связи
+  </label>
+
+  <dl class="kv" style="margin-top:18px">
     <dt>Версия панели</dt><dd class="mono">{{ build_label() }}</dd>
-    <dt>Режим</dt>
-    <dd>
-      {% if ozon.demo %}<span class="badge warn">ДЕМО</span> данные генерируются локально, Ozon не опрашивается
-      {% else %}<span class="badge ok">Боевой</span> {{ ozon.base_url }}{% endif %}
-    </dd>
-    <dt>Ключи</dt>
-    <dd>
-      {{ ozon.source_label }}
-      {% if ozon.client_id %}<div class="mono small">Client-Id: {{ ozon.client_id }} · Api-Key: {{ ozon.api_key_masked }}</div>{% endif %}
-    </dd>
     <dt>Синхронизация</dt>
     <dd>
       каждые {{ sync.interval }} с · статус: <b>{{ sync.last_status }}</b>
@@ -38,11 +84,13 @@
       Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>
       <div class="muted">Меняется в файле .env, затем перезапуск службы.</div>
     </dd>
-    <dt>Возвраты</dt>
-    <dd class="small">
-      Загружаются в статусах: <b>{{ returns_statuses | join(', ') }}</b>
-      <div class="muted">{{ 'задано в панели' if returns_source == 'panel' else 'значение из файла .env' }} — меняется ниже</div>
-    </dd>
+    {% if not account or account.marketplace == 'ozon' %}
+      <dt>Возвраты</dt>
+      <dd class="small">
+        Загружаются в статусах: <b>{{ returns_statuses | join(', ') }}</b>
+        <div class="muted">{{ 'задано в панели' if returns_source == 'panel' else 'значение из файла .env' }} — меняется ниже</div>
+      </dd>
+    {% endif %}
   </dl>
 
   {% if ozon.demo_forced %}
@@ -52,28 +100,14 @@
     </div>
   {% endif %}
 
-  <h2 style="margin-top:18px">Ключи Seller API</h2>
-  <p class="muted small" style="margin-top:0">
-    Личный кабинет Ozon → Настройки → Seller API → «Сгенерировать ключ».
-    Ключи сохраняются в панели и применяются сразу, перезапуск не нужен.
-  </p>
-  <div class="row">
-    <input type="text" id="ozon-client-id" placeholder="Client-Id" autocomplete="off"
-           value="{{ ozon.client_id if ozon.source == 'panel' else '' }}" style="width:220px">
-    <input type="password" id="ozon-api-key" placeholder="Api-Key" autocomplete="new-password" style="width:340px">
-    <button class="btn primary" id="btn-save-keys">Проверить и сохранить</button>
-  </div>
-  <label class="check small muted" style="margin-top:10px">
-    <input type="checkbox" id="ozon-skip-test"> сохранить без проверки связи
-  </label>
-
+  {% if not account or account.marketplace == 'ozon' %}
   <h2 style="margin-top:18px">Печать стикеров</h2>
   <p class="muted small" style="margin-top:0">
     На принтер уходит файл, который отдал Ozon, без каких-либо изменений.
     В Chrome и Edge он печатается сам; в Safari открывается в отдельной вкладке —
     печатать PDF из скрытого окна Safari не умеет, выходит пустой лист.
   </p>
-  {% if demo_mode() %}
+  {% if demo_mode(request) %}
     <div class="banner warning" style="font-size:14px; margin: 12px 0">
       Панель работает в демо-режиме — печатается тестовый стикер, а не файл Ozon.
       Внесите ключи Seller API выше, и стикеры пойдут настоящие.
@@ -104,6 +138,7 @@
     {% endfor %}
   </div>
   <button class="btn primary" id="btn-save-statuses" style="margin-top:12px">Сохранить и обновить возвраты</button>
+  {% endif %}
 
   <div class="row" style="margin-top:20px; gap:28px">
     {% for key, value in stats.items() %}
@@ -152,7 +187,7 @@
 
 
 
-document.getElementById('btn-save-statuses').onclick = async (event) => {
+document.getElementById('btn-save-statuses')?.addEventListener('click', async (event) => {
   const statuses = Array.from(document.querySelectorAll('.return-status:checked')).map((box) => box.value);
   if (!statuses.length) { toast('Отметьте хотя бы один статус', 'error'); return; }
   event.target.disabled = true;
@@ -166,47 +201,98 @@ document.getElementById('btn-save-statuses').onclick = async (event) => {
     event.target.disabled = false;
     event.target.textContent = 'Сохранить и обновить возвраты';
   }
-};
+});
 
-document.getElementById('btn-save-keys').onclick = async (event) => {
-  const clientId = document.getElementById('ozon-client-id').value.trim();
-  const apiKey = document.getElementById('ozon-api-key').value.trim();
-  if (!clientId || !apiKey) { toast('Заполните Client-Id и Api-Key', 'error'); return; }
+function cabinetCard(id) {
+  return document.querySelector(`.cabinet-card[data-account="${id}"]`);
+}
+
+document.querySelectorAll('[data-cab-save]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const id = button.dataset.cabSave;
+    const card = cabinetCard(id);
+    const payload = { title: card.querySelector('.cab-title').value.trim() };
+    const clientId = card.querySelector('.cab-client-id').value.trim();
+    const apiKey = card.querySelector('.cab-api-key').value.trim();
+    if (clientId || apiKey) {
+      payload.client_id = clientId;
+      payload.api_key = apiKey;
+      payload.skip_test = card.querySelector('.cab-skip-test').checked;
+    }
+    button.disabled = true;
+    button.textContent = 'Сохраняем…';
+    try {
+      const result = await api(`/api/accounts/${id}`, payload);
+      toast(result.message, 'ok', 8000);
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      toast(error.message, 'error', 15000);
+      button.disabled = false;
+      button.textContent = 'Сохранить';
+    }
+  });
+});
+
+document.querySelectorAll('[data-cab-test]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try { toast((await api(`/api/accounts/${button.dataset.cabTest}/test`, {})).message, 'ok'); }
+    catch (error) { toast(error.message, 'error', 12000); }
+    finally { button.disabled = false; }
+  });
+});
+
+document.querySelectorAll('[data-cab-toggle]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${button.dataset.cabToggle}`, { active: button.dataset.active === '1' ? false : true });
+      toast(result.message, 'ok');
+      setTimeout(() => window.location.reload(), 800);
+    } catch (error) {
+      toast(error.message, 'error', 10000);
+      button.disabled = false;
+    }
+  });
+});
+
+document.querySelectorAll('[data-cab-delete]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const card = cabinetCard(button.dataset.cabDelete);
+    const title = card.querySelector('.cab-title').value.trim();
+    if (!confirm(`Удалить кабинет «${title}» вместе с его заказами, товарами и возвратами? Отменить нельзя.`)) return;
+    button.disabled = true;
+    try {
+      const result = await api(`/api/accounts/${button.dataset.cabDelete}/delete`, {});
+      toast(result.message, 'ok', 8000);
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      toast(error.message, 'error', 12000);
+      button.disabled = false;
+    }
+  });
+});
+
+document.getElementById('btn-add-account').onclick = async (event) => {
+  const title = document.getElementById('new-title').value.trim();
+  if (!title) { toast('Укажите название кабинета', 'error'); return; }
   event.target.disabled = true;
   event.target.textContent = 'Проверяем…';
   try {
-    const result = await api('/api/ozon/credentials', {
-      client_id: clientId,
-      api_key: apiKey,
-      skip_test: document.getElementById('ozon-skip-test').checked,
+    const result = await api('/api/accounts', {
+      marketplace: document.getElementById('new-marketplace').value,
+      title,
+      client_id: document.getElementById('new-client-id').value.trim(),
+      api_key: document.getElementById('new-api-key').value.trim(),
+      skip_test: document.getElementById('new-skip-test').checked,
     });
     toast(result.message, 'ok', 8000);
     setTimeout(() => window.location.reload(), 1200);
   } catch (error) {
     toast(error.message, 'error', 15000);
     event.target.disabled = false;
-    event.target.textContent = 'Проверить и сохранить';
+    event.target.textContent = 'Проверить и добавить';
   }
-};
-
-document.getElementById('btn-clear-keys')?.addEventListener('click', async (event) => {
-  if (!confirm('Удалить ключи из панели? Она вернётся к ключам из .env или в демо-режим.')) return;
-  event.target.disabled = true;
-  try {
-    const result = await api('/api/ozon/credentials/clear', {});
-    toast(result.message, 'ok');
-    setTimeout(() => window.location.reload(), 1000);
-  } catch (error) {
-    toast(error.message, 'error');
-    event.target.disabled = false;
-  }
-});
-
-document.getElementById('btn-test').onclick = async (event) => {
-  event.target.disabled = true;
-  try { toast((await api('/api/ozon/test', {})).message, 'ok'); }
-  catch (error) { toast(error.message, 'error', 12000); }
-  finally { event.target.disabled = false; }
 };
 
 document.getElementById('btn-add').onclick = async () => {

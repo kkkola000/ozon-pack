@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from .. import db, packing, store, sync
-from ..deps import check_csrf, current_user, templates
+from ..deps import check_csrf, current_user, require_ozon_account, templates
 
 router = APIRouter()
 
@@ -19,15 +19,16 @@ TABS = {
 }
 
 
-def _list_postings(tab: str, search: str = "", limit: int = 300) -> list[dict]:
+def _list_postings(account: dict, tab: str, search: str = "", limit: int = 300) -> list[dict]:
     _title, condition = TABS.get(tab, TABS["packaging"])
-    params: list = []
-    sql = f"SELECT p.* FROM postings p WHERE {condition}"
+    params: list = [account["id"]]
+    sql = f"SELECT p.* FROM postings p WHERE p.account_id = ? AND {condition}"
     if search:
         like = f"%{search.strip()}%"
         sql += """
             AND (p.posting_number LIKE ? OR p.order_number LIKE ? OR p.city LIKE ?
                  OR EXISTS (SELECT 1 FROM posting_items i WHERE i.posting_number = p.posting_number
+                            AND i.account_id = p.account_id
                             AND (i.name LIKE ? OR i.offer_id LIKE ? OR i.sku LIKE ?)))
         """
         params += [like] * 6
@@ -38,12 +39,15 @@ def _list_postings(tab: str, search: str = "", limit: int = 300) -> list[dict]:
 
 
 @router.get("/orders", response_class=HTMLResponse)
-def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dict = Depends(current_user)):
+def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dict = Depends(current_user),
+                account: dict = Depends(require_ozon_account)):
     if tab not in TABS:
         tab = "packaging"
-    postings = _list_postings(tab, q)
+    postings = _list_postings(account, tab, q)
     counts = {
-        key: db.query_one(f"SELECT COUNT(*) AS c FROM postings p WHERE {condition}")["c"]
+        key: db.query_one(
+            f"SELECT COUNT(*) AS c FROM postings p WHERE p.account_id = ? AND {condition}", (account["id"],)
+        )["c"]
         for key, (_title, condition) in TABS.items()
     }
     return templates.TemplateResponse(
@@ -56,6 +60,7 @@ def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dic
             "tabs": TABS,
             "counts": counts,
             "postings": postings,
+            "account": account,
             "search": q,
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
@@ -65,18 +70,20 @@ def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dic
 
 
 @router.get("/api/orders")
-def api_orders(tab: str = "packaging", q: str = "", user: dict = Depends(current_user)):
-    return {"postings": _list_postings(tab, q)}
+def api_orders(tab: str = "packaging", q: str = "", user: dict = Depends(current_user),
+               account: dict = Depends(require_ozon_account)):
+    return {"postings": _list_postings(account, tab, q)}
 
 
 @router.post("/api/ship")
-def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+             account: dict = Depends(require_ozon_account)):
     """Перевести отправления в «Ожидает отгрузки»."""
     check_csrf(request)
     numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
     if not numbers:
         raise HTTPException(status_code=400, detail="Не выбрано ни одного отправления")
-    results = [packing.ship_posting(user, number) for number in numbers]
+    results = [packing.ship_posting(account, user, number) for number in numbers]
     ok = [r for r in results if r["status"] == "ok"]
     failed = [r for r in results if r["status"] != "ok"]
     shipped: list[str] = []
@@ -91,10 +98,12 @@ def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(c
 
 
 @router.post("/api/sync")
-def api_sync(request: Request, user: dict = Depends(current_user)):
+def api_sync(request: Request, user: dict = Depends(current_user),
+             account: dict = Depends(require_ozon_account)):
+    """Обновить данные текущего кабинета по кнопке."""
     check_csrf(request)
     try:
-        result = sync.run_once(returns=True)
+        result = sync.run_once(returns=True, account=account)
     except Exception as exc:  # noqa: BLE001 - показываем причину оператору
         raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
     return {"status": "ok", "message": "Данные обновлены", "result": result, "sync": sync.status()}

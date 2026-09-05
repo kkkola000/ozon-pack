@@ -7,21 +7,22 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .. import db, options, store, sync
-from ..deps import check_csrf, current_user, templates
+from ..deps import check_csrf, current_user, require_ozon_account, templates
 from ..ozon import OzonError, get_client
 
 router = APIRouter()
 
 
 def _filter_returns(
+    account: dict,
     scheme: str = "all",
     place: str = "",
     q: str = "",
     show: str = "ready",
     limit: int = 1000,
 ) -> list[dict]:
-    conditions = []
-    params: list = []
+    conditions = ["account_id = ?"]
+    params: list = [account["id"]]
     if show == "ready":
         conditions.append("is_ready = 1 AND taken_at IS NULL")
     elif show == "taken":
@@ -39,7 +40,7 @@ def _filter_returns(
             " OR posting_number LIKE ? OR barcode LIKE ? OR id LIKE ?)"
         )
         params += [like] * 7
-    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    where = " WHERE " + " AND ".join(conditions)
     rows = db.query(
         f"SELECT * FROM returns{where} ORDER BY (place_name IS NULL), place_name, product_name LIMIT ?",
         params + [limit],
@@ -47,9 +48,11 @@ def _filter_returns(
     return [store.return_view(row) for row in rows]
 
 
-def _places() -> list[str]:
+def _places(account: dict) -> list[str]:
     rows = db.query(
-        "SELECT DISTINCT place_name FROM returns WHERE is_ready = 1 AND place_name IS NOT NULL ORDER BY place_name"
+        "SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND is_ready = 1 "
+        "AND place_name IS NOT NULL ORDER BY place_name",
+        (account["id"],),
     )
     return [row["place_name"] for row in rows]
 
@@ -62,14 +65,26 @@ def returns_page(
     q: str = "",
     show: str = "ready",
     user: dict = Depends(current_user),
+    account: dict = Depends(require_ozon_account),
 ):
-    items = _filter_returns(scheme, place, q, show)
+    items = _filter_returns(account, scheme, place, q, show)
+    aid = (account["id"],)
     totals = {
-        "ready": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL")["c"],
-        "taken": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE taken_at IS NOT NULL")["c"],
-        "all": db.query_one("SELECT COUNT(*) AS c FROM returns")["c"],
-        "fbo": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL AND (type = 'FBO' OR scheme = 'FBO')")["c"],
-        "fbs": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL AND (type = 'FBS' OR scheme = 'FBS')")["c"],
+        "ready": db.query_one(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL", aid
+        )["c"],
+        "taken": db.query_one(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND taken_at IS NOT NULL", aid
+        )["c"],
+        "all": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid)["c"],
+        "fbo": db.query_one(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL "
+            "AND (type = 'FBO' OR scheme = 'FBO')", aid
+        )["c"],
+        "fbs": db.query_one(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL "
+            "AND (type = 'FBS' OR scheme = 'FBS')", aid
+        )["c"],
     }
     import json as _json
 
@@ -89,7 +104,8 @@ def returns_page(
             "items": items,
             "wanted_labels": [options.status_label(code) for code in wanted],
             "hidden_statuses": [(options.status_label(code), count) for code, count in sorted(hidden.items())],
-            "places": _places(),
+            "places": _places(account),
+            "account": account,
             "scheme": scheme,
             "place": place,
             "q": q,
@@ -110,16 +126,19 @@ def returns_print(
     q: str = "",
     show: str = "ready",
     user: dict = Depends(current_user),
+    account: dict = Depends(require_ozon_account),
 ):
     """Лист для печати: сборщик идёт с ним получать возвраты."""
-    items = _filter_returns(scheme, place, q, show)
+    items = _filter_returns(account, scheme, place, q, show)
     now = datetime.now(timezone.utc)
-    db.log_event("returns_print", user=user, message=f"Лист возвратов: {len(items)} поз.")
+    db.log_event(
+        "returns_print", account_id=account["id"], user=user, message=f"Лист возвратов: {len(items)} поз."
+    )
     if items:
         placeholders = ",".join("?" for _ in items)
         db.execute(
-            f"UPDATE returns SET printed_at = ? WHERE id IN ({placeholders})",
-            [db.now_iso()] + [item["id"] for item in items],
+            f"UPDATE returns SET printed_at = ? WHERE account_id = ? AND id IN ({placeholders})",
+            [db.now_iso(), account["id"]] + [item["id"] for item in items],
         )
     return templates.TemplateResponse(
         request,
@@ -128,6 +147,7 @@ def returns_print(
             "request": request,
             "user": user,
             "items": items,
+            "account": account,
             "printed_at": now,
             "scheme": scheme,
             "place": place,
@@ -137,7 +157,8 @@ def returns_print(
 
 
 @router.post("/api/returns/taken")
-def api_returns_taken(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_returns_taken(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+                      account: dict = Depends(require_ozon_account)):
     """Отметить возвраты как забранные (локальная отметка, в Ozon не уходит)."""
     check_csrf(request)
     ids = [str(i) for i in (payload.get("ids") or []) if i]
@@ -147,11 +168,12 @@ def api_returns_taken(request: Request, payload: dict = Body(...), user: dict = 
     placeholders = ",".join("?" for _ in ids)
     with db.write() as conn:
         conn.execute(
-            f"UPDATE returns SET taken_at = ?, taken_by = ? WHERE id IN ({placeholders})",
-            [db.now_iso() if taken else None, user["login"] if taken else None] + ids,
+            f"UPDATE returns SET taken_at = ?, taken_by = ? WHERE account_id = ? AND id IN ({placeholders})",
+            [db.now_iso() if taken else None, user["login"] if taken else None, account["id"]] + ids,
         )
         db.log_event(
             "returns_taken" if taken else "returns_untaken",
+            account_id=account["id"],
             user=user,
             message=f"{len(ids)} поз.",
             payload={"ids": ids},
@@ -161,13 +183,15 @@ def api_returns_taken(request: Request, payload: dict = Body(...), user: dict = 
 
 
 @router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(current_user)):
+def api_giveout(user: dict = Depends(current_user), account: dict = Depends(require_ozon_account)):
     """Штрихкод Ozon на выдачу возвратов (FBS)."""
     try:
-        pdf = get_client().giveout_pdf()
+        pdf = get_client(account).giveout_pdf()
     except OzonError as exc:
         raise HTTPException(status_code=502, detail=f"Ozon не отдал документ выдачи: {exc.message}") from exc
-    db.log_event("returns_giveout", user=user, message="Запрошен штрихкод выдачи возвратов")
+    db.log_event(
+        "returns_giveout", account_id=account["id"], user=user, message="Запрошен штрихкод выдачи возвратов"
+    )
     return Response(
         content=pdf,
         media_type="application/pdf",
@@ -176,11 +200,12 @@ def api_giveout(user: dict = Depends(current_user)):
 
 
 @router.post("/api/returns/sync")
-def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user)):
+def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user),
+                     account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     full = bool(payload.get("full"))
     try:
-        result = sync.sync_returns(full=full)
+        result = sync.sync_returns(account, full=full)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
     return {"status": "ok", "message": f"Обновлено возвратов: {result.get('returns', 0)}", "result": result}

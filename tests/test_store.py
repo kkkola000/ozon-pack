@@ -3,7 +3,7 @@ from app import db, store
 from app.config import settings
 
 
-def test_upsert_posting_keeps_local_state(demo_data):
+def test_upsert_posting_keeps_local_state(account, demo_data):
     number = db.query_one("SELECT posting_number FROM postings LIMIT 1")["posting_number"]
     db.execute("UPDATE postings SET local_state = 'packed', packed_by = 'ivanov' WHERE posting_number = ?", (number,))
 
@@ -11,21 +11,21 @@ def test_upsert_posting_keeps_local_state(demo_data):
     import json
 
     with db.write() as conn:
-        store.upsert_posting(conn, json.loads(raw))
+        store.upsert_posting(conn, account["id"], json.loads(raw))
 
     row = db.query_one("SELECT local_state, packed_by FROM postings WHERE posting_number = ?", (number,))
     assert row["local_state"] == "packed"
     assert row["packed_by"] == "ivanov"
 
 
-def test_cancelled_posting_marked_locally(demo_data):
+def test_cancelled_posting_marked_locally(account, demo_data):
     import json
 
     number = db.query_one("SELECT posting_number FROM postings LIMIT 1")["posting_number"]
     raw = json.loads(db.query_one("SELECT raw FROM postings WHERE posting_number = ?", (number,))["raw"])
     raw["status"] = "cancelled"
     with db.write() as conn:
-        store.upsert_posting(conn, raw)
+        store.upsert_posting(conn, account["id"], raw)
     assert db.query_one("SELECT local_state FROM postings WHERE posting_number = ?", (number,))["local_state"] == "cancelled"
 
 
@@ -35,7 +35,8 @@ def test_urgency_buckets():
     now = datetime.now(timezone.utc)
     def view(hours):
         return store.posting_view(
-            {"posting_number": "1-1-1", "shipment_date": (now + timedelta(hours=hours)).isoformat(),
+            {"account_id": 1, "posting_number": "1-1-1",
+             "shipment_date": (now + timedelta(hours=hours)).isoformat(),
              "status": "awaiting_deliver", "local_state": "new", "claim_at": None},
             with_items=False,
         )["urgency"]
@@ -124,27 +125,29 @@ def test_ignored_api_filter_still_filters_locally(demo_data, monkeypatch):
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 0")["c"] == 0
 
 
-def test_returns_in_other_statuses_are_cleaned_up(demo_data):
+def test_returns_in_other_statuses_are_cleaned_up(account, demo_data):
     """Записи, оставшиеся от прежних настроек, удаляются при синхронизации."""
     from app import sync
 
     db.execute(
-        "INSERT INTO returns(id, type, status_sys, status_name, product_name, quantity, is_ready, first_seen_at, updated_at)"
-        " VALUES('old-1', 'FBS', 'MovingToSeller', 'Едет к продавцу', 'Старый возврат', 1, 1, ?, ?)",
-        (db.now_iso(), db.now_iso()),
+        "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity, is_ready,"
+        " first_seen_at, updated_at)"
+        " VALUES(?, 'old-1', 'FBS', 'MovingToSeller', 'Едет к продавцу', 'Старый возврат', 1, 1, ?, ?)",
+        (account["id"], db.now_iso(), db.now_iso()),
     )
     sync.sync_returns()
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'old-1'")["c"] == 0
 
 
-def test_taken_returns_survive_cleanup(demo_data):
+def test_taken_returns_survive_cleanup(account, demo_data):
     """Забранные возвраты остаются в истории, даже если статус уже другой."""
     from app import sync
 
     db.execute(
-        "INSERT INTO returns(id, type, status_sys, status_name, product_name, quantity, is_ready, taken_at, taken_by,"
-        " first_seen_at, updated_at) VALUES('taken-1', 'FBS', 'ReceivedBySeller', 'Получен продавцом', 'Забранный', 1, 0, ?, 'admin', ?, ?)",
-        (db.now_iso(), db.now_iso(), db.now_iso()),
+        "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity, is_ready,"
+        " taken_at, taken_by, first_seen_at, updated_at)"
+        " VALUES(?, 'taken-1', 'FBS', 'ReceivedBySeller', 'Получен продавцом', 'Забранный', 1, 0, ?, 'admin', ?, ?)",
+        (account["id"], db.now_iso(), db.now_iso(), db.now_iso()),
     )
     sync.sync_returns()
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'taken-1'")["c"] == 1

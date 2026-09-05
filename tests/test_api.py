@@ -45,8 +45,9 @@ def test_csrf_required(client):
 def test_scan_endpoint(client):
     csrf = login(client)
     row = db.query_one(
-        """SELECT pb.barcode FROM product_barcodes pb JOIN posting_items i ON i.sku = pb.sku
-           JOIN postings p ON p.posting_number = i.posting_number
+        """SELECT pb.barcode FROM product_barcodes pb
+           JOIN posting_items i ON i.sku = pb.sku AND i.account_id = pb.account_id
+           JOIN postings p ON p.posting_number = i.posting_number AND p.account_id = i.account_id
            WHERE p.status = 'awaiting_deliver' LIMIT 1"""
     )
     response = client.post("/api/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
@@ -82,7 +83,7 @@ def test_label_pdf(client):
     assert response.content[:4] == b"%PDF"
 
 
-def test_credentials_form_requires_admin(client):
+def test_cabinet_api_requires_admin(client):
     from app.security import hash_password
 
     db.execute(
@@ -90,44 +91,82 @@ def test_credentials_form_requires_admin(client):
         (hash_password("packer123"), db.now_iso()),
     )
     client.post("/login", data={"login": "packer2", "password": "packer123", "next": "/pack"})
-    response = client.post("/api/ozon/credentials", json={"client_id": "1", "api_key": "2", "skip_test": True})
+    response = client.post("/api/accounts", json={"marketplace": "ozon", "title": "Чужой", "skip_test": True})
     assert response.status_code in (403, 401)
 
 
-def test_save_credentials_from_settings(client):
+def test_save_cabinet_keys_from_settings(client):
+    from app import accounts
+
     csrf = login(client)
+    account_id = accounts.default_account()["id"]
     response = client.post(
-        "/api/ozon/credentials",
-        json={"client_id": "123456", "api_key": "secret-key-value", "skip_test": True},
+        f"/api/accounts/{account_id}",
+        json={"title": "Основной", "client_id": "123456", "api_key": "secret-key-value", "skip_test": True},
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["ozon"]["source"] == "panel"
-    assert db.kv_get("ozon_client_id") == "123456"
+    assert accounts.credentials(accounts.get(account_id)) == ("123456", "secret-key-value", "panel")
 
     page = client.get("/settings")
     assert "123456" in page.text
     assert "secret-key-value" not in page.text, "ключ не должен показываться целиком"
 
 
-def test_save_credentials_validates_input(client):
+def test_cabinet_keys_are_validated(client):
+    from app import accounts
+
     csrf = login(client)
+    account_id = accounts.default_account()["id"]
     response = client.post(
-        "/api/ozon/credentials", json={"client_id": "", "api_key": ""}, headers={"X-CSRF-Token": csrf}
+        f"/api/accounts/{account_id}",
+        json={"client_id": "кириллица", "api_key": "ключ"},
+        headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 400
 
 
-def test_clear_credentials(client):
+def test_add_and_delete_cabinet(client):
+    from app import accounts
+
     csrf = login(client)
-    client.post(
-        "/api/ozon/credentials",
-        json={"client_id": "123456", "api_key": "secret", "skip_test": True},
+    created = client.post(
+        "/api/accounts",
+        json={"marketplace": "avito", "title": "Avito магазин", "skip_test": True},
         headers={"X-CSRF-Token": csrf},
     )
-    response = client.post("/api/ozon/credentials/clear", headers={"X-CSRF-Token": csrf}, json={})
-    assert response.status_code == 200
-    assert not db.kv_get("ozon_client_id")
+    assert created.status_code == 200, created.text
+    new_id = created.json()["account_id"]
+    assert accounts.get(new_id)["marketplace"] == "avito"
+
+    deleted = client.post(f"/api/accounts/{new_id}/delete", headers={"X-CSRF-Token": csrf}, json={})
+    assert deleted.status_code == 200
+    assert accounts.get(new_id) is None
+
+
+def test_last_cabinet_cannot_be_deleted(client):
+    from app import accounts
+
+    csrf = login(client)
+    account_id = accounts.default_account()["id"]
+    response = client.post(f"/api/accounts/{account_id}/delete", headers={"X-CSRF-Token": csrf}, json={})
+    assert response.status_code == 400
+
+
+def test_switching_cabinet_changes_section(client):
+    from app import accounts
+
+    csrf = login(client)
+    avito_id = accounts.create("avito", "Avito магазин")
+    response = client.post(
+        "/api/account/switch", json={"account_id": avito_id, "next": "/orders"}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 200, response.text
+    # Раздел FBS в кабинете Avito не открывается — панель ведёт в свой раздел.
+    assert response.json()["redirect"] == "/avito"
+    assert client.get("/avito").status_code == 200
+    assert client.get("/orders").status_code == 409
+    assert client.get("/pack").status_code == 409
 
 
 def test_returns_statuses_endpoint(client):

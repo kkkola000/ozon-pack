@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from .config import settings
+
+log = logging.getLogger("db")
 
 _local = threading.local()
 _write_lock = threading.Lock()
@@ -28,8 +31,24 @@ CREATE TABLE IF NOT EXISTS users (
     created_at    TEXT NOT NULL
 );
 
+-- Кабинет = один магазин на одной площадке. Данные разных кабинетов не
+-- пересекаются: у каждой строки есть account_id, а ключи лежат в самом кабинете.
+CREATE TABLE IF NOT EXISTS accounts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    marketplace TEXT NOT NULL DEFAULT 'ozon',
+    title       TEXT NOT NULL,
+    client_id   TEXT,
+    api_key     TEXT,
+    active      INTEGER NOT NULL DEFAULT 1,
+    sort        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, sort, id);
+
 CREATE TABLE IF NOT EXISTS postings (
-    posting_number   TEXT PRIMARY KEY,
+    account_id       INTEGER NOT NULL,
+    posting_number   TEXT NOT NULL,
     order_id         INTEGER,
     order_number     TEXT,
     status           TEXT,
@@ -69,12 +88,14 @@ CREATE TABLE IF NOT EXISTS postings (
     shipped_at       TEXT,
     note             TEXT,
     first_seen_at    TEXT,
-    updated_at       TEXT
+    updated_at       TEXT,
+    PRIMARY KEY (account_id, posting_number)
 );
-CREATE INDEX IF NOT EXISTS idx_postings_status ON postings(status, local_state);
-CREATE INDEX IF NOT EXISTS idx_postings_shipment ON postings(shipment_date);
+CREATE INDEX IF NOT EXISTS idx_postings_status ON postings(account_id, status, local_state);
+CREATE INDEX IF NOT EXISTS idx_postings_shipment ON postings(account_id, shipment_date);
 
 CREATE TABLE IF NOT EXISTS posting_items (
+    account_id     INTEGER NOT NULL,
     posting_number TEXT NOT NULL,
     sku            TEXT NOT NULL,
     offer_id       TEXT,
@@ -83,28 +104,33 @@ CREATE TABLE IF NOT EXISTS posting_items (
     price          TEXT,
     currency       TEXT,
     mandatory_mark INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (posting_number, sku)
+    PRIMARY KEY (account_id, posting_number, sku)
 );
-CREATE INDEX IF NOT EXISTS idx_items_sku ON posting_items(sku);
-CREATE INDEX IF NOT EXISTS idx_items_offer ON posting_items(offer_id);
+CREATE INDEX IF NOT EXISTS idx_items_sku ON posting_items(account_id, sku);
+CREATE INDEX IF NOT EXISTS idx_items_offer ON posting_items(account_id, offer_id);
 
 CREATE TABLE IF NOT EXISTS products (
-    sku        TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    sku        TEXT NOT NULL,
     offer_id   TEXT,
     name       TEXT,
     image      TEXT,
     barcodes   TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    PRIMARY KEY (account_id, sku)
 );
 
 CREATE TABLE IF NOT EXISTS product_barcodes (
-    barcode TEXT PRIMARY KEY,
-    sku     TEXT NOT NULL
+    account_id INTEGER NOT NULL,
+    barcode    TEXT NOT NULL,
+    sku        TEXT NOT NULL,
+    PRIMARY KEY (account_id, barcode)
 );
-CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(sku);
+CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
 
 CREATE TABLE IF NOT EXISTS pack_state (
     user_id        INTEGER PRIMARY KEY,
+    account_id     INTEGER,
     posting_number TEXT,
     scanned        TEXT NOT NULL DEFAULT '{}',
     started_at     TEXT,
@@ -114,6 +140,7 @@ CREATE TABLE IF NOT EXISTS pack_state (
 CREATE TABLE IF NOT EXISTS events (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     at             TEXT NOT NULL,
+    account_id     INTEGER,
     user_id        INTEGER,
     login          TEXT,
     kind           TEXT NOT NULL,
@@ -128,7 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_events_at ON events(at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_posting ON events(posting_number);
 
 CREATE TABLE IF NOT EXISTS returns (
-    id                TEXT PRIMARY KEY,
+    account_id        INTEGER NOT NULL,
+    id                TEXT NOT NULL,
     type              TEXT,
     scheme            TEXT,
     status_sys        TEXT,
@@ -157,9 +185,63 @@ CREATE TABLE IF NOT EXISTS returns (
     taken_by          TEXT,
     printed_at        TEXT,
     first_seen_at     TEXT,
-    updated_at        TEXT
+    updated_at        TEXT,
+    PRIMARY KEY (account_id, id)
 );
-CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(is_ready, type);
+CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(account_id, is_ready, type);
+
+-- Заказы Авито: структура API другая, поэтому отдельная таблица.
+CREATE TABLE IF NOT EXISTS avito_orders (
+    account_id      INTEGER NOT NULL,
+    id              TEXT NOT NULL,
+    marketplace_id  TEXT,
+    status          TEXT,
+    service_type    TEXT,
+    service_name    TEXT,
+    dispatch_number TEXT,
+    tracking_number TEXT,
+    terminal_code   TEXT,
+    terminal_address TEXT,
+    buyer_name      TEXT,
+    buyer_phone     TEXT,
+    confirm_till    TEXT,
+    ship_till       TEXT,
+    delivery_date   TEXT,
+    price           REAL,
+    total           REAL,
+    delivery_price  REAL,
+    commission      REAL,
+    items_count     INTEGER DEFAULT 0,
+    positions_count INTEGER DEFAULT 0,
+    actions         TEXT,
+    created_at_api  TEXT,
+    updated_at_api  TEXT,
+    raw             TEXT,
+    local_state     TEXT NOT NULL DEFAULT 'new',
+    confirmed_at    TEXT,
+    confirmed_by    TEXT,
+    shipped_at      TEXT,
+    shipped_by      TEXT,
+    printed_at      TEXT,
+    print_count     INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT,
+    updated_at      TEXT,
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_avito_status ON avito_orders(account_id, status);
+
+CREATE TABLE IF NOT EXISTS avito_order_items (
+    account_id INTEGER NOT NULL,
+    order_id   TEXT NOT NULL,
+    avito_id   TEXT NOT NULL,
+    seller_id  TEXT,
+    title      TEXT,
+    quantity   INTEGER NOT NULL DEFAULT 1,
+    price      REAL,
+    image      TEXT,
+    location   TEXT,
+    PRIMARY KEY (account_id, order_id, avito_id)
+);
 
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
@@ -230,6 +312,7 @@ def log_event(
     kind: str,
     *,
     level: str = "info",
+    account_id: int | None = None,
     user: dict | None = None,
     posting_number: str | None = None,
     sku: str | None = None,
@@ -240,11 +323,12 @@ def log_event(
 ) -> None:
     """Журнал действий — источник правды при разборе пересорта."""
     sql = (
-        "INSERT INTO events(at, user_id, login, kind, level, posting_number, sku, barcode, message, payload) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO events(at, account_id, user_id, login, kind, level, posting_number, sku, barcode, message, payload) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     params = (
         now_iso(),
+        account_id,
         (user or {}).get("id"),
         (user or {}).get("login"),
         kind,
@@ -261,8 +345,101 @@ def log_event(
         execute(sql, params)
 
 
+def create_sql(table: str) -> str:
+    """Оператор CREATE TABLE для таблицы из SCHEMA — нужен при миграции."""
+    marker = f"CREATE TABLE IF NOT EXISTS {table} ("
+    for statement in SCHEMA.split(";"):
+        if marker in statement:
+            return statement.strip() + ";"
+    raise KeyError(f"в схеме нет таблицы {table}")
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row is not None
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [row["name"] for row in conn.execute(f"PRAGMA table_info({table})")]
+
+
+# Таблицы, которые до появления кабинетов хранили данные одного магазина.
+ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "returns")
+
+
+def _default_account_id(conn: sqlite3.Connection) -> int:
+    """Кабинет по умолчанию: в него попадают данные, накопленные до обновления."""
+    row = conn.execute("SELECT id FROM accounts ORDER BY sort, id LIMIT 1").fetchone()
+    if row:
+        return int(row["id"])
+    # Ключи могли лежать в настройках панели (kv) или в .env — переносим в кабинет.
+    client_id = api_key = ""
+    if _table_exists(conn, "kv"):
+        for key, target in (("ozon_client_id", "client_id"), ("ozon_api_key", "api_key")):
+            got = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            value = (got["value"] if got else "") or ""
+            if target == "client_id":
+                client_id = value.strip()
+            else:
+                api_key = value.strip()
+    if not (client_id and api_key):
+        client_id = settings.ozon_client_id
+        api_key = settings.ozon_api_key
+    cur = conn.execute(
+        "INSERT INTO accounts(marketplace, title, client_id, api_key, active, sort, created_at) "
+        "VALUES('ozon', ?, ?, ?, 1, 0, ?)",
+        ("Ozon", client_id, api_key, now_iso()),
+    )
+    return int(cur.lastrowid)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Привести базу прошлых версий к схеме с кабинетами.
+
+    Порядок важен: индексы новой схемы ссылаются на account_id, поэтому
+    таблицы перестраиваются до executescript(SCHEMA).
+    """
+    if not _table_exists(conn, "accounts"):
+        conn.execute(create_sql("accounts"))
+
+    legacy = [t for t in ACCOUNT_TABLES if _table_exists(conn, t) and "account_id" not in _columns(conn, t)]
+    account_id = _default_account_id(conn)
+
+    for table in legacy:
+        keep = [c for c in _columns(conn, table) if c != "account_id"]
+        columns = ", ".join(keep)
+        conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+        # Индексы переезжают вместе со старой таблицей и мешают создать новые.
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?", (f"{table}_old",)
+        ).fetchall():
+            if not row["name"].startswith("sqlite_"):
+                conn.execute(f'DROP INDEX IF EXISTS "{row["name"]}"')
+        conn.execute(create_sql(table))
+        conn.execute(
+            f"INSERT OR IGNORE INTO {table}(account_id, {columns}) SELECT ?, {columns} FROM {table}_old",
+            (account_id,),
+        )
+        conn.execute(f"DROP TABLE {table}_old")
+        log.info("Таблица %s переведена на кабинеты", table)
+
+    # Здесь достаточно добавить колонку: составной ключ не нужен.
+    for table in ("pack_state", "events"):
+        if _table_exists(conn, table) and "account_id" not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER")
+            conn.execute(f"UPDATE {table} SET account_id = ?", (account_id,))
+
+
 def init_db() -> None:
     conn = connect()
+    with _write_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _migrate(conn)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
     conn.executescript(SCHEMA)
     _seed_admin()
 

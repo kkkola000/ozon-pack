@@ -6,16 +6,17 @@ from fastapi.responses import HTMLResponse, Response
 
 from .. import db, packing, store
 from ..config import settings
-from ..deps import check_csrf, current_user, templates
+from ..deps import check_csrf, current_user, require_ozon_account, templates
 from ..ozon import OzonError
 
 router = APIRouter()
 
 
 @router.get("/pack", response_class=HTMLResponse)
-def pack_page(request: Request, user: dict = Depends(current_user)):
-    state = packing.load_state(user)
-    counters = _counters()
+def pack_page(request: Request, user: dict = Depends(current_user),
+              account: dict = Depends(require_ozon_account)):
+    state = packing.load_state(account, user)
+    counters = _counters(account)
     return templates.TemplateResponse(
         request,
         "pack.html",
@@ -24,76 +25,91 @@ def pack_page(request: Request, user: dict = Depends(current_user)):
             "user": user,
             "state": state,
             "counters": counters,
+            "account": account,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "pack",
         },
     )
 
 
-def _counters() -> dict:
+def _counters(account: dict) -> dict:
+    account_id = account["id"]
     return {
         "awaiting_packaging": db.query_one(
-            "SELECT COUNT(*) AS c FROM postings WHERE status = ?", (store.STATUS_AWAITING_PACKAGING,)
+            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = ?",
+            (account_id, store.STATUS_AWAITING_PACKAGING),
         )["c"],
         "awaiting_deliver": db.query_one(
-            "SELECT COUNT(*) AS c FROM postings WHERE status = ? AND local_state = 'new'",
-            (store.STATUS_AWAITING_DELIVER,),
+            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = ? AND local_state = 'new'",
+            (account_id, store.STATUS_AWAITING_DELIVER),
         )["c"],
         "packed_today": db.query_one(
-            "SELECT COUNT(*) AS c FROM postings WHERE local_state = 'packed' AND packed_at >= date('now')"
+            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed' "
+            "AND packed_at >= date('now')",
+            (account_id,),
         )["c"],
-        "returns_ready": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL")["c"],
+        "returns_ready": db.query_one(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL",
+            (account_id,),
+        )["c"],
     }
 
 
 @router.get("/api/state")
-def api_state(user: dict = Depends(current_user)):
-    return {"state": packing.load_state(user), "counters": _counters()}
+def api_state(user: dict = Depends(current_user), account: dict = Depends(require_ozon_account)):
+    return {"state": packing.load_state(account, user), "counters": _counters(account)}
 
 
 @router.post("/api/scan")
-def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+             account: dict = Depends(require_ozon_account)):
     check_csrf(request)
-    result = packing.scan(user, str(payload.get("code") or ""))
-    result["counters"] = _counters()
+    result = packing.scan(account, user, str(payload.get("code") or ""))
+    result["counters"] = _counters(account)
     return result
 
 
 @router.post("/api/select")
-def api_select(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_select(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+               account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     number = str(payload.get("posting_number") or "")
-    result = packing.select_posting(user, number, first_sku=payload.get("sku") or None)
-    result["counters"] = _counters()
+    result = packing.select_posting(account, user, number, first_sku=payload.get("sku") or None)
+    result["counters"] = _counters(account)
     return result
 
 
 @router.post("/api/release")
-def api_release(request: Request, user: dict = Depends(current_user)):
+def api_release(request: Request, user: dict = Depends(current_user),
+                account: dict = Depends(require_ozon_account)):
     check_csrf(request)
-    result = packing.release(user)
-    result["counters"] = _counters()
+    result = packing.release(account, user)
+    result["counters"] = _counters(account)
     return result
 
 
 @router.post("/api/complete")
-def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user)):
+def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user),
+                 account: dict = Depends(require_ozon_account)):
     """Ручное завершение — например, если стикер не читается сканером."""
     check_csrf(request)
-    state = packing.load_state(user)
+    state = packing.load_state(account, user)
     if not state["active"]:
         raise HTTPException(status_code=400, detail="Нет активного отправления")
     if settings.require_all_items and not state["complete"] and user.get("role") != "admin":
         raise HTTPException(status_code=400, detail="Сначала отсканируйте все товары")
-    result = packing.complete(user, state["active"]["posting_number"], code=payload.get("reason") or "ручное завершение")
-    result["counters"] = _counters()
+    result = packing.complete(
+        account, user, state["active"]["posting_number"], code=payload.get("reason") or "ручное завершение"
+    )
+    result["counters"] = _counters(account)
     return result
 
 
 @router.get("/api/label/{posting_number}.pdf")
-def api_label(posting_number: str, user: dict = Depends(current_user)):
+def api_label(posting_number: str, user: dict = Depends(current_user),
+              account: dict = Depends(require_ozon_account)):
     try:
-        pdf, filename = packing.label_pdf(user, [posting_number])
+        pdf, filename = packing.label_pdf(account, user, [posting_number])
     except OzonError as exc:
         raise HTTPException(status_code=502, detail=f"Ozon не отдал стикер: {exc.message}") from exc
     return Response(
@@ -104,14 +120,15 @@ def api_label(posting_number: str, user: dict = Depends(current_user)):
 
 
 @router.post("/api/labels.pdf")
-def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+               account: dict = Depends(require_ozon_account)):
     """Пачка стикеров — для печати нескольких отправлений сразу."""
     check_csrf(request)
     numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
     if not numbers:
         raise HTTPException(status_code=400, detail="Не выбрано ни одного отправления")
     try:
-        pdf, filename = packing.label_pdf(user, numbers)
+        pdf, filename = packing.label_pdf(account, user, numbers)
     except OzonError as exc:
         raise HTTPException(status_code=502, detail=f"Ozon не отдал стикеры: {exc.message}") from exc
     return Response(

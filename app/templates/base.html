@@ -9,25 +9,45 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📦</text></svg>">
 </head>
 <body data-page="{{ active_tab or '' }}">
-{% set c = nav_counters() %}
+{% set c = nav_counters(request) %}
+{% set cab = account_switcher(request) %}
 <header class="topbar no-print">
-  <div class="brand">📦 Ozon<span>Pack</span></div>
+  <div class="brand">📦 <span>Pack</span></div>
+  {% if user and cab.accounts %}
+    <label class="cabinet" title="Кабинет магазина: заказы и товары у каждого свои">
+      <select id="cabinet-select" data-current="{{ cab.current.id if cab.current }}">
+        {% for item in cab.accounts %}
+          <option value="{{ item.id }}" {{ 'selected' if cab.current and item.id == cab.current.id }}>
+            {{ item.marketplace_title }} · {{ item.title }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+  {% endif %}
   <nav>
-    <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
-    <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
-      Заказы FBS
-      {% if c.packaging %}<span class="badge warn" title="Ожидает сборки">{{ c.packaging }}</span>{% endif %}
-      {% if c.deliver %}<span class="badge accent" title="Ожидает отгрузки">{{ c.deliver }}</span>{% endif %}
-    </a>
-    <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
-      Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
-    </a>
+    {% if cab.current and cab.current.marketplace == 'avito' %}
+      <a href="/avito?tab=confirm" class="{{ 'active' if active_tab == 'avito' }}">
+        Заказы Avito
+        {% if c.avito_confirm %}<span class="badge warn" title="Подтвердите заказ">{{ c.avito_confirm }}</span>{% endif %}
+        {% if c.avito_ship %}<span class="badge accent" title="Отправьте заказ">{{ c.avito_ship }}</span>{% endif %}
+      </a>
+    {% else %}
+      <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
+      <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
+        Заказы FBS
+        {% if c.packaging %}<span class="badge warn" title="Ожидает сборки">{{ c.packaging }}</span>{% endif %}
+        {% if c.deliver %}<span class="badge accent" title="Ожидает отгрузки">{{ c.deliver }}</span>{% endif %}
+      </a>
+      <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
+        Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
+      </a>
+    {% endif %}
     <a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>
     {% if user and user.role == 'admin' %}
       <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
     {% endif %}
   </nav>
-  {% if demo_mode() %}<span class="badge warn" title="Работа на сгенерированных данных, Ozon не опрашивается">ДЕМО</span>{% endif %}
+  {% if demo_mode(request) %}<span class="badge warn" title="Работа на сгенерированных данных, площадка не опрашивается">ДЕМО</span>{% endif %}
   <div class="user">{% if user %}<b>{{ user.login }}</b> · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 

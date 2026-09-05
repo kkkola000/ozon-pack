@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import db, ozon, store  # noqa: E402
+from app import accounts, avito, db, ozon, store  # noqa: E402
 from app.config import settings  # noqa: E402
 
 
@@ -24,6 +24,7 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "sync_enabled", False)
     db._local.conn = None
     ozon.reset_client()
+    avito.reset_client()
     db.init_db()
     yield
     conn = getattr(db._local, "conn", None)
@@ -31,6 +32,18 @@ def temp_db(tmp_path, monkeypatch):
         conn.close()
     db._local.conn = None
     ozon.reset_client()
+    avito.reset_client()
+
+
+@pytest.fixture
+def account():
+    """Кабинет по умолчанию — его создаёт init_db()."""
+    return accounts.default_account()
+
+
+@pytest.fixture
+def avito_account():
+    return accounts.get(accounts.create("avito", "Avito демо"))
 
 
 @pytest.fixture
@@ -60,10 +73,14 @@ def other_user():
     return dict(row)
 
 
+def account_id() -> int:
+    return accounts.default_account()["id"]
+
+
 def pick_posting(status=store.STATUS_AWAITING_DELIVER, positions=None):
     """Первое отправление в статусе, при желании — с нужным числом позиций."""
-    sql = "SELECT * FROM postings WHERE status = ? AND local_state = 'new'"
-    params = [status]
+    sql = "SELECT * FROM postings WHERE account_id = ? AND status = ? AND local_state = 'new'"
+    params = [account_id(), status]
     if positions:
         sql += " AND positions_count = ?"
         params.append(positions)
@@ -73,6 +90,8 @@ def pick_posting(status=store.STATUS_AWAITING_DELIVER, positions=None):
 
 
 def barcode_of(sku: str) -> str:
-    row = db.query_one("SELECT barcode FROM product_barcodes WHERE sku = ?", (sku,))
+    row = db.query_one(
+        "SELECT barcode FROM product_barcodes WHERE account_id = ? AND sku = ?", (account_id(), sku)
+    )
     assert row is not None, f"нет штрихкода для SKU {sku}"
     return row["barcode"]

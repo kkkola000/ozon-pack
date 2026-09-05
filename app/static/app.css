@@ -261,3 +261,33 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   tr { page-break-inside: avoid; }
 }
 .print-head { display: none; }
+
+/* Переключатель кабинетов в шапке */
+.topbar .cabinet select {
+  max-width: 230px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.topbar .cabinet select:hover { border-color: var(--accent); }
+.topbar .cabinet select:disabled { opacity: .6; cursor: progress; }
+
+/* Кабинеты в настройках */
+.cabinets { display: grid; gap: 12px; }
+.cabinet-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: #fff;
+}
+.cabinet-card.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.cabinet-card.off { opacity: .6; }
+.cabinet-card .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cabinet-card .head b { font-size: 15px; }
+.cabinet-card .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+@media (max-width: 720px) { .cabinet-card .fields { grid-template-columns: 1fr; } }

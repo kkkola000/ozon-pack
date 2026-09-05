@@ -311,13 +311,17 @@ DEMO_CITIES = [
 class DemoOzonClient(OzonClient):
     """Полностью автономная подделка API — для настройки рабочего места без ключей."""
 
-    def __init__(self) -> None:  # noqa: D107 - без сетевого клиента
+    def __init__(self, seed: int = 0) -> None:  # noqa: D107 - без сетевого клиента
         self.client_id = "demo"
         self.api_key = "demo"
         self.base_url = "demo://ozon"
         self.max_retries = 1
         self._lock = threading.Lock()
-        self._rnd = random.Random(20240501)
+        # Свой seed на кабинет: в разных кабинетах разные заказы, как в жизни.
+        self._rnd = random.Random(20240501 + seed)
+        # Номера отправлений тоже зависят от кабинета: иначе демо-магазины
+        # выдавали бы одни и те же заказы и разделение данных нечем проверить.
+        self._seed = seed
         self._postings: dict[str, dict] = {}
         self._returns: list[dict] = []
         self._generate()
@@ -332,7 +336,8 @@ class DemoOzonClient(OzonClient):
 
     def _make_posting(self, index: int, now: datetime) -> dict[str, dict]:
         rnd = self._rnd
-        number = f"{48000000 + index * 7}-{1000 + index}-1"
+        base = 48000000 + self._seed * 100000 + index * 7
+        number = f"{base}-{1000 + self._seed * 100 + index}-1"
         status = "awaiting_packaging" if index % 3 == 0 else "awaiting_deliver"
         positions = rnd.choice([1, 1, 1, 2, 2, 3])
         chosen = rnd.sample(DEMO_PRODUCTS, positions)
@@ -352,8 +357,8 @@ class DemoOzonClient(OzonClient):
         shipment = now + timedelta(hours=rnd.choice([3, 8, 20, 30, 44]))
         posting = {
             "posting_number": number,
-            "order_id": 700000000 + index,
-            "order_number": f"{48000000 + index * 7}-{1000 + index}",
+            "order_id": 700000000 + self._seed * 10000 + index,
+            "order_number": f"{base}-{1000 + self._seed * 100 + index}",
             "status": status,
             "substatus": "posting_acceptance_in_progress" if status == "awaiting_deliver" else "posting_created",
             "in_process_at": _iso(now - timedelta(hours=rnd.randrange(2, 40))),
@@ -402,7 +407,7 @@ class DemoOzonClient(OzonClient):
         display = "В пункте выдачи" if ready else "Едет к продавцу"
         arrived = now - timedelta(days=rnd.randrange(0, 12))
         return {
-            "id": 90000000 + index,
+            "id": 90000000 + self._seed * 1000 + index,
             "company_id": 1,
             "return_reason_name": rnd.choice(
                 ["Не подошёл размер", "Товар повреждён", "Не соответствует описанию", "Передумал"]
@@ -535,29 +540,34 @@ class DemoOzonClient(OzonClient):
         return None
 
 
-_client: OzonClient | None = None
+_clients: dict[int, OzonClient] = {}
 _client_lock = threading.Lock()
 
 
-def get_client() -> OzonClient:
-    """Клиент по актуальным ключам: из настроек панели или из .env."""
-    from .credentials import get_credentials, is_demo
+def get_client(account: dict | None = None) -> OzonClient:
+    """Клиент кабинета по его ключам. Кэшируется, пока ключи не поменяли."""
+    from . import accounts
 
-    global _client
+    if account is None:
+        account = accounts.default_account()
+    account_id = int((account or {}).get("id") or 0)
     with _client_lock:
-        if _client is None:
-            if is_demo():
-                _client = DemoOzonClient()
+        client = _clients.get(account_id)
+        if client is None:
+            if accounts.is_demo(account):
+                client = DemoOzonClient(seed=account_id)
             else:
-                client_id, api_key, _source = get_credentials()
-                _client = OzonClient(client_id=client_id, api_key=api_key)
-        return _client
+                client_id, api_key, _source = accounts.credentials(account)
+                client = OzonClient(client_id=client_id, api_key=api_key)
+            _clients[account_id] = client
+        return client
 
 
-def reset_client() -> None:
-    """Пересоздать клиент после смены ключей."""
-    global _client
+def reset_client(account_id: int | None = None) -> None:
+    """Пересоздать клиент после смены ключей (или все сразу)."""
     with _client_lock:
-        if _client is not None:
-            _client.close()
-        _client = None
+        targets = [account_id] if account_id is not None else list(_clients)
+        for key in targets:
+            client = _clients.pop(key, None)
+            if client is not None:
+                client.close()

@@ -192,3 +192,21 @@ function hoursLeftText(hours) {
   if (hours < 1) return `осталось ${Math.round(hours * 60)} мин`;
   return `осталось ${Math.round(hours)} ${plural(Math.round(hours), 'час', 'часа', 'часов')}`;
 }
+
+/* Переключатель кабинетов в шапке: данные каждого магазина живут отдельно. */
+document.getElementById('cabinet-select')?.addEventListener('change', async (event) => {
+  const select = event.target;
+  const previous = select.dataset.current;
+  select.disabled = true;
+  try {
+    const result = await api('/api/account/switch', {
+      account_id: select.value,
+      next: window.location.pathname + window.location.search,
+    });
+    window.location.href = result.redirect || '/';
+  } catch (error) {
+    toast(error.message, 'error', 8000);
+    if (previous) select.value = previous;
+    select.disabled = false;
+  }
+});

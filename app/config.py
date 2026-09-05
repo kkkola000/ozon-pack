@@ -53,6 +53,13 @@ class Settings:
     ozon_base_url: str = field(default_factory=lambda: os.getenv("OZON_API_URL", "https://api-seller.ozon.ru").rstrip("/"))
     ozon_timeout: int = field(default_factory=lambda: _int("OZON_TIMEOUT", 60))
 
+    # --- Avito API для бизнеса ---
+    # Ключи кабинетов Avito хранятся в панели, в .env их нет.
+    avito_base_url: str = field(default_factory=lambda: os.getenv("AVITO_API_URL", "https://api.avito.ru").rstrip("/"))
+    avito_timeout: int = field(default_factory=lambda: _int("AVITO_TIMEOUT", 60))
+    # На сколько дней назад просить заказы Avito при синхронизации.
+    avito_days_back: int = field(default_factory=lambda: _int("AVITO_DAYS_BACK", 30))
+
     # Демо-режим включён принудительно через OZON_DEMO=1. Если ключей нет,
     # панель уходит в демо и без этого флага — см. credentials.is_demo().
     demo_forced: bool = field(default_factory=lambda: _bool("OZON_DEMO", False))

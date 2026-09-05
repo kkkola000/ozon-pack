@@ -11,12 +11,49 @@ from .version import build_label
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
+# Выбранный кабинет держим в отдельной куке: менять его может любой вошедший,
+# поэтому переподписывать сессию (и сбрасывать CSRF) на каждое переключение незачем.
+ACCOUNT_COOKIE = "ozp_account"
+
 
 def current_user(request: Request) -> dict:
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(status_code=401, detail="Требуется вход")
     return user
+
+
+def current_account(request: Request) -> dict | None:
+    """Кабинет текущей вкладки: из куки, иначе первый включённый."""
+    from . import accounts
+
+    cached = getattr(request.state, "account", None)
+    if cached is not None:
+        return cached
+    account = accounts.resolve(request.cookies.get(ACCOUNT_COOKIE))
+    request.state.account = account
+    return account
+
+
+def require_account(request: Request) -> dict:
+    account = current_account(request)
+    if not account:
+        raise HTTPException(status_code=503, detail="Не добавлен ни один кабинет — откройте «Настройки»")
+    return account
+
+
+def require_ozon_account(request: Request) -> dict:
+    account = require_account(request)
+    if account["marketplace"] != "ozon":
+        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Ozon")
+    return account
+
+
+def require_avito_account(request: Request) -> dict:
+    account = require_account(request)
+    if account["marketplace"] != "avito":
+        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Avito")
+    return account
 
 
 def require_admin(request: Request) -> dict:
@@ -52,20 +89,49 @@ templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 
 
-def nav_counters() -> dict:
-    """Счётчики для шапки — считаются на каждый рендер, запросы дешёвые."""
+def nav_counters(request: Request) -> dict:
+    """Счётчики для шапки текущего кабинета — запросы дешёвые."""
     from . import db
+
+    account = current_account(request)
+    if not account:
+        return {"packaging": 0, "deliver": 0, "returns": 0, "avito_confirm": 0, "avito_ship": 0}
+    account_id = account["id"]
 
     def count(sql: str, params: tuple = ()) -> int:
         row = db.query_one(sql, params)
         return row["c"] if row else 0
 
+    if account["marketplace"] == "avito":
+        return {
+            "packaging": 0,
+            "deliver": 0,
+            "returns": 0,
+            "avito_confirm": count(
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'",
+                (account_id,),
+            ),
+            "avito_ship": count(
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'",
+                (account_id,),
+            ),
+        }
     return {
-        "packaging": count("SELECT COUNT(*) AS c FROM postings WHERE status = 'awaiting_packaging'"),
-        "deliver": count(
-            "SELECT COUNT(*) AS c FROM postings WHERE status = 'awaiting_deliver' AND local_state = 'new'"
+        "packaging": count(
+            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_packaging'",
+            (account_id,),
         ),
-        "returns": count("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND taken_at IS NULL"),
+        "deliver": count(
+            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_deliver' "
+            "AND local_state = 'new'",
+            (account_id,),
+        ),
+        "returns": count(
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL",
+            (account_id,),
+        ),
+        "avito_confirm": 0,
+        "avito_ship": 0,
     }
 
 
@@ -89,15 +155,26 @@ def static_version() -> str:
 _static_version: str | None = None
 
 
-def demo_mode() -> bool:
-    from .credentials import is_demo
+def demo_mode(request: Request) -> bool:
+    from . import accounts
 
-    return is_demo()
+    return accounts.is_demo(current_account(request))
+
+
+def account_switcher(request: Request) -> dict:
+    """Данные для переключателя кабинетов в шапке."""
+    from . import accounts
+
+    return {
+        "current": current_account(request),
+        "accounts": accounts.all_accounts(active_only=True),
+    }
 
 
 templates.env.globals["build_label"] = build_label
 templates.env.globals["nav_counters"] = nav_counters
 templates.env.globals["demo_mode"] = demo_mode
+templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version
 
 
