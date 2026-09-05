@@ -7,6 +7,7 @@ from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
 from .config import BASE_DIR, settings
+from .version import build_label
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
@@ -94,6 +95,7 @@ def demo_mode() -> bool:
     return is_demo()
 
 
+templates.env.globals["build_label"] = build_label
 templates.env.globals["nav_counters"] = nav_counters
 templates.env.globals["demo_mode"] = demo_mode
 templates.env.globals["static_version"] = static_version

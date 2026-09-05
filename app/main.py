@@ -9,9 +9,10 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import db, security, sync
-from .credentials import is_demo
 from .config import BASE_DIR, settings
+from .credentials import is_demo
 from .routes import admin, auth, orders, pack, returns
+from .version import get_commit, get_version
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +71,7 @@ def favicon():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "demo": is_demo()}
+    return {"status": "ok", "demo": is_demo(), "version": get_version(), "commit": get_commit()}
 
 
 @app.get("/")
