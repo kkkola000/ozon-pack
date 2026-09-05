@@ -31,3 +31,15 @@ def test_healthz_reports_build(client):
     assert payload["status"] == "ok"
     assert payload["version"] == version.get_version()
     assert payload["commit"] == version.get_commit()
+
+
+def test_commit_stamp_used_when_git_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(version, "BASE_DIR", tmp_path)
+    (tmp_path / "COMMIT").write_text("0123456789abcdef0123456789abcdef01234567", encoding="utf-8")
+    assert version.get_commit() == "0123456"
+
+
+def test_unsubstituted_stamp_is_ignored(tmp_path, monkeypatch):
+    monkeypatch.setattr(version, "BASE_DIR", tmp_path)
+    (tmp_path / "COMMIT").write_text("$Format:%H$", encoding="utf-8")
+    assert version.get_commit() == "—"
