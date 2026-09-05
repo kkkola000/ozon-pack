@@ -1,14 +1,15 @@
-"""Раздел «Заказы Avito»: подтверждение, отправка и оригинальные этикетки.
+"""Раздел «Заказы Avito»: подтверждение, отправка, этикетки и возвраты.
 
 Сборщику нужны ровно два действия — «Подтвердите заказ» и «Отправьте заказ».
 Остальные возможности Avito (отмена, маркировка «Честный знак», трек-номера,
 интервалы курьера, споры) в интерфейс не выводятся: лишняя кнопка на складе —
-это лишняя ошибка.
+это лишняя ошибка. В возвратах то же правило: показываем только те, что уже
+лежат в пункте выдачи и которые можно забрать.
 """
 from __future__ import annotations
 
+import json
 import logging
-
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -264,14 +265,11 @@ def api_avito_sync(request: Request, user: dict = Depends(current_user),
 
 
 # ================================================================== возвраты
-# «Возврат: заберите заказ» — заказ вернулся и лежит в пункте выдачи.
-# Пока он едет обратно, забирать нечего, поэтому по умолчанию показываем
-# только готовые к получению.
+# «Возврат: заберите заказ» — заказ вернулся и лежит в пункте выдачи. Только
+# такие возвраты панель и хранит: пока посылка едет обратно, забирать нечего.
 RETURN_VIEWS = {
-    "ready": ("Заберите заказ", "return_status = ? AND taken_at IS NULL", (avito.RETURN_READY,)),
-    "transit": ("Возврат в пути", "return_status = ?", (avito.RETURN_IN_TRANSIT,)),
+    "ready": ("Заберите заказ", "taken_at IS NULL", ()),
     "taken": ("Забранные", "taken_at IS NOT NULL", ()),
-    "all": ("Все возвраты", "1 = 1", ()),
 }
 
 
@@ -302,11 +300,22 @@ def _return_totals(account: dict) -> dict:
         )["c"]
 
     return {
-        "ready": count("return_status = ? AND taken_at IS NULL", (avito.RETURN_READY,)),
-        "transit": count("return_status = ?", (avito.RETURN_IN_TRANSIT,)),
+        "ready": count("taken_at IS NULL"),
         "taken": count("taken_at IS NOT NULL"),
-        "all": count("1 = 1"),
     }
+
+
+def _returns_skipped(account: dict) -> list[tuple[str, int]]:
+    """Что Avito вернул по возвратам помимо готовых к выдаче — для пояснения."""
+    try:
+        histogram = json.loads(db.kv_get(f"avito_returns_statuses:{account['id']}") or "{}")
+    except ValueError:
+        return []
+    return sorted(
+        (avito.RETURN_STATUS_LABELS.get(code, code), count)
+        for code, count in histogram.items()
+        if code != avito.RETURN_READY
+    )
 
 
 @router.get("/avito/returns", response_class=HTMLResponse)
@@ -325,6 +334,7 @@ def avito_returns_page(request: Request, show: str = "ready", q: str = "",
             "items": _list_returns(account, show, q),
             "views": RETURN_VIEWS,
             "totals": _return_totals(account),
+            "skipped": _returns_skipped(account),
             "show": show,
             "q": q,
             "sync": sync.status(),

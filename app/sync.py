@@ -267,9 +267,11 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
 def sync_avito(account: dict | None = None) -> dict:
     """Заказы Avito, с которыми сборщику надо что-то сделать.
 
-    Это три статуса: «ожидает подтверждения», «ждёт отправки» и «на возврате».
-    Остальные не запрашиваются и не хранятся: заказ, уехавший в «в пути» или
-    «доставлен», из панели просто исчезает.
+    Это «ожидает подтверждения», «ждёт отправки» и возвраты. Из возвратов
+    сохраняются только те, что уже лежат в пункте выдачи (returnStatus =
+    ready_to_pickup): пока посылка едет обратно, забирать нечего, и в панели
+    ей делать нечего. Остальные статусы заказа не запрашиваются вовсе —
+    уехавший в «в пути» или «доставлен» заказ из панели просто исчезает.
     """
     account = _account(account)
     if account is None:
@@ -280,16 +282,31 @@ def sync_avito(account: dict | None = None) -> dict:
 
     seen: set[str] = set()
     saved = 0
+    # Что именно вернул Avito по возвратам — видно на странице возвратов.
+    returns_seen: dict[str, int] = {}
     try:
         orders = client.orders_all(statuses=list(avito.SYNC_STATUSES), date_from=date_from)
     except AvitoError as exc:
         log.warning("Заказы Avito недоступны: %s", exc)
         raise
-    if orders:
+
+    keep = []
+    for raw in orders:
+        if raw.get("status") != avito.STATUS_ON_RETURN:
+            keep.append(raw)
+            continue
+        return_status = ((raw.get("returnPolicy") or {}).get("returnStatus")) or "—"
+        returns_seen[return_status] = returns_seen.get(return_status, 0) + 1
+        # Забрать можно только то, что доехало до пункта выдачи.
+        if return_status == avito.RETURN_READY:
+            keep.append(raw)
+
+    if keep:
         with db.write() as conn:
-            for raw in orders:
+            for raw in keep:
                 seen.add(store.upsert_avito_order(conn, account_id, raw))
                 saved += 1
+    db.kv_set(f"avito_returns_statuses:{account_id}", json.dumps(returns_seen, ensure_ascii=False))
 
     # Заказ ушёл из рабочих статусов — Avito его больше не отдаёт, убираем и мы.
     stale = [
@@ -310,11 +327,14 @@ def sync_avito(account: dict | None = None) -> dict:
             )
     result = {"avito": saved}
     ready = db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? AND return_status = ?",
-        (account_id, avito.STATUS_ON_RETURN, avito.RETURN_READY),
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+        (account_id, avito.STATUS_ON_RETURN),
     )["c"]
     if ready:
         result["avito_returns"] = ready
+    skipped = sum(count for code, count in returns_seen.items() if code != avito.RETURN_READY)
+    if skipped:
+        result["avito_returns_skipped"] = skipped
     if stale:
         result["avito_gone"] = len(stale)
     return result

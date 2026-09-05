@@ -6,7 +6,6 @@
   <div class="row between no-print">
     <div class="row" style="gap:28px">
       <div class="stat"><div class="muted small">Заберите заказ</div><div class="value">{{ totals.ready }}</div></div>
-      <div class="stat"><div class="muted small">В пути</div><div class="value muted">{{ totals.transit }}</div></div>
       <div class="stat"><div class="muted small">Забрано</div><div class="value muted">{{ totals.taken }}</div></div>
     </div>
     <div class="row">
@@ -16,8 +15,12 @@
   </div>
 
   <div class="small muted no-print" style="margin-top:10px">
-    Заказы, которые покупатель вернул. По умолчанию показаны те, что уже доехали и лежат
-    в пункте выдачи — их можно забирать. Пока возврат в пути, забирать нечего.
+    Возвраты, которые уже лежат в пункте выдачи, — только их и можно забрать.
+    {% if skipped %}
+      <br>При последней синхронизации Avito вернул и другие:
+      {% for label, count in skipped %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
+      — они в панель не попадают.
+    {% endif %}
   </div>
 
   <form class="row no-print" method="get" action="/avito/returns" style="margin-top:14px">
@@ -76,11 +79,7 @@
           {% if r.terminal_address %}<div class="muted">{{ r.terminal_address }}</div>{% endif %}
         </td>
         <td class="small">
-          {% if r.return_status == 'ready_to_pickup' %}
-            <span class="tag success">{{ r.return_label }}</span>
-          {% else %}
-            <span class="tag">{{ r.return_label }}</span>
-          {% endif %}
+          <span class="tag success">{{ r.return_label }}</span>
           {% if r.return_tracking %}<div class="muted mono">{{ r.return_tracking }}</div>{% endif %}
           {% if r.taken_at %}<div class="muted">Забрал: {{ r.taken_by }} {{ r.taken_at_local }}</div>{% endif %}
         </td>

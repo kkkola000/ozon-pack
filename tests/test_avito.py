@@ -3,6 +3,7 @@
 Проверяем главное требование: сборщик видит только «Подтвердите заказ» и
 «Отправьте заказ», а всё остальное панель не показывает и не хранит.
 """
+import json
 import re
 
 import pytest
@@ -240,38 +241,68 @@ def returns_of(account):
     )
 
 
-def test_returns_are_loaded_with_their_status(avito_account):
+def test_only_returns_ready_for_pickup_are_stored(avito_account):
+    """Забрать можно только то, что доехало до пункта выдачи — остальное не храним."""
     rows = returns_of(avito_account)
     assert rows, "возвраты не загрузились"
-    statuses = {row["return_status"] for row in rows}
-    assert statuses <= {avito.RETURN_READY, avito.RETURN_IN_TRANSIT, avito.RETURN_SELF}
-    assert avito.RETURN_READY in statuses, "нет ни одного возврата, готового к выдаче"
+    assert {row["return_status"] for row in rows} == {avito.RETURN_READY}
+
+    # Avito отдал и возвраты в пути — панель их отбросила, но не молча.
+    client = avito.get_client(avito_account)
+    in_transit = [
+        o for o in client._orders.values()
+        if o["status"] == avito.STATUS_ON_RETURN
+        and (o.get("returnPolicy") or {}).get("returnStatus") == avito.RETURN_IN_TRANSIT
+    ]
+    assert in_transit, "в демо-данных нет возвратов в пути — проверять нечего"
+    for order in in_transit:
+        assert db.query_one(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
+            (avito_account["id"], order["id"]),
+        )["c"] == 0
+    histogram = json.loads(db.kv_get(f"avito_returns_statuses:{avito_account['id']}") or "{}")
+    assert histogram.get(avito.RETURN_IN_TRANSIT) == len(in_transit)
 
 
-def test_page_shows_only_ready_returns_by_default(client, avito_account):
+def test_return_that_left_pickup_point_disappears(avito_account):
+    """Возврат забрали, Avito сменил статус — из панели он уходит."""
+    row = returns_of(avito_account)[0]
+    client = avito.get_client(avito_account)
+    client._orders[row["id"]]["returnPolicy"]["returnStatus"] = avito.RETURN_IN_TRANSIT
+
+    sync.sync_avito(avito_account)
+    assert db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["c"] == 0
+
+
+def test_page_shows_returns_ready_for_pickup(client, avito_account):
     page = client.get("/avito/returns")
     assert page.status_code == 200
     assert "Заберите заказ" in page.text
-
-    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY]
-    transit = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_IN_TRANSIT]
-    for row in ready:
+    for row in returns_of(avito_account):
         assert (row["marketplace_id"] or row["id"]) in page.text
-    for row in transit:
-        assert (row["marketplace_id"] or row["id"]) not in page.text, "возврат в пути забирать нечего"
 
 
-def test_returns_in_transit_are_visible_on_request(client, avito_account):
-    transit = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_IN_TRANSIT]
-    if not transit:
-        pytest.skip("в демо-данных нет возвратов в пути")
-    page = client.get("/avito/returns?show=transit")
-    assert page.status_code == 200
-    assert (transit[0]["marketplace_id"] or transit[0]["id"]) in page.text
+def test_page_explains_what_was_skipped(client, avito_account):
+    """Отброшенные возвраты не исчезают молча — их количество видно на странице."""
+    page = client.get("/avito/returns")
+    assert "Возврат в пути" in page.text
+    assert "в панель не попадают" in page.text
+
+
+def test_no_filter_for_returns_in_transit(client):
+    """Возврата в пути в панели нет вовсе — и показать его нечем."""
+    page = client.get("/avito/returns")
+    assert 'value="transit"' not in page.text
+    assert 'value="all"' not in page.text
+    # Неизвестный фильтр не должен открывать лазейку — откатываемся к готовым.
+    assert client.get("/avito/returns?show=transit").status_code == 200
 
 
 def test_mark_return_taken(client, avito_account):
-    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY][0]
+    ready = returns_of(avito_account)[0]
     response = client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
     assert response.status_code == 200, response.text
 
@@ -287,7 +318,7 @@ def test_mark_return_taken(client, avito_account):
 
 def test_taken_mark_survives_sync(client, avito_account):
     """Отметка «забрали» локальная — синхронизация её не стирает."""
-    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY][0]
+    ready = returns_of(avito_account)[0]
     client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
     sync.sync_avito(avito_account)
     row = db.query_one(
