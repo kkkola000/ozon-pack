@@ -46,6 +46,9 @@ EVENT_LABELS = {
     "avito_confirm": "Заказ Avito подтверждён",
     "avito_ship": "Заказ Avito отправлен",
     "avito_label_print": "Печать этикетки Avito",
+    "avito_returns_print": "Печать листа возвратов Avito",
+    "avito_returns_taken": "Возвраты Avito забраны",
+    "avito_returns_untaken": "Отметка снята",
     "avito_error": "Ошибка Avito",
 }
 

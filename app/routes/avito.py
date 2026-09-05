@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
@@ -258,4 +260,139 @@ def api_avito_sync(request: Request, user: dict = Depends(current_user),
         "message": f"Загружено заказов: {result.get('avito', 0)}",
         "result": result,
         "counts": _counts(account),
+    }
+
+
+# ================================================================== возвраты
+# «Возврат: заберите заказ» — заказ вернулся и лежит в пункте выдачи.
+# Пока он едет обратно, забирать нечего, поэтому по умолчанию показываем
+# только готовые к получению.
+RETURN_VIEWS = {
+    "ready": ("Заберите заказ", "return_status = ? AND taken_at IS NULL", (avito.RETURN_READY,)),
+    "transit": ("Возврат в пути", "return_status = ?", (avito.RETURN_IN_TRANSIT,)),
+    "taken": ("Забранные", "taken_at IS NOT NULL", ()),
+    "all": ("Все возвраты", "1 = 1", ()),
+}
+
+
+def _list_returns(account: dict, show: str = "ready", search: str = "", limit: int = 500) -> list[dict]:
+    _title, condition, extra = RETURN_VIEWS.get(show, RETURN_VIEWS["ready"])
+    params: list = [account["id"], avito.STATUS_ON_RETURN, *extra]
+    sql = f"SELECT * FROM avito_orders WHERE account_id = ? AND status = ? AND {condition}"
+    if search:
+        like = f"%{search.strip()}%"
+        sql += """
+            AND (id LIKE ? OR marketplace_id LIKE ? OR return_tracking LIKE ? OR tracking_number LIKE ?
+                 OR buyer_name LIKE ?
+                 OR EXISTS (SELECT 1 FROM avito_order_items i
+                            WHERE i.account_id = avito_orders.account_id AND i.order_id = avito_orders.id
+                            AND (i.title LIKE ? OR i.avito_id LIKE ? OR i.seller_id LIKE ?)))
+        """
+        params += [like] * 8
+    sql += " ORDER BY (updated_at_api IS NULL), updated_at_api DESC LIMIT ?"
+    params.append(limit)
+    return [store.avito_view(row) for row in db.query(sql, params)]
+
+
+def _return_totals(account: dict) -> dict:
+    def count(condition: str, extra: tuple = ()) -> int:
+        return db.query_one(
+            f"SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? AND {condition}",
+            (account["id"], avito.STATUS_ON_RETURN, *extra),
+        )["c"]
+
+    return {
+        "ready": count("return_status = ? AND taken_at IS NULL", (avito.RETURN_READY,)),
+        "transit": count("return_status = ?", (avito.RETURN_IN_TRANSIT,)),
+        "taken": count("taken_at IS NOT NULL"),
+        "all": count("1 = 1"),
+    }
+
+
+@router.get("/avito/returns", response_class=HTMLResponse)
+def avito_returns_page(request: Request, show: str = "ready", q: str = "",
+                       user: dict = Depends(current_user),
+                       account: dict = Depends(require_avito_account)):
+    if show not in RETURN_VIEWS:
+        show = "ready"
+    return templates.TemplateResponse(
+        request,
+        "avito_returns.html",
+        {
+            "request": request,
+            "user": user,
+            "account": account,
+            "items": _list_returns(account, show, q),
+            "views": RETURN_VIEWS,
+            "totals": _return_totals(account),
+            "show": show,
+            "q": q,
+            "sync": sync.status(),
+            "csrf": request.state.session.get("csrf"),
+            "active_tab": "avito_returns",
+        },
+    )
+
+
+@router.get("/avito/returns/print", response_class=HTMLResponse)
+def avito_returns_print(request: Request, show: str = "ready", q: str = "",
+                        user: dict = Depends(current_user),
+                        account: dict = Depends(require_avito_account)):
+    """Лист для печати: сборщик идёт с ним забирать возвраты."""
+    if show not in RETURN_VIEWS:
+        show = "ready"
+    items = _list_returns(account, show, q)
+    now = datetime.now(timezone.utc)
+    db.log_event(
+        "avito_returns_print", account_id=account["id"], user=user,
+        message=f"Лист возвратов Avito: {len(items)} поз.",
+    )
+    if items:
+        placeholders = ",".join("?" for _ in items)
+        db.execute(
+            f"UPDATE avito_orders SET printed_at = ? WHERE account_id = ? AND id IN ({placeholders})",
+            [db.now_iso(), account["id"]] + [item["id"] for item in items],
+        )
+    return templates.TemplateResponse(
+        request,
+        "avito_returns_print.html",
+        {
+            "request": request,
+            "user": user,
+            "account": account,
+            "items": items,
+            "printed_at": now,
+            "show": show,
+        },
+    )
+
+
+@router.post("/api/avito/returns/taken")
+def api_avito_returns_taken(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+                            account: dict = Depends(require_avito_account)):
+    """Отметить возвраты как забранные. Отметка локальная, в Avito не уходит."""
+    check_csrf(request)
+    ids = [str(i) for i in (payload.get("ids") or []) if i]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Не выбрано ни одного возврата")
+    taken = bool(payload.get("taken", True))
+    placeholders = ",".join("?" for _ in ids)
+    with db.write() as conn:
+        conn.execute(
+            f"UPDATE avito_orders SET taken_at = ?, taken_by = ? WHERE account_id = ? AND status = ? "
+            f"AND id IN ({placeholders})",
+            [db.now_iso() if taken else None, user["login"] if taken else None,
+             account["id"], avito.STATUS_ON_RETURN] + ids,
+        )
+        db.log_event(
+            "avito_returns_taken" if taken else "avito_returns_untaken",
+            account_id=account["id"],
+            user=user,
+            message=f"{len(ids)} поз.",
+            payload={"ids": ids},
+            conn=conn,
+        )
+    return {
+        "status": "ok",
+        "message": ("Отмечено как забрано: " if taken else "Отметка снята: ") + str(len(ids)),
     }

@@ -207,6 +207,8 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     confirm_till    TEXT,
     ship_till       TEXT,
     delivery_date   TEXT,
+    return_status   TEXT,
+    return_tracking TEXT,
     price           REAL,
     total           REAL,
     delivery_price  REAL,
@@ -224,11 +226,14 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     shipped_by      TEXT,
     printed_at      TEXT,
     print_count     INTEGER NOT NULL DEFAULT 0,
+    taken_at        TEXT,
+    taken_by        TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_avito_status ON avito_orders(account_id, status);
+CREATE INDEX IF NOT EXISTS idx_avito_return ON avito_orders(account_id, return_status);
 
 CREATE TABLE IF NOT EXISTS avito_order_items (
     account_id INTEGER NOT NULL,
@@ -367,6 +372,51 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
 ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "returns")
 
 
+def _schema_columns(table: str) -> list[tuple[str, str]]:
+    """Колонки таблицы из SCHEMA: [(имя, остальное определение)]."""
+    body = create_sql(table)
+    body = body[body.index("(") + 1 : body.rindex(")")]
+    parts, depth, current = [], 0, ""
+    for char in body:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += char
+    parts.append(current)
+
+    columns = []
+    for part in parts:
+        piece = part.strip()
+        if not piece or piece.upper().startswith(("PRIMARY KEY", "FOREIGN KEY", "UNIQUE", "CHECK", "--")):
+            continue
+        name, _, rest = piece.partition(" ")
+        columns.append((name, rest.strip()))
+    return columns
+
+
+def _add_missing_columns(conn: sqlite3.Connection, table: str) -> None:
+    """Дописать колонки, появившиеся в схеме позже самой таблицы."""
+    if not _table_exists(conn, table):
+        return
+    existing = set(_columns(conn, table))
+    for name, definition in _schema_columns(table):
+        if name in existing:
+            continue
+        # NOT NULL без DEFAULT ALTER TABLE не примет — такие колонки требуют
+        # перестройки таблицы, а её делаем отдельно и осознанно.
+        upper = definition.upper()
+        if "NOT NULL" in upper and "DEFAULT" not in upper:
+            log.warning("Колонку %s.%s нельзя добавить на месте", table, name)
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        log.info("В таблицу %s добавлена колонка %s", table, name)
+
+
 def _default_account_id(conn: sqlite3.Connection) -> int:
     """Кабинет по умолчанию: в него попадают данные, накопленные до обновления."""
     row = conn.execute("SELECT id FROM accounts ORDER BY sort, id LIMIT 1").fetchone()
@@ -428,6 +478,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if _table_exists(conn, table) and "account_id" not in _columns(conn, table):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER")
             conn.execute(f"UPDATE {table} SET account_id = ?", (account_id,))
+
+    # Новые колонки в уже существующих таблицах (например, возвраты Avito).
+    for table in ("avito_orders", "avito_order_items", "postings", "returns", "products"):
+        _add_missing_columns(conn, table)
 
 
 def init_db() -> None:

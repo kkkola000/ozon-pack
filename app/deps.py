@@ -95,7 +95,8 @@ def nav_counters(request: Request) -> dict:
 
     account = current_account(request)
     if not account:
-        return {"packaging": 0, "deliver": 0, "returns": 0, "avito_confirm": 0, "avito_ship": 0}
+        return {"packaging": 0, "deliver": 0, "returns": 0, "avito_confirm": 0, "avito_ship": 0,
+                "avito_returns": 0}
     account_id = account["id"]
 
     def count(sql: str, params: tuple = ()) -> int:
@@ -115,6 +116,11 @@ def nav_counters(request: Request) -> dict:
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'",
                 (account_id,),
             ),
+            "avito_returns": count(
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return' "
+                "AND return_status = 'ready_to_pickup' AND taken_at IS NULL",
+                (account_id,),
+            ),
         }
     return {
         "packaging": count(
@@ -132,6 +138,7 @@ def nav_counters(request: Request) -> dict:
         ),
         "avito_confirm": 0,
         "avito_ship": 0,
+        "avito_returns": 0,
     }
 
 

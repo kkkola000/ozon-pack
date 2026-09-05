@@ -429,12 +429,13 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
     terminal = delivery.get("terminalInfo") or {}
     prices = raw.get("prices") or {}
     schedules = raw.get("schedules") or {}
+    return_policy = raw.get("returnPolicy") or {}
     items = raw.get("items") or []
     actions = [a.get("name") for a in (raw.get("availableActions") or []) if a.get("name")]
 
     now = db.now_iso()
     existing = conn.execute(
-        "SELECT first_seen_at, local_state FROM avito_orders WHERE account_id = ? AND id = ?", (account_id, order_id)
+        "SELECT first_seen_at FROM avito_orders WHERE account_id = ? AND id = ?", (account_id, order_id)
     ).fetchone()
 
     conn.execute(
@@ -442,9 +443,10 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
         INSERT INTO avito_orders (
             account_id, id, marketplace_id, status, service_type, service_name, dispatch_number, tracking_number,
             terminal_code, terminal_address, buyer_name, buyer_phone, confirm_till, ship_till, delivery_date,
+            return_status, return_tracking,
             price, total, delivery_price, commission, items_count, positions_count, actions,
             created_at_api, updated_at_api, raw, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             marketplace_id = excluded.marketplace_id, status = excluded.status,
             service_type = excluded.service_type, service_name = excluded.service_name,
@@ -452,7 +454,8 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
             terminal_code = excluded.terminal_code, terminal_address = excluded.terminal_address,
             buyer_name = excluded.buyer_name, buyer_phone = excluded.buyer_phone,
             confirm_till = excluded.confirm_till, ship_till = excluded.ship_till,
-            delivery_date = excluded.delivery_date, price = excluded.price, total = excluded.total,
+            delivery_date = excluded.delivery_date, return_status = excluded.return_status,
+            return_tracking = excluded.return_tracking, price = excluded.price, total = excluded.total,
             delivery_price = excluded.delivery_price, commission = excluded.commission,
             items_count = excluded.items_count, positions_count = excluded.positions_count,
             actions = excluded.actions, created_at_api = excluded.created_at_api,
@@ -474,6 +477,8 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
             _dt(schedules.get("confirmTill")),
             _dt(schedules.get("shipTill")),
             _dt(schedules.get("deliveryDate")) or _dt(schedules.get("deliveryDateMax")),
+            _text(return_policy.get("returnStatus")),
+            _text(return_policy.get("trackingNumber")),
             _num(prices.get("price")),
             _num(prices.get("total")),
             _num(prices.get("delivery")),
@@ -529,12 +534,15 @@ def avito_items(account_id: int, order_id: str) -> list[dict]:
 
 def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     """Строка БД -> объект для шаблона: подписи статуса, срочность, действия."""
-    from .avito import SERVICE_LABELS, STATUS_LABELS
+    from .avito import RETURN_STATUS_LABELS, SERVICE_LABELS, STATUS_LABELS
 
     data = dict(row)
     data.pop("raw", None)
     status = data.get("status") or ""
     data["status_label"] = STATUS_LABELS.get(status, status)
+    return_status = data.get("return_status") or ""
+    data["return_label"] = RETURN_STATUS_LABELS.get(return_status, return_status or "—")
+    data["taken_at_local"] = local_time(data.get("taken_at")) if data.get("taken_at") else ""
     data["service_label"] = SERVICE_LABELS.get(data.get("service_type") or "", data.get("service_type") or "")
     try:
         data["actions"] = json.loads(data.get("actions") or "[]")

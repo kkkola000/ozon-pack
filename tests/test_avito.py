@@ -48,7 +48,9 @@ def test_only_work_statuses_are_stored(avito_account):
         "SELECT DISTINCT status FROM avito_orders WHERE account_id = ?", (avito_account["id"],)
     )}
     assert statuses
-    assert statuses <= set(avito.WORK_STATUSES), f"лишние статусы в панели: {statuses}"
+    assert statuses <= set(avito.SYNC_STATUSES), f"лишние статусы в панели: {statuses}"
+    for gone in (avito.STATUS_IN_TRANSIT, avito.STATUS_DELIVERED, avito.STATUS_CLOSED, avito.STATUS_CANCELED):
+        assert gone not in statuses
 
 
 def test_order_items_are_saved(avito_account):
@@ -228,3 +230,82 @@ def test_one_broken_cabinet_does_not_stop_others(avito_account, monkeypatch):
     result = sync.sync_all()
     assert result.get("avito"), "заказы Avito должны загрузиться несмотря на сбой Ozon"
     assert result.get("errors")
+
+
+# ------------------------------------------------------------------ возвраты
+def returns_of(account):
+    return db.query(
+        "SELECT * FROM avito_orders WHERE account_id = ? AND status = ?",
+        (account["id"], avito.STATUS_ON_RETURN),
+    )
+
+
+def test_returns_are_loaded_with_their_status(avito_account):
+    rows = returns_of(avito_account)
+    assert rows, "возвраты не загрузились"
+    statuses = {row["return_status"] for row in rows}
+    assert statuses <= {avito.RETURN_READY, avito.RETURN_IN_TRANSIT, avito.RETURN_SELF}
+    assert avito.RETURN_READY in statuses, "нет ни одного возврата, готового к выдаче"
+
+
+def test_page_shows_only_ready_returns_by_default(client, avito_account):
+    page = client.get("/avito/returns")
+    assert page.status_code == 200
+    assert "Заберите заказ" in page.text
+
+    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY]
+    transit = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_IN_TRANSIT]
+    for row in ready:
+        assert (row["marketplace_id"] or row["id"]) in page.text
+    for row in transit:
+        assert (row["marketplace_id"] or row["id"]) not in page.text, "возврат в пути забирать нечего"
+
+
+def test_returns_in_transit_are_visible_on_request(client, avito_account):
+    transit = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_IN_TRANSIT]
+    if not transit:
+        pytest.skip("в демо-данных нет возвратов в пути")
+    page = client.get("/avito/returns?show=transit")
+    assert page.status_code == 200
+    assert (transit[0]["marketplace_id"] or transit[0]["id"]) in page.text
+
+
+def test_mark_return_taken(client, avito_account):
+    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY][0]
+    response = client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
+    assert response.status_code == 200, response.text
+
+    row = db.query_one(
+        "SELECT taken_at, taken_by FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], ready["id"]),
+    )
+    assert row["taken_at"] and row["taken_by"] == "admin"
+    # Забранный возврат уходит из списка «заберите заказ»
+    assert (ready["marketplace_id"] or ready["id"]) not in client.get("/avito/returns").text
+    assert (ready["marketplace_id"] or ready["id"]) in client.get("/avito/returns?show=taken").text
+
+
+def test_taken_mark_survives_sync(client, avito_account):
+    """Отметка «забрали» локальная — синхронизация её не стирает."""
+    ready = [r for r in returns_of(avito_account) if r["return_status"] == avito.RETURN_READY][0]
+    client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
+    sync.sync_avito(avito_account)
+    row = db.query_one(
+        "SELECT taken_at FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], ready["id"]),
+    )
+    assert row["taken_at"], "отметка пропала после синхронизации"
+
+
+def test_returns_print_sheet(client, avito_account):
+    page = client.get("/avito/returns/print")
+    assert page.status_code == 200
+    assert "Возвраты Avito" in page.text
+    assert "Принял (сборщик)" in page.text
+    assert db.query_one("SELECT COUNT(*) AS c FROM events WHERE kind = 'avito_returns_print'")["c"] == 1
+
+
+def test_returns_section_is_closed_for_ozon_cabinet(client):
+    ozon_account = accounts.all_accounts()[0]
+    client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/pack"})
+    assert client.get("/avito/returns").status_code == 409

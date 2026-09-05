@@ -41,6 +41,10 @@ STATUS_CLOSED = "closed"
 
 # Сборщика касаются только два: подтвердить и отправить.
 WORK_STATUSES = (STATUS_ON_CONFIRMATION, STATUS_READY_TO_SHIP)
+# Плюс возвраты: заказ на обратном пути, его надо забрать из пункта выдачи.
+RETURN_STATUSES = (STATUS_ON_RETURN,)
+# Всё, что панель вообще запрашивает у Avito.
+SYNC_STATUSES = WORK_STATUSES + RETURN_STATUSES
 
 STATUS_LABELS = {
     STATUS_ON_CONFIRMATION: "Подтвердите заказ",
@@ -51,6 +55,17 @@ STATUS_LABELS = {
     STATUS_ON_RETURN: "На возврате",
     STATUS_IN_DISPUTE: "Спор",
     STATUS_CLOSED: "Закрыт",
+}
+
+# returnPolicy.returnStatus из модели заказа.
+RETURN_READY = "ready_to_pickup"
+RETURN_IN_TRANSIT = "in_transit"
+RETURN_SELF = "self_return"
+
+RETURN_STATUS_LABELS = {
+    RETURN_READY: "Заберите заказ",
+    RETURN_IN_TRANSIT: "Возврат в пути",
+    RETURN_SELF: "Возврат забираете сами",
 }
 
 SERVICE_LABELS = {
@@ -335,15 +350,17 @@ class DemoAvitoClient(AvitoClient):
 
     def _generate(self) -> None:
         now = datetime.now(timezone.utc)
-        for index in range(9):
+        for index in range(12):
             order = self._make_order(index, now)
             self._orders[order["id"]] = order
 
     def _make_order(self, index: int, now: datetime) -> dict:
         rnd = self._rnd
         status = STATUS_ON_CONFIRMATION if index % 2 == 0 else STATUS_READY_TO_SHIP
-        if index >= 7:
+        if 7 <= index < 9:
             status = rnd.choice([STATUS_IN_TRANSIT, STATUS_DELIVERED, STATUS_CLOSED])
+        elif index >= 9:
+            status = STATUS_ON_RETURN
         service_type, service_name = DEMO_SERVICES[index % len(DEMO_SERVICES)]
         positions = rnd.randint(1, 3)
         items = []
@@ -363,6 +380,14 @@ class DemoAvitoClient(AvitoClient):
         total = sum(item["prices"]["total"] for item in items)
         buyer_name, buyer_phone = DEMO_BUYERS[index % len(DEMO_BUYERS)]
         created = now - timedelta(hours=rnd.randint(1, 40))
+        return_policy = None
+        if status == STATUS_ON_RETURN:
+            # Первый — уже в пункте выдачи, остальные ещё едут.
+            ready = index == 9 or rnd.random() < 0.5
+            return_policy = {
+                "returnStatus": RETURN_READY if ready else RETURN_IN_TRANSIT,
+                "trackingNumber": f"RT{index:011d}",
+            }
         actions = []
         if status == STATUS_ON_CONFIRMATION:
             actions = [{"name": "confirm", "required": True}, {"name": "reject", "required": False}]
@@ -390,6 +415,7 @@ class DemoAvitoClient(AvitoClient):
                 else None,
             },
             "items": items,
+            "returnPolicy": return_policy,
             "prices": {
                 "price": total,
                 "total": round(total * 0.93, 2),

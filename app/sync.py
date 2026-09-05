@@ -265,10 +265,11 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
 
 
 def sync_avito(account: dict | None = None) -> dict:
-    """Заказы Avito в рабочих статусах: «ожидает подтверждения» и «ждёт отправки».
+    """Заказы Avito, с которыми сборщику надо что-то сделать.
 
-    Остальные статусы сборщику не нужны, поэтому не запрашиваются и не хранятся:
-    заказ, уехавший в «в пути» или «доставлен», из панели просто исчезает.
+    Это три статуса: «ожидает подтверждения», «ждёт отправки» и «на возврате».
+    Остальные не запрашиваются и не хранятся: заказ, уехавший в «в пути» или
+    «доставлен», из панели просто исчезает.
     """
     account = _account(account)
     if account is None:
@@ -280,7 +281,7 @@ def sync_avito(account: dict | None = None) -> dict:
     seen: set[str] = set()
     saved = 0
     try:
-        orders = client.orders_all(statuses=list(avito.WORK_STATUSES), date_from=date_from)
+        orders = client.orders_all(statuses=list(avito.SYNC_STATUSES), date_from=date_from)
     except AvitoError as exc:
         log.warning("Заказы Avito недоступны: %s", exc)
         raise
@@ -308,6 +309,12 @@ def sync_avito(account: dict | None = None) -> dict:
                 [account_id] + stale,
             )
     result = {"avito": saved}
+    ready = db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? AND return_status = ?",
+        (account_id, avito.STATUS_ON_RETURN, avito.RETURN_READY),
+    )["c"]
+    if ready:
+        result["avito_returns"] = ready
     if stale:
         result["avito_gone"] = len(stale)
     return result

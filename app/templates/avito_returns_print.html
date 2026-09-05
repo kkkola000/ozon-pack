@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Возвраты Avito · {{ printed_at.strftime('%d.%m.%Y') }}</title>
+  <style>
+    body { font: 12px/1.35 Arial, sans-serif; color: #000; background: #fff; margin: 14px; }
+    h1 { font-size: 17px; margin: 0 0 4px; }
+    .head { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 10px; }
+    .meta { font-size: 11px; color: #333; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #999; padding: 4px 6px; vertical-align: top; }
+    th { background: #eee; font-size: 10px; text-transform: uppercase; }
+    tr { page-break-inside: avoid; }
+    .num { width: 26px; text-align: center; }
+    .check { width: 34px; text-align: center; font-size: 17px; }
+    .qty { width: 42px; text-align: center; font-weight: 700; }
+    .mono { font-family: Consolas, monospace; }
+    .bc svg { display: block; }
+    .sign { margin-top: 18px; font-size: 12px; display: flex; gap: 40px; }
+    .sign div { flex: 1; border-top: 1px solid #000; padding-top: 4px; }
+    @media print { .no-print { display: none; } body { margin: 6mm; } }
+    @page { size: A4; margin: 8mm; }
+  </style>
+</head>
+<body>
+  <div class="head">
+    <div>
+      <h1>Возвраты Avito · {{ account.title }}</h1>
+      <div class="meta">
+        Заказов: <b>{{ items | length }}</b> ·
+        Штук: <b>{{ items | sum(attribute='items_count') }}</b> ·
+        Сформировал: {{ user.login }} ·
+        {{ printed_at.strftime('%d.%m.%Y %H:%M') }} UTC
+      </div>
+    </div>
+    <button class="no-print" onclick="window.print()">Печать</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="num">№</th>
+        <th style="width:150px">Заказ</th>
+        <th style="width:120px">Трек возврата</th>
+        <th>Товар</th>
+        <th class="qty">Кол-во</th>
+        <th style="width:150px">Где забрать</th>
+        <th style="width:110px">Возврат</th>
+        <th class="check">✓</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in items %}
+      <tr>
+        <td class="num">{{ loop.index }}</td>
+        <td class="mono">{{ r.marketplace_id or r.id }}</td>
+        <td>
+          {% if r.return_tracking %}
+            <div class="bc" data-barcode="{{ r.return_tracking }}" data-barcode-height="26" data-barcode-module="0.8"></div>
+            <div class="mono" style="font-size:9px">{{ r.return_tracking }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% for item in r['items'] %}
+            <div>{{ item.quantity }} × {{ item.title or 'Без названия' }}
+              <span style="font-size:10px;color:#444">{{ item.seller_id or item.avito_id }}</span>
+            </div>
+          {% endfor %}
+        </td>
+        <td class="qty">{{ r.items_count }}</td>
+        <td style="font-size:10px">
+          {{ r.service_label }}
+          {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
+        </td>
+        <td style="font-size:10px">{{ r.return_label }}</td>
+        <td class="check">☐</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="sign">
+    <div>Выдал (ПВЗ): ______________________ / подпись</div>
+    <div>Принял (сборщик): __________________ / подпись</div>
+  </div>
+
+  <script src="/static/code128.js?v={{ static_version() }}"></script>
+  <script>
+    renderBarcodes();
+    window.addEventListener('load', () => setTimeout(() => window.print(), 350));
+  </script>
+</body>
+</html>

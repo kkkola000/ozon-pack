@@ -31,6 +31,9 @@
         {% if c.avito_confirm %}<span class="badge warn" title="Подтвердите заказ">{{ c.avito_confirm }}</span>{% endif %}
         {% if c.avito_ship %}<span class="badge accent" title="Отправьте заказ">{{ c.avito_ship }}</span>{% endif %}
       </a>
+      <a href="/avito/returns" class="{{ 'active' if active_tab == 'avito_returns' }}">
+        Возвраты{% if c.avito_returns %}<span class="badge" title="Заберите заказ">{{ c.avito_returns }}</span>{% endif %}
+      </a>
     {% else %}
       <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
       <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
