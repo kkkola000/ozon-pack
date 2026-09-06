@@ -226,3 +226,22 @@ def test_vpn_only_manual_subnet_wins_over_wireguard_config(tmp_path, sandbox):
     rule = snippet.read_text(encoding="utf-8")
     assert "allow 10.8.0.0/24;" in rule
     assert "10.9.0.0/24" not in rule
+
+
+def test_setup_help_documents_vpn_only():
+    proc = subprocess.run(
+        ["bash", str(DEPLOY / "setup.sh"), "--help"], capture_output=True, text=True
+    )
+    assert proc.returncode == 0
+    assert "--vpn-only" in proc.stdout
+
+
+def test_setup_refuses_vpn_only_without_nginx():
+    """Без HTTPS нет и nginx — закрывать доступ нечем, лучше сказать сразу."""
+    proc = subprocess.run(
+        ["bash", str(DEPLOY / "setup.sh"), "--no-ssl", "--vpn-only"],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode != 0
+    assert "несовместим" in proc.stdout + proc.stderr

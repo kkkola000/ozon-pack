@@ -24,6 +24,8 @@ OZON_API_KEY=${OZON_API_KEY:-}
 ADMIN_LOGIN=${ADMIN_LOGIN:-admin}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
 TLS_MODE=""          # domain | ip | self-signed | none
+VPN_ONLY=0
+VPN_SUBNET=""
 EXTRA_SSL=()
 EXTRA_INSTALL=()
 
@@ -42,6 +44,8 @@ usage() {
   --ip               сертификат на IP-адрес, если домена нет (срок 160 часов)
   --self-signed      самоподписанный сертификат (браузер будет предупреждать)
   --no-ssl           только панель, без HTTPS
+  --vpn-only [СЕТЬ]  сразу закрыть панель снаружи: пускать только из сети
+                     WireGuard. Без значения сеть ищется сама (wg0)
   --port N           порт панели за nginx (по умолчанию 8080)
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   --branch NAME      ветка репозитория
@@ -51,9 +55,15 @@ usage() {
 Ключи Ozon можно передать переменными окружения (sudo -E) или ввести потом
 в самой панели: Настройки -> Ключи Seller API.
 
-Пример:
-  curl -fsSL <адрес>/deploy/setup.sh | sudo bash -s -- \
-    --domain panel.example.com --email admin@example.com
+Примеры
+  обычная установка
+    curl -fsSL <адрес>/deploy/setup.sh | sudo bash -s -- \
+      --domain panel.example.com --email admin@example.com
+
+  установка сразу закрытой панели (вход только через WireGuard)
+    curl -fsSL <адрес>/deploy/setup.sh | sudo bash -s -- \
+      --domain panel.example.com --email admin@example.com \
+      --vpn-only 10.8.0.0/24
 USAGE
   exit 0
 }
@@ -65,6 +75,9 @@ while [ $# -gt 0 ]; do
     --ip) TLS_MODE=ip; shift ;;
     --self-signed) TLS_MODE=self-signed; shift ;;
     --no-ssl) TLS_MODE=none; shift ;;
+    --vpn-only)
+      VPN_ONLY=1
+      if [ "${2:-}" ] && [ "${2#-}" = "$2" ]; then VPN_SUBNET=$2; shift 2; else shift; fi ;;
     --port) PORT=$2; shift 2 ;;
     --dir) APP_DIR=$2; shift 2 ;;
     --branch) BRANCH=$2; shift 2 ;;
@@ -75,6 +88,11 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "Запустите с правами root: sudo bash $0 ..."
+
+STEPS=2
+[ "$VPN_ONLY" = "1" ] && STEPS=3
+[ "$VPN_ONLY" = "1" ] && [ "$TLS_MODE" = "none" ] &&
+  die "--vpn-only несовместим с --no-ssl: закрывать доступ нечем, панель работает без nginx"
 
 # Домен можно ввести с терминала, даже если скрипт пришёл через curl | bash
 if [ -z "$TLS_MODE" ]; then
@@ -122,7 +140,7 @@ fetch_script() {
   echo "$target"
 }
 
-head "Шаг 1 из 2 — установка панели"
+head "Шаг 1 из $STEPS — установка панели"
 INSTALL_SH=$(fetch_script install.sh)
 INSTALL_ARGS=(--yes --port "$PORT" --dir "$APP_DIR" --repo "$REPO_URL")
 [ "$BRANCH" != "HEAD" ] && INSTALL_ARGS+=(--branch "$BRANCH")
@@ -140,7 +158,7 @@ if [ "$TLS_MODE" = "none" ]; then
   exit 0
 fi
 
-head "Шаг 2 из 2 — HTTPS"
+head "Шаг 2 из $STEPS — HTTPS"
 # После установки скрипт лежит рядом с кодом и точно соответствует его версии
 if [ -f "$APP_DIR/deploy/ssl.sh" ]; then
   SSL_SH="$APP_DIR/deploy/ssl.sh"
@@ -158,6 +176,30 @@ esac
 
 SSL_OK=1
 bash "$SSL_SH" "${SSL_ARGS[@]}" || SSL_OK=0
+
+# ------------------------------------------------------------------ доступ только по VPN
+VPN_OK=0
+if [ "$VPN_ONLY" = "1" ]; then
+  head "Шаг 3 из $STEPS — доступ только через VPN"
+  if [ "$SSL_OK" != "1" ]; then
+    warn "HTTPS не настроен, значит и nginx нет — закрывать доступ нечем."
+    warn "Разберитесь с шагом 2, затем: sudo bash $APP_DIR/deploy/vpn-only.sh"
+  else
+    if [ -f "$APP_DIR/deploy/vpn-only.sh" ]; then
+      VPN_SH="$APP_DIR/deploy/vpn-only.sh"
+    else
+      VPN_SH=$(fetch_script vpn-only.sh)
+    fi
+    VPN_ARGS=(--yes)
+    [ -n "$VPN_SUBNET" ] && VPN_ARGS+=(--subnet "$VPN_SUBNET")
+    if bash "$VPN_SH" "${VPN_ARGS[@]}"; then
+      VPN_OK=1
+    else
+      warn "Панель установлена и работает, но снаружи пока открыта."
+      warn "Укажите сеть туннеля вручную: sudo bash $APP_DIR/deploy/vpn-only.sh --subnet 10.8.0.0/24"
+    fi
+  fi
+fi
 
 # ------------------------------------------------------------------ итог
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -186,7 +228,11 @@ if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ]; then
   printf '\n%sДальше:%s добавьте кабинеты и ключи: Настройки -> Кабинеты.\n' "$BOLD" "$OFF"
   printf 'Пока ключей нет, панель ничего не загружает.\n'
 fi
-if [ "$SSL_OK" = "1" ]; then
+if [ "$VPN_OK" = "1" ]; then
+  printf '\n%sПанель закрыта снаружи%s — открывается только с включённым VPN.\n' "$BOLD" "$OFF"
+  printf '  Состояние и кто заходил: sudo bash %s/deploy/vpn-only.sh --status\n' "$APP_DIR"
+  printf '  Открыть для всех:        sudo bash %s/deploy/vpn-only.sh --off\n' "$APP_DIR"
+elif [ "$SSL_OK" = "1" ]; then
   printf '\n%sЗакрыть панель снаружи%s (если есть WireGuard): sudo bash %s/deploy/vpn-only.sh\n' \
     "$BOLD" "$OFF" "$APP_DIR"
 fi
