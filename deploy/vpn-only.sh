@@ -20,6 +20,9 @@ WG_DIR=${WG_DIR:-/etc/wireguard}
 APP_DIR=${APP_DIR:-/opt/ozon-pack}
 SERVICE=${SERVICE:-ozon-pack}
 APP_PORT=${APP_PORT:-}
+# Сколько раз и с каким интервалом перечитывать, что слушает порт после правки.
+VERIFY_TRIES=${VERIFY_TRIES:-5}
+VERIFY_DELAY=${VERIFY_DELAY:-2}
 SUBNETS=()
 EXTRA=()
 MODE=on
@@ -156,29 +159,101 @@ wg_port() {
   echo "$port"
 }
 
-# Панель, поднятая не на localhost, открыта мимо nginx — правило её не закроет.
-check_direct_port() {
-  local port=$1 outside
-  command -v ss >/dev/null 2>&1 || return 0
-  outside=$(ss -ltnH 2>/dev/null | awk '{print $4}' |
-            grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true)
-  [ -n "$outside" ] || return 0
+# Адреса, на которых порт панели слушает не localhost. Пустой вывод — снаружи
+# к панели напрямую не подключиться. Код 2 — проверить нечем (нет ss).
+listening_outside() {
+  local port=$1
+  command -v ss >/dev/null 2>&1 || return 2
+  ss -ltnH 2>/dev/null | awk '{print $4}' |
+    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
+  return 0
+}
 
-  warn "Панель слушает не только localhost: $(echo "$outside" | tr '\n' ' ')"
-  warn "В неё можно зайти мимо nginx — по адресу сервера с портом $port."
-  if [ -f "$APP_DIR/.env" ] && systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"; then
-    if grep -q '^HOST=' "$APP_DIR/.env"; then
-      sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
-    else
-      echo "HOST=127.0.0.1" >> "$APP_DIR/.env"
-    fi
-    systemctl restart "$SERVICE" 2>/dev/null || true
-    sleep 2
-    info "исправлено: HOST=127.0.0.1 в $APP_DIR/.env, служба $SERVICE перезапущена"
+# Записать KEY=value в .env, не плодя повторяющихся строк.
+set_env_var() {
+  local file=$1 key=$2 value=$3
+  [ -f "$file" ] || return 1
+  if grep -q "^$key=" "$file"; then
+    sed -i "s#^$key=.*#$key=$value#" "$file"
   else
-    warn "Закройте вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапуск панели."
-    warn "Если панель в Docker — привяжите порт: ports: [\"127.0.0.1:$port:8080\"]"
+    printf '%s=%s\n' "$key" "$value" >> "$file"
   fi
+}
+
+panel_in_docker() {
+  command -v docker >/dev/null 2>&1 || return 1
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ozon-pack$'
+}
+
+panel_in_systemd() {
+  systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"
+}
+
+# Панель, поднятая не на localhost, открыта мимо nginx — правило её не закроет.
+# Возвращает 1, если прямой доступ остался: вызывающий обязан сказать об этом
+# вслух, а не отрапортовать об успехе.
+check_direct_port() {
+  local port=$1 outside="" probed=1
+
+  if ! outside=$(listening_outside "$port"); then
+    # Без ss не видно, какой адрес слушает панель. Закрываем вслепую: за nginx
+    # ей и положено быть на localhost, а промолчать здесь означало бы повторить
+    # прежнюю ошибку — считать непроверенное сделанным.
+    probed=0
+    warn "Не нашёл команду ss — не вижу, какой адрес слушает панель."
+    warn "Закрываю прямой доступ вслепую, результат придётся сверить руками."
+  elif [ -z "$outside" ]; then
+    return 0
+  else
+    warn "Панель слушает не только localhost: $(echo "$outside" | tr '\n' ' ')"
+    warn "В неё можно зайти мимо nginx — по адресу сервера с портом $port."
+  fi
+
+  if [ -f "$APP_DIR/.env" ] && panel_in_systemd; then
+    set_env_var "$APP_DIR/.env" HOST 127.0.0.1
+    info "в $APP_DIR/.env записано HOST=127.0.0.1, перезапускаю $SERVICE"
+    systemctl restart "$SERVICE" 2>/dev/null || true
+  elif [ -f "$APP_DIR/.env" ] && panel_in_docker; then
+    # Внутри контейнера панель всегда слушает 0.0.0.0, иначе опубликованный порт
+    # до неё не достучится. Снаружи её закрывает адрес публикации порта.
+    set_env_var "$APP_DIR/.env" BIND_ADDR 127.0.0.1
+    # nginx с хоста приходит в контейнер с адреса шлюза docker-сети, а не с
+    # 127.0.0.1: без этого X-Forwarded-For перестанет учитываться и в журнале
+    # окажется адрес моста вместо адреса сборщика.
+    set_env_var "$APP_DIR/.env" FORWARDED_ALLOW_IPS 172.16.0.0/12
+    info "в $APP_DIR/.env записано BIND_ADDR=127.0.0.1, пересоздаю контейнер"
+    if ! (cd "$APP_DIR" && docker compose up -d >/dev/null 2>&1); then
+      warn "docker compose up -d не отработал — выполните вручную в $APP_DIR"
+    fi
+  else
+    warn "Ни служба $SERVICE, ни контейнер ozon-pack не найдены."
+    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env"
+    warn "(в Docker — BIND_ADDR=127.0.0.1) и перезапустите панель."
+    return 1
+  fi
+
+  if [ "$probed" = "0" ]; then
+    warn "Проверить результат нечем. Сверьте сами:  sudo ss -ltnp | grep :$port"
+    warn "В выводе должен остаться только адрес 127.0.0.1."
+    return 0
+  fi
+
+  # На слово не верим: панель могла не перезапуститься, .env — оказаться не тем,
+  # а юнит — держать адрес захардкоженным. Перечитываем, что слушает порт.
+  local attempt=0
+  while [ "$attempt" -lt "$VERIFY_TRIES" ]; do
+    attempt=$((attempt + 1))
+    sleep "$VERIFY_DELAY"
+    outside=$(listening_outside "$port") || outside=""
+    [ -n "$outside" ] || break
+  done
+  if [ -n "$outside" ]; then
+    warn "${RED}Порт $port по-прежнему слушает $(echo "$outside" | tr '\n' ' ') — прямой доступ НЕ закрыт.${OFF}"
+    warn "Панель осталась доступна по адресу сервера в обход VPN."
+    warn "Посмотрите, кто держит порт:  sudo ss -ltnp | grep :$port"
+    return 1
+  fi
+  info "${GREEN}прямой доступ закрыт${OFF} — порт $port слушает только localhost"
   return 0
 }
 
@@ -215,11 +290,13 @@ site_config() {
 # В режиме --status ничего не меняем, только сообщаем.
 check_direct_port_note() {
   local port=$1 outside
-  command -v ss >/dev/null 2>&1 || return 0
-  outside=$(ss -ltnH 2>/dev/null | awk '{print $4}' |
-            grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true)
+  if ! outside=$(listening_outside "$port"); then
+    warn "нет команды ss — проверить прямой доступ к порту $port нечем"
+    return 0
+  fi
   if [ -n "$outside" ]; then
-    warn "панель слушает мимо nginx: $(echo "$outside" | tr '\n' ' ') — запустите скрипт без --status"
+    warn "${RED}панель слушает мимо nginx: $(echo "$outside" | tr '\n' ' ')${OFF}"
+    warn "в неё можно зайти по адресу сервера без VPN — запустите скрипт без --status"
   else
     info "панель слушает только localhost — снаружи только через nginx"
   fi
@@ -387,8 +464,9 @@ info "nginx перечитал конфигурацию"
 
 step "Проверка"
 PORT=$(app_port)
+DIRECT_OPEN=0
 if [ "$MODE" = "on" ]; then
-  check_direct_port "$PORT"
+  check_direct_port "$PORT" || DIRECT_OPEN=1
   check_firewall
 fi
 if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
@@ -401,6 +479,22 @@ if [ "$MODE" = "off" ]; then
   cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово: панель снова открыта со всех адресов.${OFF}
+SUMMARY
+elif [ "$DIRECT_OPEN" = "1" ]; then
+  cat <<SUMMARY
+
+${RED}${BOLD}Правило nginx включено, но прямой доступ к панели остался открыт.${OFF}
+  Через nginx (порты 80 и 443) пускаются только адреса из сети VPN, однако
+  сама панель по-прежнему слушает внешний адрес на порту $PORT — зайти в неё
+  можно в обход VPN, минуя это правило и https.
+
+  Что сделать:
+    служба systemd   HOST=127.0.0.1 в $APP_DIR/.env, затем
+                     sudo systemctl restart $SERVICE
+    Docker           BIND_ADDR=127.0.0.1 в $APP_DIR/.env, затем
+                     cd $APP_DIR && sudo docker compose up -d
+  Проверить:
+    sudo ss -ltnp | grep :$PORT      # адрес должен быть только 127.0.0.1
 SUMMARY
 else
   cat <<SUMMARY
@@ -420,3 +514,6 @@ ${YELLOW}Если панель не открывается и через VPN${OF
 SUMMARY
 fi
 echo
+# Ненулевой код, пока прямой доступ открыт: правило nginx стоит, но панель
+# всё ещё пускает мимо VPN, и молча считать это успехом нельзя.
+[ "$DIRECT_OPEN" = "0" ] || exit 1

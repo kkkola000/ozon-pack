@@ -296,3 +296,136 @@ def test_install_error_message_is_useful():
     assert proc.returncode != 0
     output = proc.stdout + proc.stderr
     assert "Команда: mkdir" in output
+
+
+# ---------------------------------------------------------------- прямой доступ
+# Панель ставится за nginx, но слушает она свой порт сама. Если этот порт открыт
+# наружу, в панель заходят по адресу сервера мимо VPN и мимо https — правило
+# nginx такой вход не видит. Раньше скрипты «закрывали» дыру, записывая HOST в
+# .env, но юнит systemd держал адрес захардкоженным, и правка ни на что не
+# влияла: оператору сообщали об успехе, а порт оставался открыт.
+
+def test_service_unit_takes_address_from_env():
+    """Адрес и порт службы — из .env, иначе HOST=127.0.0.1 ничего не изменит."""
+    unit = (DEPLOY / "ozon-pack.service").read_text(encoding="utf-8")
+    exec_line = [ln for ln in unit.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_line) == 1, unit
+    assert "--host ${HOST}" in exec_line[0], exec_line[0]
+    assert "--host 0.0.0.0" not in exec_line[0], "адрес снова захардкожен"
+    assert "--port ${PORT}" in exec_line[0], exec_line[0]
+
+    # Умолчания на случай отсутствующего .env, и он же подключён следом
+    assert "Environment=HOST=0.0.0.0" in unit
+    assert unit.index("Environment=HOST=") < unit.index("EnvironmentFile=")
+
+
+def test_install_does_not_patch_address_or_port_in_unit():
+    """install.sh правит юнит по каталогу и пользователю, но не по порту."""
+    text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    assert "s#--port 8080#" not in text, "порт снова подставляется в юнит"
+    assert "s#--host" not in text
+
+
+def test_install_leaves_port_closed_for_localhost_panel():
+    """Панели за nginx порт в ufw не открываем — правило вводило бы в заблуждение."""
+    text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    firewall = text[text.index('step "Файрвол"'):]
+    firewall = firewall[:firewall.index("\nfi\n")]
+    assert "127.0.0.1" in firewall, "порт открывается независимо от HOST"
+    assert 'ufw allow "$PORT"/tcp' in firewall
+
+
+def test_dockerfile_does_not_trust_forwarded_header_from_anyone():
+    """«*» позволял любому подделать свой IP заголовком X-Forwarded-For."""
+    text = (BASE_DIR / "Dockerfile").read_text(encoding="utf-8")
+    cmd = [ln for ln in text.splitlines() if ln.startswith("CMD ")]
+    assert len(cmd) == 1, text
+    assert "--forwarded-allow-ips" not in cmd[0], cmd[0]
+    assert '"*"' not in cmd[0], cmd[0]
+
+
+def test_compose_publishes_port_on_configurable_address():
+    """В Docker прямой доступ закрывается адресом публикации порта."""
+    text = (BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8080" in text
+    assert '- "8080:8080"' not in text
+
+
+def test_env_example_documents_access_variables():
+    text = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    assert re.search(r"^BIND_ADDR=", text, re.M)
+    assert re.search(r"^FORWARDED_ALLOW_IPS=127\.0\.0\.1$", text, re.M)
+
+
+@pytest.fixture
+def port_sandbox(tmp_path):
+    """Песочница, где ss показывает порт панели и слушается он снаружи.
+
+    ss отвечает по содержимому .env: пока в нём нет HOST=127.0.0.1, порт «висит»
+    на 0.0.0.0 — ровно как на сервере до правки.
+    """
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "nginx").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "curl").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "systemctl").write_text(
+        "#!/bin/sh\n"
+        'case "$1" in list-unit-files) echo "ozon-pack.service enabled enabled" ;; esac\n'
+        "exit 0\n"
+    )
+    (stub / "ss").write_text(
+        "#!/bin/sh\n"
+        'if grep -q "^HOST=127.0.0.1" "$APP_DIR/.env" 2>/dev/null; then\n'
+        '  echo "LISTEN 0 511 127.0.0.1:8080 0.0.0.0:*"\n'
+        "else\n"
+        '  echo "LISTEN 0 511 0.0.0.0:8080 0.0.0.0:*"\n'
+        "fi\n"
+    )
+    for name in ("nginx", "systemctl", "ss", "curl"):
+        os.chmod(stub / name, 0o755)
+    return stub
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_closes_direct_port_and_checks_it(tmp_path, port_sandbox):
+    """Скрипт пишет HOST=127.0.0.1 и убеждается, что порт действительно закрылся."""
+    env, _snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    env.update(VERIFY_TRIES="2", VERIFY_DELAY="0")
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\n", encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "HOST=127.0.0.1" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "прямой доступ закрыт" in proc.stdout
+    assert "панель доступна только через VPN" in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_reports_port_that_stays_open(tmp_path, port_sandbox):
+    """Порт остался открыт — это провал, а не «Готово»."""
+    env, _snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    env.update(VERIFY_TRIES="2", VERIFY_DELAY="0")
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\n", encoding="utf-8")
+    # Панель игнорирует .env — так вёл себя юнит с захардкоженным --host 0.0.0.0
+    (port_sandbox / "ss").write_text(
+        '#!/bin/sh\necho "LISTEN 0 511 0.0.0.0:8080 0.0.0.0:*"\n'
+    )
+    os.chmod(port_sandbox / "ss", 0o755)
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "прямой доступ НЕ закрыт" in proc.stdout
+    assert "панель доступна только через VPN" not in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_status_warns_about_open_port(tmp_path, port_sandbox):
+    """--status показывает открытый порт, но ничего не меняет."""
+    env, snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    snippet.write_text("allow 127.0.0.1;\nallow 10.8.0.0/24;\ndeny all;\n")
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\n", encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--status"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "панель слушает мимо nginx" in proc.stdout
+    assert "HOST=0.0.0.0" in (tmp_path / ".env").read_text(encoding="utf-8")

@@ -11,8 +11,16 @@ Type=simple
 User=ozon
 Group=ozon
 WorkingDirectory=/opt/ozon-pack
+# Умолчания на случай, если .env не завели: панель откроется по адресу сервера.
+# EnvironmentFile идёт следом, поэтому значения из .env перекрывают эти.
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=FORWARDED_ALLOW_IPS=127.0.0.1
 EnvironmentFile=/opt/ozon-pack/.env
-ExecStart=/opt/ozon-pack/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080 --proxy-headers
+# Адрес и порт берутся из .env: ssl.sh и vpn-only.sh закрывают прямой доступ,
+# выставляя там HOST=127.0.0.1. Захардкоженный адрес делал бы эту правку
+# бесполезной — панель продолжала бы слушать все интерфейсы.
+ExecStart=/opt/ozon-pack/.venv/bin/uvicorn app.main:app --host ${HOST} --port ${PORT} --proxy-headers
 Restart=always
 RestartSec=5
 

@@ -374,26 +374,74 @@ write_nginx 1
 info "nginx слушает 443"
 
 # ------------------------------------------------------------------ закрываем прямой доступ
+# Адреса, на которых порт панели слушает не localhost. Пусто — снаружи напрямую
+# не подключиться. Код 2 — проверить нечем (нет ss).
+listening_outside() {
+  local port=$1
+  command -v ss >/dev/null 2>&1 || return 2
+  ss -ltnH 2>/dev/null | awk '{print $4}' |
+    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
+  return 0
+}
+
+# Записать KEY=value в .env, не плодя повторяющихся строк.
+set_env_var() {
+  local file=$1 key=$2 value=$3
+  [ -f "$file" ] || return 1
+  if grep -q "^$key=" "$file"; then
+    sed -i "s#^$key=.*#$key=$value#" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$file"
+  fi
+}
+
+DIRECT_OPEN=0
 if [ "$KEEP_OPEN" = "0" ]; then
   step "Панель закрывается от прямого доступа"
   if systemctl list-unit-files 2>/dev/null | grep -q "^$SERVICE.service"; then
-    if grep -q '^HOST=' "$APP_DIR/.env"; then
-      sed -i 's/^HOST=.*/HOST=127.0.0.1/' "$APP_DIR/.env"
-    else
-      echo "HOST=127.0.0.1" >> "$APP_DIR/.env"
-    fi
-    info "HOST=127.0.0.1 — снаружи панель доступна только через nginx"
+    set_env_var "$APP_DIR/.env" HOST 127.0.0.1
+    # nginx стучится с самого сервера, поэтому доверять X-Forwarded-For можно
+    # только ему. «*» тут означало бы, что адрес посетителя подделает кто угодно.
+    set_env_var "$APP_DIR/.env" FORWARDED_ALLOW_IPS 127.0.0.1
+    info "в $APP_DIR/.env записано HOST=127.0.0.1, перезапускаю $SERVICE"
     systemctl restart "$SERVICE"
   elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ozon-pack$'; then
     # В контейнере HOST=127.0.0.1 сделал бы панель недоступной и для nginx —
-    # прямой доступ там закрывается привязкой опубликованного порта.
-    warn "Панель работает в Docker — HOST в .env не меняем."
-    warn "Чтобы закрыть прямой доступ, в docker-compose.yml замените"
-    warn "  ports: [\"$APP_PORT:8080\"]  ->  ports: [\"127.0.0.1:$APP_PORT:8080\"]"
-    warn "и выполните: docker compose up -d"
+    # прямой доступ там закрывается адресом, на котором опубликован порт.
+    set_env_var "$APP_DIR/.env" BIND_ADDR 127.0.0.1
+    # С хоста nginx приходит в контейнер с адреса шлюза docker-сети, а не с
+    # 127.0.0.1: иначе в журнале окажется адрес моста вместо адреса сборщика.
+    set_env_var "$APP_DIR/.env" FORWARDED_ALLOW_IPS 172.16.0.0/12
+    info "BIND_ADDR=127.0.0.1 — порт контейнера публикуется только на localhost"
+    if ! (cd "$APP_DIR" && docker compose up -d >/dev/null 2>&1); then
+      warn "docker compose up -d не отработал — выполните вручную в $APP_DIR"
+    fi
   else
     warn "Служба $SERVICE не найдена и контейнер не запущен."
-    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env и перезапуск панели."
+    warn "Закройте прямой доступ вручную: HOST=127.0.0.1 в $APP_DIR/.env"
+    warn "(в Docker — BIND_ADDR=127.0.0.1) и перезапустите панель."
+    DIRECT_OPEN=1
+  fi
+
+  # Проверяем, а не рапортуем: правка .env бесполезна, если панель её не читает.
+  if [ "$DIRECT_OPEN" = "0" ]; then
+    OUTSIDE=""
+    for _ in 1 2 3 4 5; do
+      sleep 2
+      OUTSIDE=$(listening_outside "$APP_PORT") || OUTSIDE="?"
+      [ -n "$OUTSIDE" ] && [ "$OUTSIDE" != "?" ] || break
+    done
+    if [ "$OUTSIDE" = "?" ]; then
+      warn "Не нашёл команду ss — проверить прямой доступ нечем, сверьте вручную:"
+      warn "  sudo ss -ltnp | grep :$APP_PORT"
+    elif [ -n "$OUTSIDE" ]; then
+      DIRECT_OPEN=1
+      warn "${RED}Порт $APP_PORT по-прежнему слушает $(echo "$OUTSIDE" | tr '\n' ' ').${OFF}"
+      warn "Панель осталась доступна по адресу сервера в обход nginx и https."
+      warn "Посмотрите, кто держит порт:  sudo ss -ltnp | grep :$APP_PORT"
+    else
+      info "${GREEN}прямой доступ закрыт${OFF} — порт $APP_PORT слушает только localhost"
+    fi
   fi
 fi
 
@@ -458,6 +506,24 @@ else
   cat <<SUMMARY
   Закрыть панель снаружи (нужен WireGuard):
     sudo bash $APP_DIR/deploy/vpn-only.sh
+SUMMARY
+fi
+
+if [ "$DIRECT_OPEN" = "1" ]; then
+  cat <<SUMMARY
+
+${RED}${BOLD}Внимание: панель осталась доступна в обход https.${OFF}
+  Порт $APP_PORT слушает внешний адрес, поэтому в панель можно зайти по
+  http://IP-сервера:$APP_PORT — без сертификата и мимо правил nginx, пароль
+  при этом уходит по открытому каналу.
+
+  Закрыть:
+    служба systemd   HOST=127.0.0.1 в $APP_DIR/.env, затем
+                     sudo systemctl restart $SERVICE
+    Docker           BIND_ADDR=127.0.0.1 в $APP_DIR/.env, затем
+                     cd $APP_DIR && sudo docker compose up -d
+  Проверить:
+    sudo ss -ltnp | grep :$APP_PORT      # адрес должен быть только 127.0.0.1
 SUMMARY
 fi
 echo

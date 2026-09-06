@@ -217,13 +217,15 @@ have_systemd() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null; 
 if [ "$SKIP_SERVICE" = "1" ] || ! have_systemd; then
   [ "$SKIP_SERVICE" = "1" ] || warn "systemd не обнаружен — служба не установлена"
   step "Запуск вручную"
-  info "cd $APP_DIR && .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+  info "cd $APP_DIR && set -a && . ./.env && set +a && \\"
+  info "  .venv/bin/uvicorn app.main:app --host \"\$HOST\" --port \"\$PORT\" --proxy-headers"
   SERVICE_INSTALLED=0
 else
   step "Служба systemd ($SERVICE)"
-  # Юнит из репозитория, подставляем каталог, пользователя и порт
+  # Юнит из репозитория, подставляем каталог и пользователя. Адрес и порт
+  # не трогаем: юнит берёт их из .env (HOST и PORT), иначе правка HOST,
+  # которой ssl.sh и vpn-only.sh закрывают прямой доступ, ни на что не влияла бы.
   sed -e "s#/opt/ozon-pack#$APP_DIR#g" \
-      -e "s#--port 8080#--port $PORT#" \
       -e "s#^User=.*#User=$APP_USER#" \
       -e "s#^Group=.*#Group=$APP_USER#" \
       "$APP_DIR/deploy/ozon-pack.service" > "/etc/systemd/system/$SERVICE.service"
@@ -236,7 +238,15 @@ fi
 # ------------------------------------------------------------------ файрвол
 if [ "$SKIP_FIREWALL" != "1" ] && command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   step "Файрвол"
-  ufw allow "$PORT"/tcp >/dev/null && info "открыт порт $PORT/tcp"
+  # Панель, слушающая только localhost, стоит за nginx — открывать её порт
+  # наружу незачем: правило ничего не даст, а выглядело бы как разрешённый вход.
+  ENV_HOST=$(awk -F= '/^HOST=/{print $2}' "$APP_DIR/.env" 2>/dev/null | tail -1 | tr -d ' ')
+  case "$ENV_HOST" in
+    127.0.0.1|::1|localhost)
+      info "порт $PORT/tcp не открываем: панель слушает только localhost (HOST=$ENV_HOST)" ;;
+    *)
+      ufw allow "$PORT"/tcp >/dev/null && info "открыт порт $PORT/tcp" ;;
+  esac
 fi
 
 # ------------------------------------------------------------------ проверка
