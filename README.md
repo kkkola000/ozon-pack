@@ -328,19 +328,9 @@ sudo bash /opt/ozon-pack/deploy/ssl.sh --domain panel.example.com --email admin@
 
 ### Доступ только через VPN (WireGuard)
 
-Панель можно поставить **сразу закрытой** — установщик сделает всё одной
-командой, отдельного шага не нужно:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/setup.sh | sudo bash -s -- \
-  --domain panel.example.com --email admin@example.com --vpn-only 10.8.0.0/24
-```
-
-Без значения (`--vpn-only`) сеть туннеля ищется сама по интерфейсу `wg0`.
-С `--no-ssl` флаг несовместим: без nginx закрывать доступ нечем.
-
-Если панель уже стоит, доступ снаружи закрывается отдельной командой —
-WireGuard при этом настраивать заново не нужно, скрипт его не трогает:
+Установщик панель не запирает — кто может её открывать, настраивается
+отдельной командой, когда панель уже работает. WireGuard при этом
+настраивать заново не нужно, скрипт его не трогает:
 
 ```bash
 sudo bash /opt/ozon-pack/deploy/vpn-only.sh
