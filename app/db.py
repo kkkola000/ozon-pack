@@ -226,8 +226,6 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     shipped_by      TEXT,
     printed_at      TEXT,
     print_count     INTEGER NOT NULL DEFAULT 0,
-    taken_at        TEXT,
-    taken_by        TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)

@@ -133,12 +133,12 @@ def test_legacy_tables_are_gone(legacy_db):
 def test_new_columns_are_added_to_existing_tables(legacy_db):
     """Колонки, появившиеся позже таблицы, дописываются при обновлении."""
     conn = db.connect()
-    # Индекс по колонке мешает её удалить — имитируем базу до её появления.
+    # Индексы по колонкам мешают их удалить — имитируем базу до их появления.
     conn.execute("DROP INDEX IF EXISTS idx_avito_return")
     conn.execute("ALTER TABLE avito_orders DROP COLUMN return_status")
-    conn.execute("ALTER TABLE avito_orders DROP COLUMN taken_at")
+    conn.execute("ALTER TABLE avito_orders DROP COLUMN return_tracking")
     assert "return_status" not in db._columns(conn, "avito_orders")
 
     db.init_db()
     columns = db._columns(conn, "avito_orders")
-    assert "return_status" in columns and "taken_at" in columns
+    assert "return_status" in columns and "return_tracking" in columns

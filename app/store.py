@@ -542,7 +542,6 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     data["status_label"] = STATUS_LABELS.get(status, status)
     return_status = data.get("return_status") or ""
     data["return_label"] = RETURN_STATUS_LABELS.get(return_status, return_status or "—")
-    data["taken_at_local"] = local_time(data.get("taken_at")) if data.get("taken_at") else ""
     data["service_label"] = SERVICE_LABELS.get(data.get("service_type") or "", data.get("service_type") or "")
     try:
         data["actions"] = json.loads(data.get("actions") or "[]")

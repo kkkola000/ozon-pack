@@ -267,10 +267,11 @@ def api_avito_sync(request: Request, user: dict = Depends(current_user),
 # ================================================================== возвраты
 # «Возврат: заберите заказ» — заказ вернулся и лежит в пункте выдачи. Только
 # такие возвраты панель и хранит: пока посылка едет обратно, забирать нечего.
-# Отмеченные забранными уходят из списка — отдельного раздела для них нет.
+# Забирать вручную ничего не отмечают: как только возврат получен, Avito
+# переводит заказ дальше, и ближайшая синхронизация убирает его из панели.
 def _list_returns(account: dict, search: str = "", limit: int = 500) -> list[dict]:
     params: list = [account["id"], avito.STATUS_ON_RETURN]
-    sql = "SELECT * FROM avito_orders WHERE account_id = ? AND status = ? AND taken_at IS NULL"
+    sql = "SELECT * FROM avito_orders WHERE account_id = ? AND status = ?"
     if search:
         like = f"%{search.strip()}%"
         sql += """
@@ -287,16 +288,11 @@ def _list_returns(account: dict, search: str = "", limit: int = 500) -> list[dic
 
 
 def _return_totals(account: dict) -> dict:
-    def count(condition: str, extra: tuple = ()) -> int:
-        return db.query_one(
-            f"SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? AND {condition}",
-            (account["id"], avito.STATUS_ON_RETURN, *extra),
-        )["c"]
-
-    return {
-        "ready": count("taken_at IS NULL"),
-        "taken": count("taken_at IS NOT NULL"),
-    }
+    ready = db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+        (account["id"], avito.STATUS_ON_RETURN),
+    )["c"]
+    return {"ready": ready}
 
 
 def _returns_skipped(account: dict) -> list[tuple[str, int]]:
@@ -363,33 +359,3 @@ def avito_returns_print(request: Request, q: str = "",
         },
     )
 
-
-@router.post("/api/avito/returns/taken")
-def api_avito_returns_taken(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
-                            account: dict = Depends(require_avito_account)):
-    """Отметить возвраты как забранные. Отметка локальная, в Avito не уходит."""
-    check_csrf(request)
-    ids = [str(i) for i in (payload.get("ids") or []) if i]
-    if not ids:
-        raise HTTPException(status_code=400, detail="Не выбрано ни одного возврата")
-    taken = bool(payload.get("taken", True))
-    placeholders = ",".join("?" for _ in ids)
-    with db.write() as conn:
-        conn.execute(
-            f"UPDATE avito_orders SET taken_at = ?, taken_by = ? WHERE account_id = ? AND status = ? "
-            f"AND id IN ({placeholders})",
-            [db.now_iso() if taken else None, user["login"] if taken else None,
-             account["id"], avito.STATUS_ON_RETURN] + ids,
-        )
-        db.log_event(
-            "avito_returns_taken" if taken else "avito_returns_untaken",
-            account_id=account["id"],
-            user=user,
-            message=f"{len(ids)} поз.",
-            payload={"ids": ids},
-            conn=conn,
-        )
-    return {
-        "status": "ok",
-        "message": ("Отмечено как забрано: " if taken else "Отметка снята: ") + str(len(ids)),
-    }

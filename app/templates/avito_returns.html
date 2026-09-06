@@ -6,7 +6,6 @@
   <div class="row between no-print">
     <div class="row" style="gap:28px">
       <div class="stat"><div class="muted small">Заберите заказ</div><div class="value">{{ totals.ready }}</div></div>
-      <div class="stat"><div class="muted small">Забрано</div><div class="value muted">{{ totals.taken }}</div></div>
     </div>
     <div class="row">
       <span class="small muted">{% if sync.last_ok %}Обновлено: {{ sync.last_ok | local_dt }}{% endif %}</span>
@@ -16,6 +15,8 @@
 
   <div class="small muted no-print" style="margin-top:10px">
     Возвраты, которые уже лежат в пункте выдачи, — только их и можно забрать.
+    Забранный возврат Avito переводит дальше сам, и он пропадает из списка при
+    ближайшем обновлении — отмечать вручную ничего не нужно.
     {% if skipped %}
       <br>При последней синхронизации Avito вернул и другие:
       {% for label, count in skipped %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
@@ -30,10 +31,7 @@
   </form>
 
   <div class="row no-print" style="margin-top:12px">
-    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
-    <span class="muted small" id="selected-count">выбрано: 0</span>
     <span class="grow"></span>
-    <button class="btn" id="btn-taken" disabled>Отметить забранными</button>
     <a class="btn primary" href="/avito/returns/print?q={{ q }}" target="_blank">
       Печать листа ({{ items | length }})
     </a>
@@ -43,7 +41,6 @@
   <table style="margin-top:10px">
     <thead>
       <tr>
-        <th style="width:34px"></th>
         <th style="width:180px">Заказ</th>
         <th>Товар</th>
         <th style="width:70px">Кол-во</th>
@@ -54,7 +51,6 @@
     <tbody>
       {% for r in items %}
       <tr>
-        <td><input type="checkbox" class="pick" value="{{ r.id }}"></td>
         <td>
           <div class="mono" style="font-weight:700">{{ r.marketplace_id or r.id }}</div>
           <div class="muted small">{{ r.created_local }}</div>
@@ -76,7 +72,6 @@
         <td class="small">
           <span class="tag success">{{ r.return_label }}</span>
           {% if r.return_tracking %}<div class="muted mono">{{ r.return_tracking }}</div>{% endif %}
-
         </td>
       </tr>
       {% endfor %}

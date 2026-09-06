@@ -293,40 +293,40 @@ def test_page_explains_what_was_skipped(client, avito_account):
     assert "в панель не попадают" in page.text
 
 
-def test_returns_page_has_no_filters(client):
-    """В разделе только то, что надо забрать: ни фильтров, ни вкладки «Забранные»."""
+def test_returns_page_is_read_only(client):
+    """Возвраты только читаются: ни фильтров, ни отметок вручную.
+
+    Забранный возврат Avito переводит дальше сам, и синхронизация убирает его
+    из панели — ручная отметка была бы вторым источником правды.
+    """
     page = client.get("/avito/returns")
     # В шапке остаётся переключатель кабинетов — проверяем именно фильтр списка.
     assert 'name="show"' not in page.text
     assert "Забранные" not in page.text
+    assert "Отметить забранными" not in page.text
+    assert 'class="pick"' not in page.text
     # Старая ссылка с фильтром не должна ничего ломать.
     assert client.get("/avito/returns?show=taken").status_code == 200
 
 
-def test_mark_return_taken(client, avito_account):
-    ready = returns_of(avito_account)[0]
-    response = client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
-    assert response.status_code == 200, response.text
-
-    row = db.query_one(
-        "SELECT taken_at, taken_by FROM avito_orders WHERE account_id = ? AND id = ?",
-        (avito_account["id"], ready["id"]),
-    )
-    assert row["taken_at"] and row["taken_by"] == "admin"
-    # Забранный возврат уходит из списка — отдельного раздела для него нет.
-    assert (ready["marketplace_id"] or ready["id"]) not in client.get("/avito/returns").text
+def test_marking_returns_taken_is_gone(client, avito_account):
+    row = returns_of(avito_account)[0]
+    response = client.post("/api/avito/returns/taken", json={"ids": [row["id"]], "taken": True})
+    assert response.status_code == 404, "ручная отметка должна быть убрана целиком"
 
 
-def test_taken_mark_survives_sync(client, avito_account):
-    """Отметка «забрали» локальная — синхронизация её не стирает."""
-    ready = returns_of(avito_account)[0]
-    client.post("/api/avito/returns/taken", json={"ids": [ready["id"]], "taken": True})
+def test_collected_return_disappears_on_sync(client, avito_account):
+    """Кладовщик забрал возврат — Avito меняет статус, и заказ уходит из панели."""
+    row = returns_of(avito_account)[0]
+    client_api = avito.get_client(avito_account)
+    client_api._orders[row["id"]]["status"] = avito.STATUS_CLOSED
+
     sync.sync_avito(avito_account)
-    row = db.query_one(
-        "SELECT taken_at FROM avito_orders WHERE account_id = ? AND id = ?",
-        (avito_account["id"], ready["id"]),
-    )
-    assert row["taken_at"], "отметка пропала после синхронизации"
+    assert db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["c"] == 0
+    assert (row["marketplace_id"] or row["id"]) not in client.get("/avito/returns").text
 
 
 def test_returns_print_sheet(client, avito_account):
