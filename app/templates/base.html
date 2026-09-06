@@ -26,6 +26,7 @@
   {% endif %}
   <nav>
     {% if cab.current and cab.current.marketplace == 'avito' %}
+      <a href="/avito/pack" class="{{ 'active' if active_tab == 'avito_pack' }}">Сборка</a>
       <a href="/avito?tab=confirm" class="{{ 'active' if active_tab == 'avito' }}">
         Заказы Avito
         {% if c.avito_confirm %}<span class="badge warn" title="Подтвердите заказ">{{ c.avito_confirm }}</span>{% endif %}

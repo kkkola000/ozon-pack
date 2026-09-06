@@ -141,11 +141,15 @@ def _insert(conn, account: dict, user: dict, **row: Any) -> None:
 
 def record_shipped(conn, account: dict, user: dict, posting_number: str, item: dict,
                    unit_no: int, barcode: str | None) -> None:
-    """Пара сошлась: товар из состава отправления зачтён сборщику."""
+    """Пара сошлась: товар из состава отправления зачтён сборщику.
+
+    Ключ единицы обычно SKU, но у Avito его нет — там передаётся «key» вида
+    av:<идентификатор позиции>, иначе защита от дублей не за что зацепиться.
+    """
     _insert(
         conn, account, user,
         posting_number=posting_number,
-        item_key=str(item.get("sku") or ""),
+        item_key=str(item.get("key") or item.get("sku") or ""),
         sku=item.get("sku"),
         offer_id=item.get("offer_id"),
         name=item.get("name"),

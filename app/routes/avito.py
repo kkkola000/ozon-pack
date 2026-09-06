@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import avito, db, store, sync
+from .. import avito, avito_pack, db, store, sync
 from ..avito import AvitoError
 from ..deps import check_csrf, current_user, require_admin, require_avito_account, templates
 
@@ -82,6 +82,82 @@ def avito_page(request: Request, tab: str = "confirm", q: str = "", user: dict =
             "active_tab": "avito",
         },
     )
+
+
+# ------------------------------------------------------------------ сборка заказа
+def _pack_counters(account: dict) -> dict:
+    aid = (account["id"],)
+
+    def count(sql: str, params=aid) -> int:
+        row = db.query_one(sql, params)
+        return row["c"] if row else 0
+
+    return {
+        "to_pack": count(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? "
+            "AND local_state != 'packed'", (account["id"], avito.STATUS_READY_TO_SHIP)),
+        "packed_today": count(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND local_state = 'packed' "
+            "AND packed_at >= date('now')"),
+        "confirm": count(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+            (account["id"], avito.STATUS_ON_CONFIRMATION)),
+    }
+
+
+@router.get("/avito/pack", response_class=HTMLResponse)
+def avito_pack_page(request: Request, user: dict = Depends(current_user),
+                    account: dict = Depends(require_avito_account)):
+    return templates.TemplateResponse(
+        request,
+        "avito_pack.html",
+        {
+            "request": request,
+            "user": user,
+            "account": account,
+            "state": avito_pack.load_state(account, user),
+            "counters": _pack_counters(account),
+            "csrf": request.state.session.get("csrf"),
+            "active_tab": "avito_pack",
+        },
+    )
+
+
+@router.get("/api/avito/pack/state")
+def api_avito_pack_state(user: dict = Depends(current_user),
+                         account: dict = Depends(require_avito_account)):
+    return {"state": avito_pack.load_state(account, user), "counters": _pack_counters(account)}
+
+
+@router.post("/api/avito/pack/scan")
+def api_avito_pack_scan(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+                        account: dict = Depends(require_avito_account)):
+    check_csrf(request)
+    result = avito_pack.scan(account, user, str(payload.get("code") or ""))
+    result["counters"] = _pack_counters(account)
+    return result
+
+
+@router.post("/api/avito/pack/release")
+def api_avito_pack_release(request: Request, user: dict = Depends(current_user),
+                           account: dict = Depends(require_avito_account)):
+    check_csrf(request)
+    result = avito_pack.release(account, user)
+    result["counters"] = _pack_counters(account)
+    return result
+
+
+@router.post("/api/avito/pack/open")
+def api_avito_pack_open(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+                        account: dict = Depends(require_avito_account)):
+    """Открыть сборку без сканера — если стикер не читается."""
+    check_csrf(request)
+    order = avito_pack.find_order(account["id"], str(payload.get("order_id") or ""))
+    if not order:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+    result = avito_pack.open_order(account, user, order)
+    result["counters"] = _pack_counters(account)
+    return result
 
 
 @router.get("/api/avito/orders")

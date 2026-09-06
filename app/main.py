@@ -86,7 +86,8 @@ def index(request: Request):
     """Стартовая страница зависит от кабинета: у Avito своя сборка заказов."""
     account = deps.current_account(request)
     if account and account["marketplace"] == "avito":
-        return RedirectResponse("/avito", status_code=303)
+        # У Avito своё рабочее место сборщика — с него и начинаем, как на Ozon.
+        return RedirectResponse("/avito/pack", status_code=303)
     return RedirectResponse("/pack", status_code=303)
 
 

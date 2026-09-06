@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -224,6 +225,13 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     shipped_by      TEXT,
     printed_at      TEXT,
     print_count     INTEGER NOT NULL DEFAULT 0,
+    -- Сборка на складе: у Avito нет штрихкодов товаров, поэтому отметка
+    -- «собран» ставится по факту сканирования стикера и товара, а не площадкой.
+    packed_at       TEXT,
+    packed_by       TEXT,
+    claim_user_id   INTEGER,
+    claim_login     TEXT,
+    claim_at        TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)
@@ -378,10 +386,20 @@ def log_event(
         execute(sql, params)
 
 
+def _without_comments(sql: str) -> str:
+    """Убрать «-- ...» из SQL.
+
+    Схему мы разбираем сами — делим по «;» и по запятым. Комментарий по-русски
+    почти наверняка содержит и то и другое, поэтому разбирать текст с
+    комментариями нельзя: оператор разрывается посреди строки.
+    """
+    return re.sub(r"--[^\n]*", "", sql)
+
+
 def create_sql(table: str) -> str:
     """Оператор CREATE TABLE для таблицы из SCHEMA — нужен при миграции."""
     marker = f"CREATE TABLE IF NOT EXISTS {table} ("
-    for statement in SCHEMA.split(";"):
+    for statement in _without_comments(SCHEMA).split(";"):
         if marker in statement:
             return statement.strip() + ";"
     raise KeyError(f"в схеме нет таблицы {table}")
@@ -401,8 +419,12 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 
 
 def _schema_columns(table: str) -> list[tuple[str, str]]:
-    """Колонки таблицы из SCHEMA: [(имя, остальное определение)]."""
-    body = create_sql(table)
+    """Колонки таблицы из SCHEMA: [(имя, остальное определение)].
+
+    Комментарии вырезаем до разбора: запятая внутри «-- ...» иначе рвёт строку
+    пополам, и в ALTER TABLE уезжает кусок русского текста вместо колонки.
+    """
+    body = _without_comments(create_sql(table))
     body = body[body.index("(") + 1 : body.rindex(")")]
     parts, depth, current = [], 0, ""
     for char in body:

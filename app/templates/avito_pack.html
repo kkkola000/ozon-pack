@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Сборка Avito · {{ account.title }}{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="scanbar">
+    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…" autofocus>
+    <button class="btn big" id="btn-clear" title="Очистить поле">Очистить</button>
+  </div>
+  <div id="banner" class="banner idle">
+    Отсканируйте стикер отправления — откроется сборка заказа.
+  </div>
+</div>
+
+<div id="active-panel"></div>
+
+<div class="panel" id="idle-panel">
+  <div class="row between">
+    <h2 style="margin:0">Очередь</h2>
+    <button class="btn small" id="btn-sync">Обновить из Avito</button>
+  </div>
+  <div class="row" style="margin-top:12px; gap:22px">
+    <div class="stat"><div class="muted small">К сборке</div><div class="value" id="c-to-pack">{{ counters.to_pack }}</div></div>
+    <div class="stat"><div class="muted small">Собрано сегодня</div><div class="value ok" id="c-packed">{{ counters.packed_today }}</div></div>
+    <div class="stat"><div class="muted small">Ждут подтверждения</div><div class="value" id="c-confirm">{{ counters.confirm }}</div></div>
+  </div>
+  <p class="muted small" style="margin:14px 0 0">
+    Порядок работы: печатаете стикер на вкладке «Заказы Avito» → сканируете стикер, открывается сборка →
+    сканируете штрихкоды товаров, по одному на каждую единицу → заказ помечается собранным.
+    <br>Штрихкоды у Avito свои: справочника площадка не отдаёт, поэтому панель не сверяет товар,
+    а записывает в отчёт то, что вы отсканировали, вместе с номером отправления и названием позиции.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Последние сканы</h2>
+  <div id="history" class="small muted">Пока пусто.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/avito_pack.js?v={{ static_version() }}"></script>
+{% endblock %}

@@ -170,3 +170,45 @@ def test_purge_runs_only_once(legacy_db):
     )
     db.init_db()
     assert db.query_one("SELECT COUNT(*) AS c FROM postings WHERE posting_number = '999-1-1'")["c"] == 1
+
+
+def test_schema_parser_ignores_sql_comments():
+    """Запятая внутри комментария не должна превращаться в колонку.
+
+    На этом уже спотыкались: комментарий в теле CREATE TABLE разрывался по
+    запятой, и в ALTER TABLE уезжал кусок русского текста вместо имени колонки.
+    """
+    tables = [line.split()[-2] for line in db.SCHEMA.splitlines()
+              if line.startswith("CREATE TABLE IF NOT EXISTS")]
+    assert len(tables) >= 10, "не нашлись таблицы схемы"
+    for table in tables:
+        for name, definition in db._schema_columns(table):
+            assert name.isascii(), f"{table}: имя колонки «{name}» не похоже на имя"
+            assert name.replace("_", "").isalnum(), f"{table}: странное имя колонки «{name}»"
+            assert "--" not in definition, f"{table}.{name}: в определение попал комментарий"
+
+
+def test_avito_packing_columns_appear_in_old_database(tmp_path, monkeypatch):
+    """Колонки сборки Avito добавляются к таблице, созданной прежней версией."""
+    conn = db.connect()
+    conn.execute("DROP TABLE IF EXISTS avito_orders")
+    conn.execute(
+        "CREATE TABLE avito_orders (account_id INTEGER NOT NULL, id TEXT NOT NULL,"
+        " marketplace_id TEXT, status TEXT, local_state TEXT NOT NULL DEFAULT 'new',"
+        " PRIMARY KEY (account_id, id))"
+    )
+    db.init_db()
+    columns = set(db._columns(db.connect(), "avito_orders"))
+    for name in ("packed_at", "packed_by", "claim_user_id", "claim_login", "claim_at"):
+        assert name in columns, name
+
+
+def test_create_sql_survives_semicolon_in_comment():
+    """Комментарий с «;» не должен обрывать оператор CREATE TABLE."""
+    assert ";" in db.SCHEMA
+    for line in db.SCHEMA.splitlines():
+        if line.startswith("CREATE TABLE IF NOT EXISTS"):
+            table = line.split()[-2]
+            sql = db.create_sql(table)
+            assert sql.count("(") == sql.count(")"), f"{table}: оператор оборван"
+            assert sql.rstrip().endswith(");"), f"{table}: оператор оборван"
