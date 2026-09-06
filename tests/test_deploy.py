@@ -245,3 +245,28 @@ def test_setup_refuses_vpn_only_without_nginx():
     )
     assert proc.returncode != 0
     assert "несовместим" in proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_status_warns_when_rule_is_not_applied(tmp_path, sandbox):
+    """Правило записано, но конфиг его не подключает — панель открыта, и это видно."""
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    site = tmp_path / "sites-enabled" / "ozon-pack"
+    snippet.write_text("allow 127.0.0.1;\nallow 10.0.0.0/24;\ndeny all;\n")
+    assert f"include {snippet};" not in site.read_text(encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--status"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "панель открыта" in proc.stdout
+    assert "включено — панель отвечает только" not in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_status_confirms_applied_rule(tmp_path, sandbox):
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    assert _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.0.0.0/24", "--yes"], env).returncode == 0
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--status"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "включено" in proc.stdout
+    assert "10.0.0.0/24" in proc.stdout

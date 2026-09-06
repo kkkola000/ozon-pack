@@ -198,6 +198,20 @@ check_firewall() {
   return 0
 }
 
+# Конфиг сайта панели: тот, где nginx проксирует на её порт.
+site_config() {
+  local candidate port
+  port=$(app_port)
+  for candidate in "$NGINX_SITES"/* "$NGINX_CONFD"/*.conf; do
+    [ -e "$candidate" ] || continue
+    if grep -qs "proxy_pass http://127.0.0.1:$port" "$candidate"; then
+      readlink -f "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # В режиме --status ничего не меняем, только сообщаем.
 check_direct_port_note() {
   local port=$1 outside
@@ -215,13 +229,29 @@ check_direct_port_note() {
 # ------------------------------------------------------------------ состояние
 show_status() {
   step "Ограничение доступа"
-  if [ -f "$SNIPPET" ] && grep -q '^ *deny all;' "$SNIPPET"; then
+  local site="" connected=0
+  site=$(site_config) || site=""
+  if [ -n "$site" ] && grep -qs "include $SNIPPET;" "$site"; then connected=1; fi
+
+  if [ ! -f "$SNIPPET" ]; then
+    warn "выключено — файл $SNIPPET не создан, панель открыта со всех адресов"
+  elif ! grep -q '^ *deny all;' "$SNIPPET"; then
+    warn "выключено — панель открыта со всех адресов"
+  elif [ "$connected" = "1" ]; then
     info "${GREEN}включено${OFF} — панель отвечает только этим адресам:"
     grep '^ *allow' "$SNIPPET" | sed 's/^ *allow /      /; s/;$//'
-  elif [ -f "$SNIPPET" ]; then
-    warn "выключено — панель открыта со всех адресов"
   else
-    warn "выключено — файл $SNIPPET не создан"
+    warn "${RED}правило записано, но nginx его не применяет — панель открыта!${OFF}"
+    if [ -n "$site" ]; then
+      warn "в $site нет строки: include $SNIPPET;"
+    else
+      warn "не нашёл конфиг сайта панели в $NGINX_SITES (порт $(app_port))"
+    fi
+    warn "исправить: sudo bash $0 --subnet ВАША-СЕТЬ"
+  fi
+
+  if [ -n "$site" ]; then
+    info "конфиг сайта: $site"
   fi
 
   step "WireGuard"
@@ -319,16 +349,11 @@ info "файл: $SNIPPET"
 # Конфиг сайта мог быть создан прежней версией ssl.sh — без include правило
 # не сработает, поэтому дописываем его сами.
 ensure_include() {
-  local site="" candidate port
-  port=$(app_port)
-  for candidate in "$NGINX_SITES"/* "$NGINX_CONFD"/*.conf; do
-    [ -e "$candidate" ] || continue
-    if grep -qs "proxy_pass http://127.0.0.1:$port" "$candidate"; then site=$candidate; break; fi
-  done
-  [ -n "$site" ] || { warn "Не нашёл конфиг сайта панели в $NGINX_SITES"; return 1; }
-
   local target backup
-  target=$(readlink -f "$site")
+  target=$(site_config) || {
+    warn "Не нашёл конфиг сайта панели в $NGINX_SITES (порт $(app_port))"
+    return 1
+  }
   # Строка уже на месте (конфиг создан свежим ssl.sh или прошлым запуском)
   grep -qs "include $SNIPPET;" "$target" && return 0
   backup=$(mktemp)
