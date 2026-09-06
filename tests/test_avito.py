@@ -438,3 +438,64 @@ def test_both_spellings_counted_as_ready():
     assert avito.is_ready_for_pickup("ready_to_pickup")
     assert not avito.is_ready_for_pickup("in_transit")
     assert not avito.is_ready_for_pickup(None)
+
+
+# ------------------------------------------------------------------ адрес ПВЗ
+def test_pickup_address_from_terminal_info():
+    raw = {"delivery": {"terminalInfo": {"address": "Москва, Настасьинский пер., 8с2", "code": "MSK14"}}}
+    assert avito.pickup_address(raw) == "Москва, Настасьинский пер., 8с2"
+    assert avito.pickup_code(raw) == "MSK14"
+
+
+def test_pickup_address_from_unexpected_place():
+    """Схема Avito неполная — адрес ищем и там, где его не обещали."""
+    raw = {"delivery": {"serviceName": "Boxberry", "pickupPoint": {"address": "Москва, Кибальчича, 2к1"}}}
+    assert avito.pickup_address(raw) == "Москва, Кибальчича, 2к1"
+
+    deep = {"returnPolicy": {"pvzInfo": {"fullAddress": "Казань, Баумана, 1"}}}
+    assert avito.pickup_address(deep) == "Казань, Баумана, 1"
+
+
+def test_pickup_address_absent():
+    raw = {"delivery": {"serviceName": "Boxberry", "serviceType": "pvz"}}
+    assert avito.pickup_address(raw) is None
+    assert avito.pickup_code(raw) is None
+
+
+def test_address_is_saved_from_any_shape(avito_account):
+    """Адрес попадает в базу независимо от того, где Avito его положил."""
+    client = avito.get_client(avito_account)
+    order = [o for o in client._orders.values() if o["status"] == avito.STATUS_ON_RETURN][0]
+    order["delivery"].pop("terminalInfo", None)
+    order["delivery"]["pickupPoint"] = {"address": "Санкт-Петербург, Невский пр., 100", "code": "SPB7"}
+
+    sync.sync_avito(avito_account)
+    row = db.query_one(
+        "SELECT terminal_address, terminal_code FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], order["id"]),
+    )
+    assert row["terminal_address"] == "Санкт-Петербург, Невский пр., 100"
+    assert row["terminal_code"] == "SPB7"
+
+
+def test_print_sheet_falls_back_to_pvz_code(client, avito_account):
+    """Адреса нет — печатаем код ПВЗ, а не пустую клетку."""
+    row = returns_of(avito_account)[0]
+    db.execute(
+        "UPDATE avito_orders SET terminal_address = NULL, terminal_code = 'MSK14' "
+        "WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )
+    page = client.get("/avito/returns/print")
+    assert "ПВЗ MSK14" in page.text
+
+
+def test_raw_answer_is_available_to_admin(client, avito_account):
+    """Если чего-то не хватает — видно, что именно прислал Avito."""
+    row = returns_of(avito_account)[0]
+    response = client.get(f"/api/avito/returns/{row['id']}/raw")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["raw"]["id"] == row["id"]
+    assert "delivery" in body["raw"]
+    assert "pickup_address" in body

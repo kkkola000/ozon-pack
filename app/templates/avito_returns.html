@@ -68,6 +68,10 @@
           <div>{{ r.service_label }}</div>
           <div class="muted">{{ r.service_name or '' }}</div>
           {% if r.terminal_address %}<div class="muted">{{ r.terminal_address }}</div>{% endif %}
+          {% if r.terminal_code %}<div class="muted mono">ПВЗ {{ r.terminal_code }}</div>{% endif %}
+          {% if not r.terminal_address and not r.terminal_code %}
+            <div class="muted">адрес Avito не прислал</div>
+          {% endif %}
         </td>
         <td class="small">
           <span class="tag success">{{ r.return_label }}</span>

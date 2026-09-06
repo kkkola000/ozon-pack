@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from .. import avito, db, store, sync
 from ..avito import AvitoError
-from ..deps import check_csrf, current_user, require_avito_account, templates
+from ..deps import check_csrf, current_user, require_admin, require_avito_account, templates
 
 log = logging.getLogger("avito")
 
@@ -328,6 +328,26 @@ def avito_returns_page(request: Request, q: str = "",
             "active_tab": "avito_returns",
         },
     )
+
+
+@router.get("/api/avito/returns/{order_id}/raw")
+def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(require_admin),
+                         account: dict = Depends(require_avito_account)):
+    """Ответ Avito по возврату как есть — чтобы видеть, что площадка реально прислала.
+
+    Нужен, когда чего-то не хватает на экране: например, Avito не отдал адрес ПВЗ.
+    """
+    row = _order_row(account, order_id)
+    try:
+        raw = json.loads(row.get("raw") or "{}")
+    except ValueError:
+        raw = {}
+    return {
+        "order_id": order_id,
+        "pickup_address": avito.pickup_address(raw),
+        "pickup_code": avito.pickup_code(raw),
+        "raw": raw,
+    }
 
 
 @router.get("/avito/returns/print", response_class=HTMLResponse)

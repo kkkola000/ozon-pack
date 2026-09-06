@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import random
 import threading
 import time
@@ -79,6 +80,78 @@ RETURN_STATUS_LABELS = {
 def is_ready_for_pickup(return_status: str | None) -> bool:
     """Возврат доехал до пункта выдачи и его можно забрать."""
     return (return_status or "") in RETURN_READY_VALUES
+
+
+# Где в заказе искать адрес пункта выдачи. В схеме описан только terminalInfo
+# (и то как «ПВЗ для DBS»), но схема уже расходилась с боевым API, поэтому
+# сначала пробуем известные пути, а потом ищем адрес по всему ответу.
+ADDRESS_PATHS = (
+    ("delivery", "terminalInfo", "address"),
+    ("delivery", "terminal", "address"),
+    ("delivery", "pickupPoint", "address"),
+    ("delivery", "pvz", "address"),
+    ("delivery", "courierInfo", "address"),
+    ("delivery", "address"),
+    ("returnPolicy", "terminalInfo", "address"),
+    ("returnPolicy", "terminal", "address"),
+    ("returnPolicy", "pickupPoint", "address"),
+    ("returnPolicy", "address"),
+)
+CODE_PATHS = (
+    ("delivery", "terminalInfo", "code"),
+    ("delivery", "terminal", "code"),
+    ("delivery", "pickupPoint", "code"),
+    ("returnPolicy", "terminalInfo", "code"),
+    ("returnPolicy", "terminalNumber"),
+)
+_ADDRESS_KEY = re.compile(r"address|адрес", re.IGNORECASE)
+_MAX_DEPTH = 6
+
+
+def _dig(node: Any, path: tuple[str, ...]) -> Any:
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _find_by_key(node: Any, pattern: re.Pattern[str], depth: int = 0) -> str | None:
+    """Первое непустое строковое значение у ключа, похожего на адрес."""
+    if depth > _MAX_DEPTH:
+        return None
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(value, str) and value.strip() and pattern.search(key):
+                return value.strip()
+        for value in node.values():
+            found = _find_by_key(value, pattern, depth + 1)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for value in node:
+            found = _find_by_key(value, pattern, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def pickup_address(raw: dict) -> str | None:
+    """Адрес пункта выдачи из заказа — по известным путям или поиском по ответу."""
+    for path in ADDRESS_PATHS:
+        value = _dig(raw, path)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return _find_by_key(raw, _ADDRESS_KEY)
+
+
+def pickup_code(raw: dict) -> str | None:
+    """Код ПВЗ — им можно найти пункт, если адрес Avito не прислал."""
+    for path in CODE_PATHS:
+        value = _dig(raw, path)
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value).strip()
+    return None
 
 SERVICE_LABELS = {
     "pvz": "ПВЗ",

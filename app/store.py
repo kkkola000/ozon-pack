@@ -420,9 +420,10 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
     if not order_id:
         raise ValueError("В ответе Avito нет id заказа")
 
+    from . import avito as avito_client
+
     delivery = raw.get("delivery") or {}
     buyer = delivery.get("buyerInfo") or {}
-    terminal = delivery.get("terminalInfo") or {}
     prices = raw.get("prices") or {}
     schedules = raw.get("schedules") or {}
     return_policy = raw.get("returnPolicy") or {}
@@ -466,8 +467,8 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
             _text(delivery.get("serviceName")),
             _text(delivery.get("dispatchNumber")),
             _text(delivery.get("trackingNumber")),
-            _text(terminal.get("code")),
-            _text(terminal.get("address")),
+            _text(avito_client.pickup_code(raw)),
+            _text(avito_client.pickup_address(raw)),
             _text(buyer.get("fullName")),
             _text(buyer.get("phoneNumber")),
             _dt(schedules.get("confirmTill")),

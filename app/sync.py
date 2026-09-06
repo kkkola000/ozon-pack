@@ -304,6 +304,14 @@ def sync_avito(account: dict | None = None) -> dict:
         # Забрать можно только то, что доехало до пункта выдачи.
         if avito.is_ready_for_pickup(return_status):
             keep.append(raw)
+            if not avito.pickup_address(raw):
+                # Адрес ПВЗ Avito отдаёт не всегда — видно, где его искать дальше.
+                log.info(
+                    "Возврат %s без адреса ПВЗ; delivery: %s, returnPolicy: %s",
+                    raw.get("marketplaceId") or raw.get("id"),
+                    sorted((raw.get("delivery") or {}).keys()),
+                    sorted((raw.get("returnPolicy") or {}).keys()),
+                )
 
     if keep:
         with db.write() as conn:

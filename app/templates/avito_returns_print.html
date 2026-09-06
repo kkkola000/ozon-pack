@@ -71,6 +71,8 @@
         <td style="font-size:10px">
           {{ r.service_name or r.service_label }}
           {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
+          {% if r.terminal_code %}<div>ПВЗ {{ r.terminal_code }}</div>{% endif %}
+          {% if not r.terminal_address and not r.terminal_code %}<div>адрес Avito не прислал</div>{% endif %}
         </td>
         <td class="check">☐</td>
       </tr>
