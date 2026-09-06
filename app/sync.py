@@ -11,11 +11,10 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, avito, db, store
+from . import accounts, avito, db, ozon, store
 from .avito import AvitoError
 from .config import settings
 from .ozon import OzonError
-from .ozon import get_client as get_ozon_client
 
 log = logging.getLogger("sync")
 
@@ -39,7 +38,7 @@ def sync_postings(account: dict | None = None) -> dict:
     if account is None:
         return {"saved": 0, "refreshed": 0}
     account_id = account["id"]
-    client = get_ozon_client(account)
+    client = ozon.get_client(account)
     since, to = _iso_window(settings.sync_days_back, settings.sync_days_forward)
     seen: set[str] = set()
     saved = 0
@@ -108,7 +107,7 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
     if not skus:
         return {"products": 0}
 
-    client = get_ozon_client(account)
+    client = ozon.get_client(account)
     total = 0
     for start in range(0, len(skus), 100):
         chunk = skus[start : start + 100]
@@ -154,7 +153,7 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
     if account is None:
         return {"returns": 0}
     account_id = account["id"]
-    client = get_ozon_client(account)
+    client = ozon.get_client(account)
     wanted = list(statuses or get_returns_statuses())
     wanted_set = set(wanted)
     saved = 0
@@ -247,7 +246,7 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
         # настроек, убираем совсем — кроме тех, что отмечены как забранные.
         placeholders = ",".join("?" for _ in wanted) or "''"
         removed = db.execute(
-            "DELETE FROM returns WHERE account_id = ? AND taken_at IS NULL "
+            "DELETE FROM returns WHERE account_id = ? "
             f"AND (status_sys IS NULL OR status_sys NOT IN ({placeholders}))",
             [account_id] + wanted,
         ).rowcount or 0
@@ -361,7 +360,8 @@ def sync_all(*, returns: bool = True) -> dict:
     """Все включённые кабинеты. Ошибка одного не останавливает остальные."""
     result: dict = {}
     errors: list[str] = []
-    active = accounts.all_accounts(active_only=True)
+    # Без ключей запрашивать нечего — и придумывать данные панель не станет.
+    active = [a for a in accounts.all_accounts(active_only=True) if accounts.is_configured(a)]
     for account in active:
         try:
             part = sync_account(account, returns=returns)
@@ -465,6 +465,6 @@ def status() -> dict:
         "duration": db.kv_get("sync_last_duration"),
         "interval": settings.sync_interval,
         "enabled": settings.sync_enabled,
-        # Демо, пока ни один кабинет не подключён боевыми ключами.
-        "demo": all(accounts.is_demo(a) for a in active) if active else True,
+        # Кабинеты без ключей синхронизировать нечем — о них говорим отдельно.
+        "unconfigured": [a["title"] for a in active if not accounts.is_configured(a)],
     }

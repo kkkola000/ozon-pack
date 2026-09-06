@@ -10,12 +10,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import accounts, avito, db, ozon, store  # noqa: E402
 from app.config import settings  # noqa: E402
+from tests import fakes  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "db_path", str(tmp_path / "test.db"))
-    monkeypatch.setattr(settings, "demo_forced", True)
     monkeypatch.setattr(settings, "require_all_items", True)
     monkeypatch.setattr(settings, "autoprint", True)
     monkeypatch.setattr(settings, "auto_ship_on_scan", False)
@@ -26,6 +26,12 @@ def temp_db(tmp_path, monkeypatch):
     ozon.reset_client()
     avito.reset_client()
     db.init_db()
+    # Кабинет по умолчанию создаётся без ключей — в тестах вместо площадок
+    # работают подделки, поэтому ключи ставим сразу, как в боевом кабинете.
+    default = accounts.default_account()
+    if default:
+        accounts.update(default["id"], client_id="test-client", api_key="test-key")
+    fakes.install(monkeypatch)
     yield
     conn = getattr(db._local, "conn", None)
     if conn:
@@ -43,16 +49,16 @@ def account():
 
 @pytest.fixture
 def avito_account():
-    return accounts.get(accounts.create("avito", "Avito демо"))
+    return accounts.get(accounts.create("avito", "Avito", "test-client", "test-secret"))
 
 
 @pytest.fixture
-def demo_data():
-    """Загрузить демо-отправления, товары и возвраты в тестовую БД."""
+def sample_data():
+    """Загрузить в тестовую БД отправления, товары и возвраты из подделки Ozon."""
     from app import sync
 
     sync.sync_all()
-    return ozon.get_client()
+    return ozon.get_client(accounts.default_account())
 
 
 @pytest.fixture

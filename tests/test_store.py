@@ -3,7 +3,7 @@ from app import db, store
 from app.config import settings
 
 
-def test_upsert_posting_keeps_local_state(account, demo_data):
+def test_upsert_posting_keeps_local_state(account, sample_data):
     number = db.query_one("SELECT posting_number FROM postings LIMIT 1")["posting_number"]
     db.execute("UPDATE postings SET local_state = 'packed', packed_by = 'ivanov' WHERE posting_number = ?", (number,))
 
@@ -18,7 +18,7 @@ def test_upsert_posting_keeps_local_state(account, demo_data):
     assert row["packed_by"] == "ivanov"
 
 
-def test_cancelled_posting_marked_locally(account, demo_data):
+def test_cancelled_posting_marked_locally(account, sample_data):
     import json
 
     number = db.query_one("SELECT posting_number FROM postings LIMIT 1")["posting_number"]
@@ -47,7 +47,7 @@ def test_urgency_buckets():
     assert view(48) == "ok"
 
 
-def test_returns_readiness(demo_data):
+def test_returns_readiness(sample_data):
     """Готов к выдаче — только «В пункте выдачи» (ArrivedAtReturnPlace)."""
     ready = db.query("SELECT status_sys FROM returns WHERE is_ready = 1")
     assert ready, "должны быть возвраты, готовые к выдаче"
@@ -59,17 +59,17 @@ def test_returns_readiness(demo_data):
         assert row["status_sys"] not in settings.returns_ready_statuses
 
 
-def test_returns_loaded_only_in_wanted_status(demo_data):
+def test_returns_loaded_only_in_wanted_status(sample_data):
     """Синхронизация забирает у Ozon именно нужный статус, а не всё подряд."""
     statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
     assert statuses == {"ArrivedAtReturnPlace"}, statuses
 
 
-def test_return_leaving_pickup_point_is_dropped(demo_data):
+def test_return_leaving_pickup_point_is_dropped(sample_data):
     """Возврат забрали — Ozon его больше не отдаёт, значит из выдачи он уходит."""
     from app import sync
 
-    client = demo_data
+    client = sample_data
     target = client._returns[0]
     assert target["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"
     return_id = str(target["id"])
@@ -82,7 +82,7 @@ def test_return_leaving_pickup_point_is_dropped(demo_data):
     assert db.query_one("SELECT is_ready FROM returns WHERE id = ?", (return_id,))["is_ready"] == 0
 
 
-def test_network_error_does_not_clear_pickup_list(demo_data, monkeypatch):
+def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
     """Сбой связи не должен обнулять список готовых к выдаче."""
     from app import sync
     from app.ozon import OzonError
@@ -93,23 +93,23 @@ def test_network_error_does_not_clear_pickup_list(demo_data, monkeypatch):
     def boom(*args, **kwargs):
         raise OzonError("Сеть недоступна")
 
-    monkeypatch.setattr(demo_data, "returns_list", boom)
+    monkeypatch.setattr(sample_data, "returns_list", boom)
     sync.sync_returns()
 
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 1")["c"] == before
 
 
-def test_products_have_barcodes(demo_data):
+def test_products_have_barcodes(sample_data):
     assert db.query_one("SELECT COUNT(*) c FROM product_barcodes")["c"] > 0
     row = db.query_one("SELECT sku, barcodes FROM products WHERE barcodes != '[]' LIMIT 1")
     assert row is not None
 
 
-def test_ignored_api_filter_still_filters_locally(demo_data, monkeypatch):
+def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
     """Если Ozon вернёт всё подряд, лишнее не должно попасть в список выдачи."""
     from app import sync
 
-    client = demo_data
+    client = sample_data
     original = client.returns_list
 
     def ignores_filter(*, limit=500, last_id=0, filter_=None):
@@ -125,7 +125,7 @@ def test_ignored_api_filter_still_filters_locally(demo_data, monkeypatch):
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 0")["c"] == 0
 
 
-def test_returns_in_other_statuses_are_cleaned_up(account, demo_data):
+def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):
     """Записи, оставшиеся от прежних настроек, удаляются при синхронизации."""
     from app import sync
 
@@ -139,21 +139,7 @@ def test_returns_in_other_statuses_are_cleaned_up(account, demo_data):
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'old-1'")["c"] == 0
 
 
-def test_taken_returns_survive_cleanup(account, demo_data):
-    """Забранные возвраты остаются в истории, даже если статус уже другой."""
-    from app import sync
-
-    db.execute(
-        "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity, is_ready,"
-        " taken_at, taken_by, first_seen_at, updated_at)"
-        " VALUES(?, 'taken-1', 'FBS', 'ReceivedBySeller', 'Получен продавцом', 'Забранный', 1, 0, ?, 'admin', ?, ?)",
-        (account["id"], db.now_iso(), db.now_iso(), db.now_iso()),
-    )
-    sync.sync_returns()
-    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'taken-1'")["c"] == 1
-
-
-def test_statuses_can_be_changed_from_panel(demo_data):
+def test_statuses_can_be_changed_from_panel(sample_data):
     """Список статусов задаётся в интерфейсе и переопределяет .env."""
     from app import options, sync
 

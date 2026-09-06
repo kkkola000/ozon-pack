@@ -8,7 +8,8 @@ from fastapi.responses import HTMLResponse, Response
 
 from .. import db, options, store, sync
 from ..deps import check_csrf, current_user, require_ozon_account, templates
-from ..ozon import OzonError, get_client
+from .. import ozon
+from ..ozon import OzonError
 
 router = APIRouter()
 
@@ -18,15 +19,12 @@ def _filter_returns(
     scheme: str = "all",
     place: str = "",
     q: str = "",
-    show: str = "ready",
     limit: int = 1000,
 ) -> list[dict]:
-    conditions = ["account_id = ?"]
+    # В панели только то, что лежит в пункте выдачи: забранное Ozon переводит
+    # дальше сам, и синхронизация убирает такие записи.
+    conditions = ["account_id = ?", "is_ready = 1"]
     params: list = [account["id"]]
-    if show == "ready":
-        conditions.append("is_ready = 1 AND taken_at IS NULL")
-    elif show == "taken":
-        conditions.append("taken_at IS NOT NULL")
     if scheme in ("FBO", "FBS"):
         conditions.append("(type = ? OR scheme = ?)")
         params += [scheme, scheme]
@@ -63,26 +61,21 @@ def returns_page(
     scheme: str = "all",
     place: str = "",
     q: str = "",
-    show: str = "ready",
     user: dict = Depends(current_user),
     account: dict = Depends(require_ozon_account),
 ):
-    items = _filter_returns(account, scheme, place, q, show)
+    items = _filter_returns(account, scheme, place, q)
     aid = (account["id"],)
     totals = {
         "ready": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL", aid
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1", aid
         )["c"],
-        "taken": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND taken_at IS NOT NULL", aid
-        )["c"],
-        "all": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid)["c"],
         "fbo": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL "
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 "
             "AND (type = 'FBO' OR scheme = 'FBO')", aid
         )["c"],
         "fbs": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL "
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 "
             "AND (type = 'FBS' OR scheme = 'FBS')", aid
         )["c"],
     }
@@ -109,7 +102,6 @@ def returns_page(
             "scheme": scheme,
             "place": place,
             "q": q,
-            "show": show,
             "totals": totals,
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
@@ -124,12 +116,11 @@ def returns_print(
     scheme: str = "all",
     place: str = "",
     q: str = "",
-    show: str = "ready",
     user: dict = Depends(current_user),
     account: dict = Depends(require_ozon_account),
 ):
     """Лист для печати: сборщик идёт с ним получать возвраты."""
-    items = _filter_returns(account, scheme, place, q, show)
+    items = _filter_returns(account, scheme, place, q)
     now = datetime.now(timezone.utc)
     db.log_event(
         "returns_print", account_id=account["id"], user=user, message=f"Лист возвратов: {len(items)} поз."
@@ -151,42 +142,15 @@ def returns_print(
             "printed_at": now,
             "scheme": scheme,
             "place": place,
-            "show": show,
         },
     )
-
-
-@router.post("/api/returns/taken")
-def api_returns_taken(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
-                      account: dict = Depends(require_ozon_account)):
-    """Отметить возвраты как забранные (локальная отметка, в Ozon не уходит)."""
-    check_csrf(request)
-    ids = [str(i) for i in (payload.get("ids") or []) if i]
-    if not ids:
-        raise HTTPException(status_code=400, detail="Не выбрано ни одного возврата")
-    taken = bool(payload.get("taken", True))
-    placeholders = ",".join("?" for _ in ids)
-    with db.write() as conn:
-        conn.execute(
-            f"UPDATE returns SET taken_at = ?, taken_by = ? WHERE account_id = ? AND id IN ({placeholders})",
-            [db.now_iso() if taken else None, user["login"] if taken else None, account["id"]] + ids,
-        )
-        db.log_event(
-            "returns_taken" if taken else "returns_untaken",
-            account_id=account["id"],
-            user=user,
-            message=f"{len(ids)} поз.",
-            payload={"ids": ids},
-            conn=conn,
-        )
-    return {"status": "ok", "message": ("Отмечено как забрано: " if taken else "Отметка снята: ") + str(len(ids))}
 
 
 @router.get("/api/returns/giveout.pdf")
 def api_giveout(user: dict = Depends(current_user), account: dict = Depends(require_ozon_account)):
     """Штрихкод Ozon на выдачу возвратов (FBS)."""
     try:
-        pdf = get_client(account).giveout_pdf()
+        pdf = ozon.get_client(account).giveout_pdf()
     except OzonError as exc:
         raise HTTPException(status_code=502, detail=f"Ozon не отдал документ выдачи: {exc.message}") from exc
     db.log_event(

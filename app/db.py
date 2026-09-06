@@ -181,8 +181,6 @@ CREATE TABLE IF NOT EXISTS returns (
     barcode           TEXT,
     is_ready          INTEGER NOT NULL DEFAULT 0,
     raw               TEXT,
-    taken_at          TEXT,
-    taken_by          TEXT,
     printed_at        TEXT,
     first_seen_at     TEXT,
     updated_at        TEXT,
@@ -454,7 +452,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     account_id = _default_account_id(conn)
 
     for table in legacy:
-        keep = [c for c in _columns(conn, table) if c != "account_id"]
+        # Переносим только те колонки, что есть и в новой схеме: какие-то могли
+        # исчезнуть (например, локальная отметка «забрали»).
+        target = {name for name, _definition in _schema_columns(table)}
+        keep = [c for c in _columns(conn, table) if c != "account_id" and c in target]
         columns = ", ".join(keep)
         conn.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
         # Индексы переезжают вместе со старой таблицей и мешают создать новые.
@@ -482,6 +483,43 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_missing_columns(conn, table)
 
 
+DATA_TABLES = (
+    "postings", "posting_items", "products", "product_barcodes", "returns",
+    "avito_orders", "avito_order_items",
+)
+KV_GENERATED_CLEANED = "generated_data_cleaned"
+
+
+def _drop_generated_data(conn: sqlite3.Connection) -> None:
+    """Убрать данные, оставшиеся от демо-режима.
+
+    До версии 1.3 панель без ключей показывала сгенерированные заказы, товары и
+    возвраты. Демо-режима больше нет, но записи могли осесть в базе. У кабинета
+    без ключей ничего настоящего быть не может, поэтому его данные удаляются —
+    один раз, чтобы случайно снятые ключи не стирали рабочую историю.
+    """
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_GENERATED_CLEANED,)).fetchone()
+    if done:
+        return
+    removed = 0
+    for row in conn.execute("SELECT id, marketplace, client_id, api_key FROM accounts").fetchall():
+        has_keys = bool((row["client_id"] or "").strip() and (row["api_key"] or "").strip())
+        if not has_keys and row["marketplace"] == "ozon":
+            # Первый кабинет Ozon мог работать на ключах из .env — они настоящие.
+            has_keys = bool(settings.ozon_client_id and settings.ozon_api_key)
+        if has_keys:
+            continue
+        for table in DATA_TABLES:
+            if _table_exists(conn, table):
+                removed += conn.execute(f"DELETE FROM {table} WHERE account_id = ?", (row["id"],)).rowcount or 0
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_GENERATED_CLEANED, now_iso()),
+    )
+    if removed:
+        log.warning("Удалено %s записей, сгенерированных прежним демо-режимом", removed)
+
+
 def init_db() -> None:
     conn = connect()
     with _write_lock:
@@ -493,6 +531,14 @@ def init_db() -> None:
             raise
         conn.execute("COMMIT")
     conn.executescript(SCHEMA)
+    with _write_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _drop_generated_data(conn)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
     _seed_admin()
 
 

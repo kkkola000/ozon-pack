@@ -11,17 +11,12 @@ from ..deps import ACCOUNT_COOKIE, check_csrf, current_user, templates
 router = APIRouter()
 
 
-def _demo() -> bool:
-    """Бейдж «ДЕМО» на странице входа: до входа кабинет ещё не выбран."""
-    return accounts.is_demo(accounts.default_account())
-
-
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/pack", error: str | None = None):
     if getattr(request.state, "user", None):
         return RedirectResponse(next or "/pack", status_code=303)
     return templates.TemplateResponse(
-        request, "login.html", {"request": request, "next": next, "error": error, "demo": _demo()}
+        request, "login.html", {"request": request, "next": next, "error": error}
     )
 
 
@@ -32,7 +27,7 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"request": request, "next": next, "error": "Слишком много попыток. Подождите 5 минут.", "demo": _demo()},
+            {"request": request, "next": next, "error": "Слишком много попыток. Подождите 5 минут."},
             status_code=429,
         )
 
@@ -43,7 +38,7 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         return templates.TemplateResponse(
             request,
             "login.html",
-            {"request": request, "next": next, "error": "Неверный логин или пароль", "demo": _demo()},
+            {"request": request, "next": next, "error": "Неверный логин или пароль"},
             status_code=401,
         )
 

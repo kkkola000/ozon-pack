@@ -80,7 +80,7 @@ def mask(value: str) -> str:
 def _row_to_dict(row: Any) -> dict:
     account = dict(row)
     account["marketplace_title"] = marketplace_title(account["marketplace"])
-    account["demo"] = is_demo(account)
+    account["configured"] = is_configured(account)
     return account
 
 
@@ -132,19 +132,12 @@ def credentials(account: dict | None) -> tuple[str, str, str]:
     return "", "", "none"
 
 
-def is_demo(account: dict | None) -> bool:
-    """Демо-режим: принудительно через OZON_DEMO=1 либо когда ключей нет."""
-    if settings.demo_forced:
-        return True
+def is_configured(account: dict | None) -> bool:
+    """Есть ли у кабинета ключи. Без них панель не показывает ничего."""
     if account is None:
-        return True
-    if account.get("marketplace") == "ozon":
-        client_id = (account.get("client_id") or "").strip()
-        api_key = (account.get("api_key") or "").strip()
-        if client_id and api_key:
-            return False
-        return not (settings.ozon_client_id and settings.ozon_api_key)
-    return not ((account.get("client_id") or "").strip() and (account.get("api_key") or "").strip())
+        return False
+    client_id, api_key, _source = credentials(account)
+    return bool(client_id and api_key)
 
 
 def status(account: dict | None) -> dict:
@@ -159,8 +152,7 @@ def status(account: dict | None) -> dict:
             "env": "заданы в файле .env",
             "none": "не заданы",
         }[source],
-        "demo": is_demo(account),
-        "demo_forced": settings.demo_forced,
+        "configured": bool(client_id and api_key),
     }
 
 

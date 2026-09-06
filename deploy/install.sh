@@ -9,7 +9,7 @@
 #
 # Настройки — переменными окружения или флагами:
 #   OZON_CLIENT_ID=123 OZON_API_KEY=xxx PORT=8080 sudo -E bash install.sh
-#   sudo bash install.sh --port 9000 --branch ИМЯ-ВЕТКИ --demo
+#   sudo bash install.sh --port 9000 --branch ИМЯ-ВЕТКИ
 #
 set -Eeuo pipefail
 
@@ -26,7 +26,6 @@ OZON_CLIENT_ID=${OZON_CLIENT_ID:-}
 OZON_API_KEY=${OZON_API_KEY:-}
 ADMIN_LOGIN=${ADMIN_LOGIN:-admin}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-OZON_DEMO=${OZON_DEMO:-0}
 SKIP_FIREWALL=${SKIP_FIREWALL:-0}
 SKIP_SERVICE=${SKIP_SERVICE:-0}
 NONINTERACTIVE=${NONINTERACTIVE:-0}
@@ -49,7 +48,6 @@ usage() {
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   --port N           порт панели (по умолчанию 8080)
   --user NAME        системный пользователь службы (по умолчанию ozon)
-  --demo             поставить в демо-режиме, без ключей Ozon
   --no-firewall      не трогать ufw
   --no-service       не ставить службу systemd (для контейнеров/WSL)
   --yes              ничего не спрашивать
@@ -65,7 +63,6 @@ while [ $# -gt 0 ]; do
     --dir) APP_DIR=$2; shift 2 ;;
     --port) PORT=$2; PORT_EXPLICIT=1; shift 2 ;;
     --user) APP_USER=$2; shift 2 ;;
-    --demo) OZON_DEMO=1; shift ;;
     --no-firewall) SKIP_FIREWALL=1; shift ;;
     --no-service) SKIP_SERVICE=1; shift ;;
     --yes|-y) NONINTERACTIVE=1; shift ;;
@@ -159,9 +156,9 @@ if [ -f "$APP_DIR/.env" ]; then
   fi
 else
   # Ключи можно ввести с терминала, даже когда скрипт пришёл через curl | bash
-  if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ] && [ "$OZON_DEMO" != "1" ] && [ "$NONINTERACTIVE" != "1" ] && [ -r /dev/tty ]; then
+  if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ] && [ "$NONINTERACTIVE" != "1" ] && [ -r /dev/tty ]; then
     printf '    Ключи Ozon Seller API (Настройки -> Seller API в личном кабинете).\n'
-    printf '    Можно пропустить — панель поднимется в демо-режиме.\n'
+    printf '    Можно пропустить и внести их потом в самой панели.\n'
     printf '    Client-Id: '; read -r OZON_CLIENT_ID </dev/tty || true
     printf '    Api-Key:   '; read -r OZON_API_KEY </dev/tty || true
   fi
@@ -169,14 +166,14 @@ else
 
   cp "$APP_DIR/.env.example" "$APP_DIR/.env"
   # Значения передаём через окружение, а не подстановкой в текст скрипта
-  OZON_CLIENT_ID="$OZON_CLIENT_ID" OZON_API_KEY="$OZON_API_KEY" OZON_DEMO="$OZON_DEMO" \
+  OZON_CLIENT_ID="$OZON_CLIENT_ID" OZON_API_KEY="$OZON_API_KEY" \
   PORT="$PORT" ADMIN_LOGIN="$ADMIN_LOGIN" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
   python3 - "$APP_DIR/.env" <<'PYEOF'
 import os, re, sys
 
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
-for key in ("OZON_CLIENT_ID", "OZON_API_KEY", "OZON_DEMO", "PORT", "ADMIN_LOGIN", "ADMIN_PASSWORD"):
+for key in ("OZON_CLIENT_ID", "OZON_API_KEY", "PORT", "ADMIN_LOGIN", "ADMIN_PASSWORD"):
     value = os.environ.get(key, "").strip()
     text = re.sub(rf"^{key}=.*$", key + "=" + value, text, flags=re.M)
 open(path, "w", encoding="utf-8").write(text)
@@ -187,9 +184,9 @@ chmod 600 "$APP_DIR/.env"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
 if grep -q '^OZON_CLIENT_ID=$' "$APP_DIR/.env" 2>/dev/null && grep -q '^OZON_API_KEY=$' "$APP_DIR/.env" 2>/dev/null; then
-  DEMO_MODE=1
+  NO_KEYS=1
 else
-  DEMO_MODE=0
+  NO_KEYS=0
 fi
 
 # ------------------------------------------------------------------ служба
@@ -256,13 +253,11 @@ else
   echo "  Вход:     прежние учётные данные (.env не менялся)"
 fi
 
-if [ "$DEMO_MODE" = "1" ]; then
+if [ "$NO_KEYS" = "1" ]; then
   cat <<SUMMARY
 
-${YELLOW}Панель работает в ДЕМО-режиме на сгенерированных данных.${OFF}
-Для боевой работы впишите ключи и перезапустите:
-  sudo nano $APP_DIR/.env      # OZON_CLIENT_ID и OZON_API_KEY
-  sudo systemctl restart $SERVICE
+${YELLOW}Ключи площадок не заданы — панель пока ничего не загружает.${OFF}
+Внесите их в самой панели: Настройки -> Кабинеты. Перезапуск не нужен.
 SUMMARY
 fi
 

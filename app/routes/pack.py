@@ -49,7 +49,7 @@ def _counters(account: dict) -> dict:
             (account_id,),
         )["c"],
         "returns_ready": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL",
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1",
             (account_id,),
         )["c"],
     }

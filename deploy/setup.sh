@@ -45,7 +45,6 @@ usage() {
   --port N           порт панели за nginx (по умолчанию 8080)
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   --branch NAME      ветка репозитория
-  --demo             демо-режим на сгенерированных данных
   --hsts             включить HSTS (браузеры запомнят https на 180 дней)
   -h, --help         справка
 
@@ -69,7 +68,6 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift 2 ;;
     --dir) APP_DIR=$2; shift 2 ;;
     --branch) BRANCH=$2; shift 2 ;;
-    --demo) EXTRA_INSTALL+=(--demo); shift ;;
     --hsts) EXTRA_SSL+=(--hsts); shift ;;
     -h|--help) usage ;;
     *) die "Неизвестный аргумент: $1 (--help для справки)" ;;
@@ -185,8 +183,8 @@ fi
 
 printf '  Каталог: %s\n' "$APP_DIR"
 if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ]; then
-  printf '\n%sДальше:%s внесите ключи Ozon в панели: Настройки -> Ключи Seller API.\n' "$BOLD" "$OFF"
-  printf 'До этого панель работает на демонстрационных данных.\n'
+  printf '\n%sДальше:%s добавьте кабинеты и ключи: Настройки -> Кабинеты.\n' "$BOLD" "$OFF"
+  printf 'Пока ключей нет, панель ничего не загружает.\n'
 fi
 printf '\nОбновление в будущем — этой же командой ещё раз.\n\n'
 [ "$SSL_OK" = "1" ]

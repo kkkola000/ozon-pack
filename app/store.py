@@ -50,7 +50,6 @@ RETURN_STATUS_LABELS = {
     "Utilized": "Утилизирован",
     "Cancelled": "Отменён",
 }
-RETURN_TAKEN_STATUSES = {"ReceivedBySeller", "Utilized", "Utilizing", "Cancelled"}
 
 
 def _text(value: Any) -> str | None:
@@ -262,7 +261,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
 
     now = db.now_iso()
     existing = conn.execute(
-        "SELECT first_seen_at, taken_at FROM returns WHERE account_id = ? AND id = ?", (account_id, return_id)
+        "SELECT first_seen_at FROM returns WHERE account_id = ? AND id = ?", (account_id, return_id)
     ).fetchone()
     conn.execute(
         """
@@ -313,9 +312,6 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             now,
         ),
     )
-    # Возврат уехал из пункта выдачи — снимаем локальную отметку «забрали».
-    if existing and existing["taken_at"] and sys_name in RETURN_TAKEN_STATUSES:
-        conn.execute("UPDATE returns SET is_ready = 0 WHERE account_id = ? AND id = ?", (account_id, return_id))
     return return_id
 
 

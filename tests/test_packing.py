@@ -15,7 +15,7 @@ def scan_all_items(account, user, posting):
     return packing.load_state(account, user)
 
 
-def test_full_flow_single_item(account, demo_data, user):
+def test_full_flow_single_item(account, sample_data, user):
     posting = pick_posting(positions=1)
     sku = posting["items"][0]["sku"]
 
@@ -41,7 +41,7 @@ def test_full_flow_single_item(account, demo_data, user):
     assert row["claim_user_id"] is None
 
 
-def test_wrong_product_is_blocked(account, demo_data, user):
+def test_wrong_product_is_blocked(account, sample_data, user):
     posting = pick_posting(positions=1)
     packing.select_posting(account, user, posting["posting_number"])
     foreign = db.query_one(
@@ -57,7 +57,7 @@ def test_wrong_product_is_blocked(account, demo_data, user):
     assert db.query_one("SELECT COUNT(*) c FROM events WHERE kind = 'scan_wrong_product'")["c"] == 1
 
 
-def test_extra_scan_of_same_product_warns(account, demo_data, user):
+def test_extra_scan_of_same_product_warns(account, sample_data, user):
     posting = pick_posting(positions=1)
     sku = posting["items"][0]["sku"]
     quantity = posting["items"][0]["quantity"]
@@ -71,7 +71,7 @@ def test_extra_scan_of_same_product_warns(account, demo_data, user):
     assert packing.load_state(account, user)["done"] == quantity
 
 
-def test_wrong_label_is_blocked(account, demo_data, user):
+def test_wrong_label_is_blocked(account, sample_data, user):
     first = pick_posting(positions=1)
     packing.select_posting(account, user, first["posting_number"])
     other = db.query_one(
@@ -85,7 +85,7 @@ def test_wrong_label_is_blocked(account, demo_data, user):
     assert packing.load_state(account, user)["active"]["posting_number"] == first["posting_number"]
 
 
-def test_label_before_all_items_is_blocked(account, demo_data, user):
+def test_label_before_all_items_is_blocked(account, sample_data, user):
     row = db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND status = ? AND items_count > 1 AND local_state = 'new' LIMIT 1",
         (account["id"], store.STATUS_AWAITING_DELIVER),
@@ -100,7 +100,7 @@ def test_label_before_all_items_is_blocked(account, demo_data, user):
     assert db.query_one("SELECT local_state FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["local_state"] == "new"
 
 
-def test_double_assembly_is_blocked(account, demo_data, user):
+def test_double_assembly_is_blocked(account, sample_data, user):
     posting = pick_posting(positions=1)
     packing.select_posting(account, user, posting["posting_number"])
     scan_all_items(account, user, posting)
@@ -111,7 +111,7 @@ def test_double_assembly_is_blocked(account, demo_data, user):
     assert again["sound"] == "error"
 
 
-def test_packed_posting_not_offered_again(account, demo_data, user):
+def test_packed_posting_not_offered_again(account, sample_data, user):
     posting = pick_posting(positions=1)
     sku = posting["items"][0]["sku"]
     packing.select_posting(account, user, posting["posting_number"])
@@ -122,7 +122,7 @@ def test_packed_posting_not_offered_again(account, demo_data, user):
     assert posting["posting_number"] not in [c["posting_number"] for c in candidates]
 
 
-def test_claim_blocks_second_packer(account, demo_data, user, other_user):
+def test_claim_blocks_second_packer(account, sample_data, user, other_user):
     posting = pick_posting(positions=1)
     packing.select_posting(account, user, posting["posting_number"])
 
@@ -131,14 +131,14 @@ def test_claim_blocks_second_packer(account, demo_data, user, other_user):
     assert user["login"] in result["message"]
 
 
-def test_awaiting_packaging_requires_ship_first(account, demo_data, user):
+def test_awaiting_packaging_requires_ship_first(account, sample_data, user):
     posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
     result = packing.scan(account, user, posting["posting_number"])
     assert result["action"] == "needs_ship"
     assert packing.load_state(account, user)["active"] is None
 
 
-def test_auto_ship_on_scan_setting(account, demo_data, user, monkeypatch):
+def test_auto_ship_on_scan_setting(account, sample_data, user, monkeypatch):
     monkeypatch.setattr(settings, "auto_ship_on_scan", True)
     posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
     result = packing.scan(account, user, posting["posting_number"])
@@ -146,13 +146,13 @@ def test_auto_ship_on_scan_setting(account, demo_data, user, monkeypatch):
     assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["status"] == store.STATUS_AWAITING_DELIVER
 
 
-def test_unknown_code(account, demo_data, user):
+def test_unknown_code(account, sample_data, user):
     result = packing.scan(account, user, "999999999999999")
     assert result["status"] == "error"
     assert result["action"] == "unknown"
 
 
-def test_release_frees_posting(account, demo_data, user, other_user):
+def test_release_frees_posting(account, sample_data, user, other_user):
     posting = pick_posting(positions=1)
     packing.select_posting(account, user, posting["posting_number"])
     packing.release(account, user)
@@ -162,7 +162,7 @@ def test_release_frees_posting(account, demo_data, user, other_user):
     assert taken["action"] == "posting_selected"
 
 
-def test_ship_moves_status(account, demo_data, user):
+def test_ship_moves_status(account, sample_data, user):
     posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
     result = packing.ship_posting(account, user, posting["posting_number"])
     assert result["status"] == "ok"
@@ -172,7 +172,7 @@ def test_ship_moves_status(account, demo_data, user):
     assert again["status"] == "ok"  # повторный вызов безопасен
 
 
-def test_label_marks_print(account, demo_data, user):
+def test_label_marks_print(account, sample_data, user):
     posting = pick_posting()
     pdf, name = packing.label_pdf(account, user, [posting["posting_number"]])
     assert pdf[:4] == b"%PDF"
@@ -180,7 +180,7 @@ def test_label_marks_print(account, demo_data, user):
     assert row["printed_at"] and row["print_count"] == 1
 
 
-def test_switching_posting_releases_previous(account, demo_data, user, other_user):
+def test_switching_posting_releases_previous(account, sample_data, user, other_user):
     first = pick_posting(positions=1)
     packing.select_posting(account, user, first["posting_number"])
     second = db.query_one(
@@ -194,7 +194,7 @@ def test_switching_posting_releases_previous(account, demo_data, user, other_use
     assert packing.select_posting(account, other_user, first["posting_number"])["action"] == "posting_selected"
 
 
-def test_packed_posting_leaves_list_after_shipment(account, demo_data, user):
+def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
     """Отгруженное отправление не должно оставаться во вкладке «Собранные»."""
     from app import sync
     from app.routes.orders import _list_postings
@@ -209,7 +209,7 @@ def test_packed_posting_leaves_list_after_shipment(account, demo_data, user):
     assert number in packed, "сразу после сборки отправление должно быть в списке"
 
     # Ozon отгрузил отправление — статус ушёл из «Ожидает отгрузки»
-    demo_data._postings[number]["status"] = "delivering"
+    sample_data._postings[number]["status"] = "delivering"
     sync.sync_postings()
 
     assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], number))["status"] == "delivering"
@@ -221,7 +221,7 @@ def test_packed_posting_leaves_list_after_shipment(account, demo_data, user):
     assert row["local_state"] == "packed" and row["packed_by"] == user["login"]
 
 
-def test_cancelled_posting_leaves_packed_list(account, demo_data, user):
+def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     """Отменённое отправление тоже не место в очереди на отгрузку."""
     import json
 
@@ -242,7 +242,7 @@ def test_cancelled_posting_leaves_packed_list(account, demo_data, user):
     assert number not in [p["posting_number"] for p in _list_postings(account, "packed")]
 
 
-def test_switching_cabinet_frees_the_claim(account, demo_data, user, other_user):
+def test_switching_cabinet_frees_the_claim(account, sample_data, user, other_user):
     """Сборщик ушёл в другой кабинет — отправление не должно висеть забронированным."""
     from app import accounts, sync
 

@@ -4,10 +4,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import accounts, db, options, security, sync
+from .. import accounts, avito, db, options, security, sync
 from ..avito import AvitoClient, AvitoError
 from ..deps import check_csrf, current_account, current_user, require_admin, require_ozon_account, templates
-from ..ozon import OzonClient, OzonError, get_client
+from .. import ozon
+from ..ozon import OzonClient, OzonError
 
 router = APIRouter()
 
@@ -32,8 +33,6 @@ EVENT_LABELS = {
     "ship": "Сборка в Ozon",
     "ship_error": "Ошибка сборки в Ozon",
     "returns_print": "Печать листа возвратов",
-    "returns_taken": "Возвраты забраны",
-    "returns_untaken": "Отметка снята",
     "returns_giveout": "Штрихкод выдачи",
     "returns_statuses_set": "Изменены статусы возвратов",
     "user_created": "Создан пользователь",
@@ -258,7 +257,7 @@ def api_create_account(request: Request, payload: dict = Body(...), admin: dict 
     worker = sync.get_worker()
     if worker:
         worker.request_sync()
-    hint = "" if client_id else " Кабинет пока в демо-режиме: добавьте ключи."
+    hint = "" if client_id else " Кабинет пока без ключей: данные не загружаются."
     return {
         "status": "ok",
         "message": f"Кабинет «{title}» добавлен.{hint}",
@@ -349,15 +348,13 @@ def api_test_account(account_id: int, request: Request, admin: dict = Depends(re
     account = accounts.get(account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Кабинет не найден")
-    if accounts.is_demo(account):
-        return {"status": "ok", "message": f"«{account['title']}»: демо-режим, ключи не используются"}
+    if not accounts.is_configured(account):
+        raise HTTPException(status_code=400, detail=f"«{account['title']}»: ключи не заданы")
     try:
         if account["marketplace"] == "avito":
-            from ..avito import get_client as get_avito_client
-
-            result = get_avito_client(account).ping()
+            result = avito.get_client(account).ping()
         else:
-            result = get_client(account).ping()
+            result = ozon.get_client(account).ping()
     except (OzonError, AvitoError) as exc:
         raise HTTPException(status_code=502, detail=f"{account['title']}: {exc}") from exc
     return {"status": "ok", "message": f"«{account['title']}»: ключи работают", "result": result}

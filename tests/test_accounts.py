@@ -10,38 +10,45 @@ def ozon_account():
     return accounts.default_account()
 
 
+# В тестах фабрики клиентов подменены подделками — здесь нужна настоящая.
+_real_ozon_client = ozon.get_client
+_real_avito_client = avito.get_client
+
+
 def test_default_account_created_on_init(ozon_account):
     assert ozon_account is not None
     assert ozon_account["marketplace"] == "ozon"
     assert ozon_account["active"] == 1
 
 
-def test_demo_without_keys(monkeypatch, ozon_account):
-    monkeypatch.setattr(settings, "demo_forced", False)
+def test_cabinet_without_keys_has_no_client(monkeypatch, ozon_account):
+    """Без ключей панель не выдумывает данные, а честно отказывает."""
     monkeypatch.setattr(settings, "ozon_client_id", "")
     monkeypatch.setattr(settings, "ozon_api_key", "")
-    assert accounts.is_demo(ozon_account)
-    assert accounts.credentials(ozon_account)[2] == "none"
-    assert isinstance(ozon.get_client(ozon_account), ozon.DemoOzonClient)
+    accounts.update(ozon_account["id"], client_id="", api_key="")
+    account = accounts.get(ozon_account["id"])
+
+    assert not accounts.is_configured(account)
+    assert accounts.credentials(account)[2] == "none"
+    with pytest.raises(ozon.OzonError) as failure:
+        _real_ozon_client(account)
+    assert "ключи" in str(failure.value)
 
 
 def test_panel_keys_win_over_env(monkeypatch, ozon_account):
-    monkeypatch.setattr(settings, "demo_forced", False)
     monkeypatch.setattr(settings, "ozon_client_id", "env-id")
     monkeypatch.setattr(settings, "ozon_api_key", "env-key")
-    assert accounts.credentials(ozon_account) == ("env-id", "env-key", "env")
+    accounts.update(ozon_account["id"], client_id="", api_key="")
+    assert accounts.credentials(accounts.get(ozon_account["id"])) == ("env-id", "env-key", "env")
 
     accounts.update(ozon_account["id"], client_id="panel-id", api_key="panel-key")
     updated = accounts.get(ozon_account["id"])
     assert accounts.credentials(updated) == ("panel-id", "panel-key", "panel")
-    assert not accounts.is_demo(updated)
-    client = ozon.get_client(updated)
-    assert not isinstance(client, ozon.DemoOzonClient)
-    assert client.client_id == "panel-id"
+    assert accounts.is_configured(updated)
+    assert _real_ozon_client(updated).client_id == "panel-id"
 
 
-def test_clear_keys_returns_to_env_then_demo(monkeypatch, ozon_account):
-    monkeypatch.setattr(settings, "demo_forced", False)
+def test_clear_keys_returns_to_env_then_nothing(monkeypatch, ozon_account):
     monkeypatch.setattr(settings, "ozon_client_id", "env-id")
     monkeypatch.setattr(settings, "ozon_api_key", "env-key")
     accounts.update(ozon_account["id"], client_id="panel-id", api_key="panel-key")
@@ -51,15 +58,7 @@ def test_clear_keys_returns_to_env_then_demo(monkeypatch, ozon_account):
 
     monkeypatch.setattr(settings, "ozon_client_id", "")
     monkeypatch.setattr(settings, "ozon_api_key", "")
-    assert accounts.is_demo(accounts.get(ozon_account["id"]))
-
-
-def test_forced_demo_ignores_keys(monkeypatch, ozon_account):
-    monkeypatch.setattr(settings, "demo_forced", True)
-    accounts.update(ozon_account["id"], client_id="panel-id", api_key="panel-key")
-    account = accounts.get(ozon_account["id"])
-    assert accounts.is_demo(account), "OZON_DEMO=1 должен перекрывать любые ключи"
-    assert isinstance(ozon.get_client(account), ozon.DemoOzonClient)
+    assert not accounts.is_configured(accounts.get(ozon_account["id"]))
 
 
 def test_key_is_masked():
@@ -103,7 +102,7 @@ def test_unknown_marketplace_rejected():
 
 
 # ------------------------------------------------------------------ изоляция кабинетов
-def test_two_cabinets_keep_data_apart(demo_data):
+def test_two_cabinets_keep_data_apart(sample_data):
     """Главное свойство кабинетов: товар одного магазина не виден в другом."""
     first = accounts.default_account()
     second_id = accounts.create("ozon", "Второй магазин")
@@ -131,7 +130,7 @@ def test_two_cabinets_keep_data_apart(demo_data):
     ), "чужой штрихкод не должен считаться товаром кабинета"
 
 
-def test_deleting_cabinet_removes_its_data(demo_data):
+def test_deleting_cabinet_removes_its_data(sample_data):
     second_id = accounts.create("ozon", "Временный")
     sync.sync_account(accounts.get(second_id))
     assert db.query_one("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", (second_id,))["c"]
@@ -143,8 +142,17 @@ def test_deleting_cabinet_removes_its_data(demo_data):
         assert left == 0, f"в {table} остались данные удалённого кабинета"
 
 
-def test_avito_cabinet_uses_avito_client():
-    account_id = accounts.create("avito", "Avito-магазин")
-    account = accounts.get(account_id)
-    assert accounts.is_demo(account)
-    assert isinstance(avito.get_client(account), avito.DemoAvitoClient)
+def test_avito_cabinet_without_keys_has_no_client():
+    account = accounts.get(accounts.create("avito", "Avito-магазин"))
+    assert not accounts.is_configured(account)
+    with pytest.raises(avito.AvitoError) as failure:
+        _real_avito_client(account)
+    assert "ключи" in str(failure.value)
+
+
+def test_avito_cabinet_with_keys_gets_client():
+    account = accounts.get(accounts.create("avito", "Avito-магазин", "id", "secret"))
+    assert accounts.is_configured(account)
+    client = _real_avito_client(account)
+    assert client.client_id == "id"
+    client.close()

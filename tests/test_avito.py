@@ -11,11 +11,12 @@ from fastapi.testclient import TestClient
 
 from app import accounts, avito, db, store, sync
 from app.main import app
+from tests import fakes
 
 
 @pytest.fixture
 def avito_account():
-    account = accounts.get(accounts.create("avito", "Avito демо"))
+    account = accounts.get(accounts.create("avito", "Avito", "test-client", "test-secret"))
     sync.sync_avito(account)
     return account
 
@@ -137,7 +138,7 @@ def test_double_confirm_is_reported_not_silent(client, avito_account):
 
 def test_order_from_another_cabinet_is_not_touched(client, avito_account):
     """Чужой заказ не подтвердить: кабинеты изолированы."""
-    other = accounts.get(accounts.create("avito", "Второй Avito"))
+    other = accounts.get(accounts.create("avito", "Второй Avito", "id-2", "secret-2"))
     sync.sync_avito(other)
     foreign = db.query_one(
         "SELECT id FROM avito_orders WHERE account_id = ? LIMIT 1", (other["id"],)
@@ -227,7 +228,7 @@ def test_one_broken_cabinet_does_not_stop_others(avito_account, monkeypatch):
     def boom(*args, **kwargs):
         raise ozon.OzonError("нет связи")
 
-    monkeypatch.setattr(ozon.DemoOzonClient, "posting_list", boom)
+    monkeypatch.setattr(fakes.FakeOzonClient, "posting_list", boom)
     result = sync.sync_all()
     assert result.get("avito"), "заказы Avito должны загрузиться несмотря на сбой Ozon"
     assert result.get("errors")
@@ -378,7 +379,7 @@ def test_returns_are_requested_without_creation_window(avito_account, monkeypatc
         calls.append({"statuses": list(statuses or []), "date_from": date_from})
         return []
 
-    monkeypatch.setattr(avito.DemoAvitoClient, "orders_all", fake_orders_all)
+    monkeypatch.setattr(fakes.FakeAvitoClient, "orders_all", fake_orders_all)
     sync.sync_avito(avito_account)
 
     assert len(calls) == 2, "рабочие статусы и возвраты должны запрашиваться отдельно"

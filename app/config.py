@@ -60,10 +60,6 @@ class Settings:
     # На сколько дней назад просить заказы Avito при синхронизации.
     avito_days_back: int = field(default_factory=lambda: _int("AVITO_DAYS_BACK", 30))
 
-    # Демо-режим включён принудительно через OZON_DEMO=1. Если ключей нет,
-    # панель уходит в демо и без этого флага — см. credentials.is_demo().
-    demo_forced: bool = field(default_factory=lambda: _bool("OZON_DEMO", False))
-
     # --- Приложение ---
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", "").strip())
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "data" / "ozon-pack.db")))

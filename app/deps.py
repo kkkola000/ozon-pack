@@ -134,7 +134,7 @@ def nav_counters(request: Request) -> dict:
             (account_id,),
         ),
         "returns": count(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 AND taken_at IS NULL",
+            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1",
             (account_id,),
         ),
         "avito_confirm": 0,
@@ -163,10 +163,11 @@ def static_version() -> str:
 _static_version: str | None = None
 
 
-def demo_mode(request: Request) -> bool:
+def account_ready(request: Request) -> bool:
+    """Есть ли у текущего кабинета ключи — иначе панели нечего показывать."""
     from . import accounts
 
-    return accounts.is_demo(current_account(request))
+    return accounts.is_configured(current_account(request))
 
 
 def account_switcher(request: Request) -> dict:
@@ -181,7 +182,7 @@ def account_switcher(request: Request) -> dict:
 
 templates.env.globals["build_label"] = build_label
 templates.env.globals["nav_counters"] = nav_counters
-templates.env.globals["demo_mode"] = demo_mode
+templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version
 

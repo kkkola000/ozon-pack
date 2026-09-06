@@ -50,7 +50,9 @@
       <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
     {% endif %}
   </nav>
-  {% if demo_mode(request) %}<span class="badge warn" title="Работа на сгенерированных данных, площадка не опрашивается">ДЕМО</span>{% endif %}
+  {% if not account_ready(request) %}
+    <a class="badge warn" href="/settings" title="Панель не загружает заказы, пока не заданы ключи площадки">НЕТ КЛЮЧЕЙ</a>
+  {% endif %}
   <div class="user">{% if user %}<b>{{ user.login }}</b> · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 

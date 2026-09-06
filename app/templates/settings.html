@@ -17,7 +17,7 @@
         <div class="head">
           <b>{{ cab.title }}</b>
           <span class="tag">{{ cab.marketplace_title }}</span>
-          {% if cab.status.demo %}<span class="badge warn">ДЕМО</span>{% else %}<span class="badge ok">Боевой</span>{% endif %}
+          {% if cab.status.configured %}<span class="badge ok">Подключён</span>{% else %}<span class="badge warn">Нет ключей</span>{% endif %}
           {% if account and cab.id == account.id %}<span class="tag success">текущий</span>{% endif %}
           {% if not cab.active %}<span class="tag">выключен</span>{% endif %}
           <span class="grow"></span>
@@ -93,13 +93,6 @@
     {% endif %}
   </dl>
 
-  {% if ozon.demo_forced %}
-    <div class="banner warning" style="font-size:14px;margin-top:12px">
-      В файле .env стоит OZON_DEMO=1 — панель принудительно работает на тестовых данных.
-      Уберите этот флаг и перезапустите службу, чтобы ключи заработали.
-    </div>
-  {% endif %}
-
   {% if not account or account.marketplace == 'ozon' %}
   <h2 style="margin-top:18px">Печать стикеров</h2>
   <p class="muted small" style="margin-top:0">
@@ -107,16 +100,9 @@
     В Chrome и Edge он печатается сам; в Safari открывается в отдельной вкладке —
     печатать PDF из скрытого окна Safari не умеет, выходит пустой лист.
   </p>
-  {% if demo_mode(request) %}
-    <div class="banner warning" style="font-size:14px; margin: 12px 0">
-      Панель работает в демо-режиме — печатается тестовый стикер, а не файл Ozon.
-      Внесите ключи Seller API выше, и стикеры пойдут настоящие.
-    </div>
-  {% else %}
-    <div class="banner ok" style="font-size:14px; margin: 12px 0">
-      Печатается оригинальный стикер Ozon.
-    </div>
-  {% endif %}
+  <div class="banner ok" style="font-size:14px; margin: 12px 0">
+    Печатается оригинальный стикер Ozon.
+  </div>
   <p class="muted small">
     Если на бумаге стикер выглядит иначе, дело в настройках печати браузера:
     размер бумаги должен совпадать с этикеткой, масштаб 100 %, поля «нет»,

@@ -102,12 +102,11 @@ def test_everything_lands_in_one_cabinet(legacy_db):
         assert [row["account_id"] for row in rows] == [account["id"]], table
 
 
-def test_keys_move_from_kv_into_cabinet(legacy_db, monkeypatch):
+def test_keys_move_from_kv_into_cabinet(legacy_db):
     """Ключи, введённые в прошлой версии, продолжают работать после обновления."""
-    monkeypatch.setattr(settings, "demo_forced", False)
     account = accounts.default_account()
     assert accounts.credentials(account) == ("123456", "secret-key", "panel")
-    assert not accounts.is_demo(account)
+    assert accounts.is_configured(account)
 
 
 def test_old_pack_state_belongs_to_cabinet(legacy_db):
@@ -142,3 +141,32 @@ def test_new_columns_are_added_to_existing_tables(legacy_db):
     db.init_db()
     columns = db._columns(conn, "avito_orders")
     assert "return_status" in columns and "return_tracking" in columns
+
+
+def test_generated_data_is_purged_from_cabinets_without_keys(legacy_db):
+    """Записи, оставшиеся от прежнего демо-режима, удаляются при обновлении."""
+    account = accounts.default_account()
+    assert db.query_one("SELECT COUNT(*) AS c FROM postings")["c"] == 1
+
+    # Кабинет без ключей: всё, что в нём лежит, могло быть только сгенерировано.
+    accounts.update(account["id"], client_id="", api_key="")
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_GENERATED_CLEANED,))
+    db.init_db()
+
+    for table in ("postings", "posting_items", "products", "product_barcodes", "returns"):
+        assert db.query_one(f"SELECT COUNT(*) AS c FROM {table}")["c"] == 0, table
+
+
+def test_purge_runs_only_once(legacy_db):
+    """Снятые ключи не должны стирать рабочую историю при каждом запуске."""
+    account = accounts.default_account()
+    accounts.update(account["id"], client_id="", api_key="")
+    db.init_db()  # первая чистка уже прошла в фикстуре — эта ничего не трогает
+
+    db.execute(
+        "INSERT INTO postings(account_id, posting_number, status, local_state, first_seen_at, updated_at)"
+        " VALUES(?, '999-1-1', 'awaiting_deliver', 'packed', '2026-01-01', '2026-01-01')",
+        (account["id"],),
+    )
+    db.init_db()
+    assert db.query_one("SELECT COUNT(*) AS c FROM postings WHERE posting_number = '999-1-1'")["c"] == 1

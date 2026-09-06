@@ -1,12 +1,12 @@
-"""Минимальный генератор PDF без внешних зависимостей.
+"""Минимальный генератор PDF — только для подделок API в тестах.
 
-Используется только в демо-режиме (стикер отправления и лист выдачи возвратов):
-в боевом режиме PDF присылает Ozon. Кириллица транслитерируется — чтобы не
-тащить встраивание шрифтов ради демонстрационной этикетки.
+Панель никогда не рисует стикеры сама: и Ozon, и Avito присылают готовый файл.
+Здесь же нужен хоть какой-то валидный PDF, чтобы проверять печать целиком.
+Кириллица транслитерируется — встраивать шрифты ради теста незачем.
 """
 from __future__ import annotations
 
-from .barcode import bars, total_modules
+from tests.code128 import bars, total_modules
 
 MM = 72.0 / 25.4
 
@@ -106,13 +106,13 @@ def _pdf(pages: list[tuple[float, float, bytes]]) -> bytes:
 
 
 def make_label_pdf(pages: list[dict]) -> bytes:
-    """Демо-стикер отправления 75×120 мм."""
+    """Тестовый стикер отправления 75×120 мм."""
     width, height = 75 * MM, 120 * MM
     rendered = []
     for page in pages:
         c = _Content()
         c.rect(4, 4, width - 8, height - 8, fill=False)
-        c.text(10, height - 22, 9, "DEMO / ТЕСТОВЫЙ СТИКЕР")
+        c.text(10, height - 22, 9, "ТЕСТОВЫЙ СТИКЕР")
         c.line(8, height - 28, width - 8, height - 28)
         c.text(10, height - 48, 13, page.get("tpl") or "Ozon", bold=True)
         c.text(10, height - 66, 10, page.get("city") or "")
@@ -132,10 +132,10 @@ def make_label_pdf(pages: list[dict]) -> bytes:
 
 
 def make_giveout_pdf(code: str) -> bytes:
-    """Демо-штрихкод на выдачу возвратов, A4."""
+    """Тестовый штрихкод на выдачу возвратов, A4."""
     width, height = 210 * MM, 297 * MM
     c = _Content()
-    c.text(40, height - 60, 18, "ВЫДАЧА ВОЗВРАТОВ (DEMO)", bold=True)
+    c.text(40, height - 60, 18, "ВЫДАЧА ВОЗВРАТОВ (ТЕСТ)", bold=True)
     c.text(40, height - 84, 11, "Покажите штрихкод сотруднику пункта выдачи")
     c.barcode(code, 40, height - 190, width - 80, 80)
     c.text(40, height - 208, 14, code, bold=True)

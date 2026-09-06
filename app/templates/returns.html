@@ -8,7 +8,6 @@
       <div class="stat"><div class="muted small">Готовы к выдаче</div><div class="value">{{ totals.ready }}</div></div>
       <div class="stat"><div class="muted small">FBO</div><div class="value">{{ totals.fbo }}</div></div>
       <div class="stat"><div class="muted small">FBS</div><div class="value">{{ totals.fbs }}</div></div>
-      <div class="stat"><div class="muted small">Забрано</div><div class="value muted">{{ totals.taken }}</div></div>
     </div>
     <div class="row">
       <span class="small muted">{% if sync.last_ok %}Обновлено: {{ sync.last_ok | local_dt }}{% endif %}</span>
@@ -18,6 +17,8 @@
 
   <div class="small muted no-print" style="margin-top:10px">
     Загружаются возвраты в статусе <b>{{ wanted_labels | join(', ') }}</b> — то, что можно забрать в пункте выдачи.
+    Забранный возврат Ozon переводит дальше сам, и он пропадает из списка при ближайшем
+    обновлении — отмечать вручную ничего не нужно.
     {% if hidden_statuses %}
       <br>При последней синхронизации Ozon вернул и другие:
       {% for label, count in hidden_statuses %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
@@ -27,11 +28,6 @@
   </div>
 
   <form class="row no-print" method="get" action="/returns" style="margin-top:14px">
-    <select name="show">
-      <option value="ready" {{ 'selected' if show == 'ready' }}>Готовы к выдаче</option>
-      <option value="taken" {{ 'selected' if show == 'taken' }}>Забранные</option>
-      <option value="all" {{ 'selected' if show == 'all' }}>Все</option>
-    </select>
     <select name="scheme">
       <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
       <option value="FBO" {{ 'selected' if scheme == 'FBO' }}>Только FBO</option>
@@ -43,16 +39,13 @@
     </select>
     <input type="search" name="q" value="{{ q }}" placeholder="Товар, артикул, заказ, штрихкод…" style="width:240px">
     <button class="btn" type="submit">Показать</button>
-    {% if q or place or scheme != 'all' or show != 'ready' %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
+    {% if q or place or scheme != 'all' %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
   </form>
 
   <div class="row no-print" style="margin-top:12px">
-    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
-    <span class="muted small" id="selected-count">выбрано: 0</span>
     <span class="grow"></span>
-    <button class="btn" id="btn-taken" disabled>Отметить забранными</button>
     <a class="btn primary" id="btn-print"
-       href="/returns/print?show={{ show }}&scheme={{ scheme }}&place={{ place }}&q={{ q }}" target="_blank">
+       href="/returns/print?scheme={{ scheme }}&place={{ place }}&q={{ q }}" target="_blank">
       Печать листа ({{ items | length }})
     </a>
   </div>
@@ -61,7 +54,6 @@
   <table style="margin-top:10px">
     <thead>
       <tr>
-        <th style="width:34px"></th>
         <th style="width:130px">Возврат</th>
         <th>Товар</th>
         <th style="width:130px">Артикул / SKU</th>
@@ -72,8 +64,7 @@
     </thead>
     <tbody>
       {% for r in items %}
-      <tr class="{{ 'done' if r.taken_at }}">
-        <td><input type="checkbox" class="pick" value="{{ r.id }}"></td>
+      <tr>
         <td>
           <div class="mono">{{ r.id }}</div>
           <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
@@ -94,7 +85,6 @@
         </td>
         <td class="small">
           <div>{{ r.status_label or '—' }}</div>
-          {% if r.taken_at %}<div class="muted">Забрал: {{ r.taken_by }} {{ r.taken_at | local_dt }}</div>{% endif %}
           {% if r.storage_sum %}<div class="muted">Хранение: {{ r.storage_sum }} ₽</div>{% endif %}
         </td>
       </tr>

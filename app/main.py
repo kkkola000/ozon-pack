@@ -25,9 +25,9 @@ PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    demo = [a["title"] for a in accounts.all_accounts(active_only=True) if accounts.is_demo(a)]
-    if demo:
-        log.warning("Демо-режим (данные генерируются локально): %s", ", ".join(demo))
+    without_keys = [a["title"] for a in accounts.all_accounts(active_only=True) if not accounts.is_configured(a)]
+    if without_keys:
+        log.warning("Кабинеты без ключей (данные не загружаются): %s", ", ".join(without_keys))
     sync.start_worker()
     yield
     worker = sync.get_worker()
@@ -74,8 +74,8 @@ def healthz():
     active = accounts.all_accounts(active_only=True)
     return {
         "status": "ok",
-        "demo": all(accounts.is_demo(a) for a in active) if active else True,
         "accounts": len(active),
+        "configured": sum(1 for a in active if accounts.is_configured(a)),
         "version": get_version(),
         "commit": get_commit(),
     }

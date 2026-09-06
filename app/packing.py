@@ -17,7 +17,8 @@ from typing import Any
 
 from . import db, store
 from .config import settings
-from .ozon import OzonError, get_client
+from . import ozon
+from .ozon import OzonError
 
 POSTING_NUMBER_RE = re.compile(r"^\d{5,}-\d{3,}-\d{1,3}$")
 
@@ -283,7 +284,7 @@ def scan(account: dict, user: dict, code: str) -> ScanResult:
 def _fetch_by_barcode(account: dict, code: str) -> dict | None:
     """Штрихкод стикера может быть неизвестен локально — спрашиваем Ozon."""
     try:
-        raw = get_client(account).posting_by_barcode(code)
+        raw = ozon.get_client(account).posting_by_barcode(code)
     except OzonError:
         return None
     if not raw:
@@ -680,7 +681,7 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
         return {"status": "error", "message": f"{posting_number}: нет состава заказа, обновите данные"}
     package = [{"product_id": int(item["sku"]), "quantity": int(item["quantity"])} for item in items]
 
-    client = get_client(account)
+    client = ozon.get_client(account)
     try:
         result = client.ship(posting_number, [package])
     except OzonError as exc:
@@ -721,7 +722,7 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
 
 def label_pdf(account: dict, user: dict, posting_numbers: list[str]) -> tuple[bytes, str]:
     """Стикер(ы) отправления + отметка о печати."""
-    pdf, filename = get_client(account).package_label(posting_numbers)
+    pdf, filename = ozon.get_client(account).package_label(posting_numbers)
     now = db.now_iso()
     with db.write() as conn:
         for number in posting_numbers:

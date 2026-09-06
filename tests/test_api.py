@@ -9,7 +9,7 @@ from app.main import app
 
 
 @pytest.fixture
-def client(demo_data):
+def client(sample_data):
     with TestClient(app, follow_redirects=False) as test_client:
         yield test_client
 
@@ -67,12 +67,13 @@ def test_packer_cannot_open_settings(client):
     assert client.get("/pack").status_code == 200
 
 
-def test_returns_taken_flow(client):
+def test_marking_returns_taken_is_gone(client):
+    """Отметку «забрали» убрали: статус меняет сама площадка."""
     csrf = login(client)
     return_id = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
-    response = client.post("/api/returns/taken", json={"ids": [return_id], "taken": True}, headers={"X-CSRF-Token": csrf})
-    assert response.status_code == 200
-    assert db.query_one("SELECT taken_at FROM returns WHERE id = ?", (return_id,))["taken_at"]
+    response = client.post("/api/returns/taken", json={"ids": [return_id]}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 404
+    assert "Отметить забранными" not in client.get("/returns").text
 
 
 def test_label_pdf(client):

@@ -12,7 +12,6 @@
       <h2 style="font-size:22px">📦 Ozon<span style="color:var(--accent)">Pack</span></h2>
       <p class="muted small">Панель сборки FBS и возвратов</p>
       {% if error %}<div class="banner error" style="font-size:15px">{{ error }}</div>{% endif %}
-      {% if demo %}<div class="banner warning" style="font-size:14px">Демо-режим: данные сгенерированы, Ozon не опрашивается.</div>{% endif %}
       <form method="post" action="/login" style="display:grid; gap:12px; margin-top:14px">
         <input type="hidden" name="next" value="{{ next }}">
         <input type="text" name="login" placeholder="Логин" autocomplete="username" autofocus required>
