@@ -267,16 +267,10 @@ def api_avito_sync(request: Request, user: dict = Depends(current_user),
 # ================================================================== возвраты
 # «Возврат: заберите заказ» — заказ вернулся и лежит в пункте выдачи. Только
 # такие возвраты панель и хранит: пока посылка едет обратно, забирать нечего.
-RETURN_VIEWS = {
-    "ready": ("Заберите заказ", "taken_at IS NULL", ()),
-    "taken": ("Забранные", "taken_at IS NOT NULL", ()),
-}
-
-
-def _list_returns(account: dict, show: str = "ready", search: str = "", limit: int = 500) -> list[dict]:
-    _title, condition, extra = RETURN_VIEWS.get(show, RETURN_VIEWS["ready"])
-    params: list = [account["id"], avito.STATUS_ON_RETURN, *extra]
-    sql = f"SELECT * FROM avito_orders WHERE account_id = ? AND status = ? AND {condition}"
+# Отмеченные забранными уходят из списка — отдельного раздела для них нет.
+def _list_returns(account: dict, search: str = "", limit: int = 500) -> list[dict]:
+    params: list = [account["id"], avito.STATUS_ON_RETURN]
+    sql = "SELECT * FROM avito_orders WHERE account_id = ? AND status = ? AND taken_at IS NULL"
     if search:
         like = f"%{search.strip()}%"
         sql += """
@@ -314,16 +308,14 @@ def _returns_skipped(account: dict) -> list[tuple[str, int]]:
     return sorted(
         (avito.RETURN_STATUS_LABELS.get(code, code), count)
         for code, count in histogram.items()
-        if code != avito.RETURN_READY
+        if not avito.is_ready_for_pickup(code)
     )
 
 
 @router.get("/avito/returns", response_class=HTMLResponse)
-def avito_returns_page(request: Request, show: str = "ready", q: str = "",
+def avito_returns_page(request: Request, q: str = "",
                        user: dict = Depends(current_user),
                        account: dict = Depends(require_avito_account)):
-    if show not in RETURN_VIEWS:
-        show = "ready"
     return templates.TemplateResponse(
         request,
         "avito_returns.html",
@@ -331,11 +323,9 @@ def avito_returns_page(request: Request, show: str = "ready", q: str = "",
             "request": request,
             "user": user,
             "account": account,
-            "items": _list_returns(account, show, q),
-            "views": RETURN_VIEWS,
+            "items": _list_returns(account, q),
             "totals": _return_totals(account),
             "skipped": _returns_skipped(account),
-            "show": show,
             "q": q,
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
@@ -345,13 +335,11 @@ def avito_returns_page(request: Request, show: str = "ready", q: str = "",
 
 
 @router.get("/avito/returns/print", response_class=HTMLResponse)
-def avito_returns_print(request: Request, show: str = "ready", q: str = "",
+def avito_returns_print(request: Request, q: str = "",
                         user: dict = Depends(current_user),
                         account: dict = Depends(require_avito_account)):
     """Лист для печати: сборщик идёт с ним забирать возвраты."""
-    if show not in RETURN_VIEWS:
-        show = "ready"
-    items = _list_returns(account, show, q)
+    items = _list_returns(account, q)
     now = datetime.now(timezone.utc)
     db.log_event(
         "avito_returns_print", account_id=account["id"], user=user,
@@ -372,7 +360,6 @@ def avito_returns_print(request: Request, show: str = "ready", q: str = "",
             "account": account,
             "items": items,
             "printed_at": now,
-            "show": show,
         },
     )
 

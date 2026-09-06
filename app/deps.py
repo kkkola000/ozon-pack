@@ -116,9 +116,11 @@ def nav_counters(request: Request) -> dict:
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'",
                 (account_id,),
             ),
+            # В таблице лежат только возвраты, готовые к выдаче, — фильтровать
+            # ещё и по return_status незачем: написание значения у Avito плавает.
             "avito_returns": count(
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return' "
-                "AND return_status = 'ready_to_pickup' AND taken_at IS NULL",
+                "AND taken_at IS NULL",
                 (account_id,),
             ),
         }

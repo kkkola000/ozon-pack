@@ -245,7 +245,8 @@ def test_only_returns_ready_for_pickup_are_stored(avito_account):
     """Забрать можно только то, что доехало до пункта выдачи — остальное не храним."""
     rows = returns_of(avito_account)
     assert rows, "возвраты не загрузились"
-    assert {row["return_status"] for row in rows} == {avito.RETURN_READY}
+    # Оба написания, которые встречаются у Avito, считаются готовыми к выдаче.
+    assert all(avito.is_ready_for_pickup(row["return_status"]) for row in rows)
 
     # Avito отдал и возвраты в пути — панель их отбросила, но не молча.
     client = avito.get_client(avito_account)
@@ -292,13 +293,14 @@ def test_page_explains_what_was_skipped(client, avito_account):
     assert "в панель не попадают" in page.text
 
 
-def test_no_filter_for_returns_in_transit(client):
-    """Возврата в пути в панели нет вовсе — и показать его нечем."""
+def test_returns_page_has_no_filters(client):
+    """В разделе только то, что надо забрать: ни фильтров, ни вкладки «Забранные»."""
     page = client.get("/avito/returns")
-    assert 'value="transit"' not in page.text
-    assert 'value="all"' not in page.text
-    # Неизвестный фильтр не должен открывать лазейку — откатываемся к готовым.
-    assert client.get("/avito/returns?show=transit").status_code == 200
+    # В шапке остаётся переключатель кабинетов — проверяем именно фильтр списка.
+    assert 'name="show"' not in page.text
+    assert "Забранные" not in page.text
+    # Старая ссылка с фильтром не должна ничего ломать.
+    assert client.get("/avito/returns?show=taken").status_code == 200
 
 
 def test_mark_return_taken(client, avito_account):
@@ -311,9 +313,8 @@ def test_mark_return_taken(client, avito_account):
         (avito_account["id"], ready["id"]),
     )
     assert row["taken_at"] and row["taken_by"] == "admin"
-    # Забранный возврат уходит из списка «заберите заказ»
+    # Забранный возврат уходит из списка — отдельного раздела для него нет.
     assert (ready["marketplace_id"] or ready["id"]) not in client.get("/avito/returns").text
-    assert (ready["marketplace_id"] or ready["id"]) in client.get("/avito/returns?show=taken").text
 
 
 def test_taken_mark_survives_sync(client, avito_account):
@@ -386,3 +387,38 @@ def test_returns_are_requested_without_creation_window(avito_account, monkeypatc
     assert work["date_from"] is not None
     assert set(returns["statuses"]) == set(avito.RETURN_STATUSES)
     assert returns["date_from"] is None
+
+
+def test_live_api_spelling_ready_for_pickup_is_accepted(avito_account):
+    """Боевой Avito отдаёт ready_for_pickup, схема обещает ready_to_pickup.
+
+    Панель обязана принимать оба написания: иначе возвраты, которые можно
+    забрать, молча отбрасываются.
+    """
+    client = avito.get_client(avito_account)
+    returns = [o for o in client._orders.values() if o["status"] == avito.STATUS_ON_RETURN]
+    assert returns
+    for order in returns:
+        order["returnPolicy"] = {"returnStatus": "ready_for_pickup", "trackingNumber": "RT-LIVE"}
+
+    sync.sync_avito(avito_account)
+    stored = db.query(
+        "SELECT return_status FROM avito_orders WHERE account_id = ? AND status = ?",
+        (avito_account["id"], avito.STATUS_ON_RETURN),
+    )
+    assert len(stored) == len(returns), "возвраты с написанием ready_for_pickup потерялись"
+    assert {row["return_status"] for row in stored} == {"ready_for_pickup"}
+
+    # И подпись у них человеческая, а не сырой код из API.
+    view = store.avito_view(db.query_one(
+        "SELECT * FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_ON_RETURN),
+    ))
+    assert view["return_label"] == "Заберите заказ"
+
+
+def test_both_spellings_counted_as_ready():
+    assert avito.is_ready_for_pickup("ready_for_pickup")
+    assert avito.is_ready_for_pickup("ready_to_pickup")
+    assert not avito.is_ready_for_pickup("in_transit")
+    assert not avito.is_ready_for_pickup(None)

@@ -58,15 +58,27 @@ STATUS_LABELS = {
 }
 
 # returnPolicy.returnStatus из модели заказа.
+#
+# Внимание: в схеме Avito это значение описано как ready_to_pickup, а боевой
+# API отдаёт ready_for_pickup. Расхождение настоящее, поэтому принимаем оба
+# написания — иначе возвраты, которые можно забрать, молча отбрасываются.
 RETURN_READY = "ready_to_pickup"
+RETURN_READY_ALT = "ready_for_pickup"
+RETURN_READY_VALUES = frozenset({RETURN_READY, RETURN_READY_ALT})
 RETURN_IN_TRANSIT = "in_transit"
 RETURN_SELF = "self_return"
 
 RETURN_STATUS_LABELS = {
     RETURN_READY: "Заберите заказ",
+    RETURN_READY_ALT: "Заберите заказ",
     RETURN_IN_TRANSIT: "Возврат в пути",
     RETURN_SELF: "Возврат забираете сами",
 }
+
+
+def is_ready_for_pickup(return_status: str | None) -> bool:
+    """Возврат доехал до пункта выдачи и его можно забрать."""
+    return (return_status or "") in RETURN_READY_VALUES
 
 SERVICE_LABELS = {
     "pvz": "ПВЗ",
@@ -385,10 +397,11 @@ class DemoAvitoClient(AvitoClient):
             created = now - timedelta(days=rnd.randint(45, 150))
         return_policy = None
         if status == STATUS_ON_RETURN:
-            # Первый — уже в пункте выдачи, остальные ещё едут.
-            ready = index == 9 or rnd.random() < 0.5
+            # Два возврата уже в пункте выдачи — двумя написаниями, которые
+            # встречаются у Avito, — и один ещё едет: видно, что его отбросят.
+            by_index = {9: RETURN_READY_ALT, 10: RETURN_IN_TRANSIT, 11: RETURN_READY}
             return_policy = {
-                "returnStatus": RETURN_READY if ready else RETURN_IN_TRANSIT,
+                "returnStatus": by_index.get(index, RETURN_IN_TRANSIT),
                 "trackingNumber": f"RT{index:011d}",
             }
         actions = []

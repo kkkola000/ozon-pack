@@ -24,14 +24,9 @@
   </div>
 
   <form class="row no-print" method="get" action="/avito/returns" style="margin-top:14px">
-    <select name="show">
-      {% for key, meta in views.items() %}
-        <option value="{{ key }}" {{ 'selected' if show == key }}>{{ meta[0] }}</option>
-      {% endfor %}
-    </select>
     <input type="search" name="q" value="{{ q }}" placeholder="Номер заказа, товар, трек-номер…" style="width:260px">
-    <button class="btn" type="submit">Показать</button>
-    {% if q or show != 'ready' %}<a class="btn" href="/avito/returns">Сбросить</a>{% endif %}
+    <button class="btn" type="submit">Найти</button>
+    {% if q %}<a class="btn" href="/avito/returns">Сбросить</a>{% endif %}
   </form>
 
   <div class="row no-print" style="margin-top:12px">
@@ -39,7 +34,7 @@
     <span class="muted small" id="selected-count">выбрано: 0</span>
     <span class="grow"></span>
     <button class="btn" id="btn-taken" disabled>Отметить забранными</button>
-    <a class="btn primary" href="/avito/returns/print?show={{ show }}&q={{ q }}" target="_blank">
+    <a class="btn primary" href="/avito/returns/print?q={{ q }}" target="_blank">
       Печать листа ({{ items | length }})
     </a>
   </div>
@@ -58,7 +53,7 @@
     </thead>
     <tbody>
       {% for r in items %}
-      <tr class="{{ 'done' if r.taken_at }}">
+      <tr>
         <td><input type="checkbox" class="pick" value="{{ r.id }}"></td>
         <td>
           <div class="mono" style="font-weight:700">{{ r.marketplace_id or r.id }}</div>
@@ -81,17 +76,14 @@
         <td class="small">
           <span class="tag success">{{ r.return_label }}</span>
           {% if r.return_tracking %}<div class="muted mono">{{ r.return_tracking }}</div>{% endif %}
-          {% if r.taken_at %}<div class="muted">Забрал: {{ r.taken_by }} {{ r.taken_at_local }}</div>{% endif %}
+
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-    <div class="empty">
-      Возвратов не найдено.
-      {% if show == 'ready' %}Ничего забирать не нужно.{% endif %}
-    </div>
+    <div class="empty">Возвратов не найдено — забирать нечего.</div>
   {% endif %}
 </div>
 {% endblock %}

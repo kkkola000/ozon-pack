@@ -303,7 +303,7 @@ def sync_avito(account: dict | None = None) -> dict:
         return_status = ((raw.get("returnPolicy") or {}).get("returnStatus")) or "—"
         returns_seen[return_status] = returns_seen.get(return_status, 0) + 1
         # Забрать можно только то, что доехало до пункта выдачи.
-        if return_status == avito.RETURN_READY:
+        if avito.is_ready_for_pickup(return_status):
             keep.append(raw)
 
     if keep:
@@ -337,7 +337,7 @@ def sync_avito(account: dict | None = None) -> dict:
     )["c"]
     if ready:
         result["avito_returns"] = ready
-    skipped = sum(count for code, count in returns_seen.items() if code != avito.RETURN_READY)
+    skipped = sum(count for code, count in returns_seen.items() if not avito.is_ready_for_pickup(code))
     if skipped:
         result["avito_returns_skipped"] = skipped
     if stale:
