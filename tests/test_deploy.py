@@ -1,0 +1,167 @@
+"""Скрипты развёртывания: синтаксис, правило доступа и его подключение в nginx."""
+import os
+import re
+import shutil
+import subprocess
+import textwrap
+
+import pytest
+
+from app.config import BASE_DIR
+
+DEPLOY = BASE_DIR / "deploy"
+SCRIPTS = sorted(DEPLOY.glob("*.sh"))
+SNIPPET_LINE = "include $ACCESS_SNIPPET;"
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_script_syntax(script):
+    proc = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_vpn_only_help():
+    proc = subprocess.run(
+        ["bash", str(DEPLOY / "vpn-only.sh"), "--help"], capture_output=True, text=True
+    )
+    assert proc.returncode == 0
+    for flag in ("--off", "--status", "--subnet", "--allow"):
+        assert flag in proc.stdout
+
+
+def _location_blocks(text):
+    """Куски конфига от каждого `location ... {` до следующего."""
+    starts = [m.start() for m in re.finditer(r"^\s*location [^\n]*\{", text, re.M)]
+    bounds = starts + [len(text)]
+    return [text[bounds[i]:bounds[i + 1]] for i in range(len(starts))]
+
+
+def test_ssl_puts_access_rule_into_panel_locations():
+    """Правило доступа стоит в location панели и не стоит на проверке Let's Encrypt."""
+    text = (DEPLOY / "ssl.sh").read_text(encoding="utf-8")
+    blocks = _location_blocks(text)
+    panel = [b for b in blocks if "proxy_pass" in b or "return 301 https" in b]
+    acme = [b for b in blocks if "acme-challenge" in b]
+
+    assert panel, "в ssl.sh не нашлось location панели"
+    assert acme, "в ssl.sh не нашлось location для Let's Encrypt"
+    assert all(SNIPPET_LINE in b for b in panel if "proxy_pass" in b)
+    assert not any(SNIPPET_LINE in b for b in acme), "сертификат перестанет продлеваться"
+
+
+LEGACY_SITE = """\
+server {
+    listen 80;
+    server_name panel.example.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:%(port)s;
+        proxy_set_header Host $host;
+    }
+}
+"""
+
+
+@pytest.fixture
+def sandbox(tmp_path):
+    """Подставные nginx, systemctl, ss и curl — скрипт можно гонять целиком."""
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "nginx").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "ss").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "curl").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("nginx", "systemctl", "ss", "curl"):
+        os.chmod(stub / name, 0o755)
+    return stub
+
+
+def _run(script, args, env):
+    return subprocess.run(
+        ["bash", str(script), *args], capture_output=True, text=True, env=env
+    )
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_writes_rule_and_include(tmp_path, sandbox):
+    sites = tmp_path / "sites-enabled"
+    sites.mkdir()
+    site = sites / "ozon-pack"
+    site.write_text(LEGACY_SITE % {"port": "8080"})
+    snippet = tmp_path / "access.conf"
+
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{sandbox}:{env['PATH']}",
+        SNIPPET=str(snippet),
+        APP_DIR=str(tmp_path),
+        APP_PORT="8080",
+        NGINX_SITES=str(sites),
+    )
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    rule = snippet.read_text(encoding="utf-8")
+    assert "allow 10.8.0.0/24;" in rule
+    assert "allow 127.0.0.1;" in rule
+    assert rule.rstrip().endswith("deny all;")
+
+    patched = site.read_text(encoding="utf-8")
+    blocks = _location_blocks(patched)
+    include = f"include {snippet};"
+    assert [b for b in blocks if "proxy_pass" in b and include in b]
+    assert not [b for b in blocks if "acme-challenge" in b and include in b]
+
+    # Повторный запуск ничего не дублирует
+    assert _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env).returncode == 0
+    assert site.read_text(encoding="utf-8").count(include) == 1
+
+    # --off снимает ограничение, include остаётся на месте
+    assert _run(DEPLOY / "vpn-only.sh", ["--off"], env).returncode == 0
+    assert "allow all;" in snippet.read_text(encoding="utf-8")
+    assert "deny all;" not in snippet.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_reads_subnet_from_wireguard_config(tmp_path, sandbox):
+    wg = tmp_path / "wireguard"
+    wg.mkdir()
+    (wg / "wg0.conf").write_text(
+        textwrap.dedent(
+            """\
+            [Interface]
+            Address = 10.9.0.1/24
+            ListenPort = 51820
+            """
+        )
+    )
+    sites = tmp_path / "sites-enabled"
+    sites.mkdir()
+    (sites / "ozon-pack").write_text(LEGACY_SITE % {"port": "8080"})
+    snippet = tmp_path / "access.conf"
+
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{sandbox}:{env['PATH']}",
+        SNIPPET=str(snippet),
+        APP_DIR=str(tmp_path),
+        APP_PORT="8080",
+        NGINX_SITES=str(sites),
+        WG_DIR=str(wg),
+    )
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "allow 10.9.0.0/24;" in snippet.read_text(encoding="utf-8")
+
+
+def test_setup_and_readme_mention_vpn_script():
+    assert (DEPLOY / "vpn-only.sh").exists()
+    assert shutil.which("bash")
+    assert "vpn-only.sh" in (DEPLOY / "setup.sh").read_text(encoding="utf-8")
+    assert "vpn-only.sh" in (BASE_DIR / "README.md").read_text(encoding="utf-8")

@@ -128,8 +128,24 @@ if [ "$SELF_SIGNED" = "1" ]; then
 fi
 
 # ------------------------------------------------------------------ конфиг nginx
+ACCESS_SNIPPET=/etc/nginx/snippets/ozon-pack-access.conf
+
+ensure_access_snippet() {
+  # Правило доступа к панели живёт отдельным файлом: его меняет vpn-only.sh,
+  # а конфиг сайта только подключает — поэтому ограничение переживает
+  # повторный запуск этого скрипта.
+  mkdir -p "$(dirname "$ACCESS_SNIPPET")"
+  [ -f "$ACCESS_SNIPPET" ] && return
+  cat > "$ACCESS_SNIPPET" <<'CONF'
+# Кто может открывать панель. Закрыть доступ всем, кроме VPN:
+#   sudo bash /opt/ozon-pack/deploy/vpn-only.sh
+allow all;
+CONF
+}
+
 write_nginx() {
   local with_tls=$1
+  ensure_access_snippet
   {
     cat <<CONF
 # Создано deploy/ssl.sh для Ozon Pack. Правки перезапишутся при повторном запуске.
@@ -182,6 +198,7 @@ CONF
     }
 
     location / {
+        include $ACCESS_SNIPPET;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -198,6 +215,7 @@ CONF
       cat <<CONF
 
     location / {
+        include $ACCESS_SNIPPET;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -404,6 +422,7 @@ ${GREEN}${BOLD}Готово.${OFF}
   Адрес панели:  ${BOLD}https://$URL_HOST${OFF}
   Сертификат:    $CERT_DIR
   Конфиг nginx:  /etc/nginx/sites-available/$SITE
+  Кто пускается: $ACCESS_SNIPPET
 SUMMARY
 
 if [ "$SELF_SIGNED" = "1" ]; then
@@ -418,6 +437,16 @@ else
   cat <<SUMMARY
   Тип:           Let's Encrypt, срок 90 дней (продлевается автоматически)
   Проверка продления: sudo certbot renew --dry-run
+SUMMARY
+fi
+if [ -f "$ACCESS_SNIPPET" ] && grep -q '^ *deny all;' "$ACCESS_SNIPPET"; then
+  cat <<SUMMARY
+  Доступ:        только из сети VPN (правило сохранено)
+SUMMARY
+else
+  cat <<SUMMARY
+  Закрыть панель снаружи (нужен WireGuard):
+    sudo bash $APP_DIR/deploy/vpn-only.sh
 SUMMARY
 fi
 echo

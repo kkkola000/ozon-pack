@@ -186,5 +186,9 @@ if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ]; then
   printf '\n%sДальше:%s добавьте кабинеты и ключи: Настройки -> Кабинеты.\n' "$BOLD" "$OFF"
   printf 'Пока ключей нет, панель ничего не загружает.\n'
 fi
+if [ "$SSL_OK" = "1" ]; then
+  printf '\n%sЗакрыть панель снаружи%s (если есть WireGuard): sudo bash %s/deploy/vpn-only.sh\n' \
+    "$BOLD" "$OFF" "$APP_DIR"
+fi
 printf '\nОбновление в будущем — этой же командой ещё раз.\n\n'
 [ "$SSL_OK" = "1" ]
