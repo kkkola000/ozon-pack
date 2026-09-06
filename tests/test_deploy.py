@@ -262,3 +262,37 @@ def test_status_confirms_applied_rule(tmp_path, sandbox):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "включено" in proc.stdout
     assert "10.0.0.0/24" in proc.stdout
+
+
+def test_install_resets_before_checkout():
+    """«checkout -B» падает на правках, сделанных прямо на сервере, — reset идёт первым.
+
+    Именно так ломалось обновление: если на сервере поправили отслеживаемый файл
+    (или положили руками тот, что появляется в новой версии), git отказывался
+    переключать ветку и установка обрывалась.
+    """
+    text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    reset_at = text.find("reset --hard FETCH_HEAD")
+    checkout_at = text.find('checkout -B "$BRANCH"')
+    assert reset_at > 0 and checkout_at > 0
+    assert reset_at < checkout_at, "reset --hard должен идти до checkout -B"
+    assert 'checkout -B "$BRANCH" FETCH_HEAD' not in text
+
+
+@pytest.mark.parametrize("script", ["install.sh", "ssl.sh"], ids=lambda n: n)
+def test_error_trap_names_the_command(script):
+    """Сообщение об ошибке должно называть команду, а не строку с объявлением функции."""
+    text = (DEPLOY / script).read_text(encoding="utf-8")
+    assert "trap 'on_error $LINENO' ERR" in text
+    assert "BASH_COMMAND" in text
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="установщик работает только от root")
+def test_install_error_message_is_useful():
+    proc = subprocess.run(
+        ["bash", str(DEPLOY / "install.sh"), "--dir", "/proc/nope", "--yes"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    output = proc.stdout + proc.stderr
+    assert "Команда: mkdir" in output

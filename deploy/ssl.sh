@@ -28,7 +28,18 @@ step() { printf '\n%s==> %s%s\n' "$BOLD" "$*" "$OFF"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '%s[!] %s%s\n' "$YELLOW" "$*" "$OFF"; }
 die()  { printf '%s[x] %s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
-trap 'die "Настройка прервана на строке $LINENO. Причина — в выводе выше."' ERR
+# Ошибка внутри функции-обёртки указывала на строку её объявления, а не на
+# место вызова — по такому сообщению непонятно, что сломалось. Показываем и
+# саму команду, и строку, с которой всё пошло не так.
+on_error() {
+  local code=$? cmd=$BASH_COMMAND line=$1 i=1
+  while [ "${FUNCNAME[$i]:-main}" != "main" ]; do line=${BASH_LINENO[$i]}; i=$((i + 1)); done
+  printf '%s[x] %s прервана на строке %s.%s\n' "$RED" "Настройка" "$line" "$OFF" >&2
+  printf '    Команда: %s\n' "$cmd" >&2
+  printf '    Код возврата: %s. Причина — в выводе выше.\n' "$code" >&2
+  exit 1
+}
+trap 'on_error $LINENO' ERR
 
 usage() {
   cat <<'USAGE'

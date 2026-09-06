@@ -36,7 +36,18 @@ info() { printf '    %s\n' "$*"; }
 warn() { printf '%s[!] %s%s\n' "$YELLOW" "$*" "$OFF"; }
 die()  { printf '%s[x] %s%s\n' "$RED" "$*" "$OFF" >&2; exit 1; }
 
-trap 'die "Установка прервана на строке $LINENO. Вывод выше объясняет причину."' ERR
+# Ошибка внутри функции-обёртки указывала на строку её объявления, а не на
+# место вызова — по такому сообщению непонятно, что сломалось. Показываем и
+# саму команду, и строку, с которой всё пошло не так.
+on_error() {
+  local code=$? cmd=$BASH_COMMAND line=$1 i=1
+  while [ "${FUNCNAME[$i]:-main}" != "main" ]; do line=${BASH_LINENO[$i]}; i=$((i + 1)); done
+  printf '%s[x] %s прервана на строке %s.%s\n' "$RED" "Установка" "$line" "$OFF" >&2
+  printf '    Команда: %s\n' "$cmd" >&2
+  printf '    Код возврата: %s. Причина — в выводе выше.\n' "$code" >&2
+  exit 1
+}
+trap 'on_error $LINENO' ERR
 
 usage() {
   [ -r "$0" ] && sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
@@ -119,16 +130,27 @@ git_app() { git -c safe.directory="$APP_DIR" -C "$APP_DIR" "$@"; }
 if [ "$UPDATE" -eq 1 ]; then
   step "Обновление кода"
   git_app remote set-url origin "$REPO_URL"
-  git_app fetch --depth 1 origin "$BRANCH"
-  # .env, data/ и .venv не в индексе — reset их не затрагивает
-  git_app checkout -B "$BRANCH" FETCH_HEAD
-  git_app reset --hard FETCH_HEAD
+  git_app fetch --depth 1 origin "$BRANCH" ||
+    die "Не удалось получить ветку «$BRANCH» из $REPO_URL. Проверьте сеть на сервере: curl -sI https://github.com"
+  # Порядок важен. «checkout -B» отказывается работать, если в каталоге лежит
+  # файл, который появился в новой версии, а сюда его положили руками, — он
+  # падает с «untracked working tree files would be overwritten». «reset --hard»
+  # такой файл просто перезаписывает и заодно снимает правки на месте.
+  # .env, data/ и .venv перечислены в .gitignore — их не трогает ни то, ни другое.
+  git_app reset --hard FETCH_HEAD ||
+    die "Не удалось обновить файлы в $APP_DIR. Проверьте права доступа: ls -la $APP_DIR"
+  git_app checkout -B "$BRANCH" >/dev/null 2>&1 || true
 else
   step "Загрузка кода"
   if [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-    die "Каталог $APP_DIR не пуст и не является git-репозиторием. Уберите его или задайте --dir"
+    # Обычно это панель, развёрнутая из архива: обновлять её нечем, git о ней не знает.
+    die "В $APP_DIR уже что-то есть, но это не git-репозиторий — обновлять такую установку нечем.
+    Сохраните данные и настройки:  sudo cp -a $APP_DIR/data $APP_DIR/.env /root/ozon-pack-backup/
+    Затем уберите каталог:         sudo rm -rf $APP_DIR
+    И повторите установку. После неё верните data/ и .env на место."
   fi
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
+  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR" ||
+    die "Не удалось скачать код из $REPO_URL (ветка «$BRANCH»). Проверьте сеть: curl -sI https://github.com"
 fi
 info "коммит: $(git_app log --oneline -1)"
 BUILD="$(cat "$APP_DIR/VERSION" 2>/dev/null || true) ($(git_app rev-parse --short HEAD))"
