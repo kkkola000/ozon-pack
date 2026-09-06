@@ -27,6 +27,8 @@ def test_vpn_only_help():
     assert proc.returncode == 0
     for flag in ("--off", "--status", "--subnet", "--allow"):
         assert flag in proc.stdout
+    # Как узнать свою сеть — прямо в справке
+    assert "wg0" in proc.stdout
 
 
 def _location_blocks(text):
@@ -86,22 +88,32 @@ def _run(script, args, env):
     )
 
 
-@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
-def test_vpn_only_writes_rule_and_include(tmp_path, sandbox):
+def _sandbox_env(tmp_path, stub, port="8080"):
+    """Каталоги nginx и WireGuard во временной папке — скрипт не трогает систему."""
     sites = tmp_path / "sites-enabled"
-    sites.mkdir()
-    site = sites / "ozon-pack"
-    site.write_text(LEGACY_SITE % {"port": "8080"})
+    sites.mkdir(exist_ok=True)
+    (sites / "ozon-pack").write_text(LEGACY_SITE % {"port": port})
+    wg = tmp_path / "wireguard"
+    wg.mkdir(exist_ok=True)
     snippet = tmp_path / "access.conf"
 
     env = dict(os.environ)
     env.update(
-        PATH=f"{sandbox}:{env['PATH']}",
+        PATH=f"{stub}:{env['PATH']}",
         SNIPPET=str(snippet),
         APP_DIR=str(tmp_path),
-        APP_PORT="8080",
+        APP_PORT=port,
         NGINX_SITES=str(sites),
+        NGINX_CONFD=str(tmp_path / "conf.d"),
+        WG_DIR=str(wg),
     )
+    return env, snippet, wg
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_writes_rule_and_include(tmp_path, sandbox):
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    site = tmp_path / "sites-enabled" / "ozon-pack"
 
     proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -129,8 +141,7 @@ def test_vpn_only_writes_rule_and_include(tmp_path, sandbox):
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
 def test_vpn_only_reads_subnet_from_wireguard_config(tmp_path, sandbox):
-    wg = tmp_path / "wireguard"
-    wg.mkdir()
+    env, snippet, wg = _sandbox_env(tmp_path, sandbox)
     (wg / "wg0.conf").write_text(
         textwrap.dedent(
             """\
@@ -139,20 +150,6 @@ def test_vpn_only_reads_subnet_from_wireguard_config(tmp_path, sandbox):
             ListenPort = 51820
             """
         )
-    )
-    sites = tmp_path / "sites-enabled"
-    sites.mkdir()
-    (sites / "ozon-pack").write_text(LEGACY_SITE % {"port": "8080"})
-    snippet = tmp_path / "access.conf"
-
-    env = dict(os.environ)
-    env.update(
-        PATH=f"{sandbox}:{env['PATH']}",
-        SNIPPET=str(snippet),
-        APP_DIR=str(tmp_path),
-        APP_PORT="8080",
-        NGINX_SITES=str(sites),
-        WG_DIR=str(wg),
     )
 
     proc = _run(DEPLOY / "vpn-only.sh", ["--yes"], env)
@@ -165,3 +162,67 @@ def test_setup_and_readme_mention_vpn_script():
     assert shutil.which("bash")
     assert "vpn-only.sh" in (DEPLOY / "setup.sh").read_text(encoding="utf-8")
     assert "vpn-only.sh" in (BASE_DIR / "README.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("10.8.0.0/24", ["allow 10.8.0.0/24;"]),
+        # адрес хоста приводится к его сети
+        ("10.8.0.1/24", ["allow 10.8.0.0/24;"]),
+        # несколько значений через запятую
+        ("10.8.0.0/24,10.9.0.0/24", ["allow 10.8.0.0/24;", "allow 10.9.0.0/24;"]),
+        ("10.8.0.0/24, 10.9.0.0/24", ["allow 10.8.0.0/24;", "allow 10.9.0.0/24;"]),
+        # один адрес без маски
+        ("10.8.0.5", ["allow 10.8.0.5;"]),
+        # IPv6-туннель
+        ("fd42:42::/64", ["allow fd42:42::/64;"]),
+    ],
+)
+def test_vpn_only_accepts_manual_subnet(tmp_path, sandbox, value, expected):
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", value, "--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    rule = snippet.read_text(encoding="utf-8")
+    for line in expected:
+        assert line in rule
+    assert rule.rstrip().endswith("deny all;")
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+@pytest.mark.parametrize(
+    "value", ["10.8.0.0/33", "10.8.0.*", "10.8.0", "", "10.8.0.0/24,мусор", "10.8.0.0/24;drop"]
+)
+def test_vpn_only_rejects_bad_subnet(tmp_path, sandbox, value):
+    """Опечатка в сети не должна доехать до nginx и переписать правило."""
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    snippet.write_text("allow all;\n")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", value, "--yes"], env)
+    assert proc.returncode != 0
+    assert "Не понимаю" in proc.stdout + proc.stderr
+    assert snippet.read_text(encoding="utf-8") == "allow all;\n"
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_needs_value_for_subnet(tmp_path, sandbox):
+    env, _, _ = _sandbox_env(tmp_path, sandbox)
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet"], env)
+    assert proc.returncode != 0
+    assert "не указано значение" in proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_manual_subnet_wins_over_wireguard_config(tmp_path, sandbox):
+    """Указанная руками сеть заменяет найденную в /etc/wireguard, а не дополняет."""
+    env, snippet, wg = _sandbox_env(tmp_path, sandbox)
+    (wg / "wg0.conf").write_text("[Interface]\nAddress = 10.9.0.1/24\n")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    rule = snippet.read_text(encoding="utf-8")
+    assert "allow 10.8.0.0/24;" in rule
+    assert "10.9.0.0/24" not in rule

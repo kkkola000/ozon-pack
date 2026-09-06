@@ -38,23 +38,71 @@ usage() {
   (без флагов)     закрыть панель: пускать только из сети WireGuard
   --off            открыть панель для всех адресов
   --status         показать текущее состояние и кто заходил
-  --subnet CIDR    указать сеть VPN вручную (можно повторять)
-  --allow ADDR     дополнительно разрешить адрес или сеть (можно повторять)
+  --subnet СЕТЬ    указать сеть VPN вручную вместо поиска по wg0
+  --allow АДРЕС    дополнительно разрешить адрес или сеть
   --yes            не задавать вопросов
   -h, --help       эта справка
 
-Пример: закрыть панель, но оставить доступ с офисного адреса
-  sudo bash vpn-only.sh --allow 203.0.113.10
+У --subnet и --allow можно перечислить несколько значений через запятую
+или повторить флаг. Принимается и сеть (10.8.0.0/24), и один адрес
+(10.8.0.5). Адрес хоста приводится к его сети: 10.8.0.1/24 -> 10.8.0.0/24.
+
+Примеры
+  сеть вручную            sudo bash vpn-only.sh --subnet 10.8.0.0/24
+  две сети сразу          sudo bash vpn-only.sh --subnet 10.8.0.0/24,10.9.0.0/24
+  сеть VPN плюс офис      sudo bash vpn-only.sh --subnet 10.8.0.0/24 --allow 203.0.113.10
+  только свой адрес       sudo bash vpn-only.sh --subnet 10.8.0.5
+
+Подсмотреть свою сеть: ip -o addr show wg0    (или: sudo wg show)
 USAGE
   exit 0
+}
+
+# Проверяем то, что набрали руками: «10.8.0.1/24, 10.9.0.0/24» -> две
+# нормализованные строки. Если python3 почему-то нет, пропускаем значение
+# как есть — ошибку тогда поймает nginx.
+normalize_targets() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  python3 - "$1" <<'ADDR'
+import ipaddress, sys
+
+good, bad = [], []
+for raw in sys.argv[1].replace(";", ",").split(","):
+    item = raw.strip()
+    if not item:
+        continue
+    try:
+        if "/" in item:
+            good.append(str(ipaddress.ip_network(item, strict=False)))
+        else:
+            good.append(str(ipaddress.ip_address(item)))
+    except ValueError:
+        bad.append(item)
+
+if bad or not good:
+    sys.exit(1)
+print("\n".join(good))
+ADDR
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --off) MODE=off; shift ;;
     --status) MODE=status; shift ;;
-    --subnet) SUBNETS+=("$2"); shift 2 ;;
-    --allow) EXTRA+=("$2"); shift 2 ;;
+    --subnet|--allow)
+      [ $# -ge 2 ] || die "У флага $1 не указано значение, например: $1 10.8.0.0/24"
+      if ! PARSED=$(normalize_targets "$2" 2>/dev/null); then
+        die "Не понимаю «$2» у флага $1. Нужен адрес или сеть, например: 10.8.0.0/24"
+      fi
+      while read -r value; do
+        if [ -n "$value" ]; then
+          if [ "$1" = "--subnet" ]; then SUBNETS+=("$value"); else EXTRA+=("$value"); fi
+        fi
+      done <<< "$PARSED"
+      shift 2 ;;
     --yes|-y) NONINTERACTIVE=1; shift ;;
     -h|--help) usage ;;
     *) die "Неизвестный аргумент: $1 (--help для справки)" ;;
