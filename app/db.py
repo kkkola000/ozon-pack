@@ -244,6 +244,38 @@ CREATE TABLE IF NOT EXISTS avito_order_items (
     PRIMARY KEY (account_id, order_id, avito_id)
 );
 
+-- Отчёт об отгруженных товарах. Строка появляется в момент, когда сошлась пара
+-- «штрихкод товара -> номер отправления», а не при открытии заказа.
+CREATE TABLE IF NOT EXISTS shipped_items (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id     INTEGER NOT NULL,
+    marketplace    TEXT NOT NULL DEFAULT 'ozon',
+    posting_number TEXT NOT NULL DEFAULT '',
+    -- Ключ единицы товара: sku, либо bc:<штрихкод>, если товар не опознан.
+    item_key       TEXT NOT NULL,
+    sku            TEXT,
+    offer_id       TEXT,
+    name           TEXT,
+    barcode        TEXT,
+    -- Порядковый номер единицы внутри отправления: 1..количество.
+    unit_no        INTEGER NOT NULL DEFAULT 1,
+    -- ok — пара сошлась; unmatched — штрихкода нет в справочнике (Avito);
+    -- error — пересорт: не тот товар или не то отправление.
+    status         TEXT NOT NULL DEFAULT 'ok',
+    reason         TEXT,
+    user_id        INTEGER,
+    login          TEXT,
+    scanned_at     TEXT NOT NULL,
+    report_date    TEXT NOT NULL
+);
+-- Защита от дублей: одна и та же единица товара в одном отправлении
+-- записывается один раз, сколько бы раз её ни отсканировали.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shipped_unit
+    ON shipped_items(account_id, posting_number, item_key, unit_no)
+    WHERE status <> 'error';
+CREATE INDEX IF NOT EXISTS idx_shipped_day ON shipped_items(report_date, account_id, status);
+CREATE INDEX IF NOT EXISTS idx_shipped_posting ON shipped_items(account_id, posting_number);
+
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT

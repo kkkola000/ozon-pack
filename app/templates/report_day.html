@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Отгрузка {{ day }} · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <div>
+      <h2 style="margin:0">Отгрузка за {{ day }}
+        {% if closed %}
+          <span class="tag success">итоговый</span>
+        {% else %}
+          <span class="tag soon">идёт сбор, закроется в {{ cutoff }}</span>
+        {% endif %}
+      </h2>
+      <div class="small muted" style="margin-top:4px"><a href="/reports">← ко всем отчётам</a></div>
+    </div>
+    <div class="row" style="gap:28px">
+      <div class="stat"><div class="muted small">Отгружено</div><div class="value">{{ totals.shipped }}</div></div>
+      <div class="stat"><div class="muted small">Отправлений</div><div class="value">{{ totals.postings }}</div></div>
+      <div class="stat"><div class="muted small">Без штрихкода</div><div class="value">{{ totals.unmatched }}</div></div>
+      <div class="stat"><div class="muted small">Ошибок</div><div class="value">{{ totals.errors }}</div></div>
+    </div>
+  </div>
+
+  <form class="row" method="get" action="/reports/{{ day }}" style="margin-top:14px">
+    <select name="account_id">
+      <option value="">Все кабинеты</option>
+      {% for a in accounts %}
+        <option value="{{ a.id }}" {{ 'selected' if account_id == a.id }}>
+          {{ 'Avito' if a.marketplace == 'avito' else 'Ozon' }} · {{ a.title }}
+        </option>
+      {% endfor %}
+    </select>
+    <select name="status">
+      {% for value, label in status_filters %}
+        <option value="{{ value }}" {{ 'selected' if status == value }}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">Показать</button>
+    <span class="grow"></span>
+    <a class="btn primary"
+       href="/reports/{{ day }}/csv?account_id={{ account_id or '' }}&status={{ status }}">
+      Скачать CSV ({{ rows | length }})
+    </a>
+  </form>
+
+  {% if rows %}
+  <table style="margin-top:12px">
+    <thead>
+      <tr>
+        <th style="width:145px">Время скана</th>
+        <th style="width:170px">Отправление</th>
+        <th>Товар</th>
+        <th style="width:130px">Артикул / SKU</th>
+        <th style="width:150px">Штрихкод</th>
+        <th style="width:60px">Ед.</th>
+        <th style="width:190px">Результат</th>
+        <th style="width:110px">Сборщик</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="small mono">{{ r.scanned_local }}</td>
+        <td>
+          <span class="mono">{{ r.posting_number or '—' }}</span>
+          <div class="muted small">{{ 'Avito' if r.marketplace == 'avito' else 'Ozon' }} · {{ r.account_title or '' }}</div>
+        </td>
+        <td>{{ r.name or '—' }}</td>
+        <td class="small mono">
+          {{ r.offer_id or '—' }}
+          {% if r.sku %}<div class="muted">{{ r.sku }}</div>{% endif %}
+        </td>
+        <td class="small mono">{{ r.barcode or '—' }}</td>
+        <td>{{ r.unit_no if r.status != 'error' else '—' }}</td>
+        <td class="small">
+          {% if r.status == 'ok' %}
+            <span class="tag success">{{ r.status_label }}</span>
+          {% elif r.status == 'unmatched' %}
+            <span class="tag mark">{{ r.status_label }}</span>
+          {% else %}
+            <span class="tag overdue">{{ r.status_label }}</span>
+          {% endif %}
+          {% if r.reason_label %}<div class="muted">{{ r.reason_label }}</div>{% endif %}
+        </td>
+        <td class="small">{{ r.login or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">За этот день с такими условиями строк нет.</div>
+  {% endif %}
+</div>
+{% endblock %}

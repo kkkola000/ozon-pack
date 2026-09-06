@@ -15,7 +15,7 @@ import json
 import re
 from typing import Any
 
-from . import db, store
+from . import db, report, store
 from .config import settings
 from . import ozon
 from .ozon import OzonError
@@ -240,6 +240,18 @@ def candidates_for_sku(account: dict, sku: str, user: dict) -> list[dict]:
     return result
 
 
+def _sku_offer(account_id: int, sku: str) -> str | None:
+    """Артикул продавца по SKU — в отчёте по нему опознают товар."""
+    for table in ("products", "posting_items"):
+        row = db.query_one(
+            f"SELECT offer_id FROM {table} WHERE account_id = ? AND sku = ? AND offer_id IS NOT NULL LIMIT 1",
+            (account_id, sku),
+        )
+        if row and row["offer_id"]:
+            return row["offer_id"]
+    return None
+
+
 def _sku_title(account_id: int, sku: str) -> str:
     row = db.query_one("SELECT name FROM products WHERE account_id = ? AND sku = ?", (account_id, sku))
     if row and row["name"]:
@@ -269,16 +281,33 @@ def scan(account: dict, user: dict, code: str) -> ScanResult:
     if posting:
         return _scan_posting(account, user, posting, code)
 
-    db.log_event(
-        "scan_unknown", level="error", account_id=account["id"], user=user, barcode=code,
-        message="Код не распознан",
-    )
+    state = load_state(account, user)
+    active = state["active"]
+    with db.write() as conn:
+        db.log_event(
+            "scan_unknown", level="error", account_id=account["id"], user=user, barcode=code,
+            message="Код не распознан", posting_number=(active or {}).get("posting_number"), conn=conn,
+        )
+        if active:
+            # Штрихкода нет в справочнике — так бывает у Avito. В отчёт всё равно
+            # пишем: что отсканировали, в какое отправление и что там за товар.
+            report.record_unmatched(
+                conn, account, user, active["posting_number"], code, name=_single_item_name(state)
+            )
+        else:
+            report.record_error(conn, account, user, "unknown_barcode", barcode=code)
     return ScanResult(
         "error",
         f"Код «{code}» не найден: это не товар из заданий и не стикер отправления",
         action="unknown",
-        state=load_state(account, user),
+        state=state,
     )
+
+
+def _single_item_name(state: dict) -> str | None:
+    """Название товара, если в отправлении он один — иначе угадывать нечего."""
+    items = state.get("items") or []
+    return items[0].get("name") if len(items) == 1 else None
 
 
 def _fetch_by_barcode(account: dict, code: str) -> dict | None:
@@ -322,16 +351,25 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
 
     if active:
         required = {item["sku"]: item["need"] for item in state["items"]}
+        by_sku = {item["sku"]: item for item in state["items"]}
         if sku not in required:
-            db.log_event(
-                "scan_wrong_product",
-                level="error",
-                user=user,
-                posting_number=active["posting_number"],
-                sku=sku,
-                barcode=code,
-                message="Товар не из активного отправления",
-            )
+            with db.write() as conn:
+                db.log_event(
+                    "scan_wrong_product",
+                    level="error",
+                    account_id=account["id"],
+                    user=user,
+                    posting_number=active["posting_number"],
+                    sku=sku,
+                    barcode=code,
+                    message="Товар не из активного отправления",
+                    conn=conn,
+                )
+                report.record_error(
+                    conn, account, user, "wrong_product",
+                    posting_number=active["posting_number"], barcode=code, sku=sku, name=name,
+                    offer_id=_sku_offer(account["id"], sku),
+                )
             return ScanResult(
                 "error",
                 f"СТОП: «{name}» не входит в отправление {active['posting_number']}. Уберите товар.",
@@ -342,15 +380,23 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
         scanned = dict(state["scanned"])
         already = int(scanned.get(sku, 0))
         if already >= required[sku]:
-            db.log_event(
-                "scan_extra_product",
-                level="warn",
-                user=user,
-                posting_number=active["posting_number"],
-                sku=sku,
-                barcode=code,
-                message="Повторный скан товара",
-            )
+            with db.write() as conn:
+                db.log_event(
+                    "scan_extra_product",
+                    level="warn",
+                    account_id=account["id"],
+                    user=user,
+                    posting_number=active["posting_number"],
+                    sku=sku,
+                    barcode=code,
+                    message="Повторный скан товара",
+                    conn=conn,
+                )
+                report.record_error(
+                    conn, account, user, "extra_product",
+                    posting_number=active["posting_number"], barcode=code, sku=sku,
+                    name=name, offer_id=(by_sku.get(sku) or {}).get("offer_id"),
+                )
             return ScanResult(
                 "warning",
                 f"«{name}» уже отсканирован в нужном количестве ({required[sku]} шт). Лишнее не кладите.",
@@ -364,12 +410,18 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             _save_state(conn, account, user, active["posting_number"], scanned)
             db.log_event(
                 "scan_product",
+                account_id=account["id"],
                 user=user,
                 posting_number=active["posting_number"],
                 sku=sku,
                 barcode=code,
                 message=f"{scanned[sku]}/{required[sku]}",
                 conn=conn,
+            )
+            # Отчёт об отгруженных пишется именно здесь: пара «штрихкод -> отправление» сошлась.
+            report.record_shipped(
+                conn, account, user, active["posting_number"],
+                by_sku.get(sku) or {"sku": sku, "name": name}, scanned[sku], code,
             )
         new_state = load_state(account, user)
         if new_state["complete"]:
@@ -408,10 +460,15 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             """,
             (account["id"], sku, store.STATUS_AWAITING_PACKAGING),
         )["c"]
-        db.log_event(
-            "scan_no_candidates", level="warn", account_id=account["id"], user=user,
-            sku=sku, barcode=code, message=name,
-        )
+        with db.write() as conn:
+            db.log_event(
+                "scan_no_candidates", level="warn", account_id=account["id"], user=user,
+                sku=sku, barcode=code, message=name, conn=conn,
+            )
+            report.record_error(
+                conn, account, user, "no_candidates", barcode=code, sku=sku, name=name,
+                offer_id=_sku_offer(account["id"], sku),
+            )
         if locked:
             return ScanResult(
                 "warning",
@@ -544,6 +601,12 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
             message="Отправление взято в сборку",
             conn=conn,
         )
+        if first_sku and scanned.get(first_sku):
+            # Этот скан и выбрал отправление — пара сошлась, строка в отчёт.
+            item = next((i for i in posting["items"] if i["sku"] == first_sku), {"sku": first_sku})
+            report.record_shipped(
+                conn, account, user, posting_number, item, scanned[first_sku], scan_code
+            )
 
     state = load_state(account, user)
     should_print = settings.autoprint
@@ -591,15 +654,22 @@ def _scan_posting(account: dict, user: dict, posting_row: dict, code: str) -> Sc
         return select_posting(account, user, posting_number, scan_code=code)
 
     if active["posting_number"] != posting_number:
-        db.log_event(
-            "scan_wrong_label",
-            level="error",
-            account_id=account["id"],
-            user=user,
-            posting_number=active["posting_number"],
-            barcode=code,
-            message=f"Отсканирован стикер {posting_number}",
-        )
+        with db.write() as conn:
+            db.log_event(
+                "scan_wrong_label",
+                level="error",
+                account_id=account["id"],
+                user=user,
+                posting_number=active["posting_number"],
+                barcode=code,
+                message=f"Отсканирован стикер {posting_number}",
+                conn=conn,
+            )
+            report.record_error(
+                conn, account, user, "wrong_label",
+                posting_number=active["posting_number"], barcode=code,
+                name=f"стикер отправления {posting_number}",
+            )
         return ScanResult(
             "error",
             f"СТОП: это стикер отправления {posting_number}, а вы собираете {active['posting_number']}.",

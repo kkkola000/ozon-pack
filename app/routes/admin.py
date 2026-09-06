@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import accounts, avito, db, options, security, sync
+from .. import accounts, avito, db, options, report, security, sync
 from ..avito import AvitoClient, AvitoError
 from ..deps import check_csrf, current_account, current_user, require_admin, require_ozon_account, templates
 from .. import ozon
@@ -138,6 +138,8 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "cabinets": cabinets,
             "marketplaces": accounts.MARKETPLACES,
             "ozon": accounts.status(account),
+            "report_cutoff": report.get_cutoff(),
+            "report_cutoff_hint": report.cutoff_hint(),
             "returns_statuses": options.get_returns_statuses(),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
@@ -381,6 +383,21 @@ def api_reset_posting(posting_number: str, request: Request, admin: dict = Depen
         posting_number=posting_number, message="Сброшена отметка сборки",
     )
     return {"status": "ok", "message": f"{posting_number}: отметка сборки снята"}
+
+
+@router.post("/api/report/cutoff")
+def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+    """Во сколько закрывается отчётный день об отгрузке."""
+    check_csrf(request)
+    try:
+        value = report.set_cutoff(str(payload.get("cutoff") or ""), user=admin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "message": f"Отчётный день закрывается в {value}. Сканы после этого времени идут в следующий день.",
+        "cutoff": value,
+    }
 
 
 @router.post("/api/returns/statuses")

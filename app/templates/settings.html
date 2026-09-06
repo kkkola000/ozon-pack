@@ -126,6 +126,20 @@
   <button class="btn primary" id="btn-save-statuses" style="margin-top:12px">Сохранить и обновить возвраты</button>
   {% endif %}
 
+  <h2 style="margin-top:18px">Отчёт об отгрузке</h2>
+  <p class="muted small" style="margin-top:0">
+    Строка в отчёт пишется в момент, когда сборщик отсканировал товар и панель сверила его
+    с активным отправлением. Отчётный день закрывается в указанное время: всё, что отсканировано
+    позже, попадает уже в следующий день. <a href="/reports">Открыть отчёты</a>
+  </p>
+  <div class="row">
+    <label>Закрывать день в
+      <input type="time" id="report-cutoff" value="{{ report_cutoff }}" style="width:120px">
+    </label>
+    <button class="btn primary" id="btn-save-cutoff">Сохранить</button>
+    <span class="muted small">сейчас: {{ report_cutoff_hint }}</span>
+  </div>
+
   <div class="row" style="margin-top:20px; gap:28px">
     {% for key, value in stats.items() %}
       <div><div class="muted small">{{ key }}</div><div style="font-size:22px;font-weight:800">{{ value }}</div></div>
@@ -172,6 +186,20 @@
 
 
 
+
+document.getElementById('btn-save-cutoff')?.addEventListener('click', async (event) => {
+  const cutoff = document.getElementById('report-cutoff').value;
+  event.target.disabled = true;
+  try {
+    const result = await api('/api/report/cutoff', { cutoff });
+    toast(result.message, 'ok', 8000);
+    setTimeout(() => window.location.reload(), 1200);
+    return;
+  } catch (error) {
+    toast(error.message, 'error', 9000);
+  }
+  event.target.disabled = false;
+});
 
 document.getElementById('btn-save-statuses')?.addEventListener('click', async (event) => {
   const statuses = Array.from(document.querySelectorAll('.return-status:checked')).map((box) => box.value);

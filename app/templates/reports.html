@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Отчёты об отгрузке · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Отчёты об отгруженных товарах</h2>
+    <form class="row" method="get" action="/reports">
+      <select name="account_id" onchange="this.form.submit()">
+        <option value="">Все кабинеты</option>
+        {% for a in accounts %}
+          <option value="{{ a.id }}" {{ 'selected' if account_id == a.id }}>
+            {{ 'Avito' if a.marketplace == 'avito' else 'Ozon' }} · {{ a.title }}
+          </option>
+        {% endfor %}
+      </select>
+      <noscript><button class="btn" type="submit">Показать</button></noscript>
+    </form>
+  </div>
+
+  <div class="small muted" style="margin-top:10px">
+    Строка попадает в отчёт в момент, когда сошлась пара <b>штрихкод товара → номер отправления</b>:
+    сборщик отсканировал товар, и панель нашла его в составе активного отправления. Открытие заказа
+    в отчёт не пишется.
+    <br>Итоговым день становится после отсечки — {{ cutoff_hint }}. Всё, что отсканировано позже,
+    уходит в следующий день, чтобы отчёт совпадал с фактической отгрузкой.
+    <a href="/settings">Изменить время отсечки</a>
+  </div>
+
+  {% if days %}
+  <table style="margin-top:14px">
+    <thead>
+      <tr>
+        <th style="width:150px">Отчётный день</th>
+        <th style="width:110px">Состояние</th>
+        <th style="width:110px">Отгружено</th>
+        <th style="width:120px">Отправлений</th>
+        <th style="width:150px">Без штрихкода</th>
+        <th style="width:100px">Ошибок</th>
+        <th style="width:100px">Сборщиков</th>
+        <th style="width:190px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in days %}
+      <tr>
+        <td><a href="/reports/{{ d.day }}{% if account_id %}?account_id={{ account_id }}{% endif %}"><b>{{ d.day }}</b></a></td>
+        <td>
+          {% if d.closed %}
+            <span class="tag success">итоговый</span>
+          {% else %}
+            <span class="tag soon">идёт сбор</span>
+          {% endif %}
+        </td>
+        <td style="font-weight:700">{{ d.shipped }}</td>
+        <td>{{ d.postings }}</td>
+        <td>{% if d.unmatched %}<span class="badge warn">{{ d.unmatched }}</span>{% else %}—{% endif %}</td>
+        <td>{% if d.errors %}<span class="badge err">{{ d.errors }}</span>{% else %}—{% endif %}</td>
+        <td>{{ d.people }}</td>
+        <td>
+          <a class="btn small" href="/reports/{{ d.day }}{% if account_id %}?account_id={{ account_id }}{% endif %}">Открыть</a>
+          <a class="btn small primary" href="/reports/{{ d.day }}/csv{% if account_id %}?account_id={{ account_id }}{% endif %}">Скачать CSV</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <div class="empty">
+      Пока ничего не отгружено. Строки появятся, как только сборщик отсканирует товар
+      и панель сверит его с активным отправлением.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
