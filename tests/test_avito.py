@@ -338,6 +338,21 @@ def test_returns_print_sheet(client, avito_account):
     assert db.query_one("SELECT COUNT(*) AS c FROM events WHERE kind = 'avito_returns_print'")["c"] == 1
 
 
+def test_print_sheet_shows_pickup_address_without_status(client, avito_account):
+    """На бумаге нужен адрес ПВЗ, а не состояние возврата."""
+    row = returns_of(avito_account)[0]
+    db.execute(
+        "UPDATE avito_orders SET terminal_address = ?, service_name = ? WHERE account_id = ? AND id = ?",
+        ("Москва, Настасьинский пер., 8с2", "Boxberry", avito_account["id"], row["id"]),
+    )
+    page = client.get("/avito/returns/print")
+    assert "Пункт выдачи" in page.text
+    assert "Москва, Настасьинский пер., 8с2" in page.text
+    assert "Boxberry" in page.text
+    # Столбца со статусом возврата на листе быть не должно.
+    assert "Заберите заказ" not in page.text
+
+
 def test_returns_section_is_closed_for_ozon_cabinet(client):
     ozon_account = accounts.all_accounts()[0]
     client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/pack"})

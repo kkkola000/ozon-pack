@@ -168,3 +168,27 @@ def test_legacy_env_value_is_upgraded(monkeypatch):
     monkeypatch.setattr(settings, "returns_ready_statuses", ["WaitingShipment"])
     options.set_returns_statuses(["ArrivedAtReturnPlace"])
     assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+
+
+def test_ozon_print_sheet_shows_pickup_address_without_status(sample_data, account):
+    """Лист возвратов Ozon: адрес ПВЗ вместо колонки со статусом."""
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    row = db.query_one("SELECT id FROM returns WHERE account_id = ? AND is_ready = 1 LIMIT 1", (account["id"],))
+    db.execute(
+        "UPDATE returns SET place_name = ?, place_address = ? WHERE account_id = ? AND id = ?",
+        ("ПВЗ Москва, Ленинский 25", "Москва, Ленинский пр-т, 25", account["id"], row["id"]),
+    )
+    with TestClient(app, follow_redirects=False) as client:
+        client.post("/login", data={"login": "admin", "password": "test-admin-pass", "next": "/returns"})
+        page = client.get("/returns/print")
+
+    assert page.status_code == 200
+    assert "Пункт выдачи" in page.text
+    assert "Москва, Ленинский пр-т, 25" in page.text
+    assert "Статус" not in page.text, "колонку со статусом с листа убрали"
+    assert "В пункте выдачи" not in page.text

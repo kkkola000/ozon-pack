@@ -45,8 +45,7 @@
         <th style="width:120px">Трек возврата</th>
         <th>Товар</th>
         <th class="qty">Кол-во</th>
-        <th style="width:150px">Где забрать</th>
-        <th style="width:110px">Возврат</th>
+        <th style="width:200px">Пункт выдачи</th>
         <th class="check">✓</th>
       </tr>
     </thead>
@@ -70,10 +69,9 @@
         </td>
         <td class="qty">{{ r.items_count }}</td>
         <td style="font-size:10px">
-          {{ r.service_label }}
+          {{ r.service_name or r.service_label }}
           {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
         </td>
-        <td style="font-size:10px">{{ r.return_label }}</td>
         <td class="check">☐</td>
       </tr>
       {% endfor %}

@@ -49,8 +49,7 @@
         <th>Товар</th>
         <th style="width:110px">Артикул / SKU</th>
         <th class="qty">Кол-во</th>
-        <th style="width:130px">Пункт выдачи</th>
-        <th style="width:110px">Статус</th>
+        <th style="width:200px">Пункт выдачи</th>
         <th class="check">✓</th>
       </tr>
     </thead>
@@ -72,8 +71,10 @@
         </td>
         <td class="mono" style="font-size:10px">{{ r.offer_id or '—' }}<div>{{ r.sku or '' }}</div></td>
         <td class="qty">{{ r.quantity }}</td>
-        <td style="font-size:10px">{{ r.place_name or '—' }}</td>
-        <td style="font-size:10px">{{ r.status_label or '' }}</td>
+        <td style="font-size:10px">
+          {{ r.place_name or '—' }}
+          {% if r.place_address %}<div>{{ r.place_address }}</div>{% endif %}
+        </td>
         <td class="check">☐</td>
       </tr>
       {% endfor %}
