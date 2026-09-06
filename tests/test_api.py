@@ -395,3 +395,31 @@ def test_login_form_does_not_carry_hostile_next(client):
     page = client.get("/login?next=//evil.com").text
     assert 'name="next" value="/pack"' in page
     assert "evil.com" not in page
+
+
+def test_startup_warns_about_spoofable_client_ip(monkeypatch, caplog):
+    """FORWARDED_ALLOW_IPS=* — прежняя дыра: адрес посетителя подделает любой."""
+    import logging
+
+    from app.main import _warn_about_spoofable_client_ip
+
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "*")
+    with caplog.at_level(logging.WARNING, logger="app"):
+        _warn_about_spoofable_client_ip()
+    assert "FORWARDED_ALLOW_IPS=*" in caplog.text
+    assert "IP_ALLOWLIST" in caplog.text
+
+    caplog.clear()
+    monkeypatch.setenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
+    with caplog.at_level(logging.WARNING, logger="app"):
+        _warn_about_spoofable_client_ip()
+    assert caplog.text == ""
+
+
+def test_version_matches_file():
+    """Номер версии в /healthz берётся из VERSION — по нему сверяют выкладку."""
+    from app.config import BASE_DIR
+    from app.version import get_version
+
+    assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    assert get_version() == "1.9.0"

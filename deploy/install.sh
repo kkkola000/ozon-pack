@@ -164,9 +164,30 @@ step "Окружение Python"
 info "зависимости установлены"
 
 # ------------------------------------------------------------------ .env
+# Настройки, появившиеся в новых версиях, дописываем в существующий .env с их
+# значениями по умолчанию. Заданные значения не трогаем. Без этого оператор,
+# обновляясь, не узнает о новых переключателях — например о том, каким адресом
+# панель закрывается от прямого доступа.
+add_missing_env_keys() {
+  local example="$APP_DIR/.env.example" target="$APP_DIR/.env" key added=""
+  [ -f "$example" ] && [ -f "$target" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      ""|"#"*) continue ;;
+      *=*) key=${line%%=*} ;;
+      *) continue ;;
+    esac
+    grep -q "^$key=" "$target" && continue
+    printf '%s\n' "$line" >> "$target"
+    added="$added $key"
+  done < "$example"
+  [ -z "$added" ] || info "в .env добавлены новые настройки:$added"
+}
+
 step "Настройки (.env)"
 if [ -f "$APP_DIR/.env" ]; then
-  info "существующий .env сохранён без изменений"
+  info "существующий .env сохранён: заданные значения не трогаем"
+  add_missing_env_keys
   ADMIN_PASSWORD=""
   CURRENT_PORT=$(awk -F= '/^PORT=/{print $2}' "$APP_DIR/.env" | tail -1)
   if [ -n "$CURRENT_PORT" ]; then

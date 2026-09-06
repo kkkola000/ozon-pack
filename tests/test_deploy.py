@@ -429,3 +429,69 @@ def test_vpn_only_status_warns_about_open_port(tmp_path, port_sandbox):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "панель слушает мимо nginx" in proc.stdout
     assert "HOST=0.0.0.0" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------- обновление
+# Настройки, появившиеся в новой версии, должны доходить до уже установленных
+# панелей: иначе оператор о них не узнает, а прежние значения трогать нельзя.
+
+def _run_env_migration(tmp_path, env_text):
+    """Выполнить add_missing_env_keys из install.sh над подготовленным .env."""
+    (tmp_path / ".env").write_text(env_text, encoding="utf-8")
+    shutil.copy(BASE_DIR / ".env.example", tmp_path / ".env.example")
+    script = textwrap.dedent(f"""
+        set -eu
+        APP_DIR={tmp_path}
+        info() {{ printf '%s\\n' "$*"; }}
+        {_shell_function(DEPLOY / "install.sh", "add_missing_env_keys")}
+        add_missing_env_keys
+    """)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return (tmp_path / ".env").read_text(encoding="utf-8"), proc.stdout
+
+
+def _shell_function(script, name):
+    text = script.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n", start) + len("\n}\n")
+    return text[start:end]
+
+
+def test_update_adds_new_env_keys(tmp_path):
+    old_env = "OZON_CLIENT_ID=123456\nPORT=8080\nIP_ALLOWLIST=10.8.0.0/24\n"
+    result, output = _run_env_migration(tmp_path, old_env)
+
+    # Появившиеся настройки доступа дописаны со значениями по умолчанию
+    assert re.search(r"^BIND_ADDR=0\.0\.0\.0$", result, re.M)
+    assert re.search(r"^FORWARDED_ALLOW_IPS=127\.0\.0\.1$", result, re.M)
+    assert "BIND_ADDR" in output and "FORWARDED_ALLOW_IPS" in output
+
+
+def test_update_keeps_operator_values(tmp_path):
+    old_env = "OZON_CLIENT_ID=123456\nPORT=9000\nIP_ALLOWLIST=10.8.0.0/24\nHOST=127.0.0.1\n"
+    result, _ = _run_env_migration(tmp_path, old_env)
+
+    for line in ("OZON_CLIENT_ID=123456", "PORT=9000", "IP_ALLOWLIST=10.8.0.0/24", "HOST=127.0.0.1"):
+        assert re.search(rf"^{re.escape(line)}$", result, re.M), line
+    # Ни одного дубля: значение оператора должно остаться единственным
+    for key in ("PORT", "HOST", "IP_ALLOWLIST", "OZON_CLIENT_ID"):
+        assert len(re.findall(rf"^{key}=", result, re.M)) == 1, key
+
+
+def test_update_is_idempotent(tmp_path):
+    once, _ = _run_env_migration(tmp_path, "PORT=8080\n")
+    twice, output = _run_env_migration(tmp_path, once)
+    assert once == twice
+    assert "добавлены новые настройки" not in output
+
+
+def test_readme_warns_that_restart_alone_is_not_enough():
+    """Юнит с захардкоженным адресом обновляется только пересборкой."""
+    text = (BASE_DIR / "README.md").read_text(encoding="utf-8")
+    assert "### Обновление установленной панели" in text
+    section = text[text.index("### Обновление установленной панели"):]
+    section = section[:section.index("### Полезные команды")]
+    assert "install.sh" in section
+    assert "systemctl restart` недостаточно" in section
+    assert "vpn-only.sh" in section and "ssl.sh" in section

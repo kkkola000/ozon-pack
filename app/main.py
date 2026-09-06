@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -27,8 +28,26 @@ PUBLIC_PATHS = frozenset({"/login", "/healthz", "/favicon.ico", "/static"})
 PUBLIC_PREFIXES = ("/static/",)
 
 
+def _warn_about_spoofable_client_ip() -> None:
+    """Предупредить, если панель верит X-Forwarded-For от кого угодно.
+
+    Со звёздочкой uvicorn берёт адрес посетителя прямо из заголовка запроса, а
+    значит его подделает любой, кто дотянется до порта: IP_ALLOWLIST перестаёт
+    ограничивать, счётчик попыток входа обнуляется каждым запросом, а в журнале
+    оказываются выдуманные адреса. Указывать нужно адрес своего прокси.
+    """
+    if os.getenv("FORWARDED_ALLOW_IPS", "").strip() != "*":
+        return
+    log.warning(
+        "FORWARDED_ALLOW_IPS=* — адрес посетителя подделывается заголовком "
+        "X-Forwarded-For: IP_ALLOWLIST и защита от подбора пароля не работают. "
+        "Укажите адрес обратного прокси (за nginx на том же сервере — 127.0.0.1)."
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _warn_about_spoofable_client_ip()
     db.init_db()
     without_keys = [a["title"] for a in accounts.all_accounts(active_only=True) if not accounts.is_configured(a)]
     if without_keys:
