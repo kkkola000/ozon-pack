@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from .. import db, packing, store
 from ..config import settings
-from ..deps import check_csrf, current_user, require_ozon_account, templates
+from ..deps import check_csrf, current_user, require_ozon_account, safe_filename, templates
 from ..ozon import OzonError
 
 router = APIRouter()
@@ -115,7 +115,8 @@ def api_label(posting_number: str, user: dict = Depends(current_user),
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"', "Cache-Control": "no-store"},
+        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
+                 "Cache-Control": "no-store"},
     )
 
 
@@ -134,5 +135,6 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"', "Cache-Control": "no-store"},
+        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
+                 "Cache-Control": "no-store"},
     )

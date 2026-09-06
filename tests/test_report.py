@@ -286,3 +286,53 @@ class TestPages:
             )
             assert bad.status_code == 400
             assert report.get_cutoff() == "19:45"
+
+
+# ------------------------------------------------------------------ CSV и формулы
+# Названия товаров приходят из кабинета площадки. Excel и LibreOffice выполняют
+# как формулу всё, что начинается с «=», «+», «-» или «@», поэтому такое
+# название открывало бы отчёт с готовой командой внутри.
+
+def _csv_rows(day):
+    """Разобранный CSV: значения с кавычками и «;» иначе не сверить построчно."""
+    import csv as csv_module
+    import io as io_module
+
+    text = report.to_csv(day).decode("utf-8-sig")
+    return list(csv_module.reader(io_module.StringIO(text), delimiter=";"))
+
+
+def _one_row_with_name(account, user, name):
+    posting = pick_posting(positions=1)
+    sku = posting["items"][0]["sku"]
+    packing.select_posting(account, user, posting["posting_number"])
+    packing.scan(account, user, barcode_of(sku))
+    db.execute("UPDATE shipped_items SET name = ?", (name,))
+    rows = _csv_rows(report.report_date())
+    assert len(rows) == 2, rows
+    return rows[0], rows[1]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["=cmd|' /c calc'!A1", "+1+1", "-2+3", "@SUM(A1)", '=HYPERLINK("http://evil","жми")', "\tи табуляция"],
+)
+def test_csv_does_not_hand_formulas_to_excel(account, sample_data, user, name):
+    header, row = _one_row_with_name(account, user, name)
+    cell = row[header.index("Товар")]
+    assert cell == "'" + name, cell
+    assert not cell.startswith(("=", "+", "-", "@", "\t", "\r"))
+
+
+@pytest.mark.parametrize("name", ["Кружка «Ozon», 300 мл", "Чехол 2-в-1", "Набор №5"])
+def test_csv_leaves_ordinary_values_alone(account, sample_data, user, name):
+    header, row = _one_row_with_name(account, user, name)
+    assert row[header.index("Товар")] == name
+
+
+def test_csv_does_not_touch_ordinary_columns(account, sample_data, user):
+    """Апостроф не должен появляться у дат, номеров и статусов."""
+    header, row = _one_row_with_name(account, user, "Обычный товар")
+    for column in ("Отчётный день", "Отправление", "Результат", "Сборщик"):
+        cell = row[header.index(column)]
+        assert not cell.startswith("'"), f"{column}: {cell}"

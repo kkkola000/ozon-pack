@@ -19,7 +19,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("app")
 
-PUBLIC_PATHS = ("/login", "/static", "/healthz", "/favicon.ico")
+# Открытые без входа адреса. Сверяем точно, а не по началу строки: при
+# startswith любой будущий маршрут вроде /login-sso или /healthz-details
+# оказался бы открыт молча, никак этого не обозначив.
+PUBLIC_PATHS = frozenset({"/login", "/healthz", "/favicon.ico", "/static"})
+# Статика — единственное, где адрес продолжается: /static/app.js и прочие.
+PUBLIC_PREFIXES = ("/static/",)
 
 
 @asynccontextmanager
@@ -47,10 +52,10 @@ async def auth_middleware(request: Request, call_next):
 
     session = security.read_session(request.cookies.get(security.SESSION_COOKIE))
     request.state.session = session
-    request.state.user = security.get_user(session["uid"]) if session else None
+    request.state.user = security.session_user(session)
 
     path = request.url.path
-    if path.startswith(PUBLIC_PATHS) or request.state.user:
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES) or request.state.user:
         return await call_next(request)
 
     if path.startswith("/api/"):

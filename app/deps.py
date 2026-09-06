@@ -1,6 +1,8 @@
 """Общие зависимости FastAPI: текущий пользователь, CSRF, шаблоны."""
 from __future__ import annotations
 
+import hmac
+import re
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, Request
@@ -67,8 +69,24 @@ def check_csrf(request: Request) -> None:
     """Защита от запросов со сторонних сайтов."""
     session = getattr(request.state, "session", None) or {}
     token = request.headers.get("X-CSRF-Token") or ""
-    if not token or token != session.get("csrf"):
+    expected = str(session.get("csrf") or "")
+    # compare_digest вместо != : сравнение не выдаёт длину совпавшего начала.
+    if not token or not expected or not hmac.compare_digest(token, expected):
         raise HTTPException(status_code=403, detail="Недействительный CSRF-токен")
+
+
+# Имя файла приходит из ответа площадки и уходит в заголовок Content-Disposition.
+# Кавычка разорвала бы заголовок, перевод строки — весь ответ, а слэш увёл бы
+# файл в чужой каталог при сохранении. Поэтому оставляем только простые символы.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_filename(raw: object, default: str = "label.pdf") -> str:
+    """Имя файла площадки, пригодное для заголовка ответа."""
+    name = _UNSAFE_IN_FILENAME.sub("_", str(raw or ""))[:100].strip()
+    if not name or not name.strip("._"):
+        return default
+    return name
 
 
 def local_dt(value: str | None, fmt: str = "%d.%m %H:%M") -> str:

@@ -295,6 +295,27 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _restrict_access(db_path: str) -> None:
+    """Права 0600 на базу и её спутников.
+
+    В базе лежат ключи Ozon и Avito открытым текстом и хеши паролей, а sqlite
+    создаёт файл по umask — обычно доступным на чтение любому пользователю
+    сервера. Права выставляем на каждом подключении: так подтягиваются и базы,
+    заведённые прежними версиями. Так же защищён data/.secret_key в config.py.
+
+    Владеть файлом может другой пользователь (панель запускали то от root, то от
+    служебного) — тогда chmod не пройдёт, и это не повод падать: панель работает,
+    а о правах пишем в журнал.
+    """
+    for path in (db_path, f"{db_path}-wal", f"{db_path}-shm"):
+        try:
+            Path(path).chmod(0o600)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.warning("Не удалось закрыть доступ к %s: %s", path, exc)
+
+
 def connect() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
@@ -305,6 +326,8 @@ def connect() -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=15000")
         conn.execute("PRAGMA foreign_keys=ON")
+        # После journal_mode=WAL рядом появляются -wal и -shm: закрываем и их.
+        _restrict_access(settings.db_path)
         _local.conn = conn
     return conn
 

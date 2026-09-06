@@ -286,13 +286,28 @@ CSV_HEADER = [
 ]
 
 
+# Excel и LibreOffice считают формулой всё, что начинается с этих символов, и
+# выполняют её при открытии файла. Названия товаров и артикулы приходят из
+# кабинета площадки, то есть их пишет не панель, — поэтому обезвреживаем.
+_FORMULA_STARTERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value: Any) -> str:
+    """Значение для CSV, которое таблица откроет как текст, а не как формулу."""
+    text = "" if value is None else str(value)
+    if text.startswith(_FORMULA_STARTERS):
+        # Ведущий апостроф — принятый способ сказать таблице «это текст».
+        return "'" + text
+    return text
+
+
 def to_csv(day: str, account_id: int | None = None, status: str | None = None) -> bytes:
     """CSV для Excel: разделитель «;» и BOM, иначе кириллица открывается кракозябрами."""
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";", lineterminator="\r\n")
     writer.writerow(CSV_HEADER)
     for item in rows(day, account_id=account_id, status=status):
-        writer.writerow([
+        writer.writerow([_csv_cell(value) for value in (
             item["report_date"],
             item["scanned_local"],
             item.get("account_title") or "",
@@ -306,5 +321,5 @@ def to_csv(day: str, account_id: int | None = None, status: str | None = None) -
             item["status_label"],
             item["reason_label"],
             item.get("login") or "",
-        ])
+        )])
     return "﻿".encode("utf-8") + buffer.getvalue().encode("utf-8")

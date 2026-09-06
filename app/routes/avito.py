@@ -17,7 +17,8 @@ from fastapi.responses import HTMLResponse, Response
 
 from .. import avito, avito_pack, db, store, sync
 from ..avito import AvitoError
-from ..deps import check_csrf, current_user, require_admin, require_avito_account, templates
+from ..deps import (check_csrf, current_user, require_admin, require_avito_account, safe_filename,
+                    templates)
 
 log = logging.getLogger("avito")
 
@@ -320,7 +321,8 @@ def _label_response(account: dict, user: dict, orders: list[dict]) -> Response:
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{filename}"', "Cache-Control": "no-store"},
+        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
+                 "Cache-Control": "no-store"},
     )
 
 

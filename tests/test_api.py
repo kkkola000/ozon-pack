@@ -198,3 +198,200 @@ def test_returns_page_shows_hidden_statuses(client):
     page = client.get("/returns")
     assert page.status_code == 200
     assert "В пункте выдачи" in page.text
+
+
+# ---------------------------------------------------------------- адрес перехода
+# Проверки startswith("/") было мало: «//evil.com» и «/\evil.com» тоже начинаются
+# со слэша, но браузер уходит по ним на чужой домен. Ссылка на настоящий адрес
+# панели уводила на её копию сразу после успешного входа.
+
+@pytest.mark.parametrize("target", ["//evil.com", "/\\evil.com", "///evil.com", "https://evil.com", ""])
+def test_login_does_not_redirect_outside(client, target):
+    response = client.post(
+        "/login", data={"login": "admin", "password": "test-admin-pass", "next": target}
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/pack", target
+
+
+@pytest.mark.parametrize("target", ["/orders", "/orders?tab=deliver", "/returns"])
+def test_login_keeps_internal_next(client, target):
+    response = client.post(
+        "/login", data={"login": "admin", "password": "test-admin-pass", "next": target}
+    )
+    assert response.headers["location"] == target
+
+
+def test_switch_account_does_not_redirect_outside(client):
+    from app import accounts
+
+    csrf = login(client)
+    account_id = accounts.default_account()["id"]
+    response = client.post(
+        "/api/account/switch",
+        json={"account_id": account_id, "next": "//evil.com"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+    # Запасной адрес переключения — корень панели, а не чужой домен
+    assert response.json()["redirect"] == "/"
+
+
+def test_login_page_does_not_redirect_outside(client):
+    """Уже вошедшему /login отвечает переходом — тоже только внутрь панели."""
+    login(client)
+    response = client.get("/login?next=//evil.com")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/pack"
+
+
+# ---------------------------------------------------------------- сессии
+def test_password_change_closes_old_sessions(client):
+    """Смена пароля закрывает прежние входы, иначе украденная кука живёт сутки."""
+    csrf = login(client)
+    user_id = db.query_one("SELECT id FROM users WHERE login = 'admin'")["id"]
+    assert client.get("/pack").status_code == 200
+
+    response = client.post(
+        f"/api/users/{user_id}",
+        json={"password": "новый-пароль-1"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200, response.text
+
+    # Кука осталась прежней, но панель её больше не принимает
+    assert client.get("/pack").status_code == 303
+    assert client.get("/api/state").status_code == 401
+
+
+def test_password_change_leaves_other_users_alone(client):
+    from app.security import hash_password
+
+    csrf = login(client)
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer3', ?, 'packer', 1, ?)",
+        (hash_password("packer123"), db.now_iso()),
+    )
+    other_id = db.query_one("SELECT id FROM users WHERE login = 'packer3'")["id"]
+    response = client.post(
+        f"/api/users/{other_id}", json={"password": "другой-пароль"}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 200, response.text
+    # Свою сессию смена чужого пароля не рвёт
+    assert client.get("/pack").status_code == 200
+
+
+# ---------------------------------------------------------------- прочее
+def test_public_paths_match_exactly(client):
+    """Раньше startswith пускал бы без входа любой адрес, начинающийся с /login."""
+    for path in ("/login-sso", "/healthz-details", "/staticfiles"):
+        response = client.get(path)
+        assert response.status_code == 303, f"{path} открылся без входа"
+        assert response.headers["location"].startswith("/login?next=")
+    # Настоящие публичные адреса продолжают работать
+    assert client.get("/login").status_code == 200
+    assert client.get("/healthz").status_code == 200
+
+
+def test_csrf_rejects_token_with_right_prefix(client):
+    csrf = login(client)
+    response = client.post("/api/scan", json={"code": "1"}, headers={"X-CSRF-Token": csrf[:-1] + "x"})
+    assert response.status_code == 403
+
+
+def test_database_file_is_not_world_readable(client):
+    """В базе ключи площадок открытым текстом и хеши паролей."""
+    import stat
+
+    from pathlib import Path
+
+    from app.config import settings
+
+    mode = stat.S_IMODE(Path(settings.db_path).stat().st_mode)
+    assert mode == 0o600, oct(mode)
+
+
+# ---------------------------------------------------------------- ответы площадки
+# Имя файла и адрес готового стикера приходят из ответа Ozon. В заголовок ответа
+# и в исходящий запрос они попадают как есть, поэтому чистим и проверяем.
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("label.pdf", "label.pdf"),
+        ('x"; attachment; filename="evil.exe', "x_attachment_filename_evil.exe"),
+        ("../../etc/passwd", ".._.._etc_passwd"),
+        ("стикер.pdf", "_.pdf"),
+        ("отчёт\r\nSet-Cookie: a=b", "_Set-Cookie_a_b"),
+        ("", "label.pdf"),
+        (None, "label.pdf"),
+        ("...", "label.pdf"),
+    ],
+)
+def test_safe_filename(raw, expected):
+    from app.deps import safe_filename
+
+    assert safe_filename(raw) == expected
+
+
+def test_label_header_survives_hostile_filename(client, monkeypatch):
+    from app import accounts, ozon
+
+    login(client)
+    fake = ozon.get_client(accounts.default_account())
+    # Стикер отдаёт сама подделка, подменяем только имя файла в её ответе
+    original = fake.package_label
+    monkeypatch.setattr(
+        fake, "package_label",
+        lambda numbers: (original(numbers)[0], 'a"; filename="evil.exe'),
+    )
+
+    number = db.query_one(
+        "SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' LIMIT 1"
+    )["posting_number"]
+    response = client.get(f"/api/label/{number}.pdf")
+    assert response.status_code == 200
+    disposition = response.headers["content-disposition"]
+    assert disposition == 'inline; filename="a_filename_evil.exe"', disposition
+    # Заголовок не разорван: второго filename в нём нет
+    assert disposition.count("filename=") == 1
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://evil.com/label.pdf",
+        "//evil.com/label.pdf",
+        "http://api-seller.ozon.ru/label.pdf",
+        "http://169.254.169.254/latest/meta-data/",
+        "file:///etc/passwd",
+    ],
+)
+def test_label_url_from_response_must_stay_on_ozon(url):
+    """По адресу из ответа панель ходит сама — увести её в чужую сеть нельзя."""
+    from app.ozon import OzonClient, OzonError
+
+    client_obj = OzonClient(client_id="x", api_key="y")
+    try:
+        with pytest.raises(OzonError):
+            client_obj._same_host_url(url)
+    finally:
+        client_obj.close()
+
+
+@pytest.mark.parametrize("url", ["https://api-seller.ozon.ru/f/1.pdf", "/f/1.pdf", "f/1.pdf"])
+def test_label_url_on_same_host_is_allowed(url):
+    from app.ozon import OzonClient
+
+    client_obj = OzonClient(client_id="x", api_key="y")
+    try:
+        assert client_obj._same_host_url(url) == url
+    finally:
+        client_obj.close()
+
+
+def test_login_form_does_not_carry_hostile_next(client):
+    """Скрытое поле формы не должно носить чужой домен."""
+    page = client.get("/login?next=//evil.com").text
+    assert 'name="next" value="/pack"' in page
+    assert "evil.com" not in page

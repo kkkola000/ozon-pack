@@ -23,6 +23,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -208,6 +209,22 @@ class OzonClient:
             log.warning("Синхронный стикер недоступен (%s %s), пробуем асинхронный", response.status_code, message)
         return self._package_label_async(posting_numbers)
 
+    def _same_host_url(self, raw: str) -> str:
+        """Адрес готового стикера из ответа Ozon — только на тот же хост.
+
+        По этому адресу панель ходит сама, со своего сервера. Если бы в file_url
+        пришёл чужой адрес, запрос ушёл бы туда же — в том числе на внутренний
+        адрес сети, куда снаружи хода нет. Относительный путь пропускаем: его
+        httpx достроит до base_url.
+        """
+        parts = urlsplit(raw)
+        if not parts.scheme and not parts.netloc:
+            return raw
+        expected = urlsplit(self.base_url)
+        if (parts.scheme, parts.netloc) != (expected.scheme, expected.netloc):
+            raise OzonError(f"Ozon прислал стикер по чужому адресу: {parts.scheme}://{parts.netloc}")
+        return raw
+
     def _package_label_async(self, posting_numbers: list[str]) -> tuple[bytes, str]:
         created = self.post("/v2/posting/fbs/package-label/create", {"posting_number": posting_numbers})
         tasks = ((created.get("result") or {}).get("tasks")) or []
@@ -219,7 +236,8 @@ class OzonClient:
             state = self.post("/v1/posting/fbs/package-label/get", {"task_id": task_id}).get("result") or {}
             status = (state.get("status") or "").lower()
             if status in {"completed", "ready", "success"} and state.get("file_url"):
-                file_response = self._client.get(state["file_url"], timeout=60)
+                file_url = self._same_host_url(state["file_url"])
+                file_response = self._client.get(file_url, timeout=60)
                 file_response.raise_for_status()
                 return file_response.content, "label.pdf"
             if status in {"error", "failed"}:

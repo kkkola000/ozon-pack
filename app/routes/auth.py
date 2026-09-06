@@ -13,10 +13,13 @@ router = APIRouter()
 
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/pack", error: str | None = None):
+    # Адрес чистим здесь же: незачем носить чужой домен в скрытом поле формы,
+    # даже если POST его всё равно отвергнет.
+    target = security.safe_next(next)
     if getattr(request.state, "user", None):
-        return RedirectResponse(next or "/pack", status_code=303)
+        return RedirectResponse(target, status_code=303)
     return templates.TemplateResponse(
-        request, "login.html", {"request": request, "next": next, "error": error}
+        request, "login.html", {"request": request, "next": target, "error": error}
     )
 
 
@@ -43,9 +46,9 @@ def login(request: Request, login: str = Form(...), password: str = Form(...), n
         )
 
     security.clear_attempts(client_ip)
-    token = security.make_session(row["id"], row["login"], row["role"])
+    token = security.make_session(row["id"], row["login"], row["role"], row["password_hash"])
     db.log_event("login", user={"id": row["id"], "login": row["login"]}, message=f"IP {client_ip}")
-    target = next if next.startswith("/") else "/pack"
+    target = security.safe_next(next)
     response = RedirectResponse(target, status_code=303)
     response.set_cookie(
         security.SESSION_COOKIE,
@@ -87,9 +90,7 @@ def switch_account(request: Request, payload: dict = Body(...)):
         message=f"Переключение на кабинет «{account['title']}»",
     )
     # Сборка идёт в конкретном кабинете: чужой раздел после переключения открывать незачем.
-    target = str(payload.get("next") or "/")
-    if not target.startswith("/"):
-        target = "/"
+    target = security.safe_next(payload.get("next"), "/")
     if account["marketplace"] == "avito" and not target.startswith(("/avito", "/logs", "/settings")):
         target = "/avito"
     if account["marketplace"] == "ozon" and target.startswith("/avito"):
