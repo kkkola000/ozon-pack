@@ -25,12 +25,6 @@ function setBanner(kind, message) {
   setTimeout(() => banner.classList.remove('flash'), 500);
 }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (ch) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
-  ));
-}
-
 function urgencyTag(posting) {
   const map = { overdue: 'Просрочено', urgent: 'Срочно', soon: 'Сегодня', ok: '' };
   const text = map[posting.urgency];

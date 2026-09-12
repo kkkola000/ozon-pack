@@ -46,8 +46,8 @@
         Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
       </a>
     {% endif %}
-    <a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>
     {% if user and user.role == 'admin' %}
+      <a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>
       <a href="/reports" class="{{ 'active' if active_tab == 'reports' }}">Отчёты</a>
       <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
     {% endif %}

@@ -11,6 +11,9 @@ from ..ozon import OzonError
 
 router = APIRouter()
 
+# Сколько стикеров печатается одним запросом.
+MAX_LABELS = 50
+
 
 @router.get("/pack", response_class=HTMLResponse)
 def pack_page(request: Request, user: dict = Depends(current_user),
@@ -128,6 +131,12 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
     numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
     if not numbers:
         raise HTTPException(status_code=400, detail="Не выбрано ни одного отправления")
+    # Без потолка один запрос уносит в Ozon сколько угодно номеров и выбирает
+    # лимиты кабинета на всех сразу. Столько же, сколько печатает Avito.
+    if len(numbers) > MAX_LABELS:
+        raise HTTPException(
+            status_code=400, detail=f"За один раз печатается не больше {MAX_LABELS} стикеров"
+        )
     try:
         pdf, filename = packing.label_pdf(account, user, numbers)
     except OzonError as exc:

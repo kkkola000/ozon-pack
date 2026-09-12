@@ -109,9 +109,6 @@ class Settings:
                 self.secret_key = secrets.token_urlsafe(48)
                 key_file.write_text(self.secret_key, encoding="utf-8")
                 key_file.chmod(0o600)
-    @property
-    def configured(self) -> bool:
-        return bool(self.ozon_client_id and self.ozon_api_key)
 
 
 settings = Settings()

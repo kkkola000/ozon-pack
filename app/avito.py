@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import logging
 import re
-import random
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -245,8 +244,11 @@ class AvitoClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         last_error: Exception | None = None
         retried_auth = False
+        # Заголовки вызывающего достаём один раз, до цикла: pop внутри цикла
+        # забирал их на первой попытке, и повтор уходил уже без них.
+        base_headers = dict(kwargs.pop("headers", {}) or {})
         for attempt in range(self.max_retries):
-            headers = dict(kwargs.pop("headers", {}) or {})
+            headers = dict(base_headers)
             headers["Authorization"] = f"Bearer {self.token()}"
             try:
                 response = self._client.request(method, path, headers=headers, **kwargs)

@@ -172,8 +172,6 @@ def test_legacy_env_value_is_upgraded(monkeypatch):
 
 def test_ozon_print_sheet_shows_pickup_address_without_status(sample_data, account):
     """Лист возвратов Ozon: адрес ПВЗ вместо колонки со статусом."""
-    import re
-
     from fastapi.testclient import TestClient
 
     from app.main import app

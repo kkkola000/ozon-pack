@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from . import db
+from . import crypto, db
 from .config import settings
 
 # Площадки и то, как называются их ключи в личных кабинетах.
@@ -28,7 +28,6 @@ MARKETPLACES: dict[str, dict[str, str]] = {
         "hint": "Личный кабинет Avito → Настройки → Профиль → API",
     },
 }
-DEFAULT_MARKETPLACE = "ozon"
 
 # Ключи площадок — печатаемый ASCII без пробелов. Проверка нужна не для красоты:
 # кириллица в заголовке HTTP роняет запрос ещё до обращения к площадке.
@@ -120,10 +119,14 @@ def resolve(account_id: int | str | None) -> dict | None:
 
 
 def credentials(account: dict | None) -> tuple[str, str, str]:
-    """(client_id, api_key, источник): 'panel', 'env' или 'none'."""
+    """(client_id, api_key, источник): 'panel', 'env' или 'none'.
+
+    Секретная половина ключей хранится в базе зашифрованной (app/crypto.py),
+    здесь она расшифровывается — это единственная точка, где ключи достают.
+    """
     if account:
         client_id = (account.get("client_id") or "").strip()
-        api_key = (account.get("api_key") or "").strip()
+        api_key = crypto.decrypt(account.get("api_key"))
         if client_id and api_key:
             return client_id, api_key, "panel"
         # Ключи из .env — только для кабинета Ozon: другой площадки там нет.
@@ -163,7 +166,8 @@ def create(marketplace: str, title: str, client_id: str = "", api_key: str = "",
         cur = conn.execute(
             "INSERT INTO accounts(marketplace, title, client_id, api_key, active, sort, created_at, updated_at) "
             "VALUES(?, ?, ?, ?, 1, ?, ?, ?)",
-            (marketplace, title.strip(), client_id.strip(), api_key.strip(), row["next"], db.now_iso(), db.now_iso()),
+            (marketplace, title.strip(), client_id.strip(), crypto.encrypt(api_key),
+             row["next"], db.now_iso(), db.now_iso()),
         )
         account_id = int(cur.lastrowid)
         db.log_event(
@@ -189,7 +193,7 @@ def update(account_id: int, *, title: str | None = None, client_id: str | None =
         params.append(client_id.strip())
     if api_key is not None:
         sets.append("api_key = ?")
-        params.append(api_key.strip())
+        params.append(crypto.encrypt(api_key))
     if active is not None:
         sets.append("active = ?")
         params.append(1 if active else 0)

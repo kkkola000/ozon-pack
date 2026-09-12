@@ -2,12 +2,40 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from . import db
 from .config import settings
+
+# Колонка raw хранит ответ площадки целиком — он нужен, когда на экране чего-то
+# не хватает и надо понять, что именно прислали. Контакты покупателя панель при
+# этом не показывает нигде, поэтому в базу они и не попадают: по 152-ФЗ хранить
+# персональные данные без цели нельзя, а база лежит на складском сервере.
+_CONTACT_KEY = re.compile(r"phone|email|passport|телефон|почта|паспорт", re.IGNORECASE)
+_MAX_CLEAN_DEPTH = 8
+
+
+def without_contacts(value: Any, depth: int = 0) -> Any:
+    """Копия ответа площадки без телефонов и почты — то, что уходит в колонку raw."""
+    if depth > _MAX_CLEAN_DEPTH:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: without_contacts(item, depth + 1)
+            for key, item in value.items()
+            if not _CONTACT_KEY.search(str(key))
+        }
+    if isinstance(value, list):
+        return [without_contacts(item, depth + 1) for item in value]
+    return value
+
+
+def _raw_json(raw: dict) -> str:
+    return json.dumps(without_contacts(raw), ensure_ascii=False)
+
 
 # Рабочие статусы FBS: то, что сборщик видит в панели.
 STATUS_AWAITING_PACKAGING = "awaiting_packaging"
@@ -172,7 +200,7 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             items_count,
             len(products),
             _text(cancellation.get("cancel_reason")),
-            json.dumps(raw, ensure_ascii=False),
+            _raw_json(raw),
             local_state,
             (existing["first_seen_at"] if existing else now) or now,
             now,
@@ -307,7 +335,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _text((storage.get("sum") or {}).get("price")),
             _text(logistic.get("barcode")),
             is_ready,
-            json.dumps(raw, ensure_ascii=False),
+            _raw_json(raw),
             (existing["first_seen_at"] if existing else now) or now,
             now,
         ),
@@ -439,17 +467,17 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
         """
         INSERT INTO avito_orders (
             account_id, id, marketplace_id, status, service_type, service_name, dispatch_number, tracking_number,
-            terminal_code, terminal_address, buyer_name, buyer_phone, confirm_till, ship_till, delivery_date,
+            terminal_code, terminal_address, buyer_name, confirm_till, ship_till, delivery_date,
             return_status, return_tracking,
             price, total, delivery_price, commission, items_count, positions_count, actions,
             created_at_api, updated_at_api, raw, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             marketplace_id = excluded.marketplace_id, status = excluded.status,
             service_type = excluded.service_type, service_name = excluded.service_name,
             dispatch_number = excluded.dispatch_number, tracking_number = excluded.tracking_number,
             terminal_code = excluded.terminal_code, terminal_address = excluded.terminal_address,
-            buyer_name = excluded.buyer_name, buyer_phone = excluded.buyer_phone,
+            buyer_name = excluded.buyer_name,
             confirm_till = excluded.confirm_till, ship_till = excluded.ship_till,
             delivery_date = excluded.delivery_date, return_status = excluded.return_status,
             return_tracking = excluded.return_tracking, price = excluded.price, total = excluded.total,
@@ -470,7 +498,6 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
             _text(avito_client.pickup_code(raw)),
             _text(avito_client.pickup_address(raw)),
             _text(buyer.get("fullName")),
-            _text(buyer.get("phoneNumber")),
             _dt(schedules.get("confirmTill")),
             _dt(schedules.get("shipTill")),
             _dt(schedules.get("deliveryDate")) or _dt(schedules.get("deliveryDateMax")),
@@ -485,7 +512,7 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
             json.dumps(actions, ensure_ascii=False),
             _dt(raw.get("createdAt")),
             _dt(raw.get("updatedAt")),
-            json.dumps(raw, ensure_ascii=False),
+            _raw_json(raw),
             (existing["first_seen_at"] if existing else now) or now,
             now,
         ),

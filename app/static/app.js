@@ -1,6 +1,15 @@
 /* Общие утилиты: запросы к API, всплывающие сообщения, звук и печать. */
 const CSRF = document.querySelector('meta[name=csrf-token]')?.content || '';
 
+/* Экранирование перед подстановкой в innerHTML. Названия товаров, имена и
+   адреса приходят от площадки — писала их не панель. Функция живёт здесь, а не
+   в двух копиях по страницам: app.js подключается в base.html до остальных. */
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
 async function api(url, body, method = 'POST') {
   const options = {
     method,

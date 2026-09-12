@@ -440,7 +440,9 @@ class SyncWorker(threading.Thread):
                 if with_returns:
                     self._last_returns = time.time()
             except Exception:  # noqa: BLE001 - поток не должен умирать
-                pass
+                # Поток переживает любую ошибку, но молчать о ней нельзя: сбой
+                # в самой записи статуса иначе исчезает бесследно.
+                log.exception("Проход синхронизации сорвался")
             self._wake.wait(timeout=settings.sync_interval)
             self._wake.clear()
 

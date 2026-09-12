@@ -26,7 +26,14 @@ def test_commit_is_short_hash_or_unknown():
     assert commit == "—" or (len(commit) == 7 and all(c in "0123456789abcdef" for c in commit))
 
 
-def test_healthz_reports_build(client):
+def test_healthz_without_login_reports_only_status(client):
+    """Без входа — только живость: версия и коммит помогают искать уязвимые сборки."""
+    payload = client.get("/healthz").json()
+    assert payload == {"status": "ok"}
+
+
+def test_healthz_reports_build_to_logged_in(client):
+    client.post("/login", data={"login": "admin", "password": "test-admin-pass", "next": "/pack"})
     payload = client.get("/healthz").json()
     assert payload["status"] == "ok"
     assert payload["version"] == version.get_version()

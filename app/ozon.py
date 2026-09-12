@@ -10,7 +10,6 @@
   POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера
   POST /v3/product/info/list           — карточки товаров (штрихкоды, фото)
   POST /v1/returns/list                — возвраты FBO и FBS
-  POST /v1/returns/company/fbs/info    — количество возвратов по пунктам выдачи
   POST /v1/return/giveout/get-pdf      — акт/штрихкод на выдачу возвратов
 """
 from __future__ import annotations
@@ -18,7 +17,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import random
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -84,7 +82,6 @@ class OzonClient:
                 "Accept": "application/json",
             },
         )
-        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ низкий уровень
     def _request(self, path: str, payload: dict | None = None) -> httpx.Response:
@@ -271,11 +268,6 @@ class OzonClient:
         if returns is None:
             returns = (data.get("result") or {}).get("returns") or []
         return list(returns), bool(data.get("has_next"))
-
-    def returns_fbs_points(self, *, limit: int = 100, last_id: int = 0) -> list[dict]:
-        """Пункты выдачи с количеством ожидающих возвратов (FBS)."""
-        data = self.post("/v1/returns/company/fbs/info", {"filter": {}, "pagination": {"limit": limit, "last_id": last_id}})
-        return list(data.get("drop_off_points") or [])
 
     def giveout_pdf(self) -> bytes:
         """Штрихкод/акт на получение возвратов (одна активная выдача на компанию)."""

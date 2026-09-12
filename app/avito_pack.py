@@ -22,7 +22,6 @@ from .avito import STATUS_LABELS
 
 # Заказы, которые сборщику имеет смысл собирать.
 PACKABLE = "ready_to_ship"
-CLAIM_TTL_MINUTES = 30
 
 
 class ScanResult(dict):
@@ -221,7 +220,6 @@ def scan(account: dict, user: dict, code: str) -> ScanResult:
 def open_order(account: dict, user: dict, order: dict, code: str | None = None) -> ScanResult:
     order_id = order["id"]
     number = order.get("marketplace_id") or order_id
-    view = store.avito_view(order)
 
     if order.get("local_state") == "packed":
         return ScanResult(
@@ -284,7 +282,6 @@ def _scan_item(account: dict, user: dict, state: dict, code: str) -> ScanResult:
     """Штрихкод товара: сверять не с чем, поэтому записываем как есть."""
     order = state["active"]
     order_id = order["id"]
-    number = order.get("marketplace_id") or order_id
 
     if state["complete"]:
         with db.write() as conn:
@@ -301,7 +298,21 @@ def _scan_item(account: dict, user: dict, state: dict, code: str) -> ScanResult:
         )
 
     index = state["done"]
-    item, unit_no = _units(account["id"], order_id)[index]
+    units = _units(account["id"], order_id)
+    if index >= len(units):
+        # Состав заказа перечитывается из базы, а счётчик сканов — из состояния
+        # сборщика: синхронизация могла убрать позицию между сканами. Раньше
+        # это был IndexError и белый экран прямо в руках у сборщика.
+        db.log_event("avito_scan_stale", level="warn", account_id=account["id"], user=user,
+                     posting_number=order_id, barcode=code, message="Состав заказа изменился")
+        return ScanResult(
+            "error",
+            "Состав заказа изменился — откройте заказ заново (отсканируйте стикер).",
+            action="stale_order",
+            sound="error",
+            state=state,
+        )
+    item, unit_no = units[index]
     scanned = list(state["scanned"]) + [code]
 
     with db.write() as conn:

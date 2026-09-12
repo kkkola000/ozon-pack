@@ -1,7 +1,7 @@
 """Кабинеты: ключи площадок, демо-режим и разделение данных."""
 import pytest
 
-from app import accounts, avito, db, ozon, store, sync
+from app import accounts, avito, db, ozon, sync
 from app.config import settings
 
 
@@ -65,6 +65,38 @@ def test_key_is_masked():
     assert accounts.mask("abcdefghij").endswith("ghij")
     assert "abcdef" not in accounts.mask("abcdefghij")
     assert accounts.mask("") == ""
+
+
+def test_api_key_is_encrypted_in_database(ozon_account):
+    """Ключ площадки не должен читаться в базе: копия базы = утечка ключей."""
+    accounts.update(ozon_account["id"], client_id="cid-1", api_key="секретный-ключ")
+    stored = db.query_one("SELECT client_id, api_key FROM accounts WHERE id = ?", (ozon_account["id"],))
+    assert "секретный-ключ" not in stored["api_key"]
+    assert stored["api_key"].startswith("enc:v1:")
+    # Client-Id не секрет — он показывается в настройках и шифровать его незачем.
+    assert stored["client_id"] == "cid-1"
+    # Панель при этом видит ключ как обычно.
+    assert accounts.credentials(accounts.get(ozon_account["id"]))[1] == "секретный-ключ"
+
+
+def test_plaintext_keys_are_encrypted_on_startup(ozon_account):
+    """Ключи из базы прежних версий шифруются при первом запуске."""
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE accounts SET api_key = 'старый-открытый-ключ' WHERE id = ?", (ozon_account["id"],)
+        )
+    db.init_db()
+    stored = db.query_one("SELECT api_key FROM accounts WHERE id = ?", (ozon_account["id"],))["api_key"]
+    assert stored.startswith("enc:v1:")
+    assert accounts.credentials(accounts.get(ozon_account["id"]))[1] == "старый-открытый-ключ"
+
+
+def test_lost_secret_does_not_break_panel(ozon_account, monkeypatch):
+    """Сменился SECRET_KEY — панель говорит «ключей нет», а не падает."""
+    accounts.update(ozon_account["id"], client_id="cid-1", api_key="ключ")
+    monkeypatch.setattr(settings, "secret_key", "другой-секрет-совсем")
+    assert accounts.credentials(accounts.get(ozon_account["id"]))[1] == ""
+    assert not accounts.is_configured(accounts.get(ozon_account["id"]))
 
 
 def test_saving_keys_is_logged(ozon_account):

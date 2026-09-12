@@ -201,8 +201,10 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     tracking_number TEXT,
     terminal_code   TEXT,
     terminal_address TEXT,
+    -- Имя покупателя нужно на листе возвратов, чтобы найти посылку в ПВЗ.
+    -- Телефон панель не хранит: он нигде не показывается, а персональные
+    -- данные без цели — лишний риск (см. _drop_buyer_contacts ниже).
     buyer_name      TEXT,
-    buyer_phone     TEXT,
     confirm_till    TEXT,
     ship_till       TEXT,
     delivery_date   TEXT,
@@ -565,6 +567,9 @@ DATA_TABLES = (
     "avito_orders", "avito_order_items",
 )
 KV_GENERATED_CLEANED = "generated_data_cleaned"
+KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
+# Таблицы, у которых есть колонка raw с ответом площадки целиком.
+RAW_TABLES = ("postings", "returns", "avito_orders")
 
 
 def _drop_generated_data(conn: sqlite3.Connection) -> None:
@@ -597,6 +602,78 @@ def _drop_generated_data(conn: sqlite3.Connection) -> None:
         log.warning("Удалено %s записей, сгенерированных прежним демо-режимом", removed)
 
 
+def _encrypt_account_keys(conn: sqlite3.Connection) -> None:
+    """Зашифровать ключи площадок, лежащие в базе открытым текстом.
+
+    Идёт при каждом запуске и трогает только незашифрованные значения, поэтому
+    безопасна и на свежей базе, и на той, что обновлялась в несколько заходов.
+    """
+    from . import crypto
+
+    if not _table_exists(conn, "accounts"):
+        return
+    updated = 0
+    for row in conn.execute("SELECT id, api_key FROM accounts").fetchall():
+        value = (row["api_key"] or "").strip()
+        if not value or crypto.is_encrypted(value):
+            continue
+        conn.execute(
+            "UPDATE accounts SET api_key = ? WHERE id = ?", (crypto.encrypt(value), row["id"])
+        )
+        updated += 1
+    if updated:
+        log.info("Ключи площадок зашифрованы: %s кабинет(ов)", updated)
+
+
+def _drop_buyer_contacts(conn: sqlite3.Connection) -> None:
+    """Разово вычистить контакты покупателей, накопленные прежними версиями.
+
+    Телефон покупателя панель больше не сохраняет, а в колонках raw контакты
+    вырезаются перед записью (store.without_contacts). Записи, сделанные до
+    обновления, чистим один раз здесь: иначе телефоны так и лежали бы в базе,
+    хотя ни один экран их не показывает.
+    """
+    from .store import without_contacts
+
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_CONTACTS_CLEANED,)).fetchone()
+    if done:
+        return
+
+    cleaned = 0
+    if _table_exists(conn, "avito_orders") and "buyer_phone" in _columns(conn, "avito_orders"):
+        # Колонку не удаляем: DROP COLUMN есть не во всех сборках sqlite, а
+        # пустая неиспользуемая колонка безвредна. Значения — стираем.
+        cleaned += conn.execute(
+            "UPDATE avito_orders SET buyer_phone = NULL WHERE buyer_phone IS NOT NULL"
+        ).rowcount or 0
+
+    for table in RAW_TABLES:
+        if not _table_exists(conn, table) or "raw" not in _columns(conn, table):
+            continue
+        key = "posting_number" if table == "postings" else "id"
+        for row in conn.execute(f"SELECT account_id, {key} AS row_key, raw FROM {table}").fetchall():
+            if not row["raw"]:
+                continue
+            try:
+                parsed = json.loads(row["raw"])
+            except ValueError:
+                continue
+            scrubbed = json.dumps(without_contacts(parsed), ensure_ascii=False)
+            if scrubbed != row["raw"]:
+                conn.execute(
+                    f"UPDATE {table} SET raw = ? WHERE account_id = ? AND {key} = ?",
+                    (scrubbed, row["account_id"], row["row_key"]),
+                )
+                cleaned += 1
+
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_CONTACTS_CLEANED, now_iso()),
+    )
+    if cleaned:
+        log.info("Из базы убраны контакты покупателей: %s записей", cleaned)
+
+
 def init_db() -> None:
     conn = connect()
     with _write_lock:
@@ -612,6 +689,8 @@ def init_db() -> None:
         conn.execute("BEGIN IMMEDIATE")
         try:
             _drop_generated_data(conn)
+            _drop_buyer_contacts(conn)
+            _encrypt_account_keys(conn)
         except Exception:
             conn.execute("ROLLBACK")
             raise

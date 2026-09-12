@@ -23,12 +23,6 @@ function setBanner(kind, message) {
   setTimeout(() => banner.classList.remove('flash'), 500);
 }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (ch) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
-  ));
-}
-
 function renderActive(state) {
   const idle = document.getElementById('idle-panel');
   if (!state.active) {

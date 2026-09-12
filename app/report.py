@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import csv
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import db
@@ -69,11 +69,6 @@ def _parse_cutoff(value: str | None) -> tuple[int, int] | None:
     if 0 <= hour <= 23 and 0 <= minute <= 59:
         return hour, minute
     return None
-
-
-def local_now() -> datetime:
-    """Текущее время склада (TZ_OFFSET_HOURS)."""
-    return _to_local(datetime.now(timezone.utc))
 
 
 def _to_local(moment: datetime) -> datetime:

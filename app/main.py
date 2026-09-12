@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import accounts, db, deps, security, sync
-from .config import BASE_DIR, settings
+from .config import BASE_DIR
 from .routes import admin, auth, avito, orders, pack, reports, returns
 from .version import get_commit, get_version
 
@@ -94,7 +94,15 @@ def favicon():
 
 
 @app.get("/healthz")
-def healthz():
+def healthz(request: Request):
+    """Проверка живости. Без входа — только сам факт, что панель отвечает.
+
+    Версия, коммит и число кабинетов помогают не столько мониторингу, сколько
+    тому, кто ищет в интернете сервер с известной уязвимой сборкой, поэтому
+    вошедшим отдаём подробности, а всем остальным — статус.
+    """
+    if not getattr(request.state, "user", None):
+        return {"status": "ok"}
     active = accounts.all_accounts(active_only=True)
     return {
         "status": "ok",

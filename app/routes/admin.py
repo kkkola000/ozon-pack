@@ -6,11 +6,15 @@ from fastapi.responses import HTMLResponse
 
 from .. import accounts, avito, db, options, report, security, sync
 from ..avito import AvitoClient, AvitoError
-from ..deps import check_csrf, current_account, current_user, require_admin, require_ozon_account, templates
+from ..deps import check_csrf, current_account, require_admin, require_ozon_account, templates
 from .. import ozon
 from ..ozon import OzonClient, OzonError
 
 router = APIRouter()
+
+# Панель часто стоит открытой в интернете, а вход у неё один на склад: шесть
+# символов перебираются словарём за минуты, сколько бы итераций ни было у PBKDF2.
+MIN_PASSWORD = 12
 
 EVENT_LABELS = {
     "login": "Вход",
@@ -57,8 +61,14 @@ def logs_page(
     level: str = "",
     posting: str = "",
     limit: int = 300,
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_admin),
 ):
+    """Журнал — только администратору.
+
+    В нём видны входы с IP-адресами, неудачные попытки входа вместе с
+    логинами и действия всех сотрудников: сборщику для разбора пересорта это
+    не нужно, а как список учётных записей вполне пригодно.
+    """
     account = current_account(request)
     # Журнал показываем по текущему кабинету; общие события (вход, польз.) — всегда.
     conditions, params = ["(account_id IS NULL OR account_id = ?)"], [account["id"] if account else 0]
@@ -158,8 +168,8 @@ def api_create_user(request: Request, payload: dict = Body(...), admin: dict = D
     role = "admin" if payload.get("role") == "admin" else "packer"
     if len(login) < 3:
         raise HTTPException(status_code=400, detail="Логин короче 3 символов")
-    if len(password) < 6:
-        raise HTTPException(status_code=400, detail="Пароль короче 6 символов")
+    if len(password) < MIN_PASSWORD:
+        raise HTTPException(status_code=400, detail=f"Пароль короче {MIN_PASSWORD} символов")
     if db.query_one("SELECT id FROM users WHERE login = ?", (login,)):
         raise HTTPException(status_code=409, detail="Такой логин уже есть")
     db.execute(
@@ -187,8 +197,8 @@ def api_update_user(user_id: int, request: Request, payload: dict = Body(...), a
         changes.append("включён" if active else "отключён")
     if payload.get("password"):
         password = str(payload["password"]).strip()
-        if len(password) < 6:
-            raise HTTPException(status_code=400, detail="Пароль короче 6 символов")
+        if len(password) < MIN_PASSWORD:
+            raise HTTPException(status_code=400, detail=f"Пароль короче {MIN_PASSWORD} символов")
         db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (security.hash_password(password), user_id))
         changes.append("сменён пароль")
     if payload.get("role") in ("admin", "packer"):

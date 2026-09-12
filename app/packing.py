@@ -749,7 +749,16 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
     items = store.posting_items(account["id"], posting_number)
     if not items:
         return {"status": "error", "message": f"{posting_number}: нет состава заказа, обновите данные"}
-    package = [{"product_id": int(item["sku"]), "quantity": int(item["quantity"])} for item in items]
+    try:
+        # Ozon ждёт product_id числом. Колонка sku текстовая, и нечисловое
+        # значение (сбой синхронизации, правка базы руками) раньше давало
+        # оператору 500 вместо понятного сообщения.
+        package = [{"product_id": int(item["sku"]), "quantity": int(item["quantity"])} for item in items]
+    except (TypeError, ValueError):
+        return {
+            "status": "error",
+            "message": f"{posting_number}: в составе некорректный SKU — обновите данные из Ozon",
+        }
 
     client = ozon.get_client(account)
     try:

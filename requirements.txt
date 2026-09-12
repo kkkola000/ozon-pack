@@ -1,6 +1,10 @@
 fastapi==0.141.1
-uvicorn[standard]==0.34.0
+uvicorn[standard]==0.52.4
 httpx==0.28.1
 jinja2==3.1.6
 itsdangerous==2.2.0
-python-multipart==0.0.20
+# 0.0.20 разбирал формы с рядом известных уязвимостей (отказ в обслуживании на
+# POST /login до всякого входа), исправлено к 0.0.31.
+python-multipart==0.0.32
+# Шифрование ключей площадок в базе (app/crypto.py)
+cryptography==50.0.1

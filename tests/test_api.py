@@ -67,6 +67,19 @@ def test_packer_cannot_open_settings(client):
     assert client.get("/pack").status_code == 200
 
 
+def test_packer_cannot_open_logs(client):
+    """В журнале видны чужие входы с IP и неудачные попытки — это для админа."""
+    from app.security import hash_password
+
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer3', ?, 'packer', 1, ?)",
+        (hash_password("packer123"), db.now_iso()),
+    )
+    client.post("/login", data={"login": "packer3", "password": "packer123", "next": "/pack"})
+    assert client.get("/logs").status_code == 403
+    assert "/logs" not in client.get("/pack").text
+
+
 def test_marking_returns_taken_is_gone(client):
     """Отметку «забрали» убрали: статус меняет сама площадка."""
     csrf = login(client)
@@ -243,6 +256,24 @@ def test_login_page_does_not_redirect_outside(client):
     response = client.get("/login?next=//evil.com")
     assert response.status_code == 303
     assert response.headers["location"] == "/pack"
+
+
+def test_short_password_is_rejected(client):
+    """Минимум 12 символов — и при создании пользователя, и при смене пароля."""
+    csrf = login(client)
+    response = client.post(
+        "/api/users",
+        json={"login": "sborshik", "password": "korotkiy1", "role": "packer"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 400
+    assert "12" in response.json()["detail"]
+
+    user_id = db.query_one("SELECT id FROM users WHERE login = 'admin'")["id"]
+    response = client.post(
+        f"/api/users/{user_id}", json={"password": "korotkiy1"}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 400
 
 
 # ---------------------------------------------------------------- сессии
@@ -422,7 +453,7 @@ def test_version_matches_file():
     from app.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.9.0"
+    assert get_version() == "1.10.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

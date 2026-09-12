@@ -174,7 +174,7 @@
   <h2 style="margin-top:18px">Добавить сотрудника</h2>
   <div class="row">
     <input type="text" id="new-login" placeholder="Логин" autocomplete="off">
-    <input type="text" id="new-password" placeholder="Пароль (от 6 символов)" autocomplete="off">
+    <input type="text" id="new-password" placeholder="Пароль (от 12 символов)" autocomplete="off">
     <select id="new-role"><option value="packer">Сборщик</option><option value="admin">Администратор</option></select>
     <button class="btn primary" id="btn-add">Создать</button>
   </div>
@@ -337,7 +337,7 @@ document.querySelectorAll('[data-role]').forEach((button) => {
 });
 document.querySelectorAll('[data-password]').forEach((button) => {
   button.onclick = () => {
-    const password = prompt(`Новый пароль для ${button.dataset.login} (от 6 символов):`);
+    const password = prompt(`Новый пароль для ${button.dataset.login} (от 12 символов):`);
     if (password) updateUser(button.dataset.password, { password });
   };
 });

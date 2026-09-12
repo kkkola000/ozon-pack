@@ -55,6 +55,18 @@ def test_only_work_statuses_are_stored(avito_account):
         assert gone not in statuses
 
 
+def test_buyer_phone_is_not_stored(avito_account):
+    """Телефон покупателя нигде не показывается — значит, и в базе ему не место."""
+    rows = db.query(
+        "SELECT buyer_name, raw FROM avito_orders WHERE account_id = ?", (avito_account["id"],)
+    )
+    assert rows, "заказы Avito должны загрузиться"
+    # Имя остаётся: по нему находят посылку в пункте выдачи.
+    assert any(row["buyer_name"] for row in rows)
+    assert all("phoneNumber" not in (row["raw"] or "") for row in rows)
+    assert "buyer_phone" not in db.SCHEMA
+
+
 def test_order_items_are_saved(avito_account):
     order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]
     items = store.avito_items(avito_account["id"], order["id"])

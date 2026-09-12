@@ -266,12 +266,6 @@ class FakeOzonClient(OzonClient):
         page = items[start : start + limit]
         return page, start + limit < len(items)
 
-    def returns_fbs_points(self, *, limit=100, last_id=0):  # type: ignore[override]
-        return [
-            {"id": 100, "name": "ПВЗ Москва, Ленинский 25", "address": "Москва, Ленинский пр-т, 25", "returns_count": 6},
-            {"id": 101, "name": "ПВЗ Москва, Профсоюзная 14", "address": "Москва, Профсоюзная, 14", "returns_count": 2},
-        ]
-
     def giveout_pdf(self):  # type: ignore[override]
         from tests.pdfstub import make_giveout_pdf
 

@@ -1,5 +1,5 @@
 """Отчёт об отгруженных товарах: когда появляется строка и что в ней."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 
