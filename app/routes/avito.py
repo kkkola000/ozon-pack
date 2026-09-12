@@ -19,6 +19,7 @@ from .. import avito, avito_pack, db, store, sync
 from ..avito import AvitoError
 from ..deps import (check_csrf, current_user, require_admin, require_avito_account, safe_filename,
                     templates)
+from . import returns as returns_routes
 
 log = logging.getLogger("avito")
 
@@ -402,6 +403,8 @@ def avito_returns_page(request: Request, q: str = "",
             "skipped": _returns_skipped(account),
             "q": q,
             "sync": sync.status(),
+            # Лист по всем кабинетам общий для площадок и живёт в разделе возвратов
+            "all_total": returns_routes.ready_everywhere(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "avito_returns",
         },

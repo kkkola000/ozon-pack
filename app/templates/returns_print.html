@@ -17,6 +17,8 @@
     .qty { width: 42px; text-align: center; font-weight: 700; }
     .mono { font-family: Consolas, monospace; }
     .bc svg { display: block; }
+    .warn { border: 2px solid #000; padding: 6px 8px; margin: 12px 0; font-weight: 700; }
+    h2.section { font-size: 13px; margin: 16px 0 6px; page-break-after: avoid; }
     .sign { margin-top: 18px; font-size: 12px; display: flex; gap: 40px; }
     .sign div { flex: 1; border-top: 1px solid #000; padding-top: 4px; }
     @media print { .no-print { display: none; } body { margin: 6mm; } }
@@ -27,23 +29,34 @@
   <div class="head">
     <div>
       <h1>Возвраты к выдаче
+        {% if everywhere %} · все кабинеты{% elif account %} · {{ account.title }}{% endif %}
         {% if scheme != 'all' %}({{ scheme }}){% endif %}
         {% if place %} · {{ place }}{% endif %}
       </h1>
       <div class="meta">
-        Позиций: <b>{{ items | length }}</b> ·
-        Штук: <b>{{ items | sum(attribute='quantity') }}</b> ·
-        Сформировал: {{ user.login }} ·
-        {{ printed_at.strftime('%d.%m.%Y %H:%M') }} UTC
+        {% if items %}
+          Ozon: <b>{{ items | length }}</b> поз., <b>{{ items | sum(attribute='quantity') }}</b> шт.
+        {% endif %}
+        {% if avito_orders %}
+          {% if items %} · {% endif %}
+          Avito: <b>{{ avito_orders | length }}</b> заказ(ов),
+          <b>{{ avito_orders | sum(attribute='items_count') }}</b> шт.
+        {% endif %}
+        {% if not items and not avito_orders %}Ничего не готово к выдаче{% endif %}
+        · Сформировал: {{ user.login }}
+        · {{ printed_at.strftime('%d.%m.%Y %H:%M') }} UTC
       </div>
     </div>
     <button class="no-print" onclick="window.print()">Печать</button>
   </div>
 
+  {% if items %}
+  {% if everywhere %}<h2 class="section">Ozon</h2>{% endif %}
   <table>
     <thead>
       <tr>
         <th class="num">№</th>
+        {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
         <th style="width:120px">Возврат</th>
         <th style="width:96px">Схема / штрихкод</th>
         <th>Товар</th>
@@ -57,6 +70,7 @@
       {% for r in items %}
       <tr>
         <td class="num">{{ loop.index }}</td>
+        {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
         <td class="mono">{{ r.id }}<div style="font-size:10px">{{ r.order_number or '' }}</div></td>
         <td>
           <div>{{ r.type or r.scheme or '—' }}</div>
@@ -80,6 +94,66 @@
       {% endfor %}
     </tbody>
   </table>
+  {% endif %}
+
+  {% if avito_orders %}
+  <h2 class="section">Avito</h2>
+  <table>
+    <thead>
+      <tr>
+        <th class="num">№</th>
+        {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
+        <th style="width:120px">Заказ</th>
+        <th style="width:96px">Трек возврата</th>
+        <th>Товары</th>
+        <th class="qty">Кол-во</th>
+        <th style="width:200px">Куда ехать</th>
+        <th class="check">✓</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in avito_orders %}
+      <tr>
+        <td class="num">{{ loop.index }}</td>
+        {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
+        <td class="mono">{{ r.marketplace_id or r.id }}
+          {% if r.buyer_name %}<div style="font-size:10px">{{ r.buyer_name }}</div>{% endif %}
+        </td>
+        <td>
+          {% if r.return_tracking %}
+            <div class="bc" data-barcode="{{ r.return_tracking }}" data-barcode-height="26" data-barcode-module="0.8"></div>
+            <div class="mono" style="font-size:9px">{{ r.return_tracking }}</div>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% for item in r["items"] %}
+            <div>{{ item.quantity }} × {{ item.title or 'Без названия' }}
+              <span style="font-size:10px;color:#444">{{ item.seller_id or item.avito_id or '' }}</span>
+            </div>
+          {% endfor %}
+        </td>
+        <td class="qty">{{ r.items_count }}</td>
+        <td style="font-size:10px">
+          {{ r.service_name or r.service_label or '—' }}
+          {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
+          {% if r.terminal_code %}<div>ПВЗ {{ r.terminal_code }}</div>{% endif %}
+          {% if not r.terminal_address and not r.terminal_code %}<div>адрес Avito не прислал</div>{% endif %}
+        </td>
+        <td class="check">☐</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if not items and not avito_orders %}
+  <p style="margin:24px 0;font-size:13px">Ни одного возврата, готового к выдаче.</p>
+  {% endif %}
+
+  {% if truncated %}
+  <p class="warn">Внимание: в лист поместилась только часть возвратов. Остальные
+    придётся распечатать отдельно по кабинетам — иначе они останутся в пункте выдачи.</p>
+  {% endif %}
 
   <div class="sign">
     <div>Выдал (ПВЗ): ______________________ / подпись</div>

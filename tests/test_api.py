@@ -423,3 +423,146 @@ def test_version_matches_file():
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
     assert get_version() == "1.9.0"
+
+
+# ---------------------------------------------------------------- лист по всем кабинетам
+# За возвратами едут в пункт выдачи один раз, а магазинов у склада несколько.
+# Лист scope=all собирает всё, что готово к выдаче, по всем кабинетам сразу —
+# и Ozon, и Avito: у них разные терминалы, но поездку планируют по одному листу.
+
+@pytest.fixture
+def many_cabinets(client):
+    """Второй кабинет Ozon со своими возвратами и кабинет Avito со своими."""
+    from app import accounts, sync
+
+    second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
+    sync.sync_returns(second)
+    avito_one = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
+    sync.sync_avito(avito_one)
+    return {"second": second, "avito": avito_one}
+
+
+def _ready_ids(account_id):
+    return [
+        row["id"]
+        for row in db.query("SELECT id FROM returns WHERE account_id = ? AND is_ready = 1", (account_id,))
+    ]
+
+
+def test_all_cabinets_sheet_covers_every_cabinet(client, many_cabinets):
+    from app import accounts, avito
+
+    login(client)
+    first_ids = _ready_ids(accounts.default_account()["id"])
+    second_ids = _ready_ids(many_cabinets["second"]["id"])
+    # В листе заказ Avito подписан номером площадки, а не внутренним id
+    avito_numbers = [
+        row["marketplace_id"]
+        for row in db.query(
+            "SELECT marketplace_id FROM avito_orders WHERE account_id = ? AND status = ?",
+            (many_cabinets["avito"]["id"], avito.STATUS_ON_RETURN),
+        )
+    ]
+    assert first_ids and second_ids and avito_numbers, "в демо-данных нет возвратов для проверки"
+
+    page = client.get("/returns/print?scope=all")
+    assert page.status_code == 200, page.text
+
+    assert "все кабинеты" in page.text
+    assert "Кабинет" in page.text, "нет колонки с названием кабинета"
+    for return_id in first_ids + second_ids:
+        assert str(return_id) in page.text, return_id
+    for number in avito_numbers:
+        assert str(number) in page.text, number
+    assert "Второй Ozon" in page.text and "Кабинет Avito" in page.text
+    # Оба раздела на месте
+    sections = re.findall(r'<h2 class="section">([^<]+)</h2>', page.text)
+    assert sections == ["Ozon", "Avito"], sections
+
+
+def test_single_cabinet_sheet_stays_as_before(client, many_cabinets):
+    """Обычный лист по-прежнему только про текущий кабинет."""
+    from app import accounts
+
+    login(client)
+    second_ids = _ready_ids(many_cabinets["second"]["id"])
+    first_ids = _ready_ids(accounts.default_account()["id"])
+
+    page = client.get("/returns/print")
+    assert page.status_code == 200
+    assert "все кабинеты" not in page.text
+    for return_id in first_ids:
+        assert str(return_id) in page.text
+    for return_id in second_ids:
+        assert str(return_id) not in page.text, "в лист попал чужой кабинет"
+
+
+def test_all_cabinets_sheet_marks_everything_printed(client, many_cabinets):
+    from app import avito
+
+    login(client)
+    assert client.get("/returns/print?scope=all").status_code == 200
+
+    not_printed = db.query_one(
+        "SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND printed_at IS NULL"
+    )["c"]
+    assert not_printed == 0, "возвраты Ozon не отмечены напечатанными"
+    not_printed_avito = db.query_one(
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE status = ? AND printed_at IS NULL",
+        (avito.STATUS_ON_RETURN,),
+    )["c"]
+    assert not_printed_avito == 0, "возвраты Avito не отмечены напечатанными"
+
+
+def test_all_cabinets_sheet_ignores_current_cabinet_filters(client, many_cabinets):
+    """Фильтры текущего кабинета к чужим возвратам отношения не имеют."""
+    login(client)
+    second_ids = _ready_ids(many_cabinets["second"]["id"])
+
+    page = client.get("/returns/print?scope=all&scheme=FBS&place=Несуществующий&q=zzz")
+    assert page.status_code == 200
+    for return_id in second_ids:
+        assert str(return_id) in page.text, "фильтр обрезал лист по всем кабинетам"
+
+
+def test_all_cabinets_sheet_reachable_from_avito_cabinet(client, many_cabinets):
+    """Из кабинета Avito обычный /returns закрыт, а общий лист должен открываться."""
+    csrf = login(client)
+    switched = client.post(
+        "/api/account/switch",
+        json={"account_id": many_cabinets["avito"]["id"], "next": "/avito"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert switched.status_code == 200, switched.text
+
+    assert client.get("/returns/print").status_code == 409, "раздел Ozon должен остаться закрыт"
+    assert client.get("/returns/print?scope=all").status_code == 200
+
+
+def test_returns_page_offers_all_cabinets_button(client, many_cabinets):
+    login(client)
+    page = client.get("/returns")
+    assert page.status_code == 200
+    assert "/returns/print?scope=all" in page.text
+    assert "Печать по всем кабинетам" in page.text
+
+
+def test_all_cabinets_sheet_warns_when_it_does_not_fit(client, many_cabinets, monkeypatch):
+    """Обрезанный лимитом лист должен об этом сказать, а не молча недодать строк."""
+    from app.routes import returns as returns_routes
+
+    login(client)
+    original = returns_routes._filter_returns
+    monkeypatch.setattr(
+        returns_routes, "_filter_returns",
+        lambda ids, *a, **kw: original(ids, *a, **{**kw, "limit": 3}),
+    )
+    page = client.get("/returns/print?scope=all")
+    assert page.status_code == 200
+    assert "поместилась только часть возвратов" in page.text
+
+
+def test_all_cabinets_sheet_is_quiet_when_everything_fits(client, many_cabinets):
+    login(client)
+    page = client.get("/returns/print?scope=all")
+    assert "поместилась только часть возвратов" not in page.text

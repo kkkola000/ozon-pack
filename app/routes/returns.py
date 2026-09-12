@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import db, options, store, sync
+from .. import accounts, avito, db, options, store, sync
 from ..deps import check_csrf, current_user, require_ozon_account, templates
 from .. import ozon
 from ..ozon import OzonError
@@ -14,36 +14,97 @@ from ..ozon import OzonError
 router = APIRouter()
 
 
+# Значение параметра, которым просят лист сразу по всем кабинетам.
+ALL_ACCOUNTS = "all"
+
+
 def _filter_returns(
-    account: dict,
+    account_ids: list[int],
     scheme: str = "all",
     place: str = "",
     q: str = "",
     limit: int = 1000,
 ) -> list[dict]:
-    # В панели только то, что лежит в пункте выдачи: забранное Ozon переводит
-    # дальше сам, и синхронизация убирает такие записи.
-    conditions = ["account_id = ?", "is_ready = 1"]
-    params: list = [account["id"]]
+    """Возвраты Ozon, готовые к выдаче, по одному кабинету или сразу по нескольким.
+
+    В панели только то, что лежит в пункте выдачи: забранное Ozon переводит
+    дальше сам, и синхронизация убирает такие записи.
+    """
+    if not account_ids:
+        return []
+    placeholders = ",".join("?" for _ in account_ids)
+    conditions = [f"r.account_id IN ({placeholders})", "r.is_ready = 1"]
+    params: list = list(account_ids)
     if scheme in ("FBO", "FBS"):
-        conditions.append("(type = ? OR scheme = ?)")
+        conditions.append("(r.type = ? OR r.scheme = ?)")
         params += [scheme, scheme]
     if place:
-        conditions.append("place_name = ?")
+        conditions.append("r.place_name = ?")
         params.append(place)
     if q:
         like = f"%{q.strip()}%"
         conditions.append(
-            "(product_name LIKE ? OR offer_id LIKE ? OR sku LIKE ? OR order_number LIKE ?"
-            " OR posting_number LIKE ? OR barcode LIKE ? OR id LIKE ?)"
+            "(r.product_name LIKE ? OR r.offer_id LIKE ? OR r.sku LIKE ? OR r.order_number LIKE ?"
+            " OR r.posting_number LIKE ? OR r.barcode LIKE ? OR r.id LIKE ?)"
         )
         params += [like] * 7
     where = " WHERE " + " AND ".join(conditions)
+    # Пункт выдачи впереди: за возвратами едут в конкретный ПВЗ, и на листе по
+    # нескольким кабинетам строки одного пункта должны идти подряд.
     rows = db.query(
-        f"SELECT * FROM returns{where} ORDER BY (place_name IS NULL), place_name, product_name LIMIT ?",
+        f"SELECT r.*, a.title AS account_title FROM returns r "
+        f"LEFT JOIN accounts a ON a.id = r.account_id{where} "
+        f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
         params + [limit],
     )
     return [store.return_view(row) for row in rows]
+
+
+def _avito_returns(account_ids: list[int], limit: int = 500) -> list[dict]:
+    """Возвраты Avito, готовые к выдаче. Строка — заказ целиком, с вложенными товарами."""
+    if not account_ids:
+        return []
+    placeholders = ",".join("?" for _ in account_ids)
+    rows = db.query(
+        f"SELECT o.*, a.title AS account_title FROM avito_orders o "
+        f"LEFT JOIN accounts a ON a.id = o.account_id "
+        f"WHERE o.account_id IN ({placeholders}) AND o.status = ? "
+        f"ORDER BY a.title, (o.updated_at_api IS NULL), o.updated_at_api DESC LIMIT ?",
+        list(account_ids) + [avito.STATUS_ON_RETURN, limit],
+    )
+    return [store.avito_view(row) for row in rows]
+
+
+def _accounts_by_marketplace() -> tuple[list[int], list[int]]:
+    """Включённые кабинеты, разложенные по площадкам."""
+    active = accounts.all_accounts(active_only=True)
+    return (
+        [a["id"] for a in active if a["marketplace"] == "ozon"],
+        [a["id"] for a in active if a["marketplace"] == "avito"],
+    )
+
+
+def ready_everywhere() -> int:
+    """Сколько возвратов готово к выдаче во всех кабинетах — для подписи кнопки.
+
+    Считаем запросом: выбирать строки целиком ради длины дорого, у Avito к
+    каждому заказу ещё и товары подтягиваются отдельным запросом.
+    """
+    ozon_ids, avito_ids = _accounts_by_marketplace()
+    total = 0
+    if ozon_ids:
+        placeholders = ",".join("?" for _ in ozon_ids)
+        total += db.query_one(
+            f"SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND account_id IN ({placeholders})",
+            ozon_ids,
+        )["c"]
+    if avito_ids:
+        placeholders = ",".join("?" for _ in avito_ids)
+        total += db.query_one(
+            f"SELECT COUNT(*) AS c FROM avito_orders WHERE status = ? AND account_id IN ({placeholders})",
+            [avito.STATUS_ON_RETURN] + avito_ids,
+        )["c"]
+    return total
 
 
 def _places(account: dict) -> list[str]:
@@ -64,7 +125,7 @@ def returns_page(
     user: dict = Depends(current_user),
     account: dict = Depends(require_ozon_account),
 ):
-    items = _filter_returns(account, scheme, place, q)
+    items = _filter_returns([account["id"]], scheme, place, q)
     aid = (account["id"],)
     totals = {
         "ready": db.query_one(
@@ -104,9 +165,24 @@ def returns_page(
             "q": q,
             "totals": totals,
             "sync": sync.status(),
+            "all_total": ready_everywhere(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
         },
+    )
+
+
+def _mark_printed(table: str, rows: list[dict]) -> None:
+    """Отметить строки напечатанными. Кабинеты могут быть разные — ключ составной."""
+    if not rows:
+        return
+    pairs = ",".join("(?,?)" for _ in rows)
+    params: list = [db.now_iso()]
+    for row in rows:
+        params += [row["account_id"], row["id"]]
+    db.execute(
+        f"UPDATE {table} SET printed_at = ? WHERE (account_id, id) IN ({pairs})",
+        params,
     )
 
 
@@ -116,21 +192,44 @@ def returns_print(
     scheme: str = "all",
     place: str = "",
     q: str = "",
+    scope: str = "",
     user: dict = Depends(current_user),
-    account: dict = Depends(require_ozon_account),
 ):
-    """Лист для печати: сборщик идёт с ним получать возвраты."""
-    items = _filter_returns(account, scheme, place, q)
+    """Лист для печати: сборщик идёт с ним получать возвраты.
+
+    scope=all — один лист сразу по всем кабинетам, Ozon и Avito. Фильтры
+    текущего кабинета к нему не применяются: на таком листе нужно всё, что
+    готово к выдаче, иначе сборщик уедет за частью возвратов.
+    """
     now = datetime.now(timezone.utc)
-    db.log_event(
-        "returns_print", account_id=account["id"], user=user, message=f"Лист возвратов: {len(items)} поз."
-    )
-    if items:
-        placeholders = ",".join("?" for _ in items)
-        db.execute(
-            f"UPDATE returns SET printed_at = ? WHERE account_id = ? AND id IN ({placeholders})",
-            [db.now_iso(), account["id"]] + [item["id"] for item in items],
+    everywhere = scope == ALL_ACCOUNTS
+
+    if everywhere:
+        ozon_ids, avito_ids = _accounts_by_marketplace()
+        items = _filter_returns(ozon_ids)
+        avito_orders = _avito_returns(avito_ids)
+        account = None
+        scheme, place, q = "all", "", ""
+        # Лимит выборки может обрезать лист. Промолчать нельзя: сборщик уедет,
+        # решив, что забрал всё, и за остатком никто не вернётся.
+        truncated = len(items) + len(avito_orders) < ready_everywhere()
+        db.log_event(
+            "returns_print", user=user,
+            message=f"Лист возвратов по всем кабинетам: {len(items)} поз. Ozon, {len(avito_orders)} заказов Avito",
         )
+    else:
+        account = require_ozon_account(request)
+        items = _filter_returns([account["id"]], scheme, place, q)
+        avito_orders = []
+        truncated = False
+        db.log_event(
+            "returns_print", account_id=account["id"], user=user,
+            message=f"Лист возвратов: {len(items)} поз.",
+        )
+
+    _mark_printed("returns", items)
+    _mark_printed("avito_orders", avito_orders)
+
     return templates.TemplateResponse(
         request,
         "returns_print.html",
@@ -138,7 +237,10 @@ def returns_print(
             "request": request,
             "user": user,
             "items": items,
+            "avito_orders": avito_orders,
             "account": account,
+            "everywhere": everywhere,
+            "truncated": truncated,
             "printed_at": now,
             "scheme": scheme,
             "place": place,
