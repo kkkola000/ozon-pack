@@ -624,3 +624,64 @@ def test_settings_have_no_host_field():
     assert not hasattr(Settings(), "host"), "Settings.host вернулся — адрес задаёт юнит systemd"
     unit = (DEPLOY / "ozon-pack.service").read_text(encoding="utf-8")
     assert "--host ${HOST}" in unit, "юнит должен брать адрес из .env"
+
+
+# --------------------------------------------------- ограничение без nginx
+# Раньше скрипт без nginx просто умирал. Но проверка адреса живёт и в самой
+# панели, а она работает без прокси, — значит вход можно закрыть всё равно.
+# Отказ означал, что панель остаётся открытой всему интернету, хотя починить
+# это в одну строку.
+
+@pytest.fixture
+def sandbox_without_nginx(tmp_path):
+    """Песочница, в PATH которой нет nginx."""
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "systemctl").write_text(
+        '#!/bin/sh\ncase "$1" in list-unit-files) echo "ozon-pack.service enabled";; esac\nexit 0\n'
+    )
+    (stub / "ss").write_text('#!/bin/sh\necho "LISTEN 0 511 0.0.0.0:8080 0.0.0.0:*"\n')
+    (stub / "curl").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("systemctl", "ss", "curl"):
+        os.chmod(stub / name, 0o755)
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{stub}:/usr/bin:/bin",
+        SNIPPET=str(tmp_path / "access.conf"),
+        APP_DIR=str(tmp_path),
+        APP_PORT="8080",
+        NGINX_SITES=str(tmp_path / "sites"),
+        NGINX_CONFD=str(tmp_path / "confd"),
+        WG_DIR=str(tmp_path / "wg"),
+    )
+    return env
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_without_nginx_panel_still_closes(tmp_path, sandbox_without_nginx):
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=\n", encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], sandbox_without_nginx)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    allowlist = re.search(r"^IP_ALLOWLIST=(.*)$", env_text, re.M).group(1)
+    assert "10.8.0.0/24" in allowlist and "127.0.0.1" in allowlist
+
+    # HOST не трогаем: без прокси панель обязана слушать адрес сервера, иначе
+    # до неё не дойти и из туннеля
+    assert re.search(r"^HOST=0\.0\.0\.0$", env_text, re.M), env_text
+    assert "nginx не установлен" in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_without_nginx_status_does_not_cry_wolf(tmp_path, sandbox_without_nginx):
+    """Открытый порт без nginx — не дыра, если панель сама сверяет адрес."""
+    (tmp_path / ".env").write_text(
+        "HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=127.0.0.1,10.8.0.0/24\n", encoding="utf-8"
+    )
+    proc = _run(DEPLOY / "vpn-only.sh", ["--status"], sandbox_without_nginx)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "IP_ALLOWLIST=127.0.0.1,10.8.0.0/24" in proc.stdout
+    assert "панель открыта со всех адресов" not in proc.stdout
+    assert "можно зайти по адресу сервера без VPN" not in proc.stdout

@@ -113,7 +113,12 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "Запустите с правами root: sudo bash $0"
-command -v nginx >/dev/null || die "nginx не установлен — панель за ним и живёт"
+# Без nginx скрипт раньше просто умирал. Но ограничение по адресу живёт и в
+# самой панели, а она работает и без прокси, — значит закрыть вход можно всё
+# равно. Отказываться тут значит оставлять панель открытой всему интернету,
+# хотя починить это в одну строку.
+HAVE_NGINX=1
+command -v nginx >/dev/null 2>&1 || HAVE_NGINX=0
 
 # ------------------------------------------------------------------ сеть VPN
 network_of() {
@@ -294,7 +299,12 @@ check_direct_port_note() {
     warn "нет команды ss — проверить прямой доступ к порту $port нечем"
     return 0
   fi
-  if [ -n "$outside" ]; then
+  if [ -n "$outside" ] && [ "$HAVE_NGINX" = "0" ]; then
+    # Без прокси панель и должна слушать адрес сервера — иначе до неё не дойти
+    # даже из туннеля. Посторонних отсекает список адресов в самой панели.
+    info "панель слушает $(echo "$outside" | tr '\n' ' ') — так и надо без nginx"
+    info "посторонних отсекает IP_ALLOWLIST, проверьте его выше"
+  elif [ -n "$outside" ]; then
     warn "${RED}панель слушает мимо nginx: $(echo "$outside" | tr '\n' ' ')${OFF}"
     warn "в неё можно зайти по адресу сервера без VPN — запустите скрипт без --status"
   else
@@ -310,7 +320,10 @@ show_status() {
   site=$(site_config) || site=""
   if [ -n "$site" ] && grep -qs "include $SNIPPET;" "$site"; then connected=1; fi
 
-  if [ ! -f "$SNIPPET" ]; then
+  if [ "$HAVE_NGINX" = "0" ]; then
+    info "nginx не установлен — правилу прокси взяться неоткуда"
+    info "вход ограничивает сама панель, см. следующий раздел"
+  elif [ ! -f "$SNIPPET" ]; then
     warn "выключено — файл $SNIPPET не создан, панель открыта со всех адресов"
   elif ! grep -q '^ *deny all;' "$SNIPPET"; then
     warn "выключено — панель открыта со всех адресов"
@@ -453,9 +466,20 @@ apply_app_allowlist() {
   return 0
 }
 
-step "Правило nginx"
-write_snippet
-info "файл: $SNIPPET"
+if [ "$HAVE_NGINX" = "1" ]; then
+  step "Правило nginx"
+  write_snippet
+  info "файл: $SNIPPET"
+else
+  step "nginx не установлен"
+  warn "Правило для прокси не пишем — писать его некуда."
+  warn "Вход закроем на уровне самой панели: она сверяет адрес посетителя сама."
+  if [ "$MODE" = "on" ]; then
+    warn "Панель при этом отвечает по http, без сертификата. Внутри туннеля"
+    warn "WireGuard трафик всё равно шифруется, но в браузере будет http://"
+    warn "Поставить https: sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА"
+  fi
+fi
 
 step "Ограничение в самой панели"
 if [ "$MODE" = "off" ]; then
@@ -500,18 +524,22 @@ ensure_include() {
   return 1
 }
 
-if ! ensure_include; then
-  warn "Правило записано, но конфиг сайта его не подключает: обновите панель"
-  warn "и перезапустите deploy/ssl.sh — он добавит include сам."
+if [ "$HAVE_NGINX" = "1" ]; then
+  if ! ensure_include; then
+    warn "Правило записано, но конфиг сайта его не подключает: обновите панель"
+    warn "и перезапустите deploy/ssl.sh — он добавит include сам."
+  fi
+  systemctl reload nginx 2>/dev/null || systemctl restart nginx || die "nginx не перезапустился"
+  info "nginx перечитал конфигурацию"
 fi
-
-systemctl reload nginx 2>/dev/null || systemctl restart nginx || die "nginx не перезапустился"
-info "nginx перечитал конфигурацию"
 
 step "Проверка"
 PORT=$(app_port)
 DIRECT_OPEN=0
-if [ "$MODE" = "on" ]; then
+if [ "$MODE" = "on" ] && [ "$HAVE_NGINX" = "1" ]; then
+  # Порт закрываем только когда перед панелью есть прокси. Без него панель
+  # слушает адрес сервера сама — загнав её на localhost, мы отрезали бы вход
+  # вообще, вместе с сотрудниками в туннеле.
   check_direct_port "$PORT" || DIRECT_OPEN=1
   check_firewall
 fi
@@ -525,6 +553,21 @@ if [ "$MODE" = "off" ]; then
   cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово: панель снова открыта со всех адресов.${OFF}
+SUMMARY
+elif [ "$HAVE_NGINX" = "0" ]; then
+  cat <<SUMMARY
+
+${GREEN}${BOLD}Готово: вход в панель только из сети VPN.${OFF}
+  Панель сверяет адрес посетителя сама — постороннему она отвечает 403 ещё до
+  формы входа. Проверьте снаружи, без VPN: страница открываться не должна.
+
+${YELLOW}nginx не установлен${OFF}, поэтому панель отвечает по http и на своём порту
+  $PORT. Внутри туннеля WireGuard трафик шифруется, так что пароль по открытой
+  сети не идёт, но в браузере будет http:// и адрес с портом.
+
+  Поставить https и убрать порт из адреса:
+    sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА
+    sudo bash $APP_DIR/deploy/vpn-only.sh --subnet ВАША-СЕТЬ
 SUMMARY
 elif [ "$DIRECT_OPEN" = "1" ]; then
   cat <<SUMMARY
