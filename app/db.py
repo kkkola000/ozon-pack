@@ -189,11 +189,30 @@ CREATE TABLE IF NOT EXISTS returns (
     note              TEXT,
     mark_at           TEXT,
     mark_by           TEXT,
+    -- Акт, по которому за возвратом ездили. Закрепляется первой печатью листа
+    -- и больше не меняется: иначе повторная печать переписывала бы историю.
+    act_id            TEXT,
     first_seen_at     TEXT,
     updated_at        TEXT,
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(account_id, is_ready, type);
+CREATE INDEX IF NOT EXISTS idx_returns_act ON returns(act_id);
+
+-- Акт получения возвратов: один напечатанный лист, с которым ездили в ПВЗ.
+-- Лист бывает и по всем кабинетам сразу, поэтому акт не привязан к кабинету
+-- жёстко: строки внутри могут быть из разных кабинетов и с разных площадок.
+CREATE TABLE IF NOT EXISTS return_acts (
+    id           TEXT PRIMARY KEY,
+    created_at   TEXT NOT NULL,
+    created_by   TEXT,
+    -- account | all | nosheet (возврат забрали, а листа на него не печатали)
+    kind         TEXT NOT NULL DEFAULT 'account',
+    account_id   INTEGER,
+    confirmed_at TEXT,
+    confirmed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_return_acts_open ON return_acts(confirmed_at, created_at);
 
 -- Заказы Авито: структура API другая, поэтому отдельная таблица.
 CREATE TABLE IF NOT EXISTS avito_orders (
@@ -245,6 +264,7 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     note            TEXT,
     mark_at         TEXT,
     mark_by         TEXT,
+    act_id          TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)

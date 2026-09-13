@@ -27,6 +27,19 @@
     {% if user.role == 'admin' %} <a href="/settings">Изменить статусы</a>{% endif %}
   </div>
 
+  <div class="tabs no-print" style="margin-top:16px">
+    <a href="/returns" class="{{ 'active' if tab == 'ready' }}">
+      К выдаче <span class="badge">{{ totals.ready }}</span>
+    </a>
+    <a href="/returns?tab=acts" class="{{ 'active' if tab == 'acts' }}">
+      Ждёт подтверждения
+      {% if acts %}<span class="badge warn">{{ acts | length }}</span>{% endif %}
+    </a>
+  </div>
+
+  {% if tab == 'acts' %}
+    {% include "_return_acts.html" %}
+  {% else %}
   <form class="row no-print" method="get" action="/returns" style="margin-top:14px">
     <select name="scheme">
       <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
@@ -113,6 +126,7 @@
   </table>
   {% else %}
     <div class="empty">Возвратов не найдено.</div>
+  {% endif %}
   {% endif %}
 </div>
 {% include "_return_mark.html" %}

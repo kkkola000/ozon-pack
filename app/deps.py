@@ -107,14 +107,21 @@ templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 
 
+def _open_acts(account_id: int) -> int:
+    """Неподтверждённые акты получения возвратов — работа, о которой легко забыть."""
+    from . import return_acts
+
+    return return_acts.pending_count([account_id])
+
+
 def nav_counters(request: Request) -> dict:
     """Счётчики для шапки текущего кабинета — запросы дешёвые."""
     from . import db
 
     account = current_account(request)
     if not account:
-        return {"packaging": 0, "deliver": 0, "returns": 0, "avito_confirm": 0, "avito_ship": 0,
-                "avito_returns": 0}
+        return {"packaging": 0, "deliver": 0, "returns": 0, "return_acts": 0,
+                "avito_confirm": 0, "avito_ship": 0, "avito_returns": 0}
     account_id = account["id"]
 
     def count(sql: str, params: tuple = ()) -> int:
@@ -140,6 +147,7 @@ def nav_counters(request: Request) -> dict:
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return'",
                 (account_id,),
             ),
+            "return_acts": _open_acts(account_id),
         }
     return {
         "packaging": count(
@@ -155,6 +163,7 @@ def nav_counters(request: Request) -> dict:
             "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1",
             (account_id,),
         ),
+        "return_acts": _open_acts(account_id),
         "avito_confirm": 0,
         "avito_ship": 0,
         "avito_returns": 0,

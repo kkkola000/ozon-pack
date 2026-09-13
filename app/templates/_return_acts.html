@@ -1,0 +1,121 @@
+{# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по тем
+   листам, с которыми ездили в пункт выдачи. #}
+<div class="small muted no-print" style="margin:14px 0 16px">
+  Каждый акт — это лист возвратов, с которым ездили в пункт выдачи. Возвраты из
+  акта держатся здесь, даже когда Ozon перестал их отдавать, — пока по каждому
+  не поставят отметку и акт не подтвердят. Подтверждённый акт уходит в журнал.
+</div>
+
+{% if not acts %}
+  <div class="empty">
+    Неподтверждённых актов нет. Акт появляется, когда печатаете лист возвратов
+    на вкладке «К выдаче».
+  </div>
+{% endif %}
+
+{% for act in acts %}
+<details class="act" {{ 'open' if loop.first }}>
+  <summary class="act-head">
+    <div class="grow">
+      <div class="act-title">{{ act.title }}</div>
+      <div class="act-sub">
+        {{ act.total }} поз.
+        {%- if act.no_sheet %} · листа на них не печатали
+        {%- else %} · лист печатал {{ act.created_by or '—' }}{% endif %}
+        {%- if act.received %} · получены{% else %} · ещё не получены{% endif %}
+      </div>
+    </div>
+    <div class="row" style="gap:8px">
+      {% if act.marked_ok %}<span class="badge ok">{{ act.marked_ok }} принято</span>{% endif %}
+      {% if act.marked_bad %}<span class="badge err">{{ act.marked_bad }} не принят</span>{% endif %}
+      {% if act.unmarked %}<span class="badge warn">{{ act.unmarked }} без отметки</span>{% endif %}
+    </div>
+    <div class="progress mini"><div style="width:{{ act.percent }}%"></div></div>
+    <button class="btn {{ 'primary' if act.can_confirm }}" data-confirm-act="{{ act.id }}"
+            {{ 'disabled' if not act.can_confirm }}
+            title="{{ 'Подтвердить: решение принято по всем возвратам акта'
+                      if act.can_confirm else 'Сначала отметьте все возвраты акта' }}">
+      Подтвердить акт
+    </button>
+  </summary>
+
+  <div class="act-body">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:130px">Возврат</th>
+          <th>Товар</th>
+          <th style="width:130px">Артикул / SKU</th>
+          <th style="width:70px">Кол-во</th>
+          <th style="width:220px">Отметка</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in act.ozon %}
+        <tr>
+          <td>
+            <div class="mono">{{ r.id }}</div>
+            <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
+            {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
+          </td>
+          <td>
+            <div>{{ r.product_name or 'Без названия' }}</div>
+            <div class="muted small">
+              {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
+              {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
+            </div>
+          </td>
+          <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
+          <td style="font-weight:700">{{ r.quantity }}</td>
+          <td class="small" data-mark-cell>
+            <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
+                    data-mark-open data-marketplace="ozon" data-id="{{ r.id }}"
+                    data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
+                    data-subject="{{ r.id }} · {{ r.product_name or 'Без названия' }}"
+                    title="{{ r.note or '' }}">
+              {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
+            </button>
+            <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
+            <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
+          </td>
+        </tr>
+        {% endfor %}
+
+        {% for r in act.avito %}
+        <tr>
+          <td>
+            <div class="mono">{{ r.marketplace_id or r.id }}</div>
+            <span class="tag">Avito</span>
+            {% if r.return_tracking %}<div class="muted small mono">{{ r.return_tracking }}</div>{% endif %}
+          </td>
+          <td>
+            {% for item in r['items'] %}
+              <div><b>{{ item.quantity }} ×</b> {{ item.title or 'Без названия' }}</div>
+            {% endfor %}
+          </td>
+          <td class="small mono">—</td>
+          <td style="font-weight:700">{{ r.items_count }}</td>
+          <td class="small" data-mark-cell>
+            <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
+                    data-mark-open data-marketplace="avito" data-id="{{ r.id }}"
+                    data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
+                    data-subject="Заказ {{ r.marketplace_id or r.id }}"
+                    title="{{ r.note or '' }}">
+              {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
+            </button>
+            <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
+            <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="row no-print" style="margin-top:14px">
+      <span class="grow"></span>
+      <a class="btn" href="/returns/acts/{{ act.id }}.pdf">Скачать акт PDF</a>
+      <a class="btn" href="/returns/acts/{{ act.id }}/print" target="_blank">Печать акта</a>
+    </div>
+  </div>
+</details>
+{% endfor %}

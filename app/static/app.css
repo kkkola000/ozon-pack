@@ -205,6 +205,21 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 }
 .item-row .check { font-size: 26px; color: var(--ok); }
 
+/* Акт получения возвратов: одна поездка в пункт выдачи — один блок */
+.act { border: 1px solid var(--line-strong); border-radius: 16px; margin-bottom: 14px; overflow: hidden; }
+.act > .act-head {
+  display: flex; align-items: center; gap: 16px; padding: 16px 20px;
+  background: var(--surface); cursor: pointer; list-style: none;
+}
+.act > .act-head::-webkit-details-marker { display: none; }
+.act > .act-head::before { content: "▶"; color: var(--muted); font-size: 12px; }
+.act[open] > .act-head::before { content: "▼"; }
+.act[open] > .act-head { border-bottom: 1px solid var(--line); }
+.act .act-title { font-size: 17px; font-weight: 700; }
+.act .act-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.act .act-body { padding: 0 20px 18px; }
+.progress.mini { width: 150px; height: 8px; }
+
 /* Окно поверх списка: отметка о возврате */
 .modal {
   position: fixed; inset: 0; z-index: 210; display: flex;

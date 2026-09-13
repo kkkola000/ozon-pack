@@ -28,10 +28,10 @@
 <body>
   <div class="head">
     <div>
-      <h1>Возвраты к выдаче
+      <h1>{% if act %}Акт · {{ act.title }}{% else %}Возвраты к выдаче
         {% if everywhere %} · все кабинеты{% elif account %} · {{ account.title }}{% endif %}
         {% if scheme != 'all' %}({{ scheme }}){% endif %}
-        {% if place %} · {{ place }}{% endif %}
+        {% if place %} · {{ place }}{% endif %}{% endif %}
       </h1>
       <div class="meta">
         {% if items %}
@@ -43,6 +43,9 @@
           <b>{{ avito_orders | sum(attribute='items_count') }}</b> шт.
         {% endif %}
         {% if not items and not avito_orders %}Ничего не готово к выдаче{% endif %}
+        {% if act %} · принято {{ act.marked_ok }}, не принято {{ act.marked_bad }}
+          {%- if act.unmarked %}, без отметки {{ act.unmarked }}{% endif %}
+          · лист печатал: {{ act.created_by or '—' }}{% endif %}
         · Сформировал: {{ user.login }}
         · {{ printed_at.strftime('%d.%m.%Y %H:%M') }} UTC
       </div>
@@ -167,7 +170,7 @@
   <script src="/static/code128.js?v={{ static_version() }}"></script>
   <script>
     renderBarcodes();
-    window.addEventListener('load', () => setTimeout(() => window.print(), 350));
+    {% if not act %}window.addEventListener('load', () => setTimeout(() => window.print(), 350));{% endif %}
   </script>
 </body>
 </html>

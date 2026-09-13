@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, avito, db, ozon, store
+from . import accounts, avito, db, ozon, return_acts, store
 from .avito import AvitoError
 from .config import settings
 from .ozon import OzonError
@@ -242,14 +242,32 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
                 [db.now_iso(), account_id] + stale,
             )
             gone = len(stale)
+
         # Записи в ненужных статусах, оставшиеся от прошлых версий или прошлых
-        # настроек, убираем совсем — кроме тех, что отмечены как забранные.
-        placeholders = ",".join("?" for _ in wanted) or "''"
+        # настроек, убираем совсем. Кроме тех, по которым уже есть работа:
+        # отметка, комментарий или акт — удаление стёрло бы результат проверки
+        # возврата вместе со строкой. Чистим до раздачи актов: мусор из чужого
+        # статуса никто не получал, и заводить на него акт незачем.
+        wanted_places = ",".join("?" for _ in wanted) or "''"
         removed = db.execute(
             "DELETE FROM returns WHERE account_id = ? "
-            f"AND (status_sys IS NULL OR status_sys NOT IN ({placeholders}))",
+            f"AND (status_sys IS NULL OR status_sys NOT IN ({wanted_places})) "
+            "AND mark IS NULL AND note IS NULL AND act_id IS NULL",
             [account_id] + wanted,
         ).rowcount or 0
+
+        if stale:
+            # Возврат забрали, а листа на него не печатали: акта у строки нет,
+            # и она исчезла бы с экрана молча. Собираем такие в акт за день —
+            # отметку по ним всё равно надо поставить.
+            orphans = [
+                row["id"] for row in db.query(
+                    f"SELECT id FROM returns WHERE account_id = ? AND act_id IS NULL "
+                    f"AND id IN ({placeholders})",
+                    [account_id] + stale,
+                )
+            ]
+            return_acts.collect_orphans(account_id, orphans)
 
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))

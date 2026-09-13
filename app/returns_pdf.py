@@ -259,17 +259,25 @@ def build_sheet(
     scheme: str = "all",
     place: str = "",
     truncated: bool = False,
+    act: dict | None = None,
 ) -> bytes:
-    """Собрать лист возвратов. Возвращает готовый PDF байтами."""
-    title = "Возвраты к выдаче"
-    if everywhere:
-        title += " · все кабинеты"
-    elif account:
-        title += f" · {account['title']}"
-    if scheme != "all":
-        title += f" ({scheme})"
-    if place:
-        title += f" · {place}"
+    """Собрать лист возвратов. Возвращает готовый PDF байтами.
+
+    act — печатаем акт получения, а не лист к выдаче: те же строки, но уже с
+    отметками, и в заголовке видно, за какую поездку этот акт.
+    """
+    if act:
+        title = act["title"]
+    else:
+        title = "Возвраты к выдаче"
+        if everywhere:
+            title += " · все кабинеты"
+        elif account:
+            title += f" · {account['title']}"
+        if scheme != "all":
+            title += f" ({scheme})"
+        if place:
+            title += f" · {place}"
 
     parts = []
     if items:
@@ -281,6 +289,11 @@ def build_sheet(
         )
     if not parts:
         parts.append("Ничего не готово к выдаче")
+    if act:
+        parts.append(f"принято {act['marked_ok']}, не принято {act['marked_bad']}")
+        if act["unmarked"]:
+            parts.append(f"без отметки {act['unmarked']}")
+        parts.append(f"лист печатал: {act.get('created_by') or '—'}")
     parts.append(f"Сформировал: {user.get('login', '—')}")
     parts.append(f"{printed_at.strftime('%d.%m.%Y %H:%M')} UTC")
 

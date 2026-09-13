@@ -34,6 +34,7 @@
       </a>
       <a href="/avito/returns" class="{{ 'active' if active_tab == 'avito_returns' }}">
         Возвраты{% if c.avito_returns %}<span class="badge" title="Заберите заказ">{{ c.avito_returns }}</span>{% endif %}
+        {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
       </a>
     {% else %}
       <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
@@ -44,6 +45,7 @@
       </a>
       <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
         Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
+        {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
       </a>
     {% endif %}
     {% if user and user.role == 'admin' %}

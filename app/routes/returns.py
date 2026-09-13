@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, avito, db, options, returns_pdf, store, sync
+from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
 from ..deps import check_csrf, current_user, require_avito_account, require_ozon_account, templates
 from .. import ozon
 from ..ozon import OzonError
@@ -125,6 +125,7 @@ def returns_page(
     scheme: str = "all",
     place: str = "",
     q: str = "",
+    tab: str = "ready",
     user: dict = Depends(current_user),
     account: dict = Depends(require_ozon_account),
 ):
@@ -169,8 +170,73 @@ def returns_page(
             "totals": totals,
             "sync": sync.status(),
             "all_total": ready_everywhere(),
+            "tab": "acts" if tab == "acts" else "ready",
+            "acts": return_acts.pending([account["id"]]),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
+        },
+    )
+
+
+@router.post("/api/returns/acts/{act_id}/confirm")
+def api_confirm_act(act_id: str, request: Request, user: dict = Depends(current_user)):
+    """Подтвердить акт: по всем его возвратам решение принято."""
+    check_csrf(request)
+    result = return_acts.confirm(act_id, user)
+    if result["status"] == "error":
+        raise HTTPException(status_code=409 if "отметьте" in result["message"] else 404,
+                            detail=result["message"])
+    return result
+
+
+def _act_or_404(act_id: str) -> dict:
+    act = return_acts.detail(act_id)
+    if not act:
+        raise HTTPException(status_code=404, detail="Акт не найден")
+    return act
+
+
+@router.get("/returns/acts/{act_id}/print", response_class=HTMLResponse)
+def act_print(act_id: str, request: Request, user: dict = Depends(current_user)):
+    """Лист акта — тот же вид, что и лист выдачи, но уже с отметками."""
+    act = _act_or_404(act_id)
+    return templates.TemplateResponse(
+        request,
+        "returns_print.html",
+        {
+            "request": request,
+            "user": user,
+            "items": act["ozon"],
+            "avito_orders": act["avito"],
+            "account": None,
+            "everywhere": act["kind"] == ALL_ACCOUNTS,
+            "truncated": False,
+            "printed_at": datetime.now(timezone.utc),
+            "scheme": "all",
+            "place": "",
+            "act": act,
+        },
+    )
+
+
+@router.get("/returns/acts/{act_id}.pdf")
+def act_pdf(act_id: str, user: dict = Depends(current_user)):
+    act = _act_or_404(act_id)
+    printed_at = datetime.now(timezone.utc)
+    try:
+        pdf = returns_pdf.build_sheet(
+            act["ozon"], act["avito"], user=user, printed_at=printed_at,
+            everywhere=act["kind"] == ALL_ACCOUNTS, account=None, act=act,
+        )
+    except returns_pdf.FontMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    stamp = (act.get("created_at") or "")[:10] or printed_at.strftime("%Y-%m-%d")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="akt-vozvratov-{stamp}-{act_id[:8]}.pdf"',
+            "Cache-Control": "no-store",
         },
     )
 
@@ -224,6 +290,14 @@ def _collect_sheet(request: Request, user: dict, scheme: str, place: str, q: str
 
     _mark_printed("returns", items)
     _mark_printed("avito_orders", avito_orders)
+    # Печать листа заводит акт: с этим листом поедут в пункт выдачи, и по нему
+    # же потом будут ставить отметки. Строкам, у которых акт уже есть, новый не
+    # достаётся — возврат остаётся в той поездке, для которой его напечатали.
+    return_acts.open_sheet_act(
+        user, items, avito_orders,
+        kind=ALL_ACCOUNTS if everywhere else "account",
+        account_id=None if everywhere else account["id"],
+    )
 
     return {
         "items": items,
