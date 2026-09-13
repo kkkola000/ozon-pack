@@ -11,7 +11,7 @@ def scan_all_items(account, user, posting):
     for item in posting["items"]:
         for _ in range(item["quantity"]):
             result = packing.scan(account, user, barcode_of(item["sku"]))
-            assert result["status"] in ("ok", "choose"), result["message"]
+            assert result["status"] == "ok", result["message"]
     return packing.load_state(account, user)
 
 
@@ -294,14 +294,12 @@ def test_product_scan_prints_label(account, sample_data, user):
     sku = posting["items"][0]["sku"]
 
     result = packing.scan(account, user, barcode_of(sku))
-    if result["action"] == "need_choice":
-        result = packing.select_posting(account, user, posting["posting_number"], first_sku=sku)
-    assert result["action"] == "posting_selected"
+    assert result["action"] == "posting_selected", result["message"]
     assert result["print"]["posting_number"] == result["state"]["active"]["posting_number"]
 
 
-def test_manual_choice_still_prints(account, sample_data, user):
-    """Выбор отправления из списка кандидатов — тоже без стикера на руках."""
+def test_select_posting_prints(account, sample_data, user):
+    """Отправление взяли в сборку не сканом стикера — стикера на руках нет."""
     posting = pick_posting(positions=1)
     result = packing.select_posting(account, user, posting["posting_number"])
     assert result["print"]["posting_number"] == posting["posting_number"]
@@ -421,7 +419,6 @@ def test_scan_takes_the_most_urgent_and_prints(account, sample_data, user):
     result = packing.scan(account, user, barcode_of(sku))
 
     assert result["action"] == "posting_selected", result["message"]
-    assert result["action"] != "need_choice"
     # Взято первое из очереди — она отсортирована по сроку отгрузки
     assert result["state"]["active"]["posting_number"] == expected[0]["posting_number"]
     assert result["print"]["posting_number"] == expected[0]["posting_number"]

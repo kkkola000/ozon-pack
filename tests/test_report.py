@@ -77,8 +77,7 @@ def test_first_scan_that_picks_posting_is_recorded(account, sample_data, user):
     posting = pick_posting(positions=1)
     sku = posting["items"][0]["sku"]
     result = packing.scan(account, user, barcode_of(sku))
-    if result["action"] == "need_choice":
-        packing.select_posting(account, user, posting["posting_number"], first_sku=sku)
+    assert result["action"] == "posting_selected", result["message"]
 
     rows = shipped_rows("ok")
     assert len(rows) == 1

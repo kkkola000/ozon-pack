@@ -72,16 +72,6 @@ def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(c
     return result
 
 
-@router.post("/api/select")
-def api_select(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
-               account: dict = Depends(require_ozon_account)):
-    check_csrf(request)
-    number = str(payload.get("posting_number") or "")
-    result = packing.select_posting(account, user, number, first_sku=payload.get("sku") or None)
-    result["counters"] = _counters(account)
-    return result
-
-
 @router.post("/api/release")
 def api_release(request: Request, user: dict = Depends(current_user),
                 account: dict = Depends(require_ozon_account)):

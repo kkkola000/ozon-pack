@@ -52,7 +52,7 @@ def test_scan_endpoint(client):
     )
     response = client.post("/api/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200
-    assert response.json()["action"] in ("posting_selected", "need_choice")
+    assert response.json()["action"] == "posting_selected"
 
 
 def test_packer_cannot_open_settings(client):

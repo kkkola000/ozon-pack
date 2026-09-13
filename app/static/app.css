@@ -151,7 +151,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .banner.ok { background: var(--ok-soft); border-color: var(--ok); }
 .banner.error { background: var(--err-soft); border-color: var(--err); }
 .banner.warning { background: var(--warn-soft); border-color: #f1b44c; }
-.banner.choose { background: var(--accent-soft); border-color: var(--accent); }
 .banner.idle { color: var(--muted); font-weight: 500; font-size: 17px; }
 @keyframes flash { 0% { filter: brightness(1.08) saturate(1.4); } 100% { filter: none; } }
 .banner.flash { animation: flash .45s ease-out; }
@@ -217,15 +216,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .tag.fbo { background: #e6f6f0; color: #00875a; }
 .tag.fbs { background: var(--accent-soft); color: var(--accent); }
 
-.candidates { display: grid; gap: 10px; margin-top: 16px; }
-.candidate {
-  display: flex; gap: 14px; align-items: center; justify-content: space-between;
-  background: var(--bg); border: 1px solid var(--line-strong); border-radius: 14px;
-  padding: 14px 16px; cursor: pointer; transition: border-color .12s, box-shadow .12s;
-}
-.candidate:hover, .candidate.first { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.candidate .num { font-size: 17px; font-weight: 700; }
-
 .stat { min-width: 120px; }
 .stat .value { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
 .stat .value.ok { color: var(--ok); }
@@ -257,10 +247,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   .panel { border: none; background: #fff; padding: 0; box-shadow: none; }
   table { font-size: 11px; }
   th, td { border-bottom: 1px solid #999; padding: 4px 6px; color: #000; background: #fff; }
-  .print-head { display: block !important; margin-bottom: 10px; }
   tr { page-break-inside: avoid; }
 }
-.print-head { display: none; }
 
 /* Переключатель кабинетов в шапке */
 .topbar .cabinet select {

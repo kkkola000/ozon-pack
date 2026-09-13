@@ -1,12 +1,10 @@
 /* Рабочее место сборщика: один поток сканов, состояние приходит с сервера. */
 const input = document.getElementById('scan');
 const banner = document.getElementById('banner');
-const candidatesBox = document.getElementById('candidates');
 const activePanel = document.getElementById('active-panel');
 const historyBox = document.getElementById('history');
 
 let busy = false;
-let lastChoice = null;   // {sku, candidates} — когда нужно выбрать отправление
 let hasActive = false;   // открыта ли сборка — при открытой стикер не печатается
 const history = [];
 
@@ -112,32 +110,6 @@ function renderActive(state) {
   document.getElementById('btn-force').onclick = forceComplete;
 }
 
-function renderCandidates(result) {
-  if (result.action !== 'need_choice') {
-    candidatesBox.innerHTML = '';
-    lastChoice = null;
-    return;
-  }
-  lastChoice = { sku: result.sku, candidates: result.candidates };
-  candidatesBox.innerHTML = result.candidates.map((posting, index) => `
-    <div class="candidate ${index === 0 ? 'first' : ''}" data-number="${escapeHtml(posting.posting_number)}">
-      <div>
-        <div class="num mono">${index + 1}. ${escapeHtml(posting.posting_number)}</div>
-        <div class="muted small">
-          ${posting.positions_count} поз. / ${posting.items_count} шт ·
-          ${escapeHtml(posting.city || '')} ·
-          ${escapeHtml(posting.delivery_method || '')}
-        </div>
-      </div>
-      <div class="tags">${urgencyTag(posting)}</div>
-    </div>`).join('');
-  candidatesBox.querySelectorAll('.candidate').forEach((element) => {
-    // Вкладку под стикер резервируем прямо в обработчике клика: позже Safari
-    // сочтёт её всплывающим окном и заблокирует
-    element.onclick = () => selectPosting(element.dataset.number, result.sku, reservePrintWindow());
-  });
-}
-
 function pushHistory(code, result) {
   history.unshift({ code, status: result.status, message: result.message, at: new Date() });
   if (history.length > 12) history.pop();
@@ -156,7 +128,6 @@ function applyResult(result, code, printWindow = null) {
   setBanner(result.status, result.message);
   beep(result.sound || result.status);
   renderActive(result.state || { active: null });
-  renderCandidates(result);
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(code, result);
   if (result.print?.posting_number) {
@@ -209,16 +180,6 @@ async function submitScan(code, printWindow = null) {
   }
 }
 
-async function selectPosting(postingNumber, sku, printWindow = null) {
-  try {
-    const result = await api('/api/select', { posting_number: postingNumber, sku });
-    applyResult(result, null, printWindow);
-  } catch (error) {
-    printWindow?.close();
-    toast(error.message, 'error');
-  }
-}
-
 async function releaseActive() {
   try {
     const result = await api('/api/release', {});
@@ -259,16 +220,6 @@ input.addEventListener('keydown', (event) => {
        а window.open по имени поднимает поверх панели вкладку с прошлым стикером,
        и сборщик принимает это за повторную печать. */
     submitScan(input.value.trim(), hasActive ? null : reservePrintWindow());
-  }
-});
-
-/* Выбор отправления цифрой 1..9, когда система предложила несколько. */
-document.addEventListener('keydown', (event) => {
-  if (!lastChoice || !/^[1-9]$/.test(event.key) || input.value) return;
-  const posting = lastChoice.candidates[Number(event.key) - 1];
-  if (posting) {
-    event.preventDefault();
-    selectPosting(posting.posting_number, lastChoice.sku, reservePrintWindow());
   }
 });
 
@@ -321,4 +272,4 @@ async function refreshState() {
 }
 
 refreshState();
-setInterval(() => { if (!busy && !lastChoice) refreshState(); }, 30000);
+setInterval(() => { if (!busy) refreshState(); }, 30000);
