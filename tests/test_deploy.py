@@ -710,3 +710,48 @@ def test_install_warns_about_unreachable_panel():
     body = text[text.index("warn_if_unreachable() {"):]
     body = body[:body.index("\n}\n")]
     assert "nginx" in body and "HOST=0.0.0.0" in body
+
+
+@pytest.mark.parametrize(
+    "domain, email",
+    [
+        ("panel.example.com", "admin@example.com"),
+        ("panel.example.com", "me@shop.ru"),
+        ("ВАШ-ДОМЕН", "me@shop.ru"),
+        ("panel.shop.ru", "admin@example.org"),
+    ],
+)
+def test_ssl_rejects_values_from_the_examples(tmp_path, domain, email):
+    """Значения из примеров должны отсекаться сразу, а не на середине выпуска.
+
+    Домены example.* зарезервированы, и Let's Encrypt отказывает по ним и в
+    сертификате, и в регистрации почты. Без этой проверки скрипт успевал
+    поставить nginx и переписать конфиги, а падал сообщением certbot, по
+    которому не видно, что виноват скопированный пример.
+    """
+    (tmp_path / ".env").write_text("PORT=8080\nHOST=127.0.0.1\n", encoding="utf-8")
+    proc = subprocess.run(
+        ["bash", str(DEPLOY / "ssl.sh"), "--domain", domain, "--email", email, "--dir", str(tmp_path)],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    output = proc.stdout + proc.stderr
+    assert "из примера в документации" in output, output
+    # До certbot и правки nginx дело дойти не должно
+    assert "Выпуск сертификата" not in output
+
+
+def test_ssl_guard_lets_real_values_through():
+    """Проверку проходят только значения из примеров — настоящие не трогаются.
+
+    Сам скрипт с настоящим доменом здесь не запускаем: дальше этой проверки он
+    ставит nginx и правит конфиги, а тесту такие последствия ни к чему.
+    """
+    text = (DEPLOY / "ssl.sh").read_text(encoding="utf-8")
+    guard = text[text.index("# Значения из примеров"):]
+    guard = guard[:guard.index("step \"Панель:")]
+    for placeholder in ("example.com", "example.org", "example.net", "ВАШ-ДОМЕН"):
+        assert placeholder in guard, placeholder
+    # Настоящие адреса в списке отсекаемых не значатся
+    for real in ("shop.ru", "mail.ru", "ozon"):
+        assert real not in guard, real
