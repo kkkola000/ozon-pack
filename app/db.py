@@ -87,7 +87,6 @@ CREATE TABLE IF NOT EXISTS postings (
     packed_at        TEXT,
     packed_by        TEXT,
     shipped_at       TEXT,
-    note             TEXT,
     first_seen_at    TEXT,
     updated_at       TEXT,
     PRIMARY KEY (account_id, posting_number)

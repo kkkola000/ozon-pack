@@ -63,7 +63,11 @@ class Settings:
     # --- Приложение ---
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", "").strip())
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "data" / "ozon-pack.db")))
-    host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
+    # HOST здесь намеренно нет. Адрес, который слушает панель, задаётся в .env и
+    # передаётся uvicorn юнитом systemd (--host ${HOST}); приложение его не
+    # читает. Поле в настройках создавало ровно обратное впечатление: скрипты
+    # правили HOST, рапортовали об успехе, а панель продолжала слушать всё
+    # подряд, потому что адрес был вписан в юнит.
     port: int = field(default_factory=lambda: _int("PORT", 8080))
     admin_login: str = field(default_factory=lambda: os.getenv("ADMIN_LOGIN", "admin").strip())
     admin_password: str = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD", "").strip())

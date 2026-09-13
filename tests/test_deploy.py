@@ -610,3 +610,17 @@ def test_ssl_keeps_rule_open_without_allowlist(tmp_path):
     """)
     assert subprocess.run(["bash", "-c", script], capture_output=True, text=True).returncode == 0
     assert "allow all;" in snippet.read_text(encoding="utf-8")
+
+
+def test_settings_have_no_host_field():
+    """HOST читает systemd, а не приложение — поле в настройках только вводит в заблуждение.
+
+    Пока Settings.host существовал, он выглядел как то, чем задаётся адрес
+    панели: скрипты правили HOST в .env, рапортовали об успехе, а панель
+    продолжала слушать все интерфейсы, потому что адрес был вписан в юнит.
+    """
+    from app.config import Settings
+
+    assert not hasattr(Settings(), "host"), "Settings.host вернулся — адрес задаёт юнит systemd"
+    unit = (DEPLOY / "ozon-pack.service").read_text(encoding="utf-8")
+    assert "--host ${HOST}" in unit, "юнит должен брать адрес из .env"
