@@ -335,26 +335,23 @@ def test_install_leaves_port_closed_for_localhost_panel():
     assert 'ufw allow "$PORT"/tcp' in firewall
 
 
-def test_dockerfile_does_not_trust_forwarded_header_from_anyone():
-    """«*» позволял любому подделать свой IP заголовком X-Forwarded-For."""
-    text = (BASE_DIR / "Dockerfile").read_text(encoding="utf-8")
-    cmd = [ln for ln in text.splitlines() if ln.startswith("CMD ")]
-    assert len(cmd) == 1, text
-    assert "--forwarded-allow-ips" not in cmd[0], cmd[0]
-    assert '"*"' not in cmd[0], cmd[0]
-
-
-def test_compose_publishes_port_on_configurable_address():
-    """В Docker прямой доступ закрывается адресом публикации порта."""
-    text = (BASE_DIR / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "${BIND_ADDR:-0.0.0.0}:${PORT:-8080}:8080" in text
-    assert '- "8080:8080"' not in text
-
-
 def test_env_example_documents_access_variables():
     text = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
-    assert re.search(r"^BIND_ADDR=", text, re.M)
+    assert re.search(r"^HOST=127\.0\.0\.1$", text, re.M), "по умолчанию панель должна слушать localhost"
     assert re.search(r"^FORWARDED_ALLOW_IPS=127\.0\.0\.1$", text, re.M)
+
+
+def test_only_one_way_to_install():
+    """Путь установки один: служба systemd за nginx с ограничением по VPN.
+
+    Альтернативы убраны намеренно — каждая была ещё одной дверью, которую
+    можно было открыть по невнимательности.
+    """
+    for gone in ("Dockerfile", "docker-compose.yml", "deploy/nginx.conf"):
+        assert not (BASE_DIR / gone).exists(), f"{gone} вернулся"
+    assert sorted(p.name for p in (BASE_DIR / "deploy").iterdir()) == [
+        "install.sh", "ozon-pack.service", "setup.sh", "ssl.sh", "vpn-only.sh"
+    ]
 
 
 @pytest.fixture
@@ -463,9 +460,8 @@ def test_update_adds_new_env_keys(tmp_path):
     result, output = _run_env_migration(tmp_path, old_env)
 
     # Появившиеся настройки доступа дописаны со значениями по умолчанию
-    assert re.search(r"^BIND_ADDR=0\.0\.0\.0$", result, re.M)
     assert re.search(r"^FORWARDED_ALLOW_IPS=127\.0\.0\.1$", result, re.M)
-    assert "BIND_ADDR" in output and "FORWARDED_ALLOW_IPS" in output
+    assert "FORWARDED_ALLOW_IPS" in output
 
 
 def test_update_keeps_operator_values(tmp_path):

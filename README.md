@@ -284,95 +284,67 @@ echo "ADMIN_PASSWORD=admin123" >> .env
 
 ## Развёртывание на VPS
 
-### Вариант A. Панель и HTTPS одной командой (рекомендуется)
+Путь установки один: панель службой systemd, за nginx, со входом только из сети
+VPN. Альтернативы (Docker, установка вручную, панель на открытом порту) убраны
+намеренно — каждая была ещё одной дверью, которую можно открыть по
+невнимательности, а найденная дыра выглядела ровно так.
 
-На чистом сервере Ubuntu/Debian:
+Что нужно заранее: сервер Ubuntu/Debian, домен, направленный на него, и уже
+поднятый туннель WireGuard. Сам VPN эти скрипты не ставят и не трогают — им
+нужна только его подсеть.
+
+### Одной командой
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/setup.sh \
-  | sudo bash -s -- --domain panel.example.com --email admin@example.com
+  | sudo bash -s -- --domain panel.example.com --email admin@example.com \
+                    --vpn-subnet 10.8.0.0/24
 ```
 
-Скрипт ставит панель, службу systemd и nginx, выпускает бесплатный сертификат
-Let's Encrypt, закрывает прямой доступ к панели по http и печатает адрес с
-логином и паролем администратора. Повторный запуск обновляет установку.
+Подставьте свою подсеть туннеля. Скрипт ставит панель и службу systemd,
+поднимает nginx с сертификатом Let's Encrypt, закрывает прямой доступ к порту
+и включает ограничение по VPN на обоих уровнях. В конце печатает адрес, логин
+и пароль администратора — пароль показывается один раз.
 
-Без домена — сертификат на IP-адрес сервера: `--ip`. Другие флаги:
-`--self-signed` (закрытая сеть), `--no-ssl` (только панель), `--port`, `--dir`,
-`--help`. Если запустить без флагов режима, скрипт спросит домен
-с терминала.
+Без домена — сертификат на IP-адрес сервера: `--ip` вместо `--domain`.
 
-Ключи Ozon можно передать сразу:
+### По шагам
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/setup.sh -o setup.sh
-sudo OZON_CLIENT_ID=123456 OZON_API_KEY=xxxxxxxx bash setup.sh \
-  --domain panel.example.com --email admin@example.com
-```
-
-— или внести их потом в самой панели: **Настройки → Ключи Seller API**.
-
-### Вариант B. Только панель, без HTTPS
+Если удобнее видеть каждый этап отдельно:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh | sudo bash
-```
-
-Скрипт сам поставит пакеты, заберёт код с GitHub в `/opt/ozon-pack`, создаст
-системного пользователя и venv, спросит ключи Ozon (можно пропустить и внести
-их потом в панели), сгенерирует пароль администратора, запустит службу
-systemd, откроет порт в ufw и проверит, что панель отвечает. В конце печатает
-адрес и логин с паролем.
-
-Без вопросов и с готовыми ключами:
-
-```bash
+# 1. Панель и служба systemd
 curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh -o install.sh
-sudo OZON_CLIENT_ID=123456 OZON_API_KEY=xxxxxxxx ADMIN_PASSWORD='свой-пароль' bash install.sh --yes
+sudo bash install.sh --no-firewall
+
+# 2. nginx и сертификат
+sudo bash /opt/ozon-pack/deploy/ssl.sh --domain panel.example.com --email admin@example.com
+
+# 3. Вход только из сети VPN
+sudo bash /opt/ozon-pack/deploy/vpn-only.sh --subnet 10.8.0.0/24 --yes
 ```
 
-Полезные флаги: `--port 9000`, `--dir /srv/ozon-pack`, `--branch ИМЯ-ВЕТКИ`,
-`--no-firewall`, `--no-service`, `--help`.
+Шаг 3 идёт после шага 2, а не до: `vpn-only.sh` дописывает правило в готовый
+конфиг сайта, которого до `ssl.sh` ещё нет. Подсеть можно не указывать — тогда
+скрипт возьмёт её с интерфейса `wg0` сам.
 
-**Обновление** — тот же скрипт ещё раз: он подтянет свежий коммит и перезапустит
-службу, не трогая `.env`, базу и журнал сборки.
+Полезные флаги `install.sh`: `--port N`, `--dir PATH`, `--user NAME`,
+`--branch NAME`, `--no-service` (для контейнеров и WSL), `--yes`, `--help`.
 
-### Вариант C. Docker
+### Проверка
 
 ```bash
-git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack
-cd /opt/ozon-pack
-cp .env.example .env
-nano .env                 # впишите OZON_CLIENT_ID, OZON_API_KEY, ADMIN_PASSWORD
-mkdir -p data && chown -R 10001:10001 data   # контейнер работает под непривилегированным uid
-docker compose up -d --build
-docker compose logs -f    # здесь виден пароль администратора, если он не задан
-ufw allow 8080/tcp
+sudo bash /opt/ozon-pack/deploy/vpn-only.sh --status
+sudo ss -ltnp | grep :8080        # адрес должен быть только 127.0.0.1
 ```
 
-Панель: `http://IP-сервера:8080`.
+С устройства **без** VPN `curl -sI https://panel.example.com` должен дать `403`.
 
-Порт публикуется на всех интерфейсах, поэтому панель открыта по адресу сервера
-и пароль идёт по открытому каналу. Когда поставите https (`deploy/ssl.sh`) или
-ограничите доступ сетью VPN (`deploy/vpn-only.sh`), скрипты пропишут в `.env`
-`BIND_ADDR=127.0.0.1` — порт станет виден только с самого сервера, и зайти мимо
-nginx будет нельзя. Закрыть вручную: `BIND_ADDR=127.0.0.1` в `.env`, затем
-`docker compose up -d`. Файрволом этот порт не закрыть — Docker пишет правила в
-iptables в обход ufw.
-
-### Вариант D. Вручную (systemd)
+Снять ограничение, если что-то пошло не так:
 
 ```bash
-git clone https://github.com/kkkola000/ozon-pack.git /opt/ozon-pack && cd /opt/ozon-pack
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env && nano .env
-sudo cp deploy/ozon-pack.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now ozon-pack
-sudo journalctl -u ozon-pack -f
+sudo bash /opt/ozon-pack/deploy/vpn-only.sh --off
 ```
-
-Чтобы открыть панель на 80 порту, положите `deploy/nginx.conf` в nginx
-(инструкция — в первых строках файла).
 
 ### Обновление установленной панели
 
@@ -383,12 +355,6 @@ sudo journalctl -u ozon-pack -f
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kkkola000/ozon-pack/HEAD/deploy/install.sh -o install.sh
 sudo bash install.sh --yes
-```
-
-Панель в Docker:
-
-```bash
-cd /opt/ozon-pack && sudo git pull && sudo docker compose up -d --build
 ```
 
 > **`git pull` + `systemctl restart` недостаточно при обновлении с версий до
@@ -407,9 +373,11 @@ sudo bash /opt/ozon-pack/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧ
 sudo bash /opt/ozon-pack/deploy/vpn-only.sh --subnet ВАША-СЕТЬ
 ```
 
-Для панели в Docker за nginx это обязательный шаг: без него панель перестанет
-видеть настоящий адрес сотрудника и будет считать, что все запросы приходят с
-адреса docker-моста. При заполненном `IP_ALLOWLIST` это закроет вход всем.
+Если панель осталась от прежней установки в Docker, этот шаг обязателен: без
+него она перестанет видеть настоящий адрес сотрудника и будет считать, что все
+запросы приходят с адреса docker-моста. При заполненном `IP_ALLOWLIST` это
+закроет вход всем. Ставить панель в Docker заново больше нечем — путь
+установки один.
 
 Проверить после обновления:
 
@@ -536,8 +504,9 @@ sudo bash /opt/ozon-pack/deploy/vpn-only.sh --subnet 10.8.0.0/24 --allow 203.0.1
 * **Панель должна слушать только localhost.** Правило nginx закрывает порты 80
   и 443, но свой порт (`8080`) панель слушает сама: пока он смотрит наружу, в
   панель заходят по адресу сервера мимо VPN, мимо https и мимо журналов nginx.
-  Скрипт это проверяет и закрывает сам: службе прописывает `HOST=127.0.0.1`,
-  установке в Docker — `BIND_ADDR=127.0.0.1`, после чего перезапускает панель и
+  Скрипт это проверяет и закрывает сам: службе прописывает `HOST=127.0.0.1`
+  (панели, оставшейся в Docker, — `BIND_ADDR=127.0.0.1`), после чего
+  перезапускает её и
   **перечитывает, что слушает порт на самом деле**. Если порт всё ещё открыт,
   скрипт говорит об этом прямым текстом и завершается с ошибкой, а не рапортует
   «Готово»: проверить самому — `sudo ss -ltnp | grep :8080`, там должен быть
@@ -582,8 +551,8 @@ sudo bash /opt/ozon-pack/deploy/vpn-only.sh --allow ЭТОТ-АДРЕС
 | `AVITO_API_URL` | `https://api.avito.ru` | Адрес Avito API |
 | `AVITO_DAYS_BACK` | `30` | За сколько дней назад запрашивать заказы Avito |
 | `PORT` | `8080` | Порт панели |
-| `HOST` | `0.0.0.0` | Адрес, который слушает панель при установке службой. `127.0.0.1` — только через nginx с того же сервера; `ssl.sh` и `vpn-only.sh` ставят это значение сами |
-| `BIND_ADDR` | `0.0.0.0` | То же для Docker: адрес, на котором публикуется порт контейнера (внутри контейнера панель всегда слушает `0.0.0.0`) |
+| `HOST` | `127.0.0.1` | Адрес, который слушает панель. Снаружи к ней ходят только через nginx, поэтому по умолчанию — localhost. Менять значит открывать вторую дверь |
+| `BIND_ADDR` | — | Только для панели, оставшейся от прежней установки в Docker: адрес публикации порта контейнера. `vpn-only.sh` выставляет его сам |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Чьему `X-Forwarded-For` верить, определяя адрес посетителя. Указывать адрес своего прокси, не `*`: со звёздочкой любой подделает свой IP и обойдёт `IP_ALLOWLIST` вместе с защитой от подбора пароля |
 | `ADMIN_LOGIN` / `ADMIN_PASSWORD` | `admin` / генерируется | Первый администратор (создаётся один раз) |
 | `IP_ALLOWLIST` | пусто | Доступ только с этих адресов/подсетей, через запятую |
@@ -598,7 +567,7 @@ sudo bash /opt/ozon-pack/deploy/vpn-only.sh --allow ЭТОТ-АДРЕС
 | `TZ_OFFSET_HOURS` | `3` | Часовой пояс склада для отображения дат |
 | `RETURNS_READY_STATUSES` | `ArrivedAtReturnPlace` | Статусы возвратов, которые панель загружает («В пункте выдачи»). Обычно удобнее менять в Настройках панели — там значение перекрывает файл |
 
-После правки `.env` — `docker compose restart` или `systemctl restart ozon-pack`.
+После правки `.env` — `sudo systemctl restart ozon-pack`.
 
 ---
 
@@ -700,8 +669,7 @@ CSRF-токен на изменяющих запросах, ограничени
 sqlite3 data/ozon-pack.db ".backup '/backup/ozon-pack-$(date +%F).db'"
 
 # Обновление (см. раздел «Обновление установленной панели»)
-sudo bash install.sh --yes                   # служба systemd: пересоберёт юнит
-git pull && docker compose up -d --build     # Docker
+sudo bash install.sh --yes                   # пересоберёт юнит и перезапустит службу
 
 # Тесты
 .venv/bin/python -m pytest
