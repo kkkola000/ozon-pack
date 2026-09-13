@@ -214,6 +214,25 @@ CREATE TABLE IF NOT EXISTS return_acts (
 );
 CREATE INDEX IF NOT EXISTS idx_return_acts_open ON return_acts(confirmed_at, created_at);
 
+-- Акты выдачи возвратов, которые составляет сам Ozon (у Avito такого нет).
+-- Это документ площадки, а не наш: панель его только показывает рядом со своим
+-- актом, чтобы было с чем сверить полученное. Поля у метода менялись, поэтому
+-- разобранное лежит в колонках, а ответ целиком — в raw.
+CREATE TABLE IF NOT EXISTS ozon_giveouts (
+    account_id   INTEGER NOT NULL,
+    id           TEXT NOT NULL,
+    status       TEXT,
+    status_label TEXT,
+    created_at   TEXT,
+    items_count  INTEGER DEFAULT 0,
+    items        TEXT,
+    raw          TEXT,
+    first_seen_at TEXT,
+    updated_at   TEXT,
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_ozon_giveouts ON ozon_giveouts(account_id, created_at DESC);
+
 -- Заказы Авито: структура API другая, поэтому отдельная таблица.
 CREATE TABLE IF NOT EXISTS avito_orders (
     account_id      INTEGER NOT NULL,

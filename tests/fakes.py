@@ -68,6 +68,7 @@ class FakeOzonClient(OzonClient):
         self._seed = seed
         self._postings: dict[str, dict] = {}
         self._returns: list[dict] = []
+        self._giveouts: list[dict] = []
         self._generate()
 
     # -- генерация данных -------------------------------------------------
@@ -77,6 +78,29 @@ class FakeOzonClient(OzonClient):
             self._postings.update(self._make_posting(index, now))
         for index in range(11):
             self._returns.append(self._make_return(index, now))
+        for index in range(2):
+            self._giveouts.append(self._make_giveout(index, now))
+
+    def _make_giveout(self, index: int, now: datetime) -> dict:
+        """Акт выдачи возвратов, как его отдаёт Ozon.
+
+        Состав берём из настоящих возвратов подделки: акт площадки описывает то
+        же событие, что и наш акт, и по товарам они должны сходиться.
+        """
+        chunk = self._returns[index * 3 : index * 3 + 3]
+        return {
+            "giveout_id": 700000 + self._seed * 100 + index,
+            "giveout_status": "COMPLETED" if index else "FORMED",
+            "created_at": _iso(now - timedelta(days=index + 1)),
+            "_articles": [
+                {
+                    "article_name": r["product"]["name"],
+                    "seller_sku": r["product"]["offer_id"],
+                    "approved": True,
+                }
+                for r in chunk
+            ],
+        }
 
     def _make_posting(self, index: int, now: datetime) -> dict[str, dict]:
         rnd = self._rnd
@@ -265,6 +289,22 @@ class FakeOzonClient(OzonClient):
             start = ids.index(last_id) + 1 if last_id in ids else len(items)
         page = items[start : start + limit]
         return page, start + limit < len(items)
+
+    def giveout_list(self, *, limit=100, last_id=0):  # type: ignore[override]
+        """Акты выдачи, как их отдаёт Ozon: список — отдельно, состав — отдельно."""
+        if last_id:
+            return [], False
+        return [json.loads(json.dumps(g)) for g in self._giveouts], False
+
+    def giveout_info(self, giveout_id):  # type: ignore[override]
+        for giveout in self._giveouts:
+            if str(giveout["giveout_id"]) == str(giveout_id):
+                return {
+                    "giveout_id": giveout["giveout_id"],
+                    "giveout_status": giveout["giveout_status"],
+                    "articles": giveout["_articles"],
+                }
+        raise OzonError(f"Акт {giveout_id} не найден", status=404)
 
     def giveout_pdf(self):  # type: ignore[override]
         from tests.pdfstub import make_giveout_pdf

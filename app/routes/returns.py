@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
-from ..deps import check_csrf, current_user, require_avito_account, require_ozon_account, templates
+from .. import accounts, avito, db, giveouts, options, return_acts, returns_pdf, store, sync
+from ..deps import (check_csrf, current_user, require_admin, require_avito_account,
+                    require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonError
 
@@ -172,10 +173,27 @@ def returns_page(
             "all_total": ready_everywhere(),
             "tab": "acts" if tab == "acts" else "ready",
             "acts": return_acts.pending([account["id"]]),
+            # Акт выдачи ведёт и сам Ozon — показываем рядом, чтобы было с чем
+            # сверить полученное. У Avito такого документа нет.
+            "giveouts": giveouts.recent(account["id"]),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
         },
     )
+
+
+@router.get("/api/returns/giveouts/{giveout_id}/raw")
+def api_giveout_raw(giveout_id: str, admin: dict = Depends(require_admin),
+                    account: dict = Depends(require_ozon_account)):
+    """Ответ Ozon по акту выдачи как есть.
+
+    Поля этого метода у Ozon менялись, и разобрать их вслепую нельзя: здесь
+    видно, что площадка реально прислала для конкретного кабинета.
+    """
+    raw = giveouts.raw_of(account["id"], giveout_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Акт выдачи не найден")
+    return {"giveout_id": giveout_id, "raw": raw}
 
 
 @router.post("/api/returns/acts/{act_id}/confirm")

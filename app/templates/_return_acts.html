@@ -13,6 +13,62 @@
   </div>
 {% endif %}
 
+{% if giveouts %}
+<details class="act" style="margin-bottom:18px">
+  <summary class="act-head">
+    <div class="grow">
+      <div class="act-title">Акты выдачи Ozon</div>
+      <div class="act-sub">
+        Документ площадки о том же событии — {{ giveouts | length }} шт.
+        Панель его только показывает: сверить полученное есть с чем.
+      </div>
+    </div>
+    <a class="btn" href="/api/returns/giveout.pdf" target="_blank" rel="noopener"
+       onclick="event.stopPropagation()">Штрихкод выдачи</a>
+  </summary>
+  <div class="act-body">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:150px">Акт Ozon</th>
+          <th style="width:170px">Составлен</th>
+          <th style="width:150px">Статус</th>
+          <th>Состав</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in giveouts %}
+        <tr>
+          <td class="mono">{{ g.id }}</td>
+          <td class="small">{{ g.created_local or '—' }}</td>
+          <td class="small">{{ g.status_label or g.status or '—' }}</td>
+          <td class="small">
+            {% if g['items'] %}
+              {% for item in g['items'][:6] %}
+                <div>{{ item.article_name or item.name or item.product_name or '—' }}
+                  <span class="muted mono">{{ item.seller_sku or item.offer_id or item.sku or '' }}</span>
+                </div>
+              {% endfor %}
+              {% if g['items'] | length > 6 %}
+                <div class="muted">…и ещё {{ g['items'] | length - 6 }}</div>
+              {% endif %}
+            {% else %}
+              <span class="muted">состав Ozon не прислал</span>
+            {% endif %}
+            {% if user.role == 'admin' %}
+              <div class="muted small" style="margin-top:4px">
+                <a href="/api/returns/giveouts/{{ g.id }}/raw" target="_blank" rel="noopener">ответ Ozon как есть</a>
+              </div>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</details>
+{% endif %}
+
 {% for act in acts %}
 <details class="act" {{ 'open' if loop.first }}>
   <summary class="act-head">

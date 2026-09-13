@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, avito, db, ozon, return_acts, store
+from . import accounts, avito, db, giveouts, ozon, return_acts, store
 from .avito import AvitoError
 from .config import settings
 from .ozon import OzonError
@@ -272,6 +272,13 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}
+    # Акты выдачи Ozon — документ площадки о том же событии. Метод включён не у
+    # всех продавцов, поэтому его отказ не должен ронять обновление возвратов.
+    try:
+        result.update(giveouts.sync_account(account))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Акты выдачи не загрузились: %s", exc)
+        result["giveouts_error"] = str(exc)
     if skipped:
         result["returns_skipped"] = skipped
     if gone:
