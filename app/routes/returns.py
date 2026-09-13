@@ -246,7 +246,7 @@ def act_pdf(act_id: str, user: dict = Depends(current_user)):
             act["ozon"], act["avito"], user=user, printed_at=printed_at,
             everywhere=act["kind"] == ALL_ACCOUNTS, account=None, act=act,
         )
-    except returns_pdf.FontMissing as exc:
+    except returns_pdf.PdfUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     stamp = (act.get("created_at") or "")[:10] or printed_at.strftime("%Y-%m-%d")
     return Response(
@@ -358,7 +358,7 @@ def returns_sheet_pdf(
     sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_pdf")
     try:
         pdf = returns_pdf.build_sheet(user=user, **sheet)
-    except returns_pdf.FontMissing as exc:
+    except returns_pdf.PdfUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     name = returns_pdf.filename(
         sheet["printed_at"], everywhere=sheet["everywhere"], account=sheet["account"]

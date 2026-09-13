@@ -345,6 +345,39 @@ def test_sheet_pdf_says_what_to_install_when_there_is_no_font(client, monkeypatc
     assert "fonts-dejavu-core" in response.json()["detail"]
 
 
+def test_panel_starts_without_the_pdf_library():
+    """Библиотека для одной кнопки не должна ронять панель целиком.
+
+    Так уже случилось на сервере: обновились без pip install, и fpdf2, нужный
+    только кнопке «Скачать PDF», не дал подняться ни входу, ни сканированию.
+    Импорт fpdf2 теперь внутри сборки листа, и это надо удержать.
+    """
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path("app/returns_pdf.py").read_text())
+    top_level = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top_level += [alias.name.split(".")[0] for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            top_level.append(node.module.split(".")[0])
+    assert "fpdf" not in top_level, "fpdf2 импортируется наверху модуля — без него панель не поднимется"
+
+
+def test_missing_pdf_library_says_what_to_install(client, monkeypatch):
+    """Нет библиотеки — понятное сообщение и рабочая панель, а не отказ входа."""
+    monkeypatch.setattr(returns_pdf, "_SHEET_CLASS", None)
+    monkeypatch.setitem(__import__("sys").modules, "fpdf", None)
+    login(client)
+    response = client.get("/returns/sheet.pdf")
+    assert response.status_code == 503
+    assert "fpdf2" in response.json()["detail"]
+    # Остальная панель работает
+    assert client.get("/returns").status_code == 200
+    assert client.get("/pack").status_code == 200
+
+
 def test_returns_page_offers_the_pdf(client):
     login(client)
     page = client.get("/returns")

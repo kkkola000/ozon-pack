@@ -17,7 +17,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fpdf import FPDF
+# fpdf2 подключается не здесь, а внутри сборки листа. Библиотека нужна одной
+# кнопке, и её отсутствие не должно ронять панель целиком: без неё сборщик
+# по-прежнему должен входить, сканировать и печатать лист из браузера.
+# Однажды это уже уронило вход на сервере, где обновились без pip install.
 
 # Code128B: ширины штрихов по значению символа. Таблица та же, что в
 # static/code128.js, — лист на бумаге и лист на экране должны кодировать
@@ -60,7 +63,19 @@ FONT_HELP = (
 )
 
 
-class FontMissing(RuntimeError):
+LIBRARY_HELP = (
+    "Для листа в PDF нужна библиотека fpdf2, а она не установлена. "
+    "Поставьте зависимости панели: sudo -u ozon /opt/ozon-pack/.venv/bin/pip install "
+    "-r /opt/ozon-pack/requirements.txt — и перезапустите службу. Лист по-прежнему "
+    "печатается из браузера кнопкой «Печать листа»."
+)
+
+
+class PdfUnavailable(RuntimeError):
+    """Лист в PDF собрать нечем: нет библиотеки или шрифта."""
+
+
+class FontMissing(PdfUnavailable):
     """В системе нет шрифта, которым можно набрать русский текст."""
 
 
@@ -126,39 +141,61 @@ def _mark_cell(row: dict) -> str:
     return f"{sign} {label}".strip()
 
 
-class _Sheet(FPDF):
-    """Лист с колонтитулом: без номеров страниц пачку легко перепутать."""
-
-    def __init__(self, title: str, subtitle: str) -> None:
-        super().__init__(orientation="L", unit="mm", format="A4")
-        self.title_text = title
-        self.subtitle = subtitle
-        regular, bold = _find_fonts()
-        self.add_font("sheet", "", str(regular))
-        self.add_font("sheet", "B", str(bold))
-        self.set_auto_page_break(auto=True, margin=12)
-        self.set_margins(8, 8, 8)
-
-    def header(self) -> None:
-        self.set_font("sheet", "B", 13)
-        self.cell(0, 6, self.title_text, new_x="LMARGIN", new_y="NEXT")
-        self.set_font("sheet", "", 8)
-        self.cell(0, 5, self.subtitle, new_x="LMARGIN", new_y="NEXT")
-        self.ln(2)
-
-    def footer(self) -> None:
-        self.set_y(-10)
-        self.set_font("sheet", "", 7)
-        self.cell(0, 5, f"Страница {self.page_no()} из {{nb}}", align="R")
-
-    def section(self, name: str) -> None:
-        self.ln(3)
-        self.set_font("sheet", "B", 10)
-        self.cell(0, 5, name, new_x="LMARGIN", new_y="NEXT")
-        self.ln(1)
+_SHEET_CLASS = None
 
 
-def _ozon_table(pdf: _Sheet, items: list[dict], *, everywhere: bool) -> None:
+def _sheet_class():
+    """Класс листа строится при первом обращении.
+
+    fpdf2 нужен одной кнопке, поэтому импортируем его здесь, а не наверху
+    модуля: иначе отсутствие библиотеки роняет всю панель, включая вход и
+    сканирование. Однажды так и вышло на сервере, где обновились без
+    pip install.
+    """
+    global _SHEET_CLASS
+    if _SHEET_CLASS is not None:
+        return _SHEET_CLASS
+    try:
+        from fpdf import FPDF
+    except ImportError as exc:  # noqa: F841
+        raise PdfUnavailable(LIBRARY_HELP) from exc
+
+    class _Sheet(FPDF):
+        """Лист с колонтитулом: без номеров страниц пачку легко перепутать."""
+
+        def __init__(self, title: str, subtitle: str) -> None:
+            super().__init__(orientation="L", unit="mm", format="A4")
+            self.title_text = title
+            self.subtitle = subtitle
+            regular, bold = _find_fonts()
+            self.add_font("sheet", "", str(regular))
+            self.add_font("sheet", "B", str(bold))
+            self.set_auto_page_break(auto=True, margin=12)
+            self.set_margins(8, 8, 8)
+
+        def header(self) -> None:
+            self.set_font("sheet", "B", 13)
+            self.cell(0, 6, self.title_text, new_x="LMARGIN", new_y="NEXT")
+            self.set_font("sheet", "", 8)
+            self.cell(0, 5, self.subtitle, new_x="LMARGIN", new_y="NEXT")
+            self.ln(2)
+
+        def footer(self) -> None:
+            self.set_y(-10)
+            self.set_font("sheet", "", 7)
+            self.cell(0, 5, f"Страница {self.page_no()} из {{nb}}", align="R")
+
+        def section(self, name: str) -> None:
+            self.ln(3)
+            self.set_font("sheet", "B", 10)
+            self.cell(0, 5, name, new_x="LMARGIN", new_y="NEXT")
+            self.ln(1)
+
+    _SHEET_CLASS = _Sheet
+    return _SHEET_CLASS
+
+
+def _ozon_table(pdf, items: list[dict], *, everywhere: bool) -> None:
     headings = ["№"]
     widths = [8.0]
     if everywhere:
@@ -202,7 +239,7 @@ def _ozon_table(pdf: _Sheet, items: list[dict], *, everywhere: bool) -> None:
             row.cell(_cut(item.get("note"), 60))
 
 
-def _avito_table(pdf: _Sheet, orders: list[dict], *, everywhere: bool) -> None:
+def _avito_table(pdf, orders: list[dict], *, everywhere: bool) -> None:
     headings = ["№"]
     widths = [8.0]
     if everywhere:
@@ -297,7 +334,7 @@ def build_sheet(
     parts.append(f"Сформировал: {user.get('login', '—')}")
     parts.append(f"{printed_at.strftime('%d.%m.%Y %H:%M')} UTC")
 
-    pdf = _Sheet(title, " · ".join(parts))
+    pdf = _sheet_class()(title, " · ".join(parts))
     pdf.set_title(title)
     pdf.alias_nb_pages()
     pdf.add_page()
