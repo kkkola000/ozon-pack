@@ -117,7 +117,13 @@ def clear_attempts(key: str) -> None:
 
 
 def ip_allowed(client_ip: str | None) -> bool:
-    """Опциональный белый список IP/подсетей (IP_ALLOWLIST)."""
+    """Белый список IP/подсетей (IP_ALLOWLIST). Пустой — пускаем всех.
+
+    Заполненный список — это «только из сети VPN»: его ставит
+    deploy/vpn-only.sh вместе с правилом nginx. Проверка живёт и здесь, а не
+    только в прокси, потому что конфиг сайта может потерять строку include —
+    именно так панель однажды и оказалась открыта всему интернету.
+    """
     if not settings.ip_allowlist:
         return True
     if not client_ip:
@@ -126,6 +132,12 @@ def ip_allowed(client_ip: str | None) -> bool:
         addr = ipaddress.ip_address(client_ip)
     except ValueError:
         return False
+    # Свой же сервер пускаем всегда, какой бы список ни стоял. Через localhost
+    # ходят проверка здоровья контейнера и скрипты развёртывания, а туннель по
+    # SSH остаётся способом починить панель, если VPN отвалится. Отдельного
+    # доступа это не даёт: чтобы прийти с localhost, нужен вход на сервер.
+    if addr.is_loopback:
+        return True
     for entry in settings.ip_allowlist:
         try:
             if "/" in entry:

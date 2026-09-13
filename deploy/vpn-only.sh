@@ -331,6 +331,18 @@ show_status() {
     info "конфиг сайта: $site"
   fi
 
+  step "Ограничение в самой панели"
+  # Второй уровень, не зависящий от nginx: панель сверяет адрес посетителя сама.
+  local app_list=""
+  if [ -f "$APP_DIR/.env" ]; then
+    app_list=$(awk -F= '/^IP_ALLOWLIST=/{sub(/^IP_ALLOWLIST=/, ""); print}' "$APP_DIR/.env" | tail -1 | tr -d ' ')
+  fi
+  if [ -z "$app_list" ]; then
+    warn "IP_ALLOWLIST пуст — панель адрес не проверяет, всё держится на nginx"
+  else
+    info "${GREEN}включено${OFF} — IP_ALLOWLIST=$app_list"
+  fi
+
   step "WireGuard"
   local nets
   nets=$(detect_subnets)
@@ -419,9 +431,43 @@ if [ "$MODE" = "on" ]; then
   fi
 fi
 
+# Ограничение только в nginx — одна точка отказа: конфиг сайта может потерять
+# строку include, и панель молча откроется всем. Поэтому тот же список адресов
+# кладём в .env, откуда его читает сама панель (IP_ALLOWLIST).
+apply_app_allowlist() {
+  local value=$1 restart=${2:-1}
+  [ -f "$APP_DIR/.env" ] || { warn "Нет $APP_DIR/.env — панель адрес проверять не будет"; return 1; }
+  set_env_var "$APP_DIR/.env" IP_ALLOWLIST "$value" || return 1
+  if [ -n "$value" ]; then
+    info "в $APP_DIR/.env записано IP_ALLOWLIST=$value — панель проверяет адрес сама"
+  else
+    info "в $APP_DIR/.env очищен IP_ALLOWLIST — панель больше не ограничивает по адресу"
+  fi
+  [ "$restart" = "1" ] || return 0
+  if panel_in_systemd; then
+    systemctl restart "$SERVICE" 2>/dev/null || true
+  elif panel_in_docker; then
+    (cd "$APP_DIR" && docker compose up -d >/dev/null 2>&1) ||
+      warn "docker compose up -d не отработал — перезапустите панель вручную в $APP_DIR"
+  fi
+  return 0
+}
+
 step "Правило nginx"
 write_snippet
 info "файл: $SNIPPET"
+
+step "Ограничение в самой панели"
+if [ "$MODE" = "off" ]; then
+  # Снимаем с обоих уровней сразу: иначе nginx открыт, а панель закрыта, и это
+  # выглядит как поломка, причину которой ищут в nginx.
+  apply_app_allowlist "" || true
+else
+  ALLOW_LIST="127.0.0.1"
+  for net in "${SUBNETS[@]}"; do ALLOW_LIST="$ALLOW_LIST,$net"; done
+  for net in "${EXTRA[@]}"; do ALLOW_LIST="$ALLOW_LIST,$net"; done
+  apply_app_allowlist "$ALLOW_LIST" || true
+fi
 
 # Конфиг сайта мог быть создан прежней версией ssl.sh — без include правило
 # не сработает, поэтому дописываем его сами.

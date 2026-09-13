@@ -495,3 +495,122 @@ def test_readme_warns_that_restart_alone_is_not_enough():
     assert "install.sh" in section
     assert "systemctl restart` недостаточно" in section
     assert "vpn-only.sh" in section and "ssl.sh" in section
+
+
+# ---------------------------------------------------------------- только из VPN
+# Ограничение должно стоять на двух уровнях сразу: правило nginx и список
+# адресов в самой панели. Один nginx — единственная точка отказа: конфиг сайта
+# может потерять строку include, и панель молча откроется всем.
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_closes_panel_itself_too(tmp_path, port_sandbox):
+    env, _snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    env.update(VERIFY_TRIES="1", VERIFY_DELAY="0")
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=\n", encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--allow", "203.0.113.10", "--yes"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    allowlist = re.search(r"^IP_ALLOWLIST=(.*)$", env_text, re.M).group(1)
+    assert "10.8.0.0/24" in allowlist
+    assert "203.0.113.10" in allowlist
+    # Свой сервер в списке обязателен: через него ходят проверки и путь по SSH
+    assert "127.0.0.1" in allowlist
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_off_opens_both_levels(tmp_path, port_sandbox):
+    """Иначе nginx открыт, а панель закрыта — и это ищут как поломку."""
+    env, snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    env.update(VERIFY_TRIES="1", VERIFY_DELAY="0")
+    (tmp_path / ".env").write_text(
+        "HOST=127.0.0.1\nPORT=8080\nIP_ALLOWLIST=127.0.0.1,10.8.0.0/24\n", encoding="utf-8"
+    )
+
+    assert _run(DEPLOY / "vpn-only.sh", ["--off"], env).returncode == 0
+    assert "allow all;" in snippet.read_text(encoding="utf-8")
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert re.search(r"^IP_ALLOWLIST=\s*$", env_text, re.M), env_text
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_vpn_only_status_reports_both_levels(tmp_path, port_sandbox):
+    env, snippet, _wg = _sandbox_env(tmp_path, port_sandbox)
+    snippet.write_text("allow 127.0.0.1;\nallow 10.8.0.0/24;\ndeny all;\n")
+    (tmp_path / ".env").write_text("IP_ALLOWLIST=127.0.0.1,10.8.0.0/24\n", encoding="utf-8")
+
+    proc = _run(DEPLOY / "vpn-only.sh", ["--status"], env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "Ограничение в самой панели" in proc.stdout
+    assert "IP_ALLOWLIST=127.0.0.1,10.8.0.0/24" in proc.stdout
+
+
+def test_install_vpn_subnet_closes_panel(tmp_path):
+    """--vpn-subnet: панель слушает localhost и сверяет адрес сама."""
+    (tmp_path / ".env").write_text("OZON_CLIENT_ID=123\nHOST=0.0.0.0\nPORT=8080\n", encoding="utf-8")
+    script = textwrap.dedent(f"""
+        set -eu
+        APP_DIR={tmp_path}
+        info() {{ printf '%s\\n' "$*"; }}
+        warn() {{ printf '%s\\n' "$*"; }}
+        {_shell_function(DEPLOY / "install.sh", "apply_vpn_settings")}
+        apply_vpn_settings "10.8.0.0/24"
+    """)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    result = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert re.search(r"^HOST=127\.0\.0\.1$", result, re.M)
+    assert re.search(r"^IP_ALLOWLIST=127\.0\.0\.1,10\.8\.0\.0/24$", result, re.M)
+    # Значения оператора не тронуты, дублей нет
+    assert re.search(r"^OZON_CLIENT_ID=123$", result, re.M)
+    assert len(re.findall(r"^HOST=", result, re.M)) == 1
+
+
+def test_install_with_vpn_does_not_open_port_in_firewall():
+    text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    firewall = text[text.index('step "Файрвол"'):]
+    firewall = firewall[:firewall.index("\nfi\n")]
+    assert "VPN_SUBNET" in firewall, "порт открывается даже при установке с VPN"
+
+
+def test_ssl_creates_restrictive_rule_when_allowlist_is_set(tmp_path):
+    """Иначе nginx открыл бы то, что панель закрывает, и вместо отказа на
+    входе оператор увидел бы 403 из самой панели."""
+    (tmp_path / ".env").write_text(
+        "HOST=127.0.0.1\nIP_ALLOWLIST=127.0.0.1,10.8.0.0/24,203.0.113.10\n", encoding="utf-8"
+    )
+    snippet = tmp_path / "access.conf"
+    script = textwrap.dedent(f"""
+        set -eu
+        APP_DIR={tmp_path}
+        ACCESS_SNIPPET={snippet}
+        info() {{ printf '%s\\n' "$*"; }}
+        {_shell_function(DEPLOY / "ssl.sh", "ensure_access_snippet")}
+        ensure_access_snippet
+    """)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    rule = snippet.read_text(encoding="utf-8")
+    assert "allow 10.8.0.0/24;" in rule
+    assert "allow 203.0.113.10;" in rule
+    assert rule.rstrip().endswith("deny all;")
+    assert "allow all;" not in rule
+
+
+def test_ssl_keeps_rule_open_without_allowlist(tmp_path):
+    """Установка без VPN не должна внезапно закрываться."""
+    (tmp_path / ".env").write_text("HOST=0.0.0.0\nIP_ALLOWLIST=\n", encoding="utf-8")
+    snippet = tmp_path / "access.conf"
+    script = textwrap.dedent(f"""
+        set -eu
+        APP_DIR={tmp_path}
+        ACCESS_SNIPPET={snippet}
+        info() {{ printf '%s\\n' "$*"; }}
+        {_shell_function(DEPLOY / "ssl.sh", "ensure_access_snippet")}
+        ensure_access_snippet
+    """)
+    assert subprocess.run(["bash", "-c", script], capture_output=True, text=True).returncode == 0
+    assert "allow all;" in snippet.read_text(encoding="utf-8")

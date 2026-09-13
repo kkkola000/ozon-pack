@@ -27,6 +27,9 @@ OZON_API_KEY=${OZON_API_KEY:-}
 ADMIN_LOGIN=${ADMIN_LOGIN:-admin}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
 SKIP_FIREWALL=${SKIP_FIREWALL:-0}
+# Сеть VPN: с ней панель сразу ставится закрытой — слушает только localhost,
+# проверяет адрес посетителя сама и не открывает порт в файрволе.
+VPN_SUBNET=${VPN_SUBNET:-}
 SKIP_SERVICE=${SKIP_SERVICE:-0}
 NONINTERACTIVE=${NONINTERACTIVE:-0}
 
@@ -59,6 +62,7 @@ usage() {
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   --port N           порт панели (по умолчанию 8080)
   --user NAME        системный пользователь службы (по умолчанию ozon)
+  --vpn-subnet СЕТЬ  пускать только из этой сети VPN, например 10.8.0.0/24
   --no-firewall      не трогать ufw
   --no-service       не ставить службу systemd (для контейнеров/WSL)
   --yes              ничего не спрашивать
@@ -74,6 +78,7 @@ while [ $# -gt 0 ]; do
     --dir) APP_DIR=$2; shift 2 ;;
     --port) PORT=$2; PORT_EXPLICIT=1; shift 2 ;;
     --user) APP_USER=$2; shift 2 ;;
+    --vpn-subnet) VPN_SUBNET=$2; shift 2 ;;
     --no-firewall) SKIP_FIREWALL=1; shift ;;
     --no-service) SKIP_SERVICE=1; shift ;;
     --yes|-y) NONINTERACTIVE=1; shift ;;
@@ -224,6 +229,31 @@ PYEOF
   info "создан $APP_DIR/.env"
 fi
 chmod 600 "$APP_DIR/.env"
+
+# Установка с VPN: панель слушает только localhost и сверяет адрес посетителя
+# сама. Вызывается после обеих веток выше, поэтому работает и на обновлении.
+# 127.0.0.1 в списке обязателен: через localhost ходят проверка здоровья и
+# скрипты развёртывания, и он же остаётся путём восстановления через SSH.
+apply_vpn_settings() {
+  local target="$APP_DIR/.env" subnet=$1 key value line
+  [ -n "$subnet" ] || return 0
+  [ -f "$target" ] || { warn "Нет $target — настройки VPN не записаны"; return 1; }
+  for key in HOST IP_ALLOWLIST; do
+    case "$key" in
+      HOST) value="127.0.0.1" ;;
+      IP_ALLOWLIST) value="127.0.0.1,$subnet" ;;
+    esac
+    line="$key=$value"
+    if grep -q "^$key=" "$target"; then
+      sed -i "s#^$key=.*#$line#" "$target"
+    else
+      printf '%s\n' "$line" >> "$target"
+    fi
+  done
+  info "доступ только из сети $subnet: HOST=127.0.0.1, IP_ALLOWLIST задан"
+}
+
+apply_vpn_settings "$VPN_SUBNET"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
 if grep -q '^OZON_CLIENT_ID=$' "$APP_DIR/.env" 2>/dev/null && grep -q '^OZON_API_KEY=$' "$APP_DIR/.env" 2>/dev/null; then
@@ -262,6 +292,10 @@ if [ "$SKIP_FIREWALL" != "1" ] && command -v ufw >/dev/null && ufw status 2>/dev
   # Панель, слушающая только localhost, стоит за nginx — открывать её порт
   # наружу незачем: правило ничего не даст, а выглядело бы как разрешённый вход.
   ENV_HOST=$(awk -F= '/^HOST=/{print $2}' "$APP_DIR/.env" 2>/dev/null | tail -1 | tr -d ' ')
+  if [ -n "$VPN_SUBNET" ]; then
+    info "порт $PORT/tcp не открываем: вход только из сети $VPN_SUBNET"
+    ENV_HOST=127.0.0.1
+  fi
   case "$ENV_HOST" in
     127.0.0.1|::1|localhost)
       info "порт $PORT/tcp не открываем: панель слушает только localhost (HOST=$ENV_HOST)" ;;

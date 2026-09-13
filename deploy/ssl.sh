@@ -147,6 +147,31 @@ ensure_access_snippet() {
   # повторный запуск этого скрипта.
   mkdir -p "$(dirname "$ACCESS_SNIPPET")"
   [ -f "$ACCESS_SNIPPET" ] && return
+
+  # Панель уже настроена на список адресов (установка с --vpn-subnet): нельзя
+  # создавать правило разрешающим — nginx открыл бы то, что панель закрывает,
+  # и оператор увидел бы 403 из панели вместо честного отказа на входе.
+  local app_list=""
+  if [ -f "$APP_DIR/.env" ]; then
+    app_list=$(awk -F= '/^IP_ALLOWLIST=/{sub(/^IP_ALLOWLIST=/, ""); print}' "$APP_DIR/.env" | tail -1 | tr -d ' ')
+  fi
+  if [ -n "$app_list" ]; then
+    {
+      echo "# Создано ssl.sh по списку IP_ALLOWLIST из $APP_DIR/.env."
+      echo "# Открыть панель всем: sudo bash $APP_DIR/deploy/vpn-only.sh --off"
+      echo "allow 127.0.0.1;"
+      echo "allow ::1;"
+      printf '%s\n' "$app_list" | tr ',' '\n' | while read -r entry; do
+        entry=$(printf '%s' "$entry" | tr -d ' ')
+        case "$entry" in ""|127.0.0.1|::1) continue ;; esac
+        echo "allow $entry;"
+      done
+      echo "deny all;"
+    } > "$ACCESS_SNIPPET"
+    info "правило доступа создано по IP_ALLOWLIST: $app_list"
+    return
+  fi
+
   cat > "$ACCESS_SNIPPET" <<'CONF'
 # Кто может открывать панель. Закрыть доступ всем, кроме VPN:
 #   sudo bash /opt/ozon-pack/deploy/vpn-only.sh

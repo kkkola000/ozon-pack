@@ -17,6 +17,8 @@ RAW_BASE=${RAW_BASE:-https://raw.githubusercontent.com/kkkola000/ozon-pack}
 BRANCH=${BRANCH:-HEAD}
 APP_DIR=${APP_DIR:-/opt/ozon-pack}
 PORT=${PORT:-8080}
+# Сеть VPN: панель сразу ставится закрытой для всех, кроме этой сети.
+VPN_SUBNET=${VPN_SUBNET:-}
 DOMAIN=${DOMAIN:-}
 EMAIL=${EMAIL:-}
 OZON_CLIENT_ID=${OZON_CLIENT_ID:-}
@@ -43,6 +45,7 @@ usage() {
   --self-signed      самоподписанный сертификат (браузер будет предупреждать)
   --no-ssl           только панель, без HTTPS
   --port N           порт панели за nginx (по умолчанию 8080)
+  --vpn-subnet СЕТЬ  вход только из этой сети VPN, например 10.8.0.0/24
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   --branch NAME      ветка репозитория
   --hsts             включить HSTS (браузеры запомнят https на 180 дней)
@@ -55,7 +58,9 @@ usage() {
   curl -fsSL <адрес>/deploy/setup.sh | sudo bash -s -- \
     --domain panel.example.com --email admin@example.com
 
-Кто может открывать панель — отдельной командой, после установки:
+Вход только из сети VPN — флагом --vpn-subnet при установке:
+  ... --domain panel.example.com --vpn-subnet 10.8.0.0/24
+либо позже, когда панель уже работает:
   sudo bash /opt/ozon-pack/deploy/vpn-only.sh --subnet 10.8.0.0/24
 USAGE
   exit 0
@@ -69,6 +74,7 @@ while [ $# -gt 0 ]; do
     --self-signed) TLS_MODE=self-signed; shift ;;
     --no-ssl) TLS_MODE=none; shift ;;
     --port) PORT=$2; shift 2 ;;
+    --vpn-subnet) VPN_SUBNET=$2; shift 2 ;;
     --dir) APP_DIR=$2; shift 2 ;;
     --branch) BRANCH=$2; shift 2 ;;
     --hsts) EXTRA_SSL+=(--hsts); shift ;;
@@ -131,6 +137,7 @@ INSTALL_ARGS=(--yes --port "$PORT" --dir "$APP_DIR" --repo "$REPO_URL")
 [ "$BRANCH" != "HEAD" ] && INSTALL_ARGS+=(--branch "$BRANCH")
 # Порты откроет второй шаг: наружу должны смотреть только 80 и 443
 [ "$TLS_MODE" != "none" ] && INSTALL_ARGS+=(--no-firewall)
+[ -n "$VPN_SUBNET" ] && INSTALL_ARGS+=(--vpn-subnet "$VPN_SUBNET")
 [ ${#EXTRA_INSTALL[@]} -gt 0 ] && INSTALL_ARGS+=("${EXTRA_INSTALL[@]}")
 
 OZON_CLIENT_ID="$OZON_CLIENT_ID" OZON_API_KEY="$OZON_API_KEY" \
@@ -162,6 +169,14 @@ esac
 SSL_OK=1
 bash "$SSL_SH" "${SSL_ARGS[@]}" || SSL_OK=0
 
+# Ограничение ставим после HTTPS: скрипт дописывает include в готовый конфиг
+# сайта и сам проверяет, что панель не осталась открытой мимо nginx.
+if [ -n "$VPN_SUBNET" ] && [ -f "$APP_DIR/deploy/vpn-only.sh" ]; then
+  head "Доступ только из сети VPN"
+  bash "$APP_DIR/deploy/vpn-only.sh" --subnet "$VPN_SUBNET" --yes ||
+    warn "Ограничение доступа не встало — проверьте: sudo bash $APP_DIR/deploy/vpn-only.sh --status"
+fi
+
 
 # ------------------------------------------------------------------ итог
 IP=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -190,7 +205,13 @@ if [ -z "$OZON_CLIENT_ID$OZON_API_KEY" ]; then
   printf '\n%sДальше:%s добавьте кабинеты и ключи: Настройки -> Кабинеты.\n' "$BOLD" "$OFF"
   printf 'Пока ключей нет, панель ничего не загружает.\n'
 fi
-if [ "$SSL_OK" = "1" ]; then
+if [ -n "$VPN_SUBNET" ]; then
+  printf '\n%sВход только из сети %s%s\n' "$BOLD" "$VPN_SUBNET" "$OFF"
+  printf '  Панель слушает localhost, порт наружу не открыт, адрес посетителя\n'
+  printf '  проверяют и nginx, и сама панель. Снаружи — 403 ещё до формы входа.\n'
+  printf '  Проверить: sudo bash %s/deploy/vpn-only.sh --status\n' "$APP_DIR"
+  printf '  Открыть всем: sudo bash %s/deploy/vpn-only.sh --off\n' "$APP_DIR"
+elif [ "$SSL_OK" = "1" ]; then
   printf '\n%sКто может открывать панель%s — отдельной командой:\n' "$BOLD" "$OFF"
   printf '  только из сети VPN: sudo bash %s/deploy/vpn-only.sh --subnet 10.8.0.0/24\n' "$APP_DIR"
   printf '  посмотреть, как есть: sudo bash %s/deploy/vpn-only.sh --status\n' "$APP_DIR"
