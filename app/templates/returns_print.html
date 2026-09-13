@@ -13,7 +13,7 @@
     th { background: #eee; font-size: 10px; text-transform: uppercase; }
     tr { page-break-inside: avoid; }
     .num { width: 26px; text-align: center; }
-    .check { width: 34px; text-align: center; font-size: 17px; }
+    .mark { width: 64px; text-align: center; font-size: 11px; }
     .qty { width: 42px; text-align: center; font-weight: 700; }
     .mono { font-family: Consolas, monospace; }
     .bc svg { display: block; }
@@ -62,8 +62,9 @@
         <th>Товар</th>
         <th style="width:110px">Артикул / SKU</th>
         <th class="qty">Кол-во</th>
-        <th style="width:200px">Пункт выдачи</th>
-        <th class="check">✓</th>
+        <th style="width:170px">Пункт выдачи</th>
+        <th class="mark">Отметка</th>
+        <th style="width:120px">Комментарий</th>
       </tr>
     </thead>
     <tbody>
@@ -89,7 +90,8 @@
           {{ r.place_name or '—' }}
           {% if r.place_address %}<div>{{ r.place_address }}</div>{% endif %}
         </td>
-        <td class="check">☐</td>
+        <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
+        <td style="font-size:10px">{{ r.note or '' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -107,8 +109,9 @@
         <th style="width:96px">Трек возврата</th>
         <th>Товары</th>
         <th class="qty">Кол-во</th>
-        <th style="width:200px">Куда ехать</th>
-        <th class="check">✓</th>
+        <th style="width:170px">Куда ехать</th>
+        <th class="mark">Отметка</th>
+        <th style="width:120px">Комментарий</th>
       </tr>
     </thead>
     <tbody>
@@ -139,7 +142,8 @@
           {% if r.terminal_code %}<div>ПВЗ {{ r.terminal_code }}</div>{% endif %}
           {% if not r.terminal_address and not r.terminal_code %}<div>адрес Avito не прислал</div>{% endif %}
         </td>
-        <td class="check">☐</td>
+        <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
+        <td style="font-size:10px">{{ r.note or '' }}</td>
       </tr>
       {% endfor %}
     </tbody>

@@ -1,0 +1,29 @@
+{# Окно отметки о возврате. Одно на оба раздела возвратов — Ozon и Avito:
+   поля и смысл отметки там одинаковые, а две копии разъехались бы. #}
+<div id="mark-modal" class="modal no-print" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="mark-title">
+    <div class="row between">
+      <h2 id="mark-title" style="margin:0">Отметка о возврате</h2>
+      <button class="btn small" id="mark-close" title="Закрыть (Esc)">✕</button>
+    </div>
+
+    <div class="muted small" style="margin-top:6px" id="mark-subject">—</div>
+
+    <div class="row" style="margin-top:16px; gap:10px">
+      <button class="btn big mark-choice" data-mark="ok">✓ Принят</button>
+      <button class="btn big mark-choice" data-mark="bad">✗ Не принят</button>
+    </div>
+
+    <label class="small muted" for="mark-note" style="display:block; margin-top:16px">Комментарий</label>
+    <textarea id="mark-note" rows="4" maxlength="2000"
+              placeholder="Что не так с возвратом: вскрыта упаковка, нет комплекта, не выдали…"></textarea>
+
+    <div class="row between" style="margin-top:16px">
+      <button class="btn" id="mark-clear">Снять отметку</button>
+      <div class="row">
+        <button class="btn" id="mark-cancel">Отмена</button>
+        <button class="btn primary" id="mark-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+</div>

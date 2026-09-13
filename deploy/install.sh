@@ -98,7 +98,10 @@ UPDATE=0
 step "Системные пакеты"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip git curl ca-certificates sqlite3 >/dev/null
+# fonts-dejavu-core — шрифт с кириллицей для листа возвратов в PDF: встроенные
+# в PDF шрифты русские буквы не показывают. Пакет крошечный и без зависимостей.
+apt-get install -y -qq python3 python3-venv python3-pip git curl ca-certificates sqlite3 \
+  fonts-dejavu-core >/dev/null
 info "python $(python3 -V 2>&1 | awk '{print $2}'), git $(git --version | awk '{print $3}')"
 
 # ------------------------------------------------------------------ ветка

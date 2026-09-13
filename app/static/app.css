@@ -120,6 +120,13 @@ input[type=text], input[type=password], input[type=search], input[type=number], 
 }
 input::placeholder { color: #a3aeb9; }
 input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line-strong);
+  border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit;
+}
+textarea::placeholder { color: #a3aeb9; }
+textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 label.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 
@@ -197,6 +204,22 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   color: #fff; font-size: 15px; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,.6);
 }
 .item-row .check { font-size: 26px; color: var(--ok); }
+
+/* Окно поверх списка: отметка о возврате */
+.modal {
+  position: fixed; inset: 0; z-index: 210; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: rgba(0, 26, 52, .55);
+}
+/* Без этой строки display:flex перебивает встроенное правило для hidden, и
+   закрытое окно невидимой плёнкой ложится на весь список: кнопки видно, а
+   нажать нельзя. */
+.modal[hidden] { display: none; }
+.modal-box {
+  background: var(--surface); border-radius: 18px; padding: 22px 24px;
+  width: 100%; max-width: 520px; max-height: 88vh; overflow: auto;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .35);
+}
 
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; font-size: 14px; }
 .kv dt { color: var(--muted); }

@@ -37,6 +37,8 @@ EVENT_LABELS = {
     "ship": "Сборка в Ozon",
     "ship_error": "Ошибка сборки в Ozon",
     "returns_print": "Печать листа возвратов",
+    "returns_pdf": "Лист возвратов в PDF",
+    "return_mark": "Отметка о возврате",
     "returns_giveout": "Штрихкод выдачи",
     "returns_statuses_set": "Изменены статусы возвратов",
     "user_created": "Создан пользователь",

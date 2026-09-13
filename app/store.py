@@ -427,11 +427,30 @@ def claim_is_active(claim_at: str | None) -> bool:
     return datetime.now(timezone.utc) - moment < timedelta(minutes=settings.claim_ttl_minutes)
 
 
+# Отметка сборщика о возврате. Ставит её человек в пункте выдачи, площадка о
+# ней не знает: Ozon и Avito в своих статусах различают только «лежит в ПВЗ» и
+# «уехал дальше», а принял ли сборщик товар и что с ним было не так — видно
+# только на месте.
+RETURN_MARKS = {"ok": "Принят", "bad": "Не принят"}
+RETURN_MARK_SIGNS = {"ok": "✓", "bad": "✗"}
+
+
+def mark_label(code: str | None) -> str:
+    return RETURN_MARKS.get(code or "", "")
+
+
+def _with_mark(data: dict) -> dict:
+    data["mark_label"] = mark_label(data.get("mark"))
+    data["mark_sign"] = RETURN_MARK_SIGNS.get(data.get("mark") or "", "")
+    data["mark_at_local"] = local_time(data.get("mark_at"))
+    return data
+
+
 def return_view(row: sqlite3.Row | dict) -> dict:
     data = dict(row)
     data.pop("raw", None)
     data["status_label"] = data.get("status_name") or RETURN_STATUS_LABELS.get(data.get("status_sys") or "", "")
-    return data
+    return _with_mark(data)
 
 
 # ------------------------------------------------------------------ заказы Avito
@@ -591,4 +610,4 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     data["created_local"] = local_time(data.get("created_at_api"))
     if with_items:
         data["items"] = avito_items(data["account_id"], data["id"])
-    return data
+    return _with_mark(data)

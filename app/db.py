@@ -182,6 +182,13 @@ CREATE TABLE IF NOT EXISTS returns (
     is_ready          INTEGER NOT NULL DEFAULT 0,
     raw               TEXT,
     printed_at        TEXT,
+    -- Отметка сборщика: возврат приняли ('ok') или не приняли ('bad'), плюс
+    -- комментарий. Всё это заводит панель, площадка о таких отметках не знает,
+    -- поэтому синхронизация эти колонки не трогает.
+    mark              TEXT,
+    note              TEXT,
+    mark_at           TEXT,
+    mark_by           TEXT,
     first_seen_at     TEXT,
     updated_at        TEXT,
     PRIMARY KEY (account_id, id)
@@ -233,6 +240,11 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     claim_user_id   INTEGER,
     claim_login     TEXT,
     claim_at        TEXT,
+    -- Отметка сборщика при получении возврата — см. такие же колонки в returns.
+    mark            TEXT,
+    note            TEXT,
+    mark_at         TEXT,
+    mark_by         TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)

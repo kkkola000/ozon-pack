@@ -8,3 +8,7 @@ itsdangerous==2.2.0
 python-multipart==0.0.32
 # Шифрование ключей площадок в базе (app/crypto.py)
 cryptography==50.0.1
+# Лист возвратов файлом PDF (app/returns_pdf.py). Чистый Python: ставится
+# колёсами, компилятор и системные библиотеки не нужны. Шрифт с кириллицей
+# берётся из системы — на Debian и Ubuntu это пакет fonts-dejavu-core.
+fpdf2==2.8.8

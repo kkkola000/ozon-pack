@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, avito, db, options, store, sync
-from ..deps import check_csrf, current_user, require_ozon_account, templates
+from .. import accounts, avito, db, options, returns_pdf, store, sync
+from ..deps import check_csrf, current_user, require_avito_account, require_ozon_account, templates
 from .. import ozon
 from ..ozon import OzonError
 
@@ -16,6 +16,9 @@ router = APIRouter()
 
 # Значение параметра, которым просят лист сразу по всем кабинетам.
 ALL_ACCOUNTS = "all"
+
+# Куда пишется отметка сборщика: раздел возвратов один, а таблицы у площадок разные.
+MARK_TABLES = {"ozon": "returns", "avito": "avito_orders"}
 
 
 def _filter_returns(
@@ -186,22 +189,14 @@ def _mark_printed(table: str, rows: list[dict]) -> None:
     )
 
 
-@router.get("/returns/print", response_class=HTMLResponse)
-def returns_print(
-    request: Request,
-    scheme: str = "all",
-    place: str = "",
-    q: str = "",
-    scope: str = "",
-    user: dict = Depends(current_user),
-):
-    """Лист для печати: сборщик идёт с ним получать возвраты.
+def _collect_sheet(request: Request, user: dict, scheme: str, place: str, q: str, scope: str,
+                   *, kind: str) -> dict:
+    """Данные листа возвратов — общие для печати из браузера и для файла PDF.
 
     scope=all — один лист сразу по всем кабинетам, Ozon и Avito. Фильтры
     текущего кабинета к нему не применяются: на таком листе нужно всё, что
     готово к выдаче, иначе сборщик уедет за частью возвратов.
     """
-    now = datetime.now(timezone.utc)
     everywhere = scope == ALL_ACCOUNTS
 
     if everywhere:
@@ -214,7 +209,7 @@ def returns_print(
         # решив, что забрал всё, и за остатком никто не вернётся.
         truncated = len(items) + len(avito_orders) < ready_everywhere()
         db.log_event(
-            "returns_print", user=user,
+            kind, user=user,
             message=f"Лист возвратов по всем кабинетам: {len(items)} поз. Ozon, {len(avito_orders)} заказов Avito",
         )
     else:
@@ -223,29 +218,121 @@ def returns_print(
         avito_orders = []
         truncated = False
         db.log_event(
-            "returns_print", account_id=account["id"], user=user,
+            kind, account_id=account["id"], user=user,
             message=f"Лист возвратов: {len(items)} поз.",
         )
 
     _mark_printed("returns", items)
     _mark_printed("avito_orders", avito_orders)
 
+    return {
+        "items": items,
+        "avito_orders": avito_orders,
+        "account": account,
+        "everywhere": everywhere,
+        "truncated": truncated,
+        "printed_at": datetime.now(timezone.utc),
+        "scheme": scheme,
+        "place": place,
+    }
+
+
+@router.get("/returns/print", response_class=HTMLResponse)
+def returns_print(
+    request: Request,
+    scheme: str = "all",
+    place: str = "",
+    q: str = "",
+    scope: str = "",
+    user: dict = Depends(current_user),
+):
+    """Лист для печати: сборщик идёт с ним получать возвраты."""
+    sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_print")
     return templates.TemplateResponse(
-        request,
-        "returns_print.html",
-        {
-            "request": request,
-            "user": user,
-            "items": items,
-            "avito_orders": avito_orders,
-            "account": account,
-            "everywhere": everywhere,
-            "truncated": truncated,
-            "printed_at": now,
-            "scheme": scheme,
-            "place": place,
+        request, "returns_print.html", {"request": request, "user": user, **sheet}
+    )
+
+
+@router.get("/returns/sheet.pdf")
+def returns_sheet_pdf(
+    request: Request,
+    scheme: str = "all",
+    place: str = "",
+    q: str = "",
+    scope: str = "",
+    user: dict = Depends(current_user),
+):
+    """Тот же лист готовым файлом: сохранить, переслать, напечатать где угодно."""
+    sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_pdf")
+    try:
+        pdf = returns_pdf.build_sheet(user=user, **sheet)
+    except returns_pdf.FontMissing as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    name = returns_pdf.filename(
+        sheet["printed_at"], everywhere=sheet["everywhere"], account=sheet["account"]
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "no-store",
         },
     )
+
+
+@router.post("/api/returns/mark")
+def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+    """Отметка сборщика о возврате: принят или нет, плюс комментарий.
+
+    Отметку заводит панель, площадка о ней не знает — поэтому синхронизация
+    эти поля не трогает и при обновлении списка комментарий не пропадёт.
+    """
+    check_csrf(request)
+    table = MARK_TABLES.get(str(payload.get("marketplace") or "ozon"))
+    if not table:
+        raise HTTPException(status_code=400, detail="Неизвестная площадка")
+
+    return_id = str(payload.get("id") or "").strip()
+    if not return_id:
+        raise HTTPException(status_code=400, detail="Не указан возврат")
+
+    mark = str(payload.get("mark") or "").strip()
+    if mark not in store.RETURN_MARKS and mark != "":
+        raise HTTPException(status_code=400, detail="Неизвестная отметка")
+    note = str(payload.get("note") or "").strip()[:2000]
+
+    account = require_ozon_account(request) if table == "returns" else require_avito_account(request)
+    row = db.query_one(
+        f"SELECT id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Возврат {return_id} не найден в этом кабинете")
+
+    # Пустая отметка без комментария — это «снять»: следов в строке остаться
+    # не должно, иначе в списке будет висеть имя и время неизвестно чего.
+    keeps = bool(mark or note)
+    now = db.now_iso() if keeps else None
+    db.execute(
+        f"UPDATE {table} SET mark = ?, note = ?, mark_at = ?, mark_by = ? WHERE account_id = ? AND id = ?",
+        (mark or None, note or None, now, user["login"] if keeps else None, account["id"], return_id),
+    )
+    db.log_event(
+        "return_mark", account_id=account["id"], user=user,
+        message=f"{return_id}: {store.mark_label(mark) or 'отметка снята'}"
+                + (f" — {note}" if note else ""),
+    )
+    return {
+        "status": "ok",
+        "id": return_id,
+        "mark": mark,
+        "mark_label": store.mark_label(mark),
+        "mark_sign": store.RETURN_MARK_SIGNS.get(mark, ""),
+        "note": note,
+        "mark_by": user["login"] if keeps else "",
+        "mark_at_local": store.local_time(now) if keeps else "",
+        "message": f"Отметка сохранена: {store.mark_label(mark) or 'снята'}",
+    }
 
 
 @router.get("/api/returns/giveout.pdf")

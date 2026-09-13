@@ -36,6 +36,8 @@
        title="Один лист со всеми возвратами, готовыми к выдаче: кабинеты Ozon и Avito">
       Печать по всем кабинетам ({{ all_total }})
     </a>
+    <a class="btn" href="/returns/sheet.pdf?scope=all"
+       title="Лист по всем кабинетам готовым файлом PDF">Скачать PDF</a>
     <a class="btn primary" href="/avito/returns/print?q={{ q }}" target="_blank">
       Печать листа ({{ items | length }})
     </a>
@@ -50,6 +52,7 @@
         <th style="width:70px">Кол-во</th>
         <th style="width:200px">Доставка</th>
         <th style="width:180px">Возврат</th>
+        <th style="width:150px">Отметка</th>
       </tr>
     </thead>
     <tbody>
@@ -81,6 +84,17 @@
           <span class="tag success">{{ r.return_label }}</span>
           {% if r.return_tracking %}<div class="muted mono">{{ r.return_tracking }}</div>{% endif %}
         </td>
+        <td class="small" data-mark-cell>
+          <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' }}"
+                  data-mark-open data-marketplace="avito" data-id="{{ r.id }}"
+                  data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
+                  data-subject="Заказ {{ r.marketplace_id or r.id }}"
+                  title="{{ r.note or '' }}">
+            {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
+          </button>
+          <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
+          <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -89,8 +103,10 @@
     <div class="empty">Возвратов не найдено — забирать нечего.</div>
   {% endif %}
 </div>
+{% include "_return_mark.html" %}
 {% endblock %}
 
 {% block scripts %}
 <script src="/static/avito_returns.js?v={{ static_version() }}"></script>
+<script src="/static/return_mark.js?v={{ static_version() }}"></script>
 {% endblock %}
