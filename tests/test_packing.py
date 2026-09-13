@@ -267,3 +267,58 @@ def test_switching_cabinet_frees_the_claim(account, sample_data, user, other_use
     )["claim_login"]
     assert freed is None, "бронь в прежнем кабинете осталась"
     assert packing.select_posting(account, other_user, posting["posting_number"])["action"] == "posting_selected"
+
+
+# ---------------------------------------------------------------- когда печатать стикер
+# Стикер печатается, только если его нет на руках. Сборщик, открывший
+# отправление сканом самого стикера, уже держит его — печатать второй раз
+# значит выдать лишнюю бумагу и дать повод перепутать наклейки.
+
+def test_label_scan_does_not_reprint(account, sample_data, user):
+    posting = pick_posting(positions=1)
+
+    result = packing.scan(account, user, posting["posting_number"])
+    assert result["action"] == "posting_selected", result["message"]
+    assert result["print"] is None, "стикер ушёл на печать, хотя он уже в руках"
+
+
+def test_product_scan_prints_label(account, sample_data, user):
+    """Открыли сканом товара — стикера на руках нет, печатаем."""
+    posting = pick_posting(positions=1)
+    sku = posting["items"][0]["sku"]
+
+    result = packing.scan(account, user, barcode_of(sku))
+    if result["action"] == "need_choice":
+        result = packing.select_posting(account, user, posting["posting_number"], first_sku=sku)
+    assert result["action"] == "posting_selected"
+    assert result["print"]["posting_number"] == result["state"]["active"]["posting_number"]
+
+
+def test_manual_choice_still_prints(account, sample_data, user):
+    """Выбор отправления из списка кандидатов — тоже без стикера на руках."""
+    posting = pick_posting(positions=1)
+    result = packing.select_posting(account, user, posting["posting_number"])
+    assert result["print"]["posting_number"] == posting["posting_number"]
+
+
+def test_whole_flow_started_from_label(account, sample_data, user):
+    """Скан стикера, товары, снова стикер — сборка закрывается, печати нет."""
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+
+    opened = packing.scan(account, user, number)
+    assert opened["print"] is None
+
+    state = scan_all_items(account, user, posting)
+    assert state["complete"], "не все товары отсканировались"
+
+    done = packing.scan(account, user, number)
+    assert done["action"] == "completed", done["message"]
+    assert done.get("print") is None, "стикер печатается при завершении сборки"
+
+    row = db.query_one(
+        "SELECT local_state, print_count FROM postings WHERE account_id = ? AND posting_number = ?",
+        (account["id"], number),
+    )
+    assert row["local_state"] == "packed"
+    assert row["print_count"] == 0, "стикер печатался, хотя сборку начали с его скана"

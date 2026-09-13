@@ -522,7 +522,13 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
 
 # ------------------------------------------------------------------ выбор отправления
 def select_posting(account: dict, user: dict, posting_number: str, *, first_sku: str | None = None,
-                   scan_code: str | None = None) -> ScanResult:
+                   scan_code: str | None = None, label_in_hand: bool = False) -> ScanResult:
+    """Взять отправление в сборку.
+
+    label_in_hand — отправление открыли сканом самого стикера. Значит стикер
+    уже распечатан и в руках у сборщика, и отправлять его на печать второй раз
+    незачем: это лишняя бумага и лишний повод перепутать.
+    """
     row = db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
     )
@@ -609,7 +615,9 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
             )
 
     state = load_state(account, user)
-    should_print = settings.autoprint
+    # Стикер печатаем только когда его нет на руках. Пришли сюда со скана
+    # товара — печатаем; со скана стикера — он уже распечатан.
+    should_print = settings.autoprint and not label_in_hand
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте стикер отправления."
     else:
@@ -651,7 +659,8 @@ def _scan_posting(account: dict, user: dict, posting_row: dict, code: str) -> Sc
         )
 
     if active is None:
-        return select_posting(account, user, posting_number, scan_code=code)
+        # Открыли сканом стикера — он уже на руках, печатать заново не нужно.
+        return select_posting(account, user, posting_number, scan_code=code, label_in_hand=True)
 
     if active["posting_number"] != posting_number:
         with db.write() as conn:
