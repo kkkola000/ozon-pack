@@ -19,17 +19,23 @@ def test_full_flow_single_item(account, sample_data, user):
     posting = pick_posting(positions=1)
     sku = posting["items"][0]["sku"]
 
+    # Скан товара сразу берёт отправление: выбирать сборщику нечего, порядок
+    # один — по сроку отгрузки. Какое именно взяли, читаем из состояния.
     result = packing.scan(account, user, barcode_of(sku))
-    if result["action"] == "need_choice":
-        result = packing.select_posting(account, user, posting["posting_number"], first_sku=sku)
-    assert result["action"] == "posting_selected"
+    assert result["action"] == "posting_selected", result["message"]
     assert result["print"]["posting_number"] == result["state"]["active"]["posting_number"]
 
     active = result["state"]["active"]["posting_number"]
     state = packing.load_state(account, user)
-    while not state["complete"]:
-        packing.scan(account, user, barcode_of(state["items"][0]["sku"]))
+    # Добираем то, чего не хватает, а не первую позицию вслепую: у взятого
+    # отправления состав может быть не такой, как у того, что мы наметили.
+    for _ in range(50):
+        if state["complete"]:
+            break
+        missing = next(i for i in state["items"] if not i["ok"])
+        packing.scan(account, user, barcode_of(missing["sku"]))
         state = packing.load_state(account, user)
+    assert state["complete"], "состав так и не собрался"
 
     done = packing.scan(account, user, active)
     assert done["action"] == "completed"
@@ -322,3 +328,76 @@ def test_whole_flow_started_from_label(account, sample_data, user):
     )
     assert row["local_state"] == "packed"
     assert row["print_count"] == 0, "стикер печатался, хотя сборку начали с его скана"
+
+
+# ------------------------------------------------- товар в нескольких отправлениях
+# Раньше такой скан показывал список и ждал выбора. Выбирать там нечего:
+# порядок всё равно один — по сроку отгрузки. Панель берёт самое срочное и
+# печатает его стикер, а собранное выпадает из подбора само, так что следующий
+# скан того же штрихкода отдаёт следующее отправление.
+
+def sku_in_several_postings(account, user):
+    """SKU, который нужен минимум в двух отправлениях к отгрузке."""
+    row = db.query_one(
+        """
+        SELECT i.sku FROM posting_items i
+        JOIN postings p ON p.posting_number = i.posting_number AND p.account_id = i.account_id
+        WHERE i.account_id = ? AND p.status = ? AND p.local_state = 'new'
+        GROUP BY i.sku HAVING COUNT(DISTINCT i.posting_number) > 1
+        LIMIT 1
+        """,
+        (account["id"], store.STATUS_AWAITING_DELIVER),
+    )
+    if not row:
+        pytest.skip("в демо-данных нет товара сразу в нескольких отправлениях")
+    return row["sku"]
+
+
+def test_scan_takes_the_most_urgent_and_prints(account, sample_data, user):
+    sku = sku_in_several_postings(account, user)
+    expected = packing.candidates_for_sku(account, sku, user)
+    assert len(expected) > 1
+
+    result = packing.scan(account, user, barcode_of(sku))
+
+    assert result["action"] == "posting_selected", result["message"]
+    assert result["action"] != "need_choice"
+    # Взято первое из очереди — она отсортирована по сроку отгрузки
+    assert result["state"]["active"]["posting_number"] == expected[0]["posting_number"]
+    assert result["print"]["posting_number"] == expected[0]["posting_number"]
+    # И сказано, сколько ещё впереди
+    assert "ещё" in result["message"], result["message"]
+
+
+def test_next_scan_takes_the_next_posting(account, sample_data, user):
+    """Собрали одно — тот же штрихкод отдаёт следующее, а не то же самое."""
+    sku = sku_in_several_postings(account, user)
+    queue = [c["posting_number"] for c in packing.candidates_for_sku(account, sku, user)]
+
+    first = packing.scan(account, user, barcode_of(sku))
+    assert first["state"]["active"]["posting_number"] == queue[0]
+
+    # Закрываем первое отправление целиком
+    state = packing.load_state(account, user)
+    for _ in range(50):
+        if state["complete"]:
+            break
+        missing = next(i for i in state["items"] if not i["ok"])
+        packing.scan(account, user, barcode_of(missing["sku"]))
+        state = packing.load_state(account, user)
+    assert packing.scan(account, user, queue[0])["action"] == "completed"
+
+    second = packing.scan(account, user, barcode_of(sku))
+    assert second["action"] == "posting_selected", second["message"]
+    assert second["state"]["active"]["posting_number"] == queue[1], "взято не следующее по очереди"
+    assert second["print"]["posting_number"] == queue[1], "стикер следующего не ушёл на печать"
+
+
+def test_single_candidate_says_nothing_about_others(account, sample_data, user):
+    """Когда отправление одно, лишней приписки в сообщении быть не должно."""
+    posting = pick_posting(positions=1)
+    sku = posting["items"][0]["sku"]
+    if len(packing.candidates_for_sku(account, sku, user)) != 1:
+        pytest.skip("этот товар нужен не в одном отправлении")
+    result = packing.scan(account, user, barcode_of(sku))
+    assert "ещё" not in result["message"], result["message"]

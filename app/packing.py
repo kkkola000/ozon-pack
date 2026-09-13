@@ -502,22 +502,27 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             state=state,
         )
 
-    if len(candidates) == 1:
-        return select_posting(account, user, candidates[0]["posting_number"], first_sku=sku, scan_code=code)
-
-    db.log_event(
-        "scan_choice", account_id=account["id"], user=user, sku=sku, barcode=code,
-        message=f"{len(candidates)} кандидатов",
+    # Товар нужен в нескольких отправлениях — берём самое срочное и печатаем его
+    # стикер. Выбирать сборщику нечего: порядок всё равно один, по сроку
+    # отгрузки. Собранное отправление выпадает из подбора само, и следующий скан
+    # того же штрихкода отдаёт следующее по очереди.
+    chosen = candidates[0]
+    if len(candidates) > 1:
+        db.log_event(
+            "scan_choice", account_id=account["id"], user=user, sku=sku, barcode=code,
+            message=f"{len(candidates)} отправлений с этим товаром, взято {chosen['posting_number']}",
+        )
+    result = select_posting(
+        account, user, chosen["posting_number"], first_sku=sku, scan_code=code
     )
-    return ScanResult(
-        "choose",
-        f"«{name}» нужен в {len(candidates)} отправлениях — выберите одно (первое самое срочное).",
-        action="need_choice",
-        sound="warning",
-        candidates=candidates,
-        sku=sku,
-        state=state,
-    )
+    if len(candidates) > 1 and result["status"] == "ok":
+        # Говорим, сколько ещё впереди: сборщик должен понимать, что отсканирует
+        # этот штрихкод снова и получит следующее отправление, а не дубль.
+        result["message"] = (
+            f"{result['message']} Этот товар нужен ещё в {len(candidates) - 1} отправл. — "
+            "отсканируйте его снова, когда закроете это."
+        )
+    return result
 
 
 # ------------------------------------------------------------------ выбор отправления
