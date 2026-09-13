@@ -536,6 +536,18 @@ fi
 step "Проверка"
 PORT=$(app_port)
 DIRECT_OPEN=0
+# Панель на localhost без прокси недостижима ниоткуда — это надо сказать вслух,
+# иначе человек видит только не открывающуюся страницу.
+PANEL_UNREACHABLE=0
+ENV_HOST=""
+# Без «|| true» отсутствующий .env роняет скрипт целиком: set -e и pipefail
+# считают провал awk ошибкой всего прохода.
+if [ -f "$APP_DIR/.env" ]; then
+  ENV_HOST=$(awk -F= '/^HOST=/{print $2}' "$APP_DIR/.env" | tail -1 | tr -d ' ' || true)
+fi
+if [ "$HAVE_NGINX" = "0" ] && [ "$MODE" = "on" ]; then
+  case "$ENV_HOST" in 127.0.0.1|::1|localhost) PANEL_UNREACHABLE=1 ;; esac
+fi
 if [ "$MODE" = "on" ] && [ "$HAVE_NGINX" = "1" ]; then
   # Порт закрываем только когда перед панелью есть прокси. Без него панель
   # слушает адрес сервера сама — загнав её на localhost, мы отрезали бы вход
@@ -553,6 +565,22 @@ if [ "$MODE" = "off" ]; then
   cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово: панель снова открыта со всех адресов.${OFF}
+SUMMARY
+elif [ "$HAVE_NGINX" = "0" ] && [ "$PANEL_UNREACHABLE" = "1" ]; then
+  cat <<SUMMARY
+
+${RED}${BOLD}Список адресов записан, но до панели сейчас никто не дойдёт.${OFF}
+  Она слушает только $ENV_HOST, а nginx, который принимал бы запросы снаружи,
+  не установлен. В браузере это выглядит как «страница не открывается», и
+  причину по такому виду не угадать.
+
+  Дальше одно из двух:
+    поставить nginx и сертификат, панель останется на localhost:
+      sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА
+    или работать без прокси, по адресу сервера в туннеле:
+      sudo sed -i 's#^HOST=.*#HOST=0.0.0.0#' $APP_DIR/.env
+      sudo systemctl restart $SERVICE
+    Во втором случае вход ограничивает список адресов, который уже записан.
 SUMMARY
 elif [ "$HAVE_NGINX" = "0" ]; then
   cat <<SUMMARY

@@ -254,6 +254,24 @@ apply_vpn_settings() {
 }
 
 apply_vpn_settings "$VPN_SUBNET"
+
+# HOST=127.0.0.1 имеет смысл только когда перед панелью есть nginx. Без него
+# панель слушает саму себя, и до неё не дойти ни из туннеля, ни откуда — а
+# понять это по молчащему браузеру невозможно.
+warn_if_unreachable() {
+  local host
+  host=$(awk -F= '/^HOST=/{print $2}' "$APP_DIR/.env" 2>/dev/null | tail -1 | tr -d ' ')
+  case "$host" in 127.0.0.1|::1|localhost) ;; *) return 0 ;; esac
+  command -v nginx >/dev/null 2>&1 && return 0
+  warn "Панель слушает только $host, а nginx не установлен."
+  warn "Снаружи до неё не дойти — ни из сети VPN, ни откуда."
+  warn "Дальше одно из двух:"
+  warn "  поставить nginx и сертификат:"
+  warn "    sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА"
+  warn "  или работать без прокси, по адресу сервера в туннеле:"
+  warn "    HOST=0.0.0.0 в $APP_DIR/.env и sudo systemctl restart $SERVICE"
+  warn "    (вход при этом ограничивает IP_ALLOWLIST)"
+}
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
 if grep -q '^OZON_CLIENT_ID=$' "$APP_DIR/.env" 2>/dev/null && grep -q '^OZON_API_KEY=$' "$APP_DIR/.env" 2>/dev/null; then
@@ -347,6 +365,8 @@ ${YELLOW}Ключи площадок не заданы — панель пока
 Внесите их в самой панели: Настройки -> Кабинеты. Перезапуск не нужен.
 SUMMARY
 fi
+
+warn_if_unreachable
 
 if [ "${SERVICE_INSTALLED:-0}" = "1" ]; then
   cat <<SUMMARY

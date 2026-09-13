@@ -685,3 +685,28 @@ def test_without_nginx_status_does_not_cry_wolf(tmp_path, sandbox_without_nginx)
     assert "IP_ALLOWLIST=127.0.0.1,10.8.0.0/24" in proc.stdout
     assert "панель открыта со всех адресов" not in proc.stdout
     assert "можно зайти по адресу сервера без VPN" not in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_says_when_panel_became_unreachable(tmp_path, sandbox_without_nginx):
+    """HOST=127.0.0.1 без nginx — панель не видна ниоткуда, и это надо сказать.
+
+    Само по себе это выглядит как «страница не открывается»: ни в браузере, ни
+    в выводе скрипта причины не видно, и человек ищет её в списке адресов или
+    в настройках туннеля.
+    """
+    (tmp_path / ".env").write_text("HOST=127.0.0.1\nPORT=8080\nIP_ALLOWLIST=\n", encoding="utf-8")
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.66.66.0/24", "--yes"], sandbox_without_nginx)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "до панели сейчас никто не дойдёт" in proc.stdout
+    assert "HOST=0.0.0.0" in proc.stdout, "нет подсказки, как починить"
+    # Список при этом всё равно записан — правка HOST его не отменяет
+    assert "10.66.66.0/24" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_install_warns_about_unreachable_panel():
+    text = (DEPLOY / "install.sh").read_text(encoding="utf-8")
+    assert "warn_if_unreachable" in text
+    body = text[text.index("warn_if_unreachable() {"):]
+    body = body[:body.index("\n}\n")]
+    assert "nginx" in body and "HOST=0.0.0.0" in body
