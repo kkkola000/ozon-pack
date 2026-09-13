@@ -307,6 +307,66 @@ def test_manual_choice_still_prints(account, sample_data, user):
     assert result["print"]["posting_number"] == posting["posting_number"]
 
 
+def test_no_print_while_a_posting_is_open(account, sample_data, user):
+    """При открытой сборке ни один скан стикер на печать не отправляет.
+
+    Сборщик жаловался ровно на это: подтверждает товар — печатается второй
+    стикер, сканирует стикер — печатается третий. Печать допустима в одном
+    случае — скан штрихкода товара на свободном рабочем месте.
+    """
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+    packing.select_posting(account, user, number)
+
+    state = packing.load_state(account, user)
+    for _ in range(50):
+        if state["complete"]:
+            break
+        missing = next(i for i in state["items"] if not i["ok"])
+        result = packing.scan(account, user, barcode_of(missing["sku"]))
+        assert result.get("print") is None, "стикер ушёл на печать при скане товара в открытой сборке"
+        state = packing.load_state(account, user)
+
+    # Скан стикера в открытой сборке закрывает её — и тоже ничего не печатает.
+    done = packing.scan(account, user, number)
+    assert done["action"] == "completed", done["message"]
+    assert done.get("print") is None, "стикер ушёл на печать при закрытии сборки"
+
+
+def test_no_print_on_wrong_scans_in_open_posting(account, sample_data, user):
+    """Ошибочные сканы при открытой сборке печать тоже не запускают."""
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+    packing.select_posting(account, user, number)
+
+    foreign_sku = db.query_one(
+        "SELECT sku FROM posting_items WHERE account_id = ? AND posting_number != ? AND sku NOT IN "
+        "(SELECT sku FROM posting_items WHERE account_id = ? AND posting_number = ?) LIMIT 1",
+        (account["id"], number, account["id"], number),
+    )["sku"]
+    other_number = db.query_one(
+        "SELECT posting_number FROM postings WHERE account_id = ? AND posting_number != ? "
+        "AND status = ? AND local_state = 'new' LIMIT 1",
+        (account["id"], number, store.STATUS_AWAITING_DELIVER),
+    )["posting_number"]
+
+    for code in (foreign_sku and barcode_of(foreign_sku), other_number, "нет-такого-кода"):
+        result = packing.scan(account, user, code)
+        assert result.get("print") is None, f"скан «{code}» отправил стикер на печать"
+    assert packing.load_state(account, user)["active"]["posting_number"] == number
+
+
+def test_reselecting_open_posting_does_not_reprint(account, sample_data, user):
+    """Повторный вход в уже открытую сборку — стикер для неё уже печатался."""
+    posting = pick_posting(positions=1)
+    number = posting["posting_number"]
+    assert packing.select_posting(account, user, number)["print"]["posting_number"] == number
+
+    again = packing.select_posting(account, user, number)
+    assert again["action"] == "posting_selected", again["message"]
+    assert again["print"] is None, "стикер ушёл на печать повторно"
+
+
 def test_whole_flow_started_from_label(account, sample_data, user):
     """Скан стикера, товары, снова стикер — сборка закрывается, печати нет."""
     posting = pick_posting(positions=1)

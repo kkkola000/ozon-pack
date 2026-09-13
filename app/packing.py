@@ -264,6 +264,22 @@ def _sku_title(account_id: int, sku: str) -> str:
 
 # ------------------------------------------------------------------ основной вход
 def scan(account: dict, user: dict, code: str) -> ScanResult:
+    """Один скан рабочего места.
+
+    Стикер уходит на печать ровно в одном случае: отсканировали штрихкод товара,
+    когда открытой сборки нет. Здесь это закреплено на входе: если сборка была
+    открыта до скана, печати не будет, какой бы код ни отсканировали. Иначе
+    сборщик, подтверждая товар или закрывая отправление, каждый раз получал бы
+    второй экземпляр стикера.
+    """
+    had_active = load_state(account, user)["active"] is not None
+    result = _dispatch_scan(account, user, code)
+    if had_active and result.get("print"):
+        result["print"] = None
+    return result
+
+
+def _dispatch_scan(account: dict, user: dict, code: str) -> ScanResult:
     code = (code or "").strip()
     if not code:
         return ScanResult("error", "Пустой скан", state=load_state(account, user))
@@ -584,8 +600,9 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
         )
 
     previous = load_state(account, user)
+    resumed = bool(previous["active"] and previous["active"]["posting_number"] == posting_number)
     scanned: dict[str, int] = {}
-    if previous["active"] and previous["active"]["posting_number"] == posting_number:
+    if resumed:
         scanned = dict(previous["scanned"])
     if first_sku:
         scanned[first_sku] = min(
@@ -621,8 +638,9 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
 
     state = load_state(account, user)
     # Стикер печатаем только когда его нет на руках. Пришли сюда со скана
-    # товара — печатаем; со скана стикера — он уже распечатан.
-    should_print = settings.autoprint and not label_in_hand
+    # товара — печатаем; со скана стикера — он уже распечатан; вернулись в уже
+    # открытую сборку — тем более, стикер для неё печатался при её открытии.
+    should_print = settings.autoprint and not label_in_hand and not resumed
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте стикер отправления."
     else:

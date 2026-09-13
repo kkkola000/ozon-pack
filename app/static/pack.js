@@ -7,6 +7,7 @@ const historyBox = document.getElementById('history');
 
 let busy = false;
 let lastChoice = null;   // {sku, candidates} — когда нужно выбрать отправление
+let hasActive = false;   // открыта ли сборка — при открытой стикер не печатается
 const history = [];
 
 function keepFocus() {
@@ -33,6 +34,7 @@ function urgencyTag(posting) {
 }
 
 function renderActive(state) {
+  hasActive = Boolean(state.active);
   if (!state.active) {
     activePanel.innerHTML = '';
     document.getElementById('idle-panel').style.display = '';
@@ -161,12 +163,15 @@ function applyResult(result, code, printWindow = null) {
     printLabel(result.print.posting_number, printWindow);
   } else if (printWindow) {
     // Вкладка не понадобилась. Пустую закрываем, а вкладку с прошлым стикером
-    // оставляем: оператор мог не успеть её напечатать.
+    // оставляем: оператор мог не успеть её напечатать. В обоих случаях
+    // возвращаем фокус в панель — следующий скан должен попасть в поле ввода.
     try {
       if ((printWindow.location.href || 'about:blank') === 'about:blank') printWindow.close();
     } catch (error) {
       printWindow.close();
     }
+    window.focus();
+    input.focus();
   }
 }
 
@@ -249,8 +254,11 @@ input.addEventListener('keydown', (event) => {
     event.preventDefault();
     /* Скан от сканера — это нажатие клавиши, то есть действие пользователя.
        Пользуемся моментом и резервируем вкладку под стикер: после запроса к
-       серверу Safari открыть её уже не даст. Не пригодится — закроем. */
-    submitScan(input.value.trim(), reservePrintWindow());
+       серверу Safari открыть её уже не даст. Не пригодится — закроем.
+       При открытой сборке вкладку не трогаем вовсе: стикер тогда не печатается,
+       а window.open по имени поднимает поверх панели вкладку с прошлым стикером,
+       и сборщик принимает это за повторную печать. */
+    submitScan(input.value.trim(), hasActive ? null : reservePrintWindow());
   }
 });
 
