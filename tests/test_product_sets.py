@@ -395,3 +395,50 @@ def test_state_survives_a_composition_change(account, set_posting, user):
     assert isinstance(store.posting_view(db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?",
         (account["id"], state["active"]["posting_number"]))), dict)
+
+
+# ------------------------------------------------- что сказать сборщику
+def test_incomplete_label_scan_names_the_missing_parts(account, set_posting, user):
+    """«Осталось: набор» никуда не ведёт — нужны названия частей.
+
+    Название набора сборщику не поможет: к полке с ним не пойдёшь, а что внутри
+    знает только панель.
+    """
+    parts = set_posting["parts"]
+    packing.scan(account, user, barcode_of(parts[0]["sku"]))
+    posting_number = packing.load_state(account, user)["active"]["posting_number"]
+
+    result = packing.scan(account, user, posting_number)
+    assert result["action"] == "incomplete", result["message"]
+    assert parts[1]["name"] in result["message"], "не названа недостающая часть"
+    # Набор назван как заголовок, но не вместо состава.
+    assert "набор" in result["message"]
+    assert f"{parts[1]['name']} — 1 шт" in result["message"]
+
+
+def test_missing_list_keeps_plain_products_as_they_were(account, sample_data, user):
+    """Обычный товар по-прежнему называется сам, без выдуманных частей."""
+    posting = pick_posting(positions=2)
+    packing.select_posting(account, user, posting["posting_number"])
+    state = packing.load_state(account, user)
+    missing = packing.missing_items(state)
+    assert len(missing) == len(state["items"])
+    for item in state["items"]:
+        assert any(item["name"] in line for line in missing)
+
+
+def test_manual_completion_also_names_the_parts(account, set_posting, user):
+    """Кнопка «Завершить без скана стикера» отвечала общей фразой без состава."""
+    from fastapi.testclient import TestClient as _TestClient
+
+    parts = set_posting["parts"]
+    packing.scan(account, user, barcode_of(parts[0]["sku"]))
+    with _TestClient(app, follow_redirects=False) as http:
+        http.post("/login", data={"login": "admin", "password": "test-admin-pass", "next": "/pack"})
+        csrf = re.search(r'name="csrf-token" content="([^"]*)"', http.get("/pack").text).group(1)
+        # Администратору панель завершить разрешает, поэтому проверяем сборщиком.
+        db.execute("UPDATE users SET role = 'packer' WHERE login = 'admin'")
+        response = http.post("/api/complete", json={}, headers={"X-CSRF-Token": csrf})
+    db.execute("UPDATE users SET role = 'admin' WHERE login = 'admin'")
+    assert response.status_code == 400
+    assert parts[1]["name"] in response.json()["detail"], response.json()["detail"]

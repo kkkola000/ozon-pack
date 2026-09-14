@@ -90,7 +90,13 @@ def api_complete(request: Request, payload: dict = Body(default={}), user: dict 
     if not state["active"]:
         raise HTTPException(status_code=400, detail="Нет активного отправления")
     if settings.require_all_items and not state["complete"] and user.get("role") != "admin":
-        raise HTTPException(status_code=400, detail="Сначала отсканируйте все товары")
+        # Говорим, чего именно не хватает: у набора — недостающие части, а не
+        # его название. К полке с названием набора не пойдёшь.
+        raise HTTPException(
+            status_code=400,
+            detail="Сначала отсканируйте все товары. Осталось: "
+                   + "; ".join(packing.missing_items(state)),
+        )
     result = packing.complete(
         account, user, state["active"]["posting_number"], code=payload.get("reason") or "ручное завершение"
     )

@@ -165,6 +165,28 @@ def part_slot(set_sku: str, part_key: str) -> str:
     return f"{set_sku}#{part_key}"
 
 
+def missing_items(state: dict) -> list[str]:
+    """Чего не хватает до полной сборки — словами, которые видит сборщик.
+
+    У набора называем недостающие части, а не сам набор: названия набора мало,
+    к полке с ним не пойдёшь. Набор на площадке — обычный товар, и что в нём
+    внутри, знает только панель.
+    """
+    missing = []
+    for item in state.get("items", []):
+        if item.get("ok"):
+            continue
+        name = item.get("name") or item.get("sku")
+        if item.get("is_set"):
+            left = [f"{part['name']} — {part['need'] - part['scanned']} шт"
+                    for part in item["parts"] if not part["ok"]]
+            if left:
+                missing.append(f"{name} (набор): " + ", ".join(left))
+                continue
+        missing.append(f"{name} — {item['need'] - item['scanned']} шт")
+    return missing
+
+
 def _set_progress(set_sku: str, need: int, direct: int,
                   parts: list[dict], scanned: dict) -> tuple[int, dict]:
     """Сколько наборов собрано и что ещё осталось взять с полки.
@@ -910,7 +932,7 @@ def _scan_posting(account: dict, user: dict, posting_row: dict, code: str) -> Sc
         )
 
     if settings.require_all_items and not state["complete"]:
-        missing = [f"{i['name']} — {i['need'] - i['scanned']} шт" for i in state["items"] if not i["ok"]]
+        missing = missing_items(state)
         db.log_event(
             "scan_label_incomplete",
             level="warn",
