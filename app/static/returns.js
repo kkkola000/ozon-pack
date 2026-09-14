@@ -99,8 +99,9 @@ document.getElementById('btn-sync-returns')?.addEventListener('click', async (ev
   event.target.textContent = 'Обновляем…';
   try {
     const result = await api('/api/returns/sync', {});
-    toast(result.message, 'ok');
-    setTimeout(() => window.location.reload(), 700);
+    /* Про акты бывает что сказать: сообщение длиннее обычного, и его читают. */
+    toast(result.message, result.status === 'warning' ? 'warning' : 'ok', 12000);
+    setTimeout(() => window.location.reload(), 1500);
   } catch (error) {
     toast(error.message, 'error', 10000);
     event.target.disabled = false;

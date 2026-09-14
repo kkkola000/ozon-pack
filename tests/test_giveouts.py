@@ -181,3 +181,48 @@ def test_raw_answer_is_admin_only(client):
 def test_unknown_giveout_is_404(client):
     login(client)
     assert client.get("/api/returns/giveouts/нет-такого/raw").status_code == 404
+
+
+# ---------------------------------------------------------------- видно ли, что акты грузятся
+def test_sync_button_reports_the_acts(client):
+    """По одной строке «обновлено возвратов» не понять, заработал ли путь по API."""
+    csrf = login(client)
+    response = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert "Обновлено возвратов" in message
+    assert "актов выдачи" in message, message
+    assert "возвратов по ним" in message, message
+
+
+def test_sync_button_explains_a_missing_method(client, monkeypatch):
+    """Метод выключен — надо сказать это словами и подсказать запасной ход."""
+    from app import ozon
+
+    account = accounts.default_account()
+    ozon_client = ozon.get_client(account)
+
+    def refuse(*a, **kw):
+        raise OzonError("Method not found", status=404)
+
+    monkeypatch.setattr(ozon_client, "giveout_list", refuse)
+    csrf = login(client)
+    body = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()
+    assert body["status"] == "warning"
+    assert "акты выдачи недоступны" in body["message"]
+    assert "загрузить файлом" in body["message"]
+
+
+def test_sync_button_reports_unmatched_acts(client, monkeypatch):
+    """Акт пришёл, а возвраты по нему не опознаны — это не «всё хорошо»."""
+    from app import ozon
+
+    account = accounts.default_account()
+    ozon_client = ozon.get_client(account)
+    monkeypatch.setattr(ozon_client, "giveout_list",
+                        lambda **kw: ([{"giveout_id": 9, "giveout_status": "DONE"}], False))
+    monkeypatch.setattr(ozon_client, "giveout_info",
+                        lambda gid: {"articles": [{"article_name": "Неизвестный товар"}]})
+    csrf = login(client)
+    message = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()["message"]
+    assert "не опознано актов: 1" in message, message

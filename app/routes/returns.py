@@ -529,4 +529,33 @@ def api_returns_sync(request: Request, payload: dict = Body(default={}), user: d
         result = sync.sync_returns(account, full=full)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {"status": "ok", "message": f"Обновлено возвратов: {result.get('returns', 0)}", "result": result}
+    return {
+        "status": "warning" if result.get("giveouts_error") else "ok",
+        "message": _sync_message(result),
+        "result": result,
+    }
+
+
+def _sync_message(result: dict) -> str:
+    """Что именно сделала синхронизация — вместе с актами выдачи.
+
+    Акты приходят по API молча, и по одной строке «обновлено возвратов» нельзя
+    понять, заработал ли этот путь у кабинета. Поэтому говорим прямо: сколько
+    актов забрали, сколько возвратов по ним разложили и почему не вышло.
+    """
+    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
+    if result.get("giveouts_error"):
+        parts.append(f"акты выдачи недоступны ({result['giveouts_error']}) — акт можно загрузить файлом")
+        return ". ".join(parts)
+    acts = result.get("giveouts", 0)
+    if not acts:
+        parts.append("актов выдачи Ozon пока не отдал")
+        return ". ".join(parts)
+    parts.append(f"актов выдачи: {acts}")
+    if result.get("giveouts_returns"):
+        parts.append(f"возвратов по ним: {result['giveouts_returns']}")
+    if result.get("giveouts_unmatched"):
+        parts.append(
+            f"не опознано актов: {result['giveouts_unmatched']} — в их составе нет знакомых штрихкодов"
+        )
+    return ". ".join(parts)
