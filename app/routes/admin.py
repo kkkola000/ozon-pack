@@ -39,6 +39,8 @@ EVENT_LABELS = {
     "returns_print": "Печать листа возвратов",
     "returns_pdf": "Лист возвратов в PDF",
     "return_mark": "Отметка о возврате",
+    "return_act_confirm": "Акт возвратов подтверждён",
+    "return_act_upload": "Акт возвратов загружен файлом",
     "returns_giveout": "Штрихкод выдачи",
     "returns_statuses_set": "Изменены статусы возвратов",
     "user_created": "Создан пользователь",

@@ -24,48 +24,16 @@ import uuid
 
 from . import db, store
 
-# Таблицы строк, которые попадают в акт. Ключ — площадка, как в /api/returns/mark.
-ROW_TABLES = {"ozon": "returns", "avito": "avito_orders"}
-
-# Возврат забрали, а листа на него не печатали: такие собираем в акт за день,
-# иначе они пропадут молча — то есть ровно так, как было до актов.
+# Возврат забрали, а акта площадки на него ещё нет: такие собираем в акт за
+# день, иначе они пропадут молча — то есть ровно так, как было до актов.
 NO_SHEET = "nosheet"
+# Акт, загруженный администратором файлом: у кабинета может не быть метода
+# выдачи, а закрывать поездку всё равно надо.
+UPLOADED = "upload"
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:16]
-
-
-def create(user: dict, *, kind: str = "account", account_id: int | None = None, conn=None) -> str:
-    """Завести акт. Возвращает его id."""
-    act_id = _new_id()
-    sql = (
-        "INSERT INTO return_acts(id, created_at, created_by, kind, account_id) VALUES(?,?,?,?,?)"
-    )
-    params = (act_id, db.now_iso(), user.get("login"), kind, account_id)
-    if conn is not None:
-        conn.execute(sql, params)
-    else:
-        db.execute(sql, params)
-    return act_id
-
-
-def attach(act_id: str, table: str, rows: list[dict], *, conn=None) -> int:
-    """Привязать к акту строки, у которых акта ещё нет.
-
-    Уже привязанные не трогаем: возврат остаётся в том акте, по которому за ним
-    поехали в первый раз.
-    """
-    rows = [row for row in rows if not row.get("act_id")]
-    if not rows:
-        return 0
-    pairs = ",".join("(?,?)" for _ in rows)
-    params: list = [act_id]
-    for row in rows:
-        params += [row["account_id"], row["id"]]
-    sql = f"UPDATE {table} SET act_id = ? WHERE act_id IS NULL AND (account_id, id) IN ({pairs})"
-    cursor = conn.execute(sql, params) if conn is not None else db.execute(sql, params)
-    return cursor.rowcount or 0
 
 
 def from_giveout(account_id: int, giveout_id: str, *, created_at: str | None,
@@ -81,57 +49,85 @@ def from_giveout(account_id: int, giveout_id: str, *, created_at: str | None,
     """
     if not return_ids:
         return None
-    placeholders = ",".join("?" for _ in return_ids)
     with db.write() as conn:
         row = conn.execute("SELECT id FROM return_acts WHERE giveout_id = ?", (giveout_id,)).fetchone()
         act_id = row["id"] if row else _new_id()
+        taken = _claim(conn, act_id, account_id, return_ids)
         if row:
             conn.execute(
                 "UPDATE return_acts SET giveout_status = ?, created_at = COALESCE(?, created_at) WHERE id = ?",
                 (status, created_at, act_id),
             )
-        else:
+        elif taken:
             conn.execute(
                 "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, giveout_id, giveout_status) "
                 "VALUES(?,?,?,?,?,?,?)",
                 (act_id, created_at or db.now_iso(), None, "ozon", account_id, giveout_id, status),
             )
-        conn.execute(
-            f"""
-            UPDATE returns SET act_id = ?
-            WHERE account_id = ? AND id IN ({placeholders})
-              AND (act_id IS NULL
-                   OR act_id IN (SELECT id FROM return_acts
-                                 WHERE kind = ? AND confirmed_at IS NULL))
-            """,
-            [act_id, account_id] + return_ids + [NO_SHEET],
-        )
-        # Акт «без листа», из которого всё разобрали, больше не нужен.
-        conn.execute(
-            "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
-            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
-            (NO_SHEET,),
-        )
+        else:
+            # Все возвраты акта уже разнесены по подтверждённым актам: заводить
+            # пустой акт незачем.
+            return None
+        _drop_empty_spares(conn)
     return act_id
 
 
-def open_sheet_act(user: dict, ozon_rows: list[dict], avito_rows: list[dict], *,
-                   kind: str, account_id: int | None) -> str | None:
-    """Печать листа заводит акт — но только если в нём есть что-то новое.
+def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
+    """Забрать возвраты в акт. Возвращает, сколько реально переехало.
 
-    Перепечатали тот же лист, ничего не добавив, — нового акта не появляется:
-    пустые акты во вкладке только мешали бы отличать поездки друг от друга.
+    Берём свободные и те, что лежат в неподтверждённом акте «без листа»:
+    документ площадки точнее нашей догадки. Возврат из подтверждённого акта не
+    трогаем — работа по нему закрыта.
     """
+    placeholders = ",".join("?" for _ in return_ids)
+    cursor = conn.execute(
+        f"""
+        UPDATE returns SET act_id = ?
+        WHERE account_id = ? AND id IN ({placeholders})
+          AND (act_id IS NULL
+               OR act_id IN (SELECT id FROM return_acts
+                             WHERE kind = ? AND confirmed_at IS NULL))
+        """,
+        [act_id, account_id] + return_ids + [NO_SHEET],
+    )
+    return cursor.rowcount or 0
+
+
+def _drop_empty_spares(conn) -> None:
+    """Акт «без листа», из которого всё разобрали, больше не нужен."""
+    conn.execute(
+        "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
+        "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
+        (NO_SHEET,),
+    )
+
+
+def from_upload(account_id: int, user: dict, *, source: str, return_ids: list[str]) -> str | None:
+    """Акт, загруженный администратором файлом.
+
+    Нужен, когда метода выдачи у кабинета нет или он отвечает отказом: акт есть
+    на бумаге, а через API его не видно. Возврат, уже попавший в акт «без
+    листа», переносим сюда — как и при акте из API.
+    """
+    if not return_ids:
+        return None
     act_id = _new_id()
     with db.write() as conn:
-        taken = (attach(act_id, "returns", ozon_rows, conn=conn)
-                 + attach(act_id, "avito_orders", avito_rows, conn=conn))
+        taken = _claim(conn, act_id, account_id, return_ids)
         if not taken:
+            # Все возвраты файла уже разнесены — второй акт на ту же поездку
+            # означал бы второй комплект отметок на одну работу.
             return None
         conn.execute(
-            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id) VALUES(?,?,?,?,?)",
-            (act_id, db.now_iso(), user.get("login"), kind, account_id),
+            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, giveout_id) "
+            "VALUES(?,?,?,?,?,?)",
+            (act_id, db.now_iso(), user.get("login"), UPLOADED, account_id, source[:200] or None),
         )
+        _drop_empty_spares(conn)
+    db.log_event(
+        "return_act_upload", account_id=account_id, user=user,
+        message=f"{source}: {taken} возвратов",
+    )
     return act_id
 
 
@@ -218,12 +214,16 @@ def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
         "title": f"Возвраты за {store.local_time(act.get('created_at'))}",
         "no_sheet": act.get("kind") == NO_SHEET,
         "from_ozon": act.get("kind") == "ozon",
+        "uploaded": act.get("kind") == UPLOADED,
+        "source": act.get("giveout_id") or "",
         "giveout_label": _giveout_label(act),
     }
 
 
 def _giveout_label(act: dict) -> str:
     """Подпись акта площадки: по ней акт сверяют с документом Ozon."""
+    if act.get("kind") == UPLOADED:
+        return f"загружен файлом: {act.get('giveout_id') or '—'}"
     if act.get("kind") != "ozon":
         return ""
     from . import giveouts

@@ -14,6 +14,31 @@
   </div>
 {% endif %}
 
+{% if user.role == 'admin' %}
+{# Запасной ход: у кабинета может не быть метода выдачи, а закрывать поездку
+   всё равно надо. Только администратору — акт нельзя удалить. #}
+<details class="act no-print" id="act-upload" style="margin-bottom:18px">
+  <summary class="act-head">
+    <div class="grow">
+      <div class="act-title">Загрузить акт файлом</div>
+      <div class="act-sub">
+        Если акта нет в списке: возьмите его в личном кабинете Ozon и загрузите.
+        Подойдёт PDF, XLSX, CSV или ответ API в JSON — панель найдёт в файле
+        штрихкоды возвратов кабинета «{{ account.title }}».
+      </div>
+    </div>
+  </summary>
+  <div class="act-body">
+    <div class="row" style="margin-top:8px; flex-wrap:wrap">
+      <input type="file" id="act-file" accept=".pdf,.xlsx,.xlsm,.csv,.tsv,.json,.txt">
+      <button class="btn" id="act-check">Посмотреть, что в файле</button>
+      <button class="btn primary" id="act-create" hidden>Создать акт</button>
+    </div>
+    <div id="act-upload-result" class="small" style="margin-top:14px"></div>
+  </div>
+</details>
+{% endif %}
+
 {% if giveouts %}
 <details class="act" style="margin-bottom:18px">
   <summary class="act-head">
@@ -77,9 +102,9 @@
       <div class="act-title">{{ act.title }}</div>
       <div class="act-sub">
         {{ act.total }} поз.
-        {%- if act.from_ozon %} · {{ act.giveout_label }}
-        {%- elif act.no_sheet %} · акта Ozon на них пока нет
-        {%- elif act.created_by %} · лист печатал {{ act.created_by }}{% endif %}
+        {%- if act.from_ozon or act.uploaded %} · {{ act.giveout_label }}
+        {%- elif act.no_sheet %} · акта Ozon на них пока нет{% endif %}
+        {%- if act.uploaded %} · загрузил {{ act.created_by or '—' }}{% endif %}
       </div>
     </div>
     <div class="row" style="gap:8px">

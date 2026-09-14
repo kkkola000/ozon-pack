@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, avito, db, giveouts, options, return_acts, returns_pdf, store, sync
+from .. import (accounts, act_upload, avito, db, giveouts, options, return_acts,
+                returns_pdf, store, sync)
 from ..deps import (check_csrf, current_user, require_admin, require_avito_account,
                     require_ozon_account, templates)
 from .. import ozon
@@ -194,6 +195,86 @@ def api_giveout_raw(giveout_id: str, admin: dict = Depends(require_admin),
     if raw is None:
         raise HTTPException(status_code=404, detail="Акт выдачи не найден")
     return {"giveout_id": giveout_id, "raw": raw}
+
+
+@router.post("/api/returns/acts/upload")
+async def api_upload_act(
+    request: Request,
+    file: UploadFile = File(...),
+    dry_run: bool = Form(default=False),
+    admin: dict = Depends(require_admin),
+    account: dict = Depends(require_ozon_account),
+):
+    """Загрузить акт выдачи файлом. Только администратору.
+
+    Нужно, когда метод выдачи у кабинета выключен или отвечает отказом: акт
+    есть в личном кабинете или на бумаге, а через API его не видно. Файл
+    разбирается по содержимому — годится PDF, XLSX, CSV или ответ API в JSON.
+
+    Сначала показываем, что нашлось (dry_run), и только вторым запросом заводим
+    акт: акт нельзя удалить, поэтому создавать его вслепую по чужому файлу —
+    плохая идея.
+    """
+    check_csrf(request)
+    data = await file.read()
+    try:
+        found_codes = act_upload.parse(file.filename or "", data)
+    except act_upload.UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return_ids = giveouts.match_returns(account["id"], [{"code": code} for code in found_codes])
+    rows = []
+    if return_ids:
+        placeholders = ",".join("?" for _ in return_ids)
+        rows = [
+            dict(row) for row in db.query(
+                f"SELECT id, barcode, product_name, act_id FROM returns "
+                f"WHERE account_id = ? AND id IN ({placeholders}) ORDER BY id",
+                [account["id"]] + return_ids,
+            )
+        ]
+    busy = [row for row in rows if row["act_id"]]
+    free = [row["id"] for row in rows if not row["act_id"]]
+
+    if not return_ids:
+        return {
+            "status": "warning",
+            "found": 0,
+            "codes": len(found_codes),
+            "message": f"В файле {len(found_codes)} кодов, но ни один не совпал с возвратами "
+                       f"кабинета «{account['title']}». Проверьте, тот ли это кабинет.",
+        }
+
+    preview = {
+        "status": "ok",
+        "found": len(return_ids),
+        "codes": len(found_codes),
+        "free": len(free),
+        "busy": len(busy),
+        "returns": [
+            {"id": row["id"], "barcode": row["barcode"], "name": row["product_name"],
+             "in_act": bool(row["act_id"])}
+            for row in rows
+        ],
+    }
+    if dry_run:
+        preview["message"] = (
+            f"Нашлось возвратов: {len(return_ids)}"
+            + (f", из них уже в актах: {len(busy)}" if busy else "")
+        )
+        return preview
+
+    act_id = return_acts.from_upload(
+        account["id"], admin, source=file.filename or "акт", return_ids=return_ids
+    )
+    if not act_id:
+        raise HTTPException(status_code=409, detail="Все возвраты из файла уже разнесены по актам")
+    taken = return_acts.detail(act_id)
+    return {
+        **preview,
+        "act_id": act_id,
+        "message": f"Акт создан: {taken['total']} возвратов",
+    }
 
 
 @router.post("/api/returns/acts/{act_id}/confirm")
