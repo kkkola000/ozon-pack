@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ act.title }} · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <div>
+      <h2 style="margin:0">{{ act.title }}</h2>
+      <div class="small muted" style="margin-top:4px">
+        {{ act.total }} поз.{% if act.source_label %} · {{ act.source_label }}{% endif %}
+        {% if act.confirmed_at %}
+          · подтвердил {{ act.confirmed_by or '—' }}, {{ act.confirmed_local }}
+        {% else %}
+          · <span class="badge warn">ещё не подтверждён</span>
+        {% endif %}
+      </div>
+    </div>
+    <div class="row">
+      <a class="btn" href="/reports/returns">Все акты</a>
+      <a class="btn" href="/returns/acts/{{ act.id }}.pdf">Скачать PDF</a>
+      <a class="btn" href="/returns/acts/{{ act.id }}/print" target="_blank">Печать</a>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px; gap:8px">
+    {% if act.marked_ok %}<span class="badge ok">{{ act.marked_ok }} принято</span>{% endif %}
+    {% if act.marked_bad %}<span class="badge err">{{ act.marked_bad }} не принят</span>{% endif %}
+    {% if act.unmarked %}<span class="badge warn">{{ act.unmarked }} без отметки</span>{% endif %}
+  </div>
+
+  <table style="margin-top:14px">
+    <thead>
+      <tr>
+        <th style="width:140px">Возврат</th>
+        <th>Товар</th>
+        <th style="width:130px">Артикул / SKU</th>
+        <th style="width:70px">Кол-во</th>
+        <th style="width:110px">Решение</th>
+        <th style="width:260px">Комментарий</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in act.ozon %}
+      <tr>
+        <td>
+          <div class="mono">{{ r.id }}</div>
+          <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
+          {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
+        </td>
+        <td>
+          <div>{{ r.product_name or 'Без названия' }}</div>
+          <div class="muted small">
+            {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
+            {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
+          </div>
+        </td>
+        <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
+        <td style="font-weight:700">{{ r.quantity }}</td>
+        <td>
+          {% if r.mark %}
+            <span class="badge {{ 'ok' if r.mark == 'ok' else 'err' }}">{{ r.mark_sign }} {{ r.mark_label }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="small">
+          {{ r.note or '' }}
+          {% if r.mark_at %}<div class="muted">{{ r.mark_by }} · {{ r.mark_at_local }}</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+
+      {% for r in act.avito %}
+      <tr>
+        <td>
+          <div class="mono">{{ r.marketplace_id or r.id }}</div>
+          <span class="tag">Avito</span>
+          {% if r.return_tracking %}<div class="muted small mono">{{ r.return_tracking }}</div>{% endif %}
+        </td>
+        <td>
+          {% for item in r['items'] %}
+            <div><b>{{ item.quantity }} ×</b> {{ item.title or 'Без названия' }}</div>
+          {% endfor %}
+        </td>
+        <td class="small mono">—</td>
+        <td style="font-weight:700">{{ r.items_count }}</td>
+        <td>
+          {% if r.mark %}
+            <span class="badge {{ 'ok' if r.mark == 'ok' else 'err' }}">{{ r.mark_sign }} {{ r.mark_label }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="small">
+          {{ r.note or '' }}
+          {% if r.mark_at %}<div class="muted">{{ r.mark_by }} · {{ r.mark_at_local }}</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

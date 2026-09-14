@@ -6,7 +6,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, report
+from .. import accounts, report, return_acts
 from ..deps import require_admin, templates
 
 router = APIRouter()
@@ -50,6 +50,53 @@ def reports_page(request: Request, account_id: str | None = None,
             "cutoff": report.get_cutoff(),
             "cutoff_hint": report.cutoff_hint(),
             "today": report.report_date(),
+            "csrf": request.state.session.get("csrf"),
+            "active_tab": "reports",
+        },
+    )
+
+
+@router.get("/reports/returns", response_class=HTMLResponse)
+def return_acts_page(request: Request, account_id: str | None = None,
+                     user: dict = Depends(require_admin)):
+    """Подтверждённые акты получения возвратов.
+
+    Пока по акту не приняли решение, он висит в «Возвратах». Подтверждённый
+    оттуда уходит: работа закрыта, и место такому документу здесь, рядом с
+    отчётом об отгрузке. Обратно акт не возвращается.
+
+    Путь объявлен раньше «/reports/{day}»: иначе «returns» уехало бы в разбор
+    даты и раздел отвечал бы 404.
+    """
+    chosen = _account_filter(account_id)
+    return templates.TemplateResponse(
+        request,
+        "report_return_acts.html",
+        {
+            "request": request,
+            "user": user,
+            "acts": return_acts.confirmed(chosen),
+            "accounts": accounts.all_accounts(),
+            "account_id": chosen,
+            "csrf": request.state.session.get("csrf"),
+            "active_tab": "reports",
+        },
+    )
+
+
+@router.get("/reports/returns/{act_id}", response_class=HTMLResponse)
+def return_act_page(act_id: str, request: Request, user: dict = Depends(require_admin)):
+    """Один подтверждённый акт: состав, отметки и комментарии сборщика."""
+    act = return_acts.detail(act_id)
+    if not act:
+        raise HTTPException(status_code=404, detail="Акт не найден")
+    return templates.TemplateResponse(
+        request,
+        "report_return_act.html",
+        {
+            "request": request,
+            "user": user,
+            "act": act,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "reports",
         },

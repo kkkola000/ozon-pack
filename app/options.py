@@ -9,6 +9,12 @@ from . import db
 from .config import settings
 
 KV_RETURNS_STATUSES = "returns_ready_statuses"
+# Статусы, в которых возврат считается полученным: он уже у нас, и по нему надо
+# принять решение. Это отдельная настройка, а не часть списка «готов к выдаче»:
+# один список решал бы сразу две задачи — что показывать сборщику к поездке и
+# что закрывать актом, — и включить второе без первого было бы нельзя.
+KV_RETURNS_RECEIVED = "returns_received_statuses"
+
 RETURN_STATUS_CHOICES = [
     ("ArrivedAtReturnPlace", "В пункте выдачи", "возврат лежит в пункте — его можно забрать"),
     ("WaitingShipment", "Ожидает отгрузки", "готовится к отправке"),
@@ -19,6 +25,7 @@ RETURN_STATUS_CHOICES = [
     ("ReturnedToOzon", "На складе Ozon", "хранится у Ozon"),
 ]
 DEFAULT_RETURNS_STATUSES = ["ArrivedAtReturnPlace"]
+DEFAULT_RECEIVED_STATUSES = ["ReceivedBySeller"]
 
 # Значения, которые писал в .env установщик прежних версий. Это не осознанный
 # выбор пользователя, а устаревшая настройка по умолчанию: файл при обновлении
@@ -50,6 +57,39 @@ def set_returns_statuses(statuses: list[str], user: dict | None = None) -> list[
 
 def returns_source() -> str:
     return "panel" if (db.kv_get(KV_RETURNS_STATUSES) or "").strip() else "env"
+
+
+def get_received_statuses() -> list[str]:
+    """Статусы, в которых возврат считается полученным.
+
+    Пустое значение — осознанный выбор «не вести акты автоматически», поэтому
+    отличаем «не задано» (берём умолчание) от «задано пустым».
+    """
+    raw = db.kv_get(KV_RETURNS_RECEIVED)
+    if raw is None:
+        return list(DEFAULT_RECEIVED_STATUSES)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def set_received_statuses(statuses: list[str], user: dict | None = None) -> list[str]:
+    cleaned = [s.strip() for s in statuses if s and s.strip()]
+    db.kv_set(KV_RETURNS_RECEIVED, ",".join(cleaned))
+    db.log_event("returns_received_set", user=user, message=", ".join(cleaned) or "выключено")
+    return cleaned
+
+
+def wanted_statuses() -> list[str]:
+    """Что вообще забирать из Ozon: и к выдаче, и полученное.
+
+    Полученные возвраты надо не только загрузить, но и удержать в базе: чистка
+    удаляет записи в незапрошенных статусах, и без этого списка возврат исчез
+    бы ровно в тот момент, когда по нему нужно поставить отметку.
+    """
+    seen: list[str] = []
+    for code in list(get_returns_statuses()) + list(get_received_statuses()):
+        if code not in seen:
+            seen.append(code)
+    return seen
 
 
 def status_label(sys_name: str) -> str:

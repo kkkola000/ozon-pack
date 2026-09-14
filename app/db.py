@@ -189,55 +189,51 @@ CREATE TABLE IF NOT EXISTS returns (
     note              TEXT,
     mark_at           TEXT,
     mark_by           TEXT,
-    -- Акт, по которому за возвратом ездили. Закрепляется первой печатью листа
-    -- и больше не меняется: иначе повторная печать переписывала бы историю.
+    -- Акт, по которому за возвратом ездили. Ставится один раз и больше не
+    -- меняется: это же и защита от повторной загрузки — возврат, уже попавший
+    -- в акт, во второй акт не возьмут, даже когда акт подтверждён и закрыт.
     act_id            TEXT,
+    -- Когда панель впервые увидела возврат в статусе «Получен». Пишется один
+    -- раз: Ozon отдаёт этот статус и дальше, а повторная запись означала бы
+    -- второй акт на тот же возврат.
+    received_at       TEXT,
+    -- Тот же момент местной датой — по ней возвраты грузят «за указанное
+    -- число». Считать дату из received_at в запросе нельзя: сдвиг часового
+    -- пояса живёт в настройках, а не в SQLite.
+    received_day      TEXT,
     first_seen_at     TEXT,
     updated_at        TEXT,
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(account_id, is_ready, type);
 CREATE INDEX IF NOT EXISTS idx_returns_act ON returns(act_id);
+CREATE INDEX IF NOT EXISTS idx_returns_received ON returns(account_id, received_day, act_id);
 
--- Акт получения возвратов: один напечатанный лист, с которым ездили в ПВЗ.
--- Лист бывает и по всем кабинетам сразу, поэтому акт не привязан к кабинету
--- жёстко: строки внутри могут быть из разных кабинетов и с разных площадок.
+-- Акт получения возвратов: возвраты, которые перешли в статус «Получен», —
+-- одна поездка в пункт выдачи. Акт закрывает поездку целиком: и FBS, и FBO.
+-- Акт бывает и по всем кабинетам сразу, поэтому к кабинету не привязан жёстко:
+-- строки внутри могут быть из разных кабинетов и с разных площадок.
 CREATE TABLE IF NOT EXISTS return_acts (
     id           TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
     created_by   TEXT,
-    -- ozon    — собран из акта выдачи площадки, это основной случай;
-    -- nosheet — возврат забрали, а акта площадки на него ещё нет;
-    -- account | all — акты прежних версий, собранные печатью листа.
+    -- received — возвраты перешли в статус «Получен», акт собрался сам;
+    -- byday    — администратор загрузил полученные возвраты за указанное число;
+    -- nosheet  — возврат пропал из выдачи, а «Получен» по нему не приходил;
+    -- ozon | upload | account | all — акты прежних версий.
     kind         TEXT NOT NULL DEFAULT 'account',
     account_id   INTEGER,
-    -- Акт выдачи Ozon, из которого собран этот: его номер и состав — источник.
+    -- Число, за которое собран акт (для kind = byday): местная дата получения.
+    received_day TEXT,
+    -- Колонки актов выдачи Ozon. Оставлены ради баз прежних версий: акты о
+    -- возвратах площадка не отдаёт, и новые акты их не заполняют.
     giveout_id   TEXT,
     giveout_status TEXT,
     confirmed_at TEXT,
     confirmed_by TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_return_acts_giveout ON return_acts(giveout_id);
 CREATE INDEX IF NOT EXISTS idx_return_acts_open ON return_acts(confirmed_at, created_at);
-
--- Акты выдачи возвратов, которые составляет сам Ozon (у Avito такого нет).
--- Это документ площадки, а не наш: панель его только показывает рядом со своим
--- актом, чтобы было с чем сверить полученное. Поля у метода менялись, поэтому
--- разобранное лежит в колонках, а ответ целиком — в raw.
-CREATE TABLE IF NOT EXISTS ozon_giveouts (
-    account_id   INTEGER NOT NULL,
-    id           TEXT NOT NULL,
-    status       TEXT,
-    status_label TEXT,
-    created_at   TEXT,
-    items_count  INTEGER DEFAULT 0,
-    items        TEXT,
-    raw          TEXT,
-    first_seen_at TEXT,
-    updated_at   TEXT,
-    PRIMARY KEY (account_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_ozon_giveouts ON ozon_giveouts(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_return_acts_day ON return_acts(kind, account_id, received_day);
 
 -- Заказы Авито: структура API другая, поэтому отдельная таблица.
 CREATE TABLE IF NOT EXISTS avito_orders (
@@ -506,7 +502,7 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
     "postings", "posting_items", "products", "product_barcodes",
-    "returns", "return_acts", "ozon_giveouts",
+    "returns", "return_acts",
     "avito_orders", "avito_order_items",
     "shipped_items",
 )

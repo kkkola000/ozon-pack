@@ -45,7 +45,7 @@
         {% if not items and not avito_orders %}Ничего не готово к выдаче{% endif %}
         {% if act %} · принято {{ act.marked_ok }}, не принято {{ act.marked_bad }}
           {%- if act.unmarked %}, без отметки {{ act.unmarked }}{% endif %}
-          · лист печатал: {{ act.created_by or '—' }}{% endif %}
+          {%- if act.source_label %} · {{ act.source_label }}{% endif %}{% endif %}
         · Сформировал: {{ user.login }}
         · {{ printed_at.strftime('%d.%m.%Y %H:%M') }} UTC
       </div>

@@ -68,7 +68,6 @@ class FakeOzonClient(OzonClient):
         self._seed = seed
         self._postings: dict[str, dict] = {}
         self._returns: list[dict] = []
-        self._giveouts: list[dict] = []
         self._generate()
 
     # -- генерация данных -------------------------------------------------
@@ -78,31 +77,6 @@ class FakeOzonClient(OzonClient):
             self._postings.update(self._make_posting(index, now))
         for index in range(11):
             self._returns.append(self._make_return(index, now))
-        for index in range(2):
-            self._giveouts.append(self._make_giveout(index, now))
-
-    def _make_giveout(self, index: int, now: datetime) -> dict:
-        """Акт выдачи возвратов, как его отдаёт Ozon.
-
-        Состав — настоящие возвраты подделки, со штрихкодом каждого: по нему
-        панель и раскладывает акт на свои строки. В пункте выдачи забирают всё
-        разом, поэтому в акт попадают и FBS, и FBO.
-        """
-        chunk = self._returns[index * 3 : index * 3 + 3]
-        return {
-            "giveout_id": 700000 + self._seed * 100 + index,
-            "giveout_status": "COMPLETED" if index else "FORMED",
-            "created_at": _iso(now - timedelta(hours=index * 7 + 2)),
-            "_articles": [
-                {
-                    "article_name": r["product"]["name"],
-                    "seller_sku": r["product"]["offer_id"],
-                    "barcode": r["logistic"]["barcode"],
-                    "approved": True,
-                }
-                for r in chunk
-            ],
-        }
 
     def _make_posting(self, index: int, now: datetime) -> dict[str, dict]:
         rnd = self._rnd
@@ -173,8 +147,13 @@ class FakeOzonClient(OzonClient):
         sku, offer, name, _bc = rnd.choice(SAMPLE_PRODUCTS)
         ready = index % 4 != 3
         scheme = rnd.choice(["FBO", "FBS"])
-        status = ("ArrivedAtReturnPlace" if ready else "MovingToSeller")
-        display = "В пункте выдачи" if ready else "Едет к продавцу"
+        # Один возврат уже получен: по нему панель собирает акт на
+        # подтверждение, и путь «Получен -> акт» есть в любых данных подделки.
+        received = index == 7
+        status = ("ArrivedAtReturnPlace" if ready else
+                  "ReceivedBySeller" if received else "MovingToSeller")
+        display = ("В пункте выдачи" if ready else
+                   "Получен продавцом" if received else "Едет к продавцу")
         arrived = now - timedelta(days=rnd.randrange(0, 12))
         return {
             "id": 90000000 + self._seed * 1000 + index,
@@ -294,28 +273,32 @@ class FakeOzonClient(OzonClient):
         page = items[start : start + limit]
         return page, start + limit < len(items)
 
-    def giveout_list(self, *, limit=100, last_id=0):  # type: ignore[override]
-        """Акты выдачи, как их отдаёт Ozon: список — отдельно, состав — отдельно."""
-        if last_id:
-            return [], False
-        return [json.loads(json.dumps(g)) for g in self._giveouts], False
-
-    def giveout_info(self, giveout_id):  # type: ignore[override]
-        for giveout in self._giveouts:
-            if str(giveout["giveout_id"]) == str(giveout_id):
-                return {
-                    "giveout_id": giveout["giveout_id"],
-                    "giveout_status": giveout["giveout_status"],
-                    "articles": giveout["_articles"],
-                }
-        raise OzonError(f"Акт {giveout_id} не найден", status=404)
-
     def giveout_pdf(self):  # type: ignore[override]
-        """Документ выдачи со штрихкодами возвратов, как у Ozon."""
+        """Штрихкод на выдачу возвратов в пункте — его показывают в ПВЗ."""
         from tests.pdfstub import make_giveout_pdf
 
         barcodes = [r["logistic"]["barcode"] for r in self._returns[:3]]
         return make_giveout_pdf(f"FAKE-GIVEOUT-{self._seed:04d}", barcodes)
+
+    # -- управление подделкой из проверок ---------------------------------
+    def receive(self, *return_ids) -> list[str]:
+        """Перевести возвраты в «Получен»: так это выглядит после поездки в ПВЗ.
+
+        Ozon меняет статус сам, когда возврат отдали продавцу. Без аргументов
+        получает всё, что лежит в пункте выдачи, — «съездили за всем разом».
+        """
+        wanted = {str(rid) for rid in return_ids}
+        changed = []
+        for item in self._returns:
+            status = item["visual"]["status"]
+            if wanted and str(item["id"]) not in wanted:
+                continue
+            if not wanted and status["sys_name"] != "ArrivedAtReturnPlace":
+                continue
+            status["sys_name"] = "ReceivedBySeller"
+            status["display_name"] = "Получен продавцом"
+            changed.append(str(item["id"]))
+        return changed
 
     def ping(self):  # type: ignore[override]
         return {"ok": True, "fake": True}

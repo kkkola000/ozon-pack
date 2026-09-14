@@ -1,105 +1,198 @@
 """Акты получения возвратов.
 
-Акт — одна выдача в пункте: приехали, забрали, проверили. Пока по каждой
-строке не поставят отметку и акт не подтвердят, он висит во вкладке «Ждёт
-подтверждения».
+Акт — одна поездка в пункт выдачи: приехали, забрали, проверили. Пока по
+каждой строке не поставят отметку и акт не подтвердят, он висит во вкладке
+«Ждёт подтверждения»; подтверждённый уходит в «Отчёты».
 
-Составляет акт площадка. Ozon отдаёт его методами /v1/return/giveout/* со
-своим составом и временем, и панель раскладывает этот акт на свои возвраты по
-штрихкоду (app/giveouts.py). Забирают в пункте всё разом — и FBS, и FBO, —
-поэтому один акт закрывает поездку целиком.
+Что считается фактом получения. Возврат перешёл в статус «Получен»
+(ReceivedBySeller) — значит, он уже у нас. Панель замечает это при обновлении
+возвратов и сводит все такие возвраты в один акт за текущие дату и время.
+Актов о возвратах Ozon не отдаёт: своего документа, по которому можно было бы
+собрать состав, у площадки нет, поэтому состав собирается по статусам.
 
-Зачем это нужно. Забранный возврат Ozon перестаёт отдавать как «В пункте
-выдачи», и строка пропадала с экрана ровно тогда, когда сборщик заканчивал
-проверку и шёл записать результат. Акт держит её до подтверждения.
+Запасной путь — загрузить полученные возвраты за указанное число: обновление
+могло не работать, версия панели могла быть старой, статус мог прийти позже.
+Одно число, а не промежуток: акт — это поездка, а не отчётный период.
 
-Запасной путь. Возврат пропал из выдачи, а акта площадки на него ещё нет —
-такой попадает в акт «без листа» за день, чтобы не исчез молча. Появится акт
-Ozon с этим возвратом — строка переедет в него: документ площадки точнее, а
-два акта на один возврат означали бы две отметки на одну работу.
+Защита от повторной загрузки. Возврат, попавший в акт, второй раз в акт не
+попадёт: act_id ставится один раз и не снимается даже после подтверждения.
+Момент получения (received_at) тоже пишется однократно, поэтому возврат,
+который Ozon отдаёт «полученным» неделю подряд, остаётся в своём акте.
 """
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from . import db, store
 
-# Возврат забрали, а акта площадки на него ещё нет: такие собираем в акт за
-# день, иначе они пропадут молча — то есть ровно так, как было до актов.
+# Возврат пропал из выдачи, а статус «Получен» по нему не приходил: такие
+# собираем в акт за день, иначе они исчезли бы с экрана молча — то есть ровно
+# так, как было до актов.
 NO_SHEET = "nosheet"
-# Акт, загруженный администратором файлом: у кабинета может не быть метода
-# выдачи, а закрывать поездку всё равно надо.
+# Акт собрался сам: возвраты перешли в статус «Получен».
+RECEIVED = "received"
+# Акт за указанное число: полученные возвраты загрузил администратор.
+BY_DAY = "byday"
+# Виды актов прежних версий. Новые такими не создаются, но старые ещё лежат в
+# базе и должны нормально показываться и подтверждаться.
 UPLOADED = "upload"
+FROM_GIVEOUT = "ozon"
+
+# Сколько акт «собирается сам» остаётся открытым для новых полученных возвратов.
+# Обновление идёт раз в несколько минут, и одна поездка иначе разошлась бы по
+# нескольким актам: часть возвратов площадка проводит позже остальных. Две
+# поездки в один день разделены больше чем этим сроком.
+MERGE_WINDOW = timedelta(hours=2)
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def from_giveout(account_id: int, giveout_id: str, *, created_at: str | None,
-                 status: str | None, return_ids: list[str]) -> str | None:
-    """Собрать акт из акта выдачи Ozon.
+# --------------------------------------------------------------- сбор актов
+# Полученный возврат, который ещё можно забрать в акт. Условие одно на выборку
+# состава и на подсказку с числами: иначе кнопка обещала бы одно, а акт
+# собирал бы другое.
+_FREE_RECEIVED = (
+    "account_id = ? AND received_at IS NOT NULL "
+    "AND (act_id IS NULL OR act_id IN (SELECT id FROM return_acts "
+    "WHERE kind = ? AND confirmed_at IS NULL))"
+)
 
-    Это основной путь: площадка сама сообщает, что и когда отдала, — состав и
-    время берём у неё, а не выводим из того, что возврат пропал из выдачи.
 
-    Возврат мог уже попасть в акт «без листа» (панель заметила пропажу раньше,
-    чем появился акт площадки). Такой переносим сюда: акт площадки точнее, а
-    два акта на один возврат — это две отметки на одну работу.
+def received_returns(account_id: int, day: str | None = None) -> list[str]:
+    """Полученные возвраты кабинета, которые ещё ни в один акт не попали.
+
+    Это и есть защита от повторной загрузки: возврат с act_id сюда не попадает
+    ни при каком повторе — ни когда Ozon снова отдаёт его «полученным», ни
+    когда то же число загрузили второй раз.
+
+    Исключение — акт «без статуса»: туда возврат попал по догадке о пропаже, и
+    пришедший «Получен» эту догадку заменяет. Иначе на один возврат оказалось
+    бы два акта, то есть две отметки на одну работу.
     """
-    if not return_ids:
-        return None
+    sql = f"SELECT id FROM returns WHERE {_FREE_RECEIVED}"
+    params: list = [account_id, NO_SHEET]
+    if day:
+        sql += " AND received_day = ?"
+        params.append(day)
+    sql += " ORDER BY received_at, id"
+    return [row["id"] for row in db.query(sql, params)]
+
+
+def received_days(account_id: int) -> list[dict]:
+    """Числа, за которые есть незакрытые полученные возвраты, — свежие сверху."""
+    return [
+        dict(row) for row in db.query(
+            f"SELECT received_day AS day, COUNT(*) AS count FROM returns "
+            f"WHERE {_FREE_RECEIVED} AND received_day IS NOT NULL "
+            f"GROUP BY received_day ORDER BY received_day DESC",
+            (account_id, NO_SHEET),
+        )
+    ]
+
+
+def from_received(account_id: int, *, user: dict | None = None,
+                  day: str | None = None) -> dict:
+    """Свести полученные возвраты в один акт.
+
+    Без day — всё, что панель зарегистрировала полученным и ещё не закрыла
+    актом; так работает обновление возвратов. С day — полученное за указанное
+    число, так работает загрузка администратором.
+
+    Возвращает {'status', 'message', 'act_id', 'added', 'merged'}. Ошибкой
+    отсутствие возвратов не считается: обновление идёт постоянно, и «ничего
+    нового» — обычное его состояние.
+    """
+    ids = received_returns(account_id, day)
+    if not ids:
+        return {
+            "status": "warning",
+            "message": (f"За {_day_label(day)} полученных возвратов нет — либо их ещё не "
+                        "забрали, либо они уже в акте.") if day
+                       else "Новых полученных возвратов нет.",
+            "act_id": None,
+            "added": 0,
+            "merged": False,
+        }
+
     with db.write() as conn:
-        row = conn.execute("SELECT id FROM return_acts WHERE giveout_id = ?", (giveout_id,)).fetchone()
-        act_id = row["id"] if row else _new_id()
-        taken = _claim(conn, act_id, account_id, return_ids)
-        if row:
-            conn.execute(
-                "UPDATE return_acts SET giveout_status = ?, created_at = COALESCE(?, created_at) WHERE id = ?",
-                (status, created_at, act_id),
-            )
-        elif taken:
-            conn.execute(
-                "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, giveout_id, giveout_status) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (act_id, created_at or db.now_iso(), None, "ozon", account_id, giveout_id, status),
-            )
-        else:
-            # Все возвраты акта уже разнесены по подтверждённым актам: заводить
-            # пустой акт незачем.
-            return None
+        act_id, merged = _open_act(conn, account_id, day=day, user=user)
+        added = _claim(conn, act_id, account_id, ids)
+        if not added:
+            # Возвраты разобрали между выборкой и записью — параллельное
+            # обновление. Пустой акт оставлять нельзя: его нельзя удалить.
+            if not merged:
+                conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
+            return {"status": "warning", "message": "Полученные возвраты уже разнесены по актам",
+                    "act_id": None, "added": 0, "merged": merged}
         _drop_empty_spares(conn)
-    return act_id
 
-
-def free_returns(account_id: int, return_ids: list[str]) -> list[str]:
-    """Из перечисленных — те, что ещё можно забрать в акт.
-
-    Возврат из подтверждённого акта занят: работа по нему закрыта. Показывать
-    его как «добавится» нельзя — человек нажмёт и не поймёт, почему ничего не
-    произошло.
-    """
-    if not return_ids:
-        return []
-    placeholders = ",".join("?" for _ in return_ids)
-    rows = db.query(
-        f"""
-        SELECT id FROM returns
-        WHERE account_id = ? AND id IN ({placeholders})
-          AND (act_id IS NULL
-               OR act_id IN (SELECT id FROM return_acts WHERE kind = ? AND confirmed_at IS NULL))
-        """,
-        [account_id] + return_ids + [NO_SHEET],
+    act = detail(act_id)
+    db.log_event(
+        "return_act_received", account_id=account_id, user=user,
+        message=f"{act['title']}: {'добавлено' if merged else 'акт создан'} {added} возвратов"
+                + (f" за {day}" if day else ""),
     )
-    return [row["id"] for row in rows]
+    return {
+        "status": "ok",
+        "act_id": act_id,
+        "added": added,
+        "merged": merged,
+        "message": (f"{act['title']}: добавлено возвратов {added}, всего в акте {act['total']}"
+                    if merged else f"{act['title']}: акт на {added} возвратов"),
+    }
+
+
+def _open_act(conn, account_id: int, *, day: str | None, user: dict | None) -> tuple[str, bool]:
+    """Куда класть полученные возвраты: открытый акт или новый.
+
+    Акт за число один: загрузили то же число второй раз — возвраты доедут в тот
+    же акт, а не разойдутся по двум. Акт, который собрался сам, остаётся
+    открытым MERGE_WINDOW: одна поездка не должна разваливаться на части.
+    """
+    if day:
+        row = conn.execute(
+            "SELECT id FROM return_acts WHERE kind = ? AND account_id = ? AND received_day = ? "
+            "AND confirmed_at IS NULL",
+            (BY_DAY, account_id, day),
+        ).fetchone()
+        if row:
+            return row["id"], True
+        act_id = _new_id()
+        conn.execute(
+            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day) "
+            "VALUES(?,?,?,?,?,?)",
+            (act_id, db.now_iso(), (user or {}).get("login"), BY_DAY, account_id, day),
+        )
+        return act_id, False
+
+    fresh = (datetime.now(timezone.utc) - MERGE_WINDOW).strftime("%Y-%m-%dT%H:%M:%S")
+    row = conn.execute(
+        "SELECT id FROM return_acts WHERE kind = ? AND account_id = ? AND confirmed_at IS NULL "
+        "AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
+        (RECEIVED, account_id, fresh),
+    ).fetchone()
+    if row:
+        return row["id"], True
+    act_id = _new_id()
+    now = db.now_iso()
+    conn.execute(
+        "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day) "
+        "VALUES(?,?,?,?,?,?)",
+        (act_id, now, (user or {}).get("login"), RECEIVED, account_id, store.local_day(now)),
+    )
+    return act_id, False
 
 
 def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
     """Забрать возвраты в акт. Возвращает, сколько реально переехало.
 
-    Берём свободные и те, что лежат в неподтверждённом акте «без листа»:
-    документ площадки точнее нашей догадки. Возврат из подтверждённого акта не
-    трогаем — работа по нему закрыта.
+    Берём свободные и те, что лежат в неподтверждённом акте «без статуса»:
+    факт получения от площадки точнее нашей догадки о пропаже. Возврат из
+    любого другого акта не трогаем — это и есть защита от второго акта на ту
+    же работу.
     """
     placeholders = ",".join("?" for _ in return_ids)
     cursor = conn.execute(
@@ -116,7 +209,7 @@ def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
 
 
 def _drop_empty_spares(conn) -> None:
-    """Акт «без листа», из которого всё разобрали, больше не нужен."""
+    """Акт «без статуса», из которого всё разобрали, больше не нужен."""
     conn.execute(
         "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
         "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
@@ -124,40 +217,13 @@ def _drop_empty_spares(conn) -> None:
     )
 
 
-def from_upload(account_id: int, user: dict, *, source: str, return_ids: list[str]) -> str | None:
-    """Акт, загруженный администратором файлом.
-
-    Нужен, когда метода выдачи у кабинета нет или он отвечает отказом: акт есть
-    на бумаге, а через API его не видно. Возврат, уже попавший в акт «без
-    листа», переносим сюда — как и при акте из API.
-    """
-    if not return_ids:
-        return None
-    act_id = _new_id()
-    with db.write() as conn:
-        taken = _claim(conn, act_id, account_id, return_ids)
-        if not taken:
-            # Все возвраты файла уже разнесены — второй акт на ту же поездку
-            # означал бы второй комплект отметок на одну работу.
-            return None
-        conn.execute(
-            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, giveout_id) "
-            "VALUES(?,?,?,?,?,?)",
-            (act_id, db.now_iso(), user.get("login"), UPLOADED, account_id, source[:200] or None),
-        )
-        _drop_empty_spares(conn)
-    db.log_event(
-        "return_act_upload", account_id=account_id, user=user,
-        message=f"{source}: {taken} возвратов",
-    )
-    return act_id
-
-
 def collect_orphans(account_id: int, ids: list[str], *, table: str = "returns") -> str | None:
-    """Возвраты забрали, а листа на них не печатали — собрать в акт за день.
+    """Возврат пропал из выдачи, а «Получен» по нему не приходил.
 
-    Такое бывает, когда за возвратами съездили без листа или напечатали его до
-    обновления версии. Без акта они исчезли бы с экрана незаметно.
+    Такое бывает, когда площадка проводит возврат мимо этого статуса или он
+    приходит с задержкой. Собираем такие в акт за день: без него строка
+    исчезла бы с экрана незаметно, вместе с непоставленной отметкой. Придёт
+    «Получен» — возврат переедет в акт получения.
     """
     if not ids:
         return None
@@ -180,9 +246,11 @@ def collect_orphans(account_id: int, ids: list[str], *, table: str = "returns") 
             f"AND id IN ({placeholders})",
             [act_id, account_id] + ids,
         )
+        _drop_empty_spares(conn)
     return act_id
 
 
+# ------------------------------------------------------------------- чтение
 def get(act_id: str) -> dict | None:
     row = db.query_one("SELECT * FROM return_acts WHERE id = ?", (act_id,))
     return dict(row) if row else None
@@ -213,12 +281,7 @@ def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
     marked_ok = sum(1 for row in rows if row.get("mark") == "ok")
     marked_bad = sum(1 for row in rows if row.get("mark") == "bad")
     unmarked = len(rows) - marked_ok - marked_bad
-    # Возврат «получен», когда площадка перестала отдавать его к выдаче. Пока
-    # ни один не получен — за возвратами ещё не съездили.
-    received = sum(
-        1 for row in rows
-        if (row.get("is_ready") == 0 if "is_ready" in row else row.get("status") != "on_return")
-    )
+    kind = act.get("kind")
     return {
         **act,
         "rows": rows,
@@ -228,31 +291,47 @@ def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
         "marked_ok": marked_ok,
         "marked_bad": marked_bad,
         "unmarked": unmarked,
-        "received": received,
         "percent": round((len(rows) - unmarked) / len(rows) * 100) if rows else 0,
         "can_confirm": bool(rows) and unmarked == 0,
         "created_local": store.local_time(act.get("created_at")),
         "confirmed_local": store.local_time(act.get("confirmed_at")),
-        "title": f"Возвраты за {store.local_time(act.get('created_at'))}",
-        "no_sheet": act.get("kind") == NO_SHEET,
-        "from_ozon": act.get("kind") == "ozon",
-        "uploaded": act.get("kind") == UPLOADED,
-        "source": act.get("giveout_id") or "",
-        "giveout_label": _giveout_label(act),
+        "title": _title(act),
+        "source_label": _source_label(act),
+        "no_sheet": kind == NO_SHEET,
+        "by_day": kind == BY_DAY,
+        "auto": kind == RECEIVED,
     }
 
 
-def _giveout_label(act: dict) -> str:
-    """Подпись акта площадки: по ней акт сверяют с документом Ozon."""
-    if act.get("kind") == UPLOADED:
-        return f"загружен файлом: {act.get('giveout_id') or '—'}"
-    if act.get("kind") != "ozon":
-        return ""
-    from . import giveouts
+def _title(act: dict) -> str:
+    """Подпись акта. Акт за число называем числом: его выбрал человек."""
+    if act.get("kind") == BY_DAY and act.get("received_day"):
+        return "Возвраты, полученные " + _day_label(act["received_day"])
+    return f"Возвраты за {store.local_time(act.get('created_at'))}"
 
-    status = giveouts.status_label(act.get("giveout_status") or "")
-    number = act.get("giveout_id") or ""
-    return f"акт Ozon {number}" + (f" · {status}" if status else "")
+
+def _day_label(day: str | None) -> str:
+    try:
+        return datetime.strptime(str(day), "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return str(day or "—")
+
+
+def _source_label(act: dict) -> str:
+    """Откуда акт взялся — это видно в списке и на бумаге."""
+    kind = act.get("kind")
+    if kind == RECEIVED:
+        return "возвраты перешли в статус «Получен»"
+    if kind == BY_DAY:
+        return f"загружены за {_day_label(act.get('received_day'))}" + (
+            f", {act['created_by']}" if act.get("created_by") else "")
+    if kind == NO_SHEET:
+        return "пропали из выдачи, статус «Получен» не приходил"
+    if kind == UPLOADED:
+        return f"загружен файлом: {act.get('giveout_id') or '—'}"
+    if kind == FROM_GIVEOUT:
+        return f"акт выдачи Ozon {act.get('giveout_id') or '—'}"
+    return ""
 
 
 def pending(account_ids: list[int] | None = None) -> list[dict]:
@@ -283,6 +362,54 @@ def pending_count(account_ids: list[int] | None = None) -> int:
     return len(pending(account_ids))
 
 
+def confirmed(account_id: int | None = None, limit: int = 200) -> list[dict]:
+    """Подтверждённые акты для раздела «Отчёты» — свежие сверху.
+
+    Строки не тянем: в списке они не нужны, а акт с сотней позиций на каждую
+    строку списка — это сотня лишних запросов. Итоги считаем одним запросом.
+    """
+    where = "WHERE confirmed_at IS NOT NULL"
+    params: list = []
+    if account_id:
+        where += " AND (account_id = ? OR kind = 'all')"
+        params.append(account_id)
+    acts = db.query(
+        f"SELECT * FROM return_acts {where} ORDER BY confirmed_at DESC LIMIT ?",
+        params + [limit],
+    )
+    if not acts:
+        return []
+    ids = [row["id"] for row in acts]
+    placeholders = ",".join("?" for _ in ids)
+    totals: dict[str, dict] = {act_id: {"total": 0, "ok": 0, "bad": 0} for act_id in ids}
+    for table in ("returns", "avito_orders"):
+        for row in db.query(
+            f"SELECT act_id, COUNT(*) AS total, "
+            f"SUM(mark = 'ok') AS ok, SUM(mark = 'bad') AS bad "
+            f"FROM {table} WHERE act_id IN ({placeholders}) GROUP BY act_id",
+            ids,
+        ):
+            counts = totals[row["act_id"]]
+            counts["total"] += row["total"] or 0
+            counts["ok"] += row["ok"] or 0
+            counts["bad"] += row["bad"] or 0
+    result = []
+    for act in acts:
+        act = dict(act)
+        counts = totals[act["id"]]
+        result.append({
+            **act,
+            "total": counts["total"],
+            "marked_ok": counts["ok"],
+            "marked_bad": counts["bad"],
+            "title": _title(act),
+            "source_label": _source_label(act),
+            "created_local": store.local_time(act.get("created_at")),
+            "confirmed_local": store.local_time(act.get("confirmed_at"), "%d.%m.%Y %H:%M"),
+        })
+    return result
+
+
 def detail(act_id: str) -> dict | None:
     act = get(act_id)
     if not act:
@@ -295,7 +422,8 @@ def confirm(act_id: str, user: dict) -> dict:
     """Подтвердить акт. Возвращает {'status', 'message'}.
 
     Подтвердить можно только полностью отмеченный акт: иначе половина строк
-    закроется без решения и никто об этом не узнает.
+    закроется без решения и никто об этом не узнает. Подтверждённый акт уходит
+    в «Отчёты» и обратно не возвращается.
     """
     act = detail(act_id)
     if not act:
@@ -316,4 +444,4 @@ def confirm(act_id: str, user: dict) -> dict:
         message=f"{act['title']}: {act['total']} поз., принято {act['marked_ok']}, "
                 f"не принято {act['marked_bad']}",
     )
-    return {"status": "ok", "message": f"{act['title']}: акт подтверждён"}
+    return {"status": "ok", "message": f"{act['title']}: акт подтверждён, ищите его в «Отчётах»"}

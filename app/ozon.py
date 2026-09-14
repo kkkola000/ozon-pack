@@ -10,9 +10,7 @@
   POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера
   POST /v3/product/info/list           — карточки товаров (штрихкоды, фото)
   POST /v1/returns/list                — возвраты FBO и FBS
-  POST /v1/return/giveout/list         — акты выдачи возвратов, составленные Ozon
-  POST /v1/return/giveout/info         — состав одного акта выдачи
-  POST /v1/return/giveout/get-pdf      — акт/штрихкод на выдачу возвратов
+  POST /v1/return/giveout/get-pdf      — штрихкод на выдачу возвратов в пункте
 """
 from __future__ import annotations
 
@@ -33,23 +31,6 @@ log = logging.getLogger("ozon")
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 4
-
-
-def _first_list(body: dict, names: tuple[str, ...]) -> list[dict]:
-    """Первый непустой список под одним из имён — ответы Ozon их меняли."""
-    for name in names:
-        value = (body or {}).get(name)
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
-    return []
-
-
-def _as_int(value: Any) -> Any:
-    """Ozon ждёт идентификаторы числом, а в базе они лежат строкой."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return value
 
 
 class OzonError(RuntimeError):
@@ -287,25 +268,6 @@ class OzonClient:
         if returns is None:
             returns = (data.get("result") or {}).get("returns") or []
         return list(returns), bool(data.get("has_next"))
-
-    def giveout_list(self, *, limit: int = 100, last_id: int = 0) -> tuple[list[dict], bool]:
-        """Акты выдачи возвратов, которые Ozon составил на нашу компанию.
-
-        Схема ответа у метода менялась, поэтому разбираем терпимо: берём первый
-        список, который найдём под известными именами. Сырой ответ всё равно
-        сохраняется целиком — если поля разъедутся, будет по чему чинить.
-        """
-        data = self.post("/v1/return/giveout/list", {"limit": limit, "last_id": last_id})
-        body = data.get("result") if isinstance(data.get("result"), dict) else data
-        giveouts = _first_list(body, ("giveouts", "giveout", "items", "list"))
-        has_next = bool(body.get("has_next") or data.get("has_next"))
-        return giveouts, has_next
-
-    def giveout_info(self, giveout_id: Any) -> dict:
-        """Состав одного акта выдачи."""
-        data = self.post("/v1/return/giveout/info", {"giveout_id": _as_int(giveout_id)})
-        body = data.get("result") if isinstance(data.get("result"), dict) else data
-        return dict(body or {})
 
     def giveout_pdf(self) -> bytes:
         """Штрихкод/акт на получение возвратов (одна активная выдача на компанию)."""

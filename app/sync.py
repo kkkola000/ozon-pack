@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, avito, db, giveouts, ozon, return_acts, store
+from . import accounts, avito, db, ozon, return_acts, store
 from .avito import AvitoError
 from .config import settings
 from .ozon import OzonError
@@ -141,20 +141,23 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
 def sync_returns(account: dict | None = None, *, full: bool = False, statuses: list[str] | None = None) -> dict:
     """Возвраты FBO и FBS: /v1/returns/list.
 
-    Забираем только те статусы, в которых возврат реально можно получить
-    (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»). Фильтр уходит в
-    запрос, но на него не полагаемся: всё, что пришло с другим статусом,
-    отбрасывается на нашей стороне. Иначе достаточно одной перемены в API,
-    чтобы сборщик снова увидел лишнее.
+    Забираем два набора статусов. Первый — в которых возврат можно получить
+    (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»): это список к
+    поездке. Второй — в которых он уже получен (ReceivedBySeller): по такому
+    нужна отметка, и панель сводит такие возвраты в акт на подтверждение.
+
+    Фильтр уходит в запрос, но на него не полагаемся: всё, что пришло с другим
+    статусом, отбрасывается на нашей стороне. Иначе достаточно одной перемены
+    в API, чтобы сборщик снова увидел лишнее.
     """
-    from .options import get_returns_statuses
+    from .options import wanted_statuses
 
     account = _account(account)
     if account is None:
         return {"returns": 0}
     account_id = account["id"]
     client = ozon.get_client(account)
-    wanted = list(statuses or get_returns_statuses())
+    wanted = list(statuses or wanted_statuses())
     wanted_set = set(wanted)
     saved = 0
     skipped = 0
@@ -256,29 +259,33 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
             [account_id] + wanted,
         ).rowcount or 0
 
+        # Возвраты, перешедшие в «Получен», — это факт: они уже у нас, и по
+        # каждому нужна отметка. Сводим их в один акт на подтверждение. Делаем
+        # это до разбора пропавших: получение известно точно, а пропажа — это
+        # только догадка, и два акта на один возврат означали бы две отметки
+        # на одну работу.
+        result_received = return_acts.from_received(account_id).get("added") or 0
+
         if stale:
-            # Возврат забрали, а листа на него не печатали: акта у строки нет,
-            # и она исчезла бы с экрана молча. Собираем такие в акт за день —
-            # отметку по ним всё равно надо поставить.
+            # Возврат пропал из выдачи, а «Получен» по нему не приходил: акта у
+            # строки нет, и она исчезла бы с экрана молча. Собираем такие в акт
+            # за день — отметку по ним всё равно надо поставить.
             orphans = [
                 row["id"] for row in db.query(
                     f"SELECT id FROM returns WHERE account_id = ? AND act_id IS NULL "
-                    f"AND id IN ({placeholders})",
+                    f"AND received_at IS NULL AND id IN ({placeholders})",
                     [account_id] + stale,
                 )
             ]
             return_acts.collect_orphans(account_id, orphans)
+    else:
+        result_received = 0
 
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}
-    # Акты выдачи Ozon — документ площадки о том же событии. Метод включён не у
-    # всех продавцов, поэтому его отказ не должен ронять обновление возвратов.
-    try:
-        result.update(giveouts.sync_account(account))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Акты выдачи не загрузились: %s", exc)
-        result["giveouts_error"] = str(exc)
+    if result_received:
+        result["returns_received"] = result_received
     if skipped:
         result["returns_skipped"] = skipped
     if gone:

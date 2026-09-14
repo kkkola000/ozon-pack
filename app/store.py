@@ -280,12 +280,16 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     status = visual.get("status") or {}
     price = product.get("price") or {}
 
-    from .options import get_returns_statuses
+    from .options import get_received_statuses, get_returns_statuses
 
     sys_name = _text(status.get("sys_name")) or ""
     # Готов к выдаче ровно тогда, когда Ozon сообщает нужный статус
     # (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»).
     is_ready = 1 if sys_name in set(get_returns_statuses()) else 0
+    # «Получен» — возврат уже у нас, и по нему нужна отметка. Один и тот же
+    # статус в обоих списках означает «ещё к выдаче»: сборщик за ним едет, а
+    # закрывать актом то, что не забрали, нельзя.
+    received = not is_ready and sys_name in set(get_received_statuses())
 
     now = db.now_iso()
     existing = conn.execute(
@@ -296,8 +300,9 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
         INSERT INTO returns (
             account_id, id, type, scheme, status_sys, status_name, order_id, order_number, posting_number, sku, offer_id,
             product_name, quantity, price, currency, place_name, place_address, target_place_name, return_reason,
-            return_date, final_moment, storage_until, storage_sum, barcode, is_ready, raw, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            return_date, final_moment, storage_until, storage_sum, barcode, is_ready, raw, first_seen_at, updated_at,
+            received_at, received_day
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             type = excluded.type, scheme = excluded.scheme, status_sys = excluded.status_sys,
             status_name = excluded.status_name, order_id = excluded.order_id, order_number = excluded.order_number,
@@ -307,7 +312,12 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             target_place_name = excluded.target_place_name, return_reason = excluded.return_reason,
             return_date = excluded.return_date, final_moment = excluded.final_moment,
             storage_until = excluded.storage_until, storage_sum = excluded.storage_sum, barcode = excluded.barcode,
-            is_ready = excluded.is_ready, raw = excluded.raw, updated_at = excluded.updated_at
+            is_ready = excluded.is_ready, raw = excluded.raw, updated_at = excluded.updated_at,
+            -- Момент получения пишется только в первый раз. Ozon отдаёт статус
+            -- «Получен» и на следующих обновлениях, а новая дата означала бы
+            -- новый акт на тот же возврат — вторую отметку на одну работу.
+            received_at = COALESCE(returns.received_at, excluded.received_at),
+            received_day = COALESCE(returns.received_day, excluded.received_day)
         """,
         (
             account_id,
@@ -338,6 +348,8 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _raw_json(raw),
             (existing["first_seen_at"] if existing else now) or now,
             now,
+            now if received else None,
+            local_day(now) if received else None,
         ),
     )
     return return_id
@@ -385,6 +397,15 @@ def local_time(value: str | None, fmt: str = "%d.%m %H:%M") -> str:
         moment = moment.replace(tzinfo=timezone.utc)
     shifted = moment.astimezone(timezone.utc) + timedelta(hours=settings.timezone_offset)
     return shifted.strftime(fmt)
+
+
+def local_day(value: str | None = None) -> str:
+    """ISO-UTC -> местная дата «ГГГГ-ММ-ДД». Без аргумента — сегодняшняя.
+
+    Момент хранится в UTC, а человек называет число по часам склада: вечерняя
+    поездка в UTC+3 иначе попала бы во вчерашний день.
+    """
+    return local_time(value or db.now_iso(), "%Y-%m-%d")
 
 
 def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:

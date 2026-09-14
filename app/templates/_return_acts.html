@@ -1,113 +1,60 @@
-{# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по тем
-   листам, с которыми ездили в пункт выдачи. #}
+{# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по одной
+   поездке в пункт выдачи. Акт собирается сам, как только возврат перешёл в
+   статус «Получен». #}
 <div class="small muted no-print" style="margin:14px 0 16px">
-  Каждый акт — одна выдача в пункте: что отдали и когда, по документу Ozon.
+  Акт появляется сам: возврат перешёл в статус «Получен» — значит, он уже у нас,
+  и панель сводит все такие возвраты в один акт за текущие дату и время.
   Возвраты акта держатся здесь, даже когда площадка перестала их отдавать, —
   пока по каждому не поставят отметку и акт не подтвердят. Подтверждённый акт
-  уходит в журнал.
+  уходит в <a href="/reports/returns">«Отчёты»</a>.
 </div>
 
 {% if not acts %}
   <div class="empty">
-    Неподтверждённых актов нет. Акт появляется сам, когда Ozon составит документ
-    о выданных возвратах — обычно сразу после того, как их забрали в пункте.
+    Неподтверждённых актов нет. Акт появится, как только возвраты перейдут в
+    статус «Получен», — обычно вскоре после того, как их забрали в пункте.
   </div>
 {% endif %}
 
 {% if user.role == 'admin' %}
-{# Запасной ход: у кабинета может не быть метода выдачи, а закрывать поездку
-   всё равно надо. Только администратору — акт нельзя удалить. #}
-<details class="act no-print" id="act-upload" style="margin-bottom:18px">
+{# Запасной ход: обновление могло не работать или статус пришёл с задержкой, а
+   возвраты уже забрали. Только администратору — акт нельзя удалить. #}
+<details class="act no-print" id="act-byday" style="margin-bottom:18px">
   <summary class="act-head">
     <div class="grow">
-      <div class="act-title">Получить акты возвратов</div>
+      <div class="act-title">Загрузить полученные возвраты за число</div>
       <div class="act-sub">
-        Показать акты выдачи, которые есть у Ozon, и выбрать те, что нужно
-        завести в панель. Ищутся штрихкоды возвратов кабинета
-        «{{ account.title }}».
+        Один акт на все возвраты кабинета «{{ account.title }}», которые панель
+        зарегистрировала полученными в выбранный день. Возврат, уже попавший в
+        акт, второй раз не возьмётся.
       </div>
     </div>
   </summary>
   <div class="act-body">
-    <div class="row" style="margin-top:8px">
-      <button class="btn primary" id="act-fetch">Получить акты возвратов</button>
-      <label class="muted small">за последние
-        <select id="act-days" style="padding:4px 8px">
-          <option value="7" selected>7 дней</option>
-          <option value="14">14 дней</option>
-          <option value="30">30 дней</option>
-        </select>
+    <div class="row" style="margin-top:8px; flex-wrap:wrap">
+      <label class="muted small">Число получения
+        <input type="date" id="act-day" value="{{ today }}" max="{{ today }}"
+               style="padding:4px 8px; margin-left:6px">
       </label>
-      <span class="grow"></span>
-      <button class="btn" id="act-from-ozon" title="Если списка актов у кабинета нет">
-        Забрать текущий документ выдачи
-      </button>
-    </div>
-    <div id="act-list" style="margin-top:14px"></div>
-
-    <div class="row" style="margin-top:18px; flex-wrap:wrap">
-      <span class="muted small">Нет в списке? Загрузите файл акта:</span>
-      <input type="file" id="act-file" accept=".pdf,.xlsx,.xlsm,.csv,.tsv,.json,.txt">
-      <button class="btn" id="act-check">Посмотреть, что в файле</button>
+      <button class="btn" id="act-check">Посмотреть, что попадёт</button>
       <button class="btn primary" id="act-create" hidden>Создать акт</button>
     </div>
-    <div id="act-upload-result" class="small" style="margin-top:14px"></div>
-  </div>
-</details>
-{% endif %}
 
-{% if giveouts %}
-<details class="act" style="margin-bottom:18px">
-  <summary class="act-head">
-    <div class="grow">
-      <div class="act-title">Акты выдачи Ozon</div>
-      <div class="act-sub">
-        Документ площадки о том же событии — {{ giveouts | length }} шт.
-        Панель его только показывает: сверить полученное есть с чем.
-      </div>
-    </div>
-    <a class="btn" href="/api/returns/giveout.pdf" target="_blank" rel="noopener"
-       onclick="event.stopPropagation()">Штрихкод выдачи</a>
-  </summary>
-  <div class="act-body">
-    <table>
-      <thead>
-        <tr>
-          <th style="width:150px">Акт Ozon</th>
-          <th style="width:170px">Составлен</th>
-          <th style="width:150px">Статус</th>
-          <th>Состав</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for g in giveouts %}
-        <tr>
-          <td class="mono">{{ g.id }}</td>
-          <td class="small">{{ g.created_local or '—' }}</td>
-          <td class="small">{{ g.status_label or g.status or '—' }}</td>
-          <td class="small">
-            {% if g['items'] %}
-              {% for item in g['items'][:6] %}
-                <div>{{ item.article_name or item.name or item.product_name or '—' }}
-                  <span class="muted mono">{{ item.seller_sku or item.offer_id or item.sku or '' }}</span>
-                </div>
-              {% endfor %}
-              {% if g['items'] | length > 6 %}
-                <div class="muted">…и ещё {{ g['items'] | length - 6 }}</div>
-              {% endif %}
-            {% else %}
-              <span class="muted">состав Ozon не прислал</span>
-            {% endif %}
-            {% if user.role == 'admin' %}
-              <div class="muted small" style="margin-top:4px">
-                <a href="/api/returns/giveouts/{{ g.id }}/raw" target="_blank" rel="noopener">ответ Ozon как есть</a>
-              </div>
-            {% endif %}
-          </td>
-        </tr>
+    {% if received_days %}
+      <div class="small muted" style="margin-top:12px">
+        Есть полученные возвраты без акта:
+        {% for row in received_days %}
+          <a href="#" data-pick-day="{{ row.day }}">{{ row.day }}</a>
+          <span class="muted">({{ row.count }})</span>{% if not loop.last %} · {% endif %}
         {% endfor %}
-      </tbody>
-    </table>
+      </div>
+    {% else %}
+      <div class="small muted" style="margin-top:12px">
+        Полученных возвратов без акта нет — всё уже разнесено.
+      </div>
+    {% endif %}
+
+    <div id="act-byday-result" class="small" style="margin-top:14px"></div>
   </div>
 </details>
 {% endif %}
@@ -117,12 +64,7 @@
   <summary class="act-head">
     <div class="grow">
       <div class="act-title">{{ act.title }}</div>
-      <div class="act-sub">
-        {{ act.total }} поз.
-        {%- if act.from_ozon or act.uploaded %} · {{ act.giveout_label }}
-        {%- elif act.no_sheet %} · акта Ozon на них пока нет{% endif %}
-        {%- if act.uploaded %} · загрузил {{ act.created_by or '—' }}{% endif %}
-      </div>
+      <div class="act-sub">{{ act.total }} поз.{% if act.source_label %} · {{ act.source_label }}{% endif %}</div>
     </div>
     <div class="row" style="gap:8px">
       {% if act.marked_ok %}<span class="badge ok">{{ act.marked_ok }} принято</span>{% endif %}

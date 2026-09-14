@@ -1,13 +1,12 @@
 """Раздел «Возвраты FBO/FBS»: что готово к выдаче и печать листа."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import (accounts, act_upload, avito, db, giveouts, options, return_acts,
-                returns_pdf, store, sync)
+from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
 from ..deps import (check_csrf, current_user, require_admin, require_avito_account,
                     require_ozon_account, templates)
 from .. import ozon
@@ -174,149 +173,48 @@ def returns_page(
             "all_total": ready_everywhere(),
             "tab": "acts" if tab == "acts" else "ready",
             "acts": return_acts.pending([account["id"]]),
-            # Акт выдачи ведёт и сам Ozon — показываем рядом, чтобы было с чем
-            # сверить полученное. У Avito такого документа нет.
-            "giveouts": giveouts.recent(account["id"]),
+            # Числа, за которые есть полученные возвраты без акта: подсказка к
+            # ручной загрузке, чтобы не гадать, какое число выбирать.
+            "received_days": return_acts.received_days(account["id"]),
+            "today": store.local_day(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
         },
     )
 
 
-@router.get("/api/returns/giveouts/{giveout_id}/raw")
-def api_giveout_raw(giveout_id: str, admin: dict = Depends(require_admin),
-                    account: dict = Depends(require_ozon_account)):
-    """Ответ Ozon по акту выдачи как есть.
+@router.post("/api/returns/acts/by-day")
+def api_act_by_day(request: Request, payload: dict = Body(...),
+                   admin: dict = Depends(require_admin),
+                   account: dict = Depends(require_ozon_account)):
+    """Собрать акт из возвратов, полученных за указанное число. Только админу.
 
-    Поля этого метода у Ozon менялись, и разобрать их вслепую нельзя: здесь
-    видно, что площадка реально прислала для конкретного кабинета.
-    """
-    raw = giveouts.raw_of(account["id"], giveout_id)
-    if raw is None:
-        raise HTTPException(status_code=404, detail="Акт выдачи не найден")
-    return {"giveout_id": giveout_id, "raw": raw}
+    Обычно акт собирается сам, как только возврат перешёл в «Получен». Ручная
+    загрузка нужна, когда обновление не работало или статус пришёл с задержкой:
+    возвраты уже в базе, а акта на них нет.
 
-
-@router.get("/api/returns/acts/available")
-def api_available_acts(days: int = 7, admin: dict = Depends(require_admin),
-                       account: dict = Depends(require_ozon_account)):
-    """Акты выдачи Ozon за последние дни — список на выбор.
-
-    Показывает, что есть у площадки и сколько возвратов кабинета в каждом акте
-    узнаётся. Ничего не создаёт: выбирает и добавляет человек.
-    """
-    result = giveouts.available(account, days=max(1, min(days, 90)))
-    if result["status"] == "error":
-        raise HTTPException(status_code=502, detail=result["message"])
-    return result
-
-
-@router.post("/api/returns/acts/import")
-def api_import_acts(request: Request, payload: dict = Body(...),
-                    admin: dict = Depends(require_admin),
-                    account: dict = Depends(require_ozon_account)):
-    """Завести в панели отмеченные акты выдачи."""
-    check_csrf(request)
-    ids = [str(item).strip() for item in (payload.get("giveout_ids") or []) if str(item).strip()]
-    if not ids:
-        raise HTTPException(status_code=400, detail="Не выбрано ни одного акта")
-    return giveouts.import_acts(account, admin, ids)
-
-
-@router.post("/api/returns/acts/from-ozon")
-def api_act_from_ozon(request: Request, payload: dict = Body(default={}),
-                      admin: dict = Depends(require_admin),
-                      account: dict = Depends(require_ozon_account)):
-    """Забрать документ выдачи у Ozon и собрать по нему акт — без файла.
-
-    Панель делает это и сама при синхронизации, когда список актов ничего не
-    дал. Кнопка нужна, чтобы не ждать: съездили за возвратами — нажали.
+    Число одно, а не промежуток: акт — это поездка в пункт выдачи, и смешивать
+    в нём разные дни значило бы подтверждать одной подписью две работы.
     """
     check_csrf(request)
-    result = giveouts.act_from_document(account, admin, dry_run=bool(payload.get("dry_run")))
-    if result["status"] == "error":
-        raise HTTPException(status_code=502, detail=result["message"])
-    return result
-
-
-@router.post("/api/returns/acts/upload")
-async def api_upload_act(
-    request: Request,
-    file: UploadFile = File(...),
-    dry_run: bool = Form(default=False),
-    admin: dict = Depends(require_admin),
-    account: dict = Depends(require_ozon_account),
-):
-    """Загрузить акт выдачи файлом. Только администратору.
-
-    Нужно, когда метод выдачи у кабинета выключен или отвечает отказом: акт
-    есть в личном кабинете или на бумаге, а через API его не видно. Файл
-    разбирается по содержимому — годится PDF, XLSX, CSV или ответ API в JSON.
-
-    Сначала показываем, что нашлось (dry_run), и только вторым запросом заводим
-    акт: акт нельзя удалить, поэтому создавать его вслепую по чужому файлу —
-    плохая идея.
-    """
-    check_csrf(request)
-    data = await file.read()
-    try:
-        found_codes = act_upload.parse(file.filename or "", data)
-    except act_upload.UploadRejected as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    return_ids = giveouts.match_returns(account["id"], [{"code": code} for code in found_codes])
-    rows = []
-    if return_ids:
-        placeholders = ",".join("?" for _ in return_ids)
-        rows = [
-            dict(row) for row in db.query(
-                f"SELECT id, barcode, product_name, act_id FROM returns "
-                f"WHERE account_id = ? AND id IN ({placeholders}) ORDER BY id",
-                [account["id"]] + return_ids,
-            )
-        ]
-    busy = [row for row in rows if row["act_id"]]
-    free = [row["id"] for row in rows if not row["act_id"]]
-
-    if not return_ids:
+    day = _valid_day(str(payload.get("day") or ""))
+    if bool(payload.get("dry_run")):
+        ids = return_acts.received_returns(account["id"], day)
         return {
-            "status": "warning",
-            "found": 0,
-            "codes": len(found_codes),
-            "message": f"В файле {len(found_codes)} кодов, но ни один не совпал с возвратами "
-                       f"кабинета «{account['title']}». Проверьте, тот ли это кабинет.",
+            "status": "ok" if ids else "warning",
+            "found": len(ids),
+            "day": day,
+            "message": (f"Полученных возвратов за это число: {len(ids)}" if ids else
+                        "За это число полученных возвратов без акта нет"),
         }
+    return return_acts.from_received(account["id"], user=admin, day=day)
 
-    preview = {
-        "status": "ok",
-        "found": len(return_ids),
-        "codes": len(found_codes),
-        "free": len(free),
-        "busy": len(busy),
-        "returns": [
-            {"id": row["id"], "barcode": row["barcode"], "name": row["product_name"],
-             "in_act": bool(row["act_id"])}
-            for row in rows
-        ],
-    }
-    if dry_run:
-        preview["message"] = (
-            f"Нашлось возвратов: {len(return_ids)}"
-            + (f", из них уже в актах: {len(busy)}" if busy else "")
-        )
-        return preview
 
-    act_id = return_acts.from_upload(
-        account["id"], admin, source=file.filename or "акт", return_ids=return_ids
-    )
-    if not act_id:
-        raise HTTPException(status_code=409, detail="Все возвраты из файла уже разнесены по актам")
-    taken = return_acts.detail(act_id)
-    return {
-        **preview,
-        "act_id": act_id,
-        "message": f"Акт создан: {taken['total']} возвратов",
-    }
+def _valid_day(day: str) -> str:
+    try:
+        return date.fromisoformat(day.strip()).isoformat()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Число указывается как ГГГГ-ММ-ДД") from exc
 
 
 @router.post("/api/returns/acts/{act_id}/confirm")
@@ -571,35 +469,21 @@ def api_returns_sync(request: Request, payload: dict = Body(default={}), user: d
         result = sync.sync_returns(account, full=full)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {
-        "status": "warning" if result.get("giveouts_error") else "ok",
-        "message": _sync_message(result),
-        "result": result,
-    }
+    return {"status": "ok", "message": _sync_message(result), "result": result}
 
 
 def _sync_message(result: dict) -> str:
-    """Что именно сделала синхронизация — вместе с актами выдачи.
+    """Что именно сделала синхронизация — вместе с актом на подтверждение.
 
-    Акты приходят по API молча, и по одной строке «обновлено возвратов» нельзя
-    понять, заработал ли этот путь у кабинета. Поэтому говорим прямо: сколько
-    актов забрали, сколько возвратов по ним разложили и почему не вышло.
+    Акт собирается молча, и по одной строке «обновлено возвратов» нельзя
+    понять, попало ли полученное в акт. Поэтому говорим прямо.
     """
     parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
-    if result.get("giveouts_error"):
-        parts.append(f"акты выдачи недоступны ({result['giveouts_error']}) — "
-                     "акт можно забрать документом Ozon или загрузить файлом")
-        return ". ".join(parts)
-    acts = result.get("giveouts", 0)
-    if not acts:
-        parts.append("актов выдачи Ozon пока не отдал")
-        return ". ".join(parts)
-    parts.append(f"актов выдачи у Ozon: {acts}")
-    if result.get("giveouts_returns"):
-        parts.append(f"возвратов в них: {result['giveouts_returns']}")
-    parts.append("добавить — во вкладке «Ждёт подтверждения»")
-    if result.get("giveouts_unmatched"):
-        parts.append(
-            f"не опознано актов: {result['giveouts_unmatched']} — в их составе нет знакомых штрихкодов"
-        )
+    if result.get("returns_received"):
+        parts.append(f"получено новых: {result['returns_received']} — они в акте "
+                     "во вкладке «Ждёт подтверждения»")
+    else:
+        parts.append("новых полученных нет")
+    if result.get("returns_gone"):
+        parts.append(f"ушло из выдачи: {result['returns_gone']}")
     return ". ".join(parts)

@@ -204,7 +204,7 @@ def test_avito_packing_columns_appear_in_old_database(tmp_path, monkeypatch):
 
 
 def test_act_columns_appear_in_old_database():
-    """Колонки акта выдачи дописываются к таблице, созданной прежней версией."""
+    """Колонки акта дописываются к таблице, созданной прежней версией."""
     conn = db.connect()
     conn.execute("DROP TABLE IF EXISTS return_acts")
     conn.execute(
@@ -214,7 +214,26 @@ def test_act_columns_appear_in_old_database():
     )
     db.init_db()
     columns = set(db._columns(db.connect(), "return_acts"))
-    for name in ("giveout_id", "giveout_status"):
+    for name in ("received_day", "giveout_id", "giveout_status"):
+        assert name in columns, name
+
+
+def test_receipt_columns_appear_in_old_database():
+    """Возвраты прежней версии получают колонки получения.
+
+    Без них акт не собрать: раздел «Ждёт подтверждения» падал бы на первом же
+    запросе к received_at, а на сервере таблица возвратов давно создана.
+    """
+    conn = db.connect()
+    conn.execute("DROP TABLE IF EXISTS returns")
+    conn.execute(
+        "CREATE TABLE returns (account_id INTEGER NOT NULL, id TEXT NOT NULL,"
+        " status_sys TEXT, is_ready INTEGER NOT NULL DEFAULT 0, act_id TEXT,"
+        " PRIMARY KEY (account_id, id))"
+    )
+    db.init_db()
+    columns = set(db._columns(db.connect(), "returns"))
+    for name in ("received_at", "received_day", "mark", "note"):
         assert name in columns, name
 
 

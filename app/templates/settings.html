@@ -89,6 +89,7 @@
       <dd class="small">
         Загружаются в статусах: <b>{{ returns_statuses | join(', ') }}</b>
         <div class="muted">{{ 'задано в панели' if returns_source == 'panel' else 'значение из файла .env' }} — меняется ниже</div>
+        Полученными считаются: <b>{{ received_statuses | join(', ') if received_statuses else 'не задано — акты не ведутся' }}</b>
       </dd>
     {% endif %}
   </dl>
@@ -124,6 +125,30 @@
     {% endfor %}
   </div>
   <button class="btn primary" id="btn-save-statuses" style="margin-top:12px">Сохранить и обновить возвраты</button>
+
+  <h2 style="margin-top:18px">Какие возвраты считать полученными</h2>
+  <p class="muted small" style="margin-top:0">
+    Возврат в отмеченном статусе уже у нас: по нему нужна отметка. Как только
+    панель это замечает, она сводит все такие возвраты в один акт за текущие
+    дату и время — акт ждёт подтверждения в разделе
+    <a href="/returns?tab=acts">«Возвраты»</a>, а подтверждённый уходит в
+    <a href="/reports/returns">«Отчёты»</a>. Возврат, попавший в акт, второй раз
+    в акт не возьмётся.
+  </p>
+  <div style="display:grid; gap:6px; max-width:640px">
+    {% for code, label, hint in returns_choices %}
+      <label class="check">
+        <input type="checkbox" class="received-status" value="{{ code }}" {{ 'checked' if code in received_statuses }}>
+        <span><b>{{ label }}</b> <span class="muted small">— {{ hint }} ({{ code }})</span></span>
+      </label>
+    {% endfor %}
+  </div>
+  <p class="muted small">
+    Статус, отмеченный в обоих списках, считается «к выдаче»: за таким возвратом
+    ещё едут, и закрывать актом то, что не забрали, нельзя. Снять все отметки —
+    значит выключить акты: полученные возвраты просто перестанут загружаться.
+  </p>
+  <button class="btn primary" id="btn-save-received" style="margin-top:4px">Сохранить и обновить возвраты</button>
   {% endif %}
 
   <h2 style="margin-top:18px">Отчёт об отгрузке</h2>
@@ -208,6 +233,22 @@ document.getElementById('btn-save-statuses')?.addEventListener('click', async (e
   event.target.textContent = 'Обновляем…';
   try {
     const result = await api('/api/returns/statuses', { statuses });
+    toast(result.message, 'ok', 9000);
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    event.target.disabled = false;
+    event.target.textContent = 'Сохранить и обновить возвраты';
+  }
+});
+
+/* Пустой список здесь допустим: это «не вести акты», осознанный выбор. */
+document.getElementById('btn-save-received')?.addEventListener('click', async (event) => {
+  const statuses = Array.from(document.querySelectorAll('.received-status:checked')).map((box) => box.value);
+  event.target.disabled = true;
+  event.target.textContent = 'Обновляем…';
+  try {
+    const result = await api('/api/returns/received-statuses', { statuses });
     toast(result.message, 'ok', 9000);
     setTimeout(() => window.location.reload(), 1500);
   } catch (error) {

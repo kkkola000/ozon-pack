@@ -330,7 +330,10 @@ def build_sheet(
         parts.append(f"принято {act['marked_ok']}, не принято {act['marked_bad']}")
         if act["unmarked"]:
             parts.append(f"без отметки {act['unmarked']}")
-        parts.append(f"лист печатал: {act.get('created_by') or '—'}")
+        # Откуда акт: собрался по статусу «Получен» или загружен за число.
+        # На бумаге это единственный след происхождения документа.
+        if act.get("source_label"):
+            parts.append(act["source_label"])
     parts.append(f"Сформировал: {user.get('login', '—')}")
     parts.append(f"{printed_at.strftime('%d.%m.%Y %H:%M')} UTC")
 

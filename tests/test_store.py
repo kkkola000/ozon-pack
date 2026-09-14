@@ -59,10 +59,14 @@ def test_returns_readiness(sample_data):
         assert row["status_sys"] not in settings.returns_ready_statuses
 
 
-def test_returns_loaded_only_in_wanted_status(sample_data):
-    """Синхронизация забирает у Ozon именно нужный статус, а не всё подряд."""
+def test_returns_loaded_only_in_wanted_statuses(sample_data):
+    """Синхронизация забирает нужные статусы, а не всё подряд.
+
+    Нужных два набора: «к выдаче» — список сборщику к поездке, и «получен» —
+    из них собирается акт на подтверждение. Всё остальное не сохраняется.
+    """
     statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
-    assert statuses == {"ArrivedAtReturnPlace"}, statuses
+    assert statuses <= {"ArrivedAtReturnPlace", "ReceivedBySeller"}, statuses
 
 
 def test_return_leaving_pickup_point_is_dropped(sample_data):
@@ -120,9 +124,13 @@ def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
     result = sync.sync_returns()
 
     statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
-    assert statuses == {"ArrivedAtReturnPlace"}, statuses
+    assert statuses <= {"ArrivedAtReturnPlace", "ReceivedBySeller"}, statuses
     assert result.get("returns_skipped"), "отброшенные возвраты должны быть посчитаны"
-    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 0")["c"] == 0
+    # Не готов к выдаче здесь только полученный: за ним ехать уже не надо,
+    # но отметку по нему поставить ещё предстоит.
+    assert db.query_one(
+        "SELECT COUNT(*) c FROM returns WHERE is_ready = 0 AND received_at IS NULL"
+    )["c"] == 0
 
 
 def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):

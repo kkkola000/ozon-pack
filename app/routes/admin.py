@@ -40,10 +40,12 @@ EVENT_LABELS = {
     "returns_pdf": "Лист возвратов в PDF",
     "return_mark": "Отметка о возврате",
     "return_act_confirm": "Акт возвратов подтверждён",
+    "return_act_received": "Акт возвратов собран по полученным",
     "return_act_upload": "Акт возвратов загружен файлом",
     "return_act_import": "Акты возвратов добавлены из Ozon",
     "returns_giveout": "Штрихкод выдачи",
     "returns_statuses_set": "Изменены статусы возвратов",
+    "returns_received_set": "Изменены статусы «Получен»",
     "user_created": "Создан пользователь",
     "user_updated": "Изменён пользователь",
     "account_created": "Добавлен кабинет",
@@ -158,6 +160,7 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "returns_statuses": options.get_returns_statuses(),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
+            "received_statuses": options.get_received_statuses(),
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
@@ -435,5 +438,38 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
     return {
         "status": "ok",
         "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
+        "result": result,
+    }
+
+
+@router.post("/api/returns/received-statuses")
+def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin),
+                          account: dict = Depends(require_ozon_account)):
+    """В каких статусах возврат считается полученным — из них собирается акт.
+
+    Пустой список разрешён: это «не вести акты автоматически». Отказывать здесь,
+    как в списке к выдаче, нельзя — иначе выключить акты было бы невозможно.
+    """
+    check_csrf(request)
+    raw = payload.get("statuses") or []
+    known = {code for code, _label, _hint in options.RETURN_STATUS_CHOICES}
+    unknown = [str(s).strip() for s in raw if str(s).strip() not in known]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Неизвестный статус: {', '.join(unknown)}")
+    statuses = [str(s).strip() for s in raw if str(s).strip()]
+
+    options.set_received_statuses(statuses, user=admin)
+    try:
+        result = sync.sync_returns(account)
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
+    if not statuses:
+        return {"status": "ok", "result": result,
+                "message": "Акты по статусу больше не собираются: полученные возвраты не загружаются."}
+    names = ", ".join(options.status_label(code) for code in statuses)
+    return {
+        "status": "ok",
+        "message": f"Полученными считаются возвраты в статусах: {names}. "
+                   f"Новых получено: {result.get('returns_received', 0)}.",
         "result": result,
     }
