@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Ошибка {{ status }} · Ozon Pack{% endblock %}
+{% block wrap_class %}narrow{% endblock %}
+
+{% block content %}
+{# Страница на случай, когда по ссылке открылось не то, что ждали: печать,
+   выгрузка, документ. Оператору нужно объяснение и путь назад, а не JSON. #}
+<div class="panel">
+  <div class="muted small">Ошибка {{ status }}</div>
+  <h2 style="margin:6px 0 12px">
+    {% if status == 404 %}Не найдено
+    {% elif status == 403 %}Нет доступа
+    {% elif status == 409 %}Так сделать нельзя
+    {% elif status == 503 %}Пока недоступно
+    {% else %}Не получилось{% endif %}
+  </h2>
+
+  <p style="margin:0 0 18px; font-size:15px; line-height:1.5">{{ detail }}</p>
+
+  <div class="row">
+    <a class="btn primary" href="/returns">К возвратам</a>
+    <a class="btn" href="/pack">К сборке</a>
+    <button class="btn" onclick="history.back()">Назад</button>
+  </div>
+</div>
+{% endblock %}

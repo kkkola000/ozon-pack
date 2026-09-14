@@ -6,6 +6,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -59,15 +60,66 @@ async def lifespan(app: FastAPI):
         worker.stop()
 
 
-app = FastAPI(title="Ozon Pack", docs_url=None, redoc_url=None, lifespan=lifespan)
+class Utf8JSONResponse(JSONResponse):
+    """JSON с явной кодировкой.
+
+    Без «charset=utf-8» браузер, открывший адрес напрямую (а не через fetch),
+    угадывает кодировку по настройкам системы. На русской Windows это CP1251, и
+    сообщение приходит нечитаемым: «РўСЂРµР±СѓРµС‚СЃСЏ РІС…РѕРґ» вместо
+    «Требуется вход». Так оператору и показали причину ошибки.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+
+app = FastAPI(title="Ozon Pack", docs_url=None, redoc_url=None, lifespan=lifespan,
+              default_response_class=Utf8JSONResponse)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
+
+
+def _wants_html(request: Request) -> bool:
+    """Это переход по ссылке, а не запрос из скрипта?
+
+    По ссылкам открываются печать и выгрузки — на них человек смотрит глазами,
+    и JSON-ответ ему ничего не объясняет.
+    """
+    if request.headers.get("X-Requested-With"):
+        return False
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept and "application/json" not in accept.split(",")[0]
+
+
+@app.exception_handler(StarletteHTTPException)
+async def error_response(request: Request, exc: StarletteHTTPException):
+    """Ошибку показываем так, как её будут читать.
+
+    Перешли по ссылке — страница с объяснением; запросил скрипт — JSON,
+    который разберёт панель.
+    """
+    detail = exc.detail if isinstance(exc.detail, str) else "Ошибка"
+    if _wants_html(request):
+        return deps.templates.TemplateResponse(
+            request,
+            "error.html",
+            {
+                "request": request,
+                "user": getattr(request.state, "user", None),
+                "status": exc.status_code,
+                "detail": detail,
+                "active_tab": "",
+            },
+            status_code=exc.status_code,
+            headers=getattr(exc, "headers", None),
+        )
+    return Utf8JSONResponse({"detail": detail}, status_code=exc.status_code,
+                            headers=getattr(exc, "headers", None))
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else None
     if not security.ip_allowed(client_ip):
-        return JSONResponse({"detail": "Доступ с этого IP запрещён"}, status_code=403)
+        return Utf8JSONResponse({"detail": "Доступ с этого IP запрещён"}, status_code=403)
 
     session = security.read_session(request.cookies.get(security.SESSION_COOKIE))
     request.state.session = session
@@ -78,7 +130,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     if path.startswith("/api/"):
-        return JSONResponse({"detail": "Требуется вход"}, status_code=401)
+        return Utf8JSONResponse({"detail": "Требуется вход"}, status_code=401)
     return RedirectResponse(f"/login?next={path}", status_code=303)
 
 
