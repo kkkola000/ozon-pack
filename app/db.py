@@ -206,12 +206,18 @@ CREATE TABLE IF NOT EXISTS return_acts (
     id           TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
     created_by   TEXT,
-    -- account | all | nosheet (возврат забрали, а листа на него не печатали)
+    -- ozon    — собран из акта выдачи площадки, это основной случай;
+    -- nosheet — возврат забрали, а акта площадки на него ещё нет;
+    -- account | all — акты прежних версий, собранные печатью листа.
     kind         TEXT NOT NULL DEFAULT 'account',
     account_id   INTEGER,
+    -- Акт выдачи Ozon, из которого собран этот: его номер и состав — источник.
+    giveout_id   TEXT,
+    giveout_status TEXT,
     confirmed_at TEXT,
     confirmed_by TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_return_acts_giveout ON return_acts(giveout_id);
 CREATE INDEX IF NOT EXISTS idx_return_acts_open ON return_acts(confirmed_at, created_at);
 
 -- Акты выдачи возвратов, которые составляет сам Ozon (у Avito такого нет).
@@ -492,6 +498,19 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
 # Таблицы, которые до появления кабинетов хранили данные одного магазина.
 ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "returns")
 
+# Таблицам отсюда дописываются колонки, появившиеся в схеме позже их самих.
+# Оператор создания таблицы колонку в живую таблицу не добавляет, поэтому
+# каждая таблица схемы, которая может уже существовать на сервере, обязана
+# быть в списке: иначе обновление падает на первом запросе к новой колонке.
+# Полноту списка держит проверка в tests/test_migration.py.
+TABLES_WITH_NEW_COLUMNS = (
+    "accounts", "users", "kv", "events", "pack_state",
+    "postings", "posting_items", "products", "product_barcodes",
+    "returns", "return_acts", "ozon_giveouts",
+    "avito_orders", "avito_order_items",
+    "shipped_items",
+)
+
 
 def _schema_columns(table: str) -> list[tuple[str, str]]:
     """Колонки таблицы из SCHEMA: [(имя, остальное определение)].
@@ -607,8 +626,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER")
             conn.execute(f"UPDATE {table} SET account_id = ?", (account_id,))
 
-    # Новые колонки в уже существующих таблицах (например, возвраты Avito).
-    for table in ("avito_orders", "avito_order_items", "postings", "returns", "products"):
+    for table in TABLES_WITH_NEW_COLUMNS:
         _add_missing_columns(conn, table)
 
 

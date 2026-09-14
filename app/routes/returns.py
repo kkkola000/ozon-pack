@@ -308,14 +308,9 @@ def _collect_sheet(request: Request, user: dict, scheme: str, place: str, q: str
 
     _mark_printed("returns", items)
     _mark_printed("avito_orders", avito_orders)
-    # Печать листа заводит акт: с этим листом поедут в пункт выдачи, и по нему
-    # же потом будут ставить отметки. Строкам, у которых акт уже есть, новый не
-    # достаётся — возврат остаётся в той поездке, для которой его напечатали.
-    return_acts.open_sheet_act(
-        user, items, avito_orders,
-        kind=ALL_ACCOUNTS if everywhere else "account",
-        account_id=None if everywhere else account["id"],
-    )
+    # Акт печать больше не заводит: его составляет площадка. Ozon отдаёт акт
+    # выдачи с составом и временем, и «Ждёт подтверждения» собирается из него —
+    # это факт передачи, а не намерение съездить.
 
     return {
         "items": items,

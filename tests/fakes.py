@@ -84,18 +84,20 @@ class FakeOzonClient(OzonClient):
     def _make_giveout(self, index: int, now: datetime) -> dict:
         """Акт выдачи возвратов, как его отдаёт Ozon.
 
-        Состав берём из настоящих возвратов подделки: акт площадки описывает то
-        же событие, что и наш акт, и по товарам они должны сходиться.
+        Состав — настоящие возвраты подделки, со штрихкодом каждого: по нему
+        панель и раскладывает акт на свои строки. В пункте выдачи забирают всё
+        разом, поэтому в акт попадают и FBS, и FBO.
         """
         chunk = self._returns[index * 3 : index * 3 + 3]
         return {
             "giveout_id": 700000 + self._seed * 100 + index,
             "giveout_status": "COMPLETED" if index else "FORMED",
-            "created_at": _iso(now - timedelta(days=index + 1)),
+            "created_at": _iso(now - timedelta(hours=index * 7 + 2)),
             "_articles": [
                 {
                     "article_name": r["product"]["name"],
                     "seller_sku": r["product"]["offer_id"],
+                    "barcode": r["logistic"]["barcode"],
                     "approved": True,
                 }
                 for r in chunk
@@ -204,7 +206,9 @@ class FakeOzonClient(OzonClient):
             "logistic": {
                 "return_date": _iso(arrived - timedelta(days=2)),
                 "final_moment": _iso(arrived) if ready else None,
-                "barcode": f"RET{90000000 + index}",
+                # Штрихкод свой на кабинет: у разных магазинов возвраты разные,
+                # и на совпадении номеров нельзя проверить разделение данных.
+                "barcode": f"RET{90000000 + self._seed * 1000 + index}",
             },
             "visual": {"status": {"id": index, "display_name": display, "sys_name": status}, "change_moment": _iso(arrived)},
             "additional_info": {"is_opened": index % 5 == 0, "is_super_econom": False},

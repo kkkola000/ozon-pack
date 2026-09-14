@@ -1,16 +1,22 @@
 """Акты получения возвратов.
 
-Акт — это один напечатанный лист возвратов: с ним съездили в пункт выдачи,
-забрали товар и проверили его. Пока по каждой строке акта не поставят отметку
-и акт не подтвердят, он висит во вкладке «Ждёт подтверждения».
+Акт — одна выдача в пункте: приехали, забрали, проверили. Пока по каждой
+строке не поставят отметку и акт не подтвердят, он висит во вкладке «Ждёт
+подтверждения».
+
+Составляет акт площадка. Ozon отдаёт его методами /v1/return/giveout/* со
+своим составом и временем, и панель раскладывает этот акт на свои возвраты по
+штрихкоду (app/giveouts.py). Забирают в пункте всё разом — и FBS, и FBO, —
+поэтому один акт закрывает поездку целиком.
 
 Зачем это нужно. Забранный возврат Ozon перестаёт отдавать как «В пункте
-выдачи», и раньше строка просто пропадала с экрана — ровно в тот момент, когда
-сборщик заканчивал проверку и шёл записать результат. Акт держит строку до
-подтверждения, и отметку есть куда поставить.
+выдачи», и строка пропадала с экрана ровно тогда, когда сборщик заканчивал
+проверку и шёл записать результат. Акт держит её до подтверждения.
 
-Акт закрепляется за строкой **первой** печатью и больше не меняется: иначе
-повторная печать листа переписывала бы прошлые поездки задним числом.
+Запасной путь. Возврат пропал из выдачи, а акта площадки на него ещё нет —
+такой попадает в акт «без листа» за день, чтобы не исчез молча. Появится акт
+Ozon с этим возвратом — строка переедет в него: документ площадки точнее, а
+два акта на один возврат означали бы две отметки на одну работу.
 """
 from __future__ import annotations
 
@@ -60,6 +66,53 @@ def attach(act_id: str, table: str, rows: list[dict], *, conn=None) -> int:
     sql = f"UPDATE {table} SET act_id = ? WHERE act_id IS NULL AND (account_id, id) IN ({pairs})"
     cursor = conn.execute(sql, params) if conn is not None else db.execute(sql, params)
     return cursor.rowcount or 0
+
+
+def from_giveout(account_id: int, giveout_id: str, *, created_at: str | None,
+                 status: str | None, return_ids: list[str]) -> str | None:
+    """Собрать акт из акта выдачи Ozon.
+
+    Это основной путь: площадка сама сообщает, что и когда отдала, — состав и
+    время берём у неё, а не выводим из того, что возврат пропал из выдачи.
+
+    Возврат мог уже попасть в акт «без листа» (панель заметила пропажу раньше,
+    чем появился акт площадки). Такой переносим сюда: акт площадки точнее, а
+    два акта на один возврат — это две отметки на одну работу.
+    """
+    if not return_ids:
+        return None
+    placeholders = ",".join("?" for _ in return_ids)
+    with db.write() as conn:
+        row = conn.execute("SELECT id FROM return_acts WHERE giveout_id = ?", (giveout_id,)).fetchone()
+        act_id = row["id"] if row else _new_id()
+        if row:
+            conn.execute(
+                "UPDATE return_acts SET giveout_status = ?, created_at = COALESCE(?, created_at) WHERE id = ?",
+                (status, created_at, act_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, giveout_id, giveout_status) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (act_id, created_at or db.now_iso(), None, "ozon", account_id, giveout_id, status),
+            )
+        conn.execute(
+            f"""
+            UPDATE returns SET act_id = ?
+            WHERE account_id = ? AND id IN ({placeholders})
+              AND (act_id IS NULL
+                   OR act_id IN (SELECT id FROM return_acts
+                                 WHERE kind = ? AND confirmed_at IS NULL))
+            """,
+            [act_id, account_id] + return_ids + [NO_SHEET],
+        )
+        # Акт «без листа», из которого всё разобрали, больше не нужен.
+        conn.execute(
+            "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
+            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
+            (NO_SHEET,),
+        )
+    return act_id
 
 
 def open_sheet_act(user: dict, ozon_rows: list[dict], avito_rows: list[dict], *,
@@ -164,7 +217,20 @@ def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
         "confirmed_local": store.local_time(act.get("confirmed_at")),
         "title": f"Возвраты за {store.local_time(act.get('created_at'))}",
         "no_sheet": act.get("kind") == NO_SHEET,
+        "from_ozon": act.get("kind") == "ozon",
+        "giveout_label": _giveout_label(act),
     }
+
+
+def _giveout_label(act: dict) -> str:
+    """Подпись акта площадки: по ней акт сверяют с документом Ozon."""
+    if act.get("kind") != "ozon":
+        return ""
+    from . import giveouts
+
+    status = giveouts.status_label(act.get("giveout_status") or "")
+    number = act.get("giveout_id") or ""
+    return f"акт Ozon {number}" + (f" · {status}" if status else "")
 
 
 def pending(account_ids: list[int] | None = None) -> list[dict]:

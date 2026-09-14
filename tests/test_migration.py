@@ -203,6 +203,41 @@ def test_avito_packing_columns_appear_in_old_database(tmp_path, monkeypatch):
         assert name in columns, name
 
 
+def test_act_columns_appear_in_old_database():
+    """Колонки акта выдачи дописываются к таблице, созданной прежней версией."""
+    conn = db.connect()
+    conn.execute("DROP TABLE IF EXISTS return_acts")
+    conn.execute(
+        "CREATE TABLE return_acts (id TEXT PRIMARY KEY, created_at TEXT NOT NULL,"
+        " created_by TEXT, kind TEXT NOT NULL DEFAULT 'account', account_id INTEGER,"
+        " confirmed_at TEXT, confirmed_by TEXT)"
+    )
+    db.init_db()
+    columns = set(db._columns(db.connect(), "return_acts"))
+    for name in ("giveout_id", "giveout_status"):
+        assert name in columns, name
+
+
+def test_every_schema_table_gets_new_columns():
+    """Таблицу из схемы нельзя забыть в списке миграции.
+
+    CREATE TABLE IF NOT EXISTS не добавляет колонку в уже существующую таблицу.
+    Забыли таблицу в списке — на сервере, где она создана прежней версией,
+    обновление падает на первом же запросе к новой колонке. Так и случилось с
+    return_acts.
+    """
+    import re
+
+    in_schema = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db.SCHEMA))
+    # Эти создаёт и наполняет сама схема при первом запуске, колонок в них не
+    # прибавлялось ни разу; остальные обязаны быть в списке.
+    migrated = set(db.TABLES_WITH_NEW_COLUMNS)
+    forgotten = in_schema - migrated
+    assert not forgotten, (
+        "таблицы из схемы не попали в миграцию колонок: " + ", ".join(sorted(forgotten))
+    )
+
+
 def test_create_sql_survives_semicolon_in_comment():
     """Комментарий с «;» не должен обрывать оператор CREATE TABLE."""
     assert ";" in db.SCHEMA

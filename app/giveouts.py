@@ -1,22 +1,25 @@
 """Акты выдачи возвратов, которые составляет Ozon.
 
-Свой акт панель собирает из напечатанного листа (app/return_acts.py) — это
-внутренний документ склада: кто поехал, что привёз, что принял. Ozon ведёт свой
-учёт того же события и отдаёт его методами /v1/return/giveout/*. У Avito
-такого нет вовсе.
+Это основной источник раздела «Ждёт подтверждения». В пункте выдачи забирают
+всё разом — и FBS, и FBO, — и Ozon составляет на это акт: что отдано и когда.
+Панель забирает акт методами /v1/return/giveout/* и раскладывает его на строки
+своих возвратов. Так состав и время берутся у площадки, а не выводятся из того,
+что возврат перестал показываться к выдаче.
 
-Панель загружает акты Ozon и показывает рядом со своими — чтобы было с чем
-сверить полученное. Автоматически их между собой не сшиваем: сопоставлять
-документы двух сторон по составу можно только когда точно известны поля Ozon,
-а они у этого метода менялись. Поэтому разобранное лежит в колонках, а ответ
-целиком сохраняется в raw: если поля разъедутся, будет по чему чинить.
+Строки акта ложатся на возвраты по штрихкоду. Ищем его по значению, а не по
+имени колонки: поля этого метода у Ozon менялись, и привязка к имени сломалась
+бы на следующей версии. Ответ целиком всё равно сохраняется в raw — если что-то
+разъедется, будет по чему чинить.
+
+У Avito такого документа нет вовсе: его возвраты попадают в акт только вместе
+с общим листом, и отметки по ним ставятся так же.
 """
 from __future__ import annotations
 
 import json
 import logging
 
-from . import db, ozon, store
+from . import db, ozon, return_acts, store
 from .ozon import OzonError
 
 log = logging.getLogger("giveouts")
@@ -64,6 +67,53 @@ def status_label(code: str) -> str:
     return STATUS_LABELS.get((code or "").upper(), code or "")
 
 
+def _values(item: dict) -> list[str]:
+    """Все строковые значения строки акта, включая вложенные."""
+    found: list[str] = []
+    stack = [item]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+        elif isinstance(current, (str, int)) and not isinstance(current, bool):
+            text = str(current).strip()
+            if text:
+                found.append(text)
+    return found
+
+
+def match_returns(account_id: int, items: list[dict]) -> list[str]:
+    """Возвраты кабинета, которые описаны строками акта.
+
+    Сопоставляем по значению, а не по имени поля: в акте есть штрихкод
+    возврата, но как именно называется колонка — у метода менялось. Берём из
+    строки все значения и ищем совпадение среди штрихкодов, идентификаторов и
+    номеров отправлений этого кабинета. Такой поиск не зависит от того, как
+    Ozon назовёт поле в следующей версии.
+    """
+    candidates: set[str] = set()
+    for item in items:
+        candidates.update(_values(item))
+    if not candidates:
+        return []
+
+    found: list[str] = []
+    values = list(candidates)
+    for start in range(0, len(values), 400):
+        chunk = values[start : start + 400]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = db.query(
+            f"SELECT id FROM returns WHERE account_id = ? AND ("
+            f"barcode IN ({placeholders}) OR id IN ({placeholders}) OR posting_number IN ({placeholders}))",
+            [account_id] + chunk * 3,
+        )
+        found += [row["id"] for row in rows]
+    # Порядок не важен, важна однократность: один возврат — одна строка акта.
+    return sorted(set(found))
+
+
 def sync_account(account: dict) -> dict:
     """Загрузить акты выдачи кабинета. Мягко к отсутствию метода.
 
@@ -74,6 +124,8 @@ def sync_account(account: dict) -> dict:
     client = ozon.get_client(account)
     account_id = account["id"]
     saved = 0
+    matched = 0
+    unmatched = 0
     last_id = 0
 
     for _page in range(MAX_PAGES):
@@ -81,7 +133,7 @@ def sync_account(account: dict) -> dict:
             giveouts, has_next = client.giveout_list(limit=PAGE_LIMIT, last_id=last_id)
         except OzonError as exc:
             log.warning("Акты выдачи недоступны: %s", exc)
-            return {"giveouts": saved, "giveouts_error": exc.message}
+            return _result(saved, matched, unmatched, error=exc.message)
         if not giveouts:
             break
         for raw in giveouts:
@@ -99,6 +151,23 @@ def sync_account(account: dict) -> dict:
             items = _items_of(merged)
             _upsert(account_id, giveout_id, merged, items)
             saved += 1
+            # Строки акта — это и есть «Ждёт подтверждения»: площадка сама
+            # сказала, какие возвраты отдала и когда.
+            return_ids = match_returns(account_id, items)
+            return_acts.from_giveout(
+                account_id, giveout_id,
+                created_at=_pick(merged, CREATED_KEYS) or None,
+                status=_pick(merged, STATUS_KEYS) or None,
+                return_ids=return_ids,
+            )
+            matched += len(return_ids)
+            if items and not return_ids:
+                # Акт есть, а возвраты по нему не нашлись: у нас нет их строк
+                # или в акте нет ни штрихкода, ни номера. Молчать нельзя —
+                # иначе раздел останется пустым без объяснения.
+                unmatched += 1
+                log.info("Акт %s: ни один из %s товаров не сопоставлен с возвратами",
+                         giveout_id, len(items))
         last_id = _pick(giveouts[-1], ID_KEYS) or 0
         try:
             last_id = int(last_id)
@@ -107,7 +176,18 @@ def sync_account(account: dict) -> dict:
         if not has_next or not last_id:
             break
 
-    return {"giveouts": saved}
+    return _result(saved, matched, unmatched)
+
+
+def _result(saved: int, matched: int, unmatched: int, *, error: str | None = None) -> dict:
+    result: dict = {"giveouts": saved}
+    if matched:
+        result["giveouts_returns"] = matched
+    if unmatched:
+        result["giveouts_unmatched"] = unmatched
+    if error:
+        result["giveouts_error"] = error
+    return result
 
 
 def _upsert(account_id: int, giveout_id: str, raw: dict, items: list[dict]) -> None:

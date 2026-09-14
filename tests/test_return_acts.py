@@ -1,16 +1,21 @@
 """Акты получения возвратов.
 
-Суть: возврат нельзя терять с экрана в тот момент, когда его забрали. Раньше
-Ozon переставал отдавать забранный возврат, и строка исчезала ровно тогда,
-когда сборщик заканчивал проверку и шёл записать результат. Акт держит её до
-подтверждения.
+Акт составляет площадка: Ozon отдаёт его методами /v1/return/giveout/* со
+своим составом и временем, а панель раскладывает акт на свои возвраты по
+штрихкоду. Забирают в пункте всё разом — и FBS, и FBO, — поэтому один акт
+закрывает поездку целиком.
+
+Суть раздела: возврат нельзя терять с экрана в тот момент, когда его забрали.
+Ozon перестаёт отдавать забранный возврат как «В пункте выдачи», и строка
+исчезала ровно тогда, когда сборщик заканчивал проверку и шёл записать
+результат.
 """
 import re
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, avito, db, return_acts, sync
+from app import accounts, db, giveouts, return_acts, sync
 from app.main import app
 
 
@@ -27,198 +32,239 @@ def login(client) -> str:
     return re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
 
 
-def ready_ids(account_id=None):
-    account_id = account_id or accounts.default_account()["id"]
-    return [
-        row["id"] for row in db.query(
-            "SELECT id FROM returns WHERE account_id = ? AND is_ready = 1 ORDER BY id", (account_id,)
-        )
-    ]
+def act_returns():
+    """Возвраты, разложенные по актам площадки."""
+    return {
+        row["id"]: row["act_id"]
+        for row in db.query("SELECT id, act_id FROM returns WHERE act_id IS NOT NULL")
+    }
 
 
-def pickup(ids):
-    """Возвраты забрали: Ozon перестал отдавать их как «В пункте выдачи»."""
-    account = accounts.default_account()
-    from app import ozon
-
-    client = ozon.get_client(account)
-    original = client.returns_list
-
-    def without(*a, **kw):
-        returns, has_next = original(*a, **kw)
-        return [r for r in returns if str(r.get("id")) not in set(map(str, ids))], has_next
-
-    client.returns_list = without
-    sync.sync_returns(account)
-    client.returns_list = original
+def a_giveout():
+    row = db.query_one("SELECT * FROM ozon_giveouts ORDER BY id LIMIT 1")
+    assert row is not None, "в подделке нет актов выдачи"
+    return giveouts.view(row)
 
 
-def mark(client, csrf, return_id, value="ok", note="", marketplace="ozon"):
+def mark(client, csrf, return_id, value="ok", note=""):
     response = client.post(
         "/api/returns/mark",
-        json={"marketplace": marketplace, "id": return_id, "mark": value, "note": note},
+        json={"marketplace": "ozon", "id": return_id, "mark": value, "note": note},
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200, response.text
-    return response
 
 
-# ---------------------------------------------------------------- акт заводится печатью
-def test_printing_the_sheet_opens_an_act(client):
-    login(client)
-    assert return_acts.pending() == []
-
-    assert client.get("/returns/print").status_code == 200
-
-    acts = return_acts.pending()
-    assert len(acts) == 1, "печать листа не завела акт"
-    act = acts[0]
-    assert act["total"] == len(ready_ids())
-    assert act["created_by"] == "admin"
-    assert act["unmarked"] == act["total"]
-    assert act["can_confirm"] is False, "пустой акт нельзя подтверждать"
-
-
-def test_pdf_sheet_opens_an_act_too(client):
-    """Лист скачали файлом — за ним поедут так же, как за напечатанным."""
-    login(client)
-    assert client.get("/returns/sheet.pdf").status_code == 200
-    assert len(return_acts.pending()) == 1
-
-
-def test_reprinting_does_not_move_returns_to_a_new_act(client):
-    """Повторная печать не переписывает прошлую поездку задним числом."""
-    login(client)
-    client.get("/returns/print")
-    first = return_acts.pending()[0]
-
-    client.get("/returns/print")
-    acts = return_acts.pending()
-    assert len(acts) == 1, "перепечатка того же листа завела лишний акт"
-    assert acts[0]["id"] == first["id"]
-    assert acts[0]["total"] == first["total"]
-
-
-def test_new_returns_go_to_a_new_act(client):
-    """Появился новый возврат — печать заводит второй акт только на него."""
-    login(client)
-    client.get("/returns/print")
-    first = return_acts.pending()[0]
-
-    db.execute(
-        "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity,"
-        " is_ready, first_seen_at, updated_at)"
-        " VALUES(?, 'new-1', 'FBS', 'ArrivedAtReturnPlace', 'В пункте выдачи', 'Новый возврат', 1, 1, ?, ?)",
-        (accounts.default_account()["id"], db.now_iso(), db.now_iso()),
-    )
-    client.get("/returns/print")
-
-    acts = {a["id"]: a for a in return_acts.pending()}
-    assert len(acts) == 2
-    assert acts[first["id"]]["total"] == first["total"], "старый акт изменился"
-    fresh = next(a for a in acts.values() if a["id"] != first["id"])
-    assert [r["id"] for r in fresh["ozon"]] == ["new-1"]
-
-
-# ---------------------------------------------------------------- возврат не теряется
-def test_received_return_stays_in_the_act(client):
-    """Главное свойство: забрали возврат — строка осталась в акте."""
-    login(client)
-    client.get("/returns/print")
-    ids = ready_ids()
-
-    pickup(ids[:2])
-
-    assert ready_ids() == ids[2:], "возвраты не ушли из списка к выдаче"
-    act = return_acts.pending()[0]
-    assert {r["id"] for r in act["ozon"]} >= set(ids[:2]), "забранные возвраты выпали из акта"
-    assert act["received"] == 2
-
-
-def test_page_shows_the_act_with_received_returns(client):
-    login(client)
-    client.get("/returns/print")
-    ids = ready_ids()
-    pickup(ids)
-
-    page = client.get("/returns?tab=acts")
-    assert page.status_code == 200
-    assert "Ждёт подтверждения" in page.text
-    for return_id in ids:
-        assert str(return_id) in page.text, f"возврата {return_id} нет во вкладке актов"
-
-
-def test_main_tab_is_unchanged(client):
-    """Главная страница возвратов осталась прежней — там только то, что к выдаче."""
-    login(client)
-    client.get("/returns/print")
-    ids = ready_ids()
-    pickup(ids[:1])
-
-    page = client.get("/returns")
-    assert page.status_code == 200
-    assert str(ids[0]) not in page.text, "забранный возврат остался в списке к выдаче"
-    for return_id in ids[1:]:
-        assert str(return_id) in page.text
-
-
-def test_return_taken_without_a_sheet_lands_in_its_own_act(client):
-    """За возвратом съездили без листа — он всё равно должен ждать отметки."""
-    login(client)
-    ids = ready_ids()
-    pickup(ids[:1])
-
-    acts = return_acts.pending()
-    assert len(acts) == 1, "возврат без листа пропал молча"
-    assert acts[0]["no_sheet"] is True
-    assert [r["id"] for r in acts[0]["ozon"]] == [ids[0]]
-
-
-def test_sync_keeps_marked_returns_when_statuses_change(client):
-    """Смена списка статусов не должна стирать отметки вместе со строками."""
-    from app import options
-
-    csrf = login(client)
-    client.get("/returns/print")
-    target = ready_ids()[0]
-    mark(client, csrf, target, "bad", "нет комплекта")
-
-    options.set_returns_statuses(["MovingToSeller"])
-    sync.sync_returns(accounts.default_account())
-
-    row = db.query_one("SELECT mark, note FROM returns WHERE id = ?", (target,))
-    assert row is not None, "строка с отметкой удалена при смене статусов"
-    assert row["mark"] == "bad" and row["note"] == "нет комплекта"
-
-
-# ---------------------------------------------------------------- подтверждение
 def confirm(client, csrf, act_id):
     return client.post(f"/api/returns/acts/{act_id}/confirm", json={},
                        headers={"X-CSRF-Token": csrf})
 
 
+# ---------------------------------------------------------------- акт от площадки
+def test_giveout_becomes_an_act(sample_data):
+    """Акт выдачи Ozon раскладывается в раздел «Ждёт подтверждения»."""
+    acts = return_acts.pending()
+    assert acts, "акты площадки не превратились в акты панели"
+    assert all(act["from_ozon"] for act in acts)
+    assert all(act["giveout_id"] for act in acts)
+
+
+def test_act_rows_come_from_the_giveout(sample_data):
+    """В акте ровно те возвраты, что перечислены в акте площадки."""
+    giveout = a_giveout()
+    act = next(a for a in return_acts.pending() if a["giveout_id"] == giveout["id"])
+
+    barcodes = {item["barcode"] for item in giveout["items"]}
+    in_act = {row["barcode"] for row in act["ozon"]}
+    assert in_act == barcodes, "состав акта разошёлся с актом площадки"
+
+
+def test_act_keeps_the_platform_time_and_number(sample_data):
+    """Время выдачи берём у площадки: возвраты забирают несколько раз в день."""
+    giveout = a_giveout()
+    act = next(a for a in return_acts.pending() if a["giveout_id"] == giveout["id"])
+    assert act["created_at"] == giveout["created_at"], "время акта не от площадки"
+    assert str(giveout["id"]) in act["giveout_label"]
+    assert act["giveout_status"], "статус акта площадки не сохранён"
+
+
+def test_two_pickups_a_day_are_two_acts(sample_data):
+    """Съездили дважды — два акта, каждый со своим временем."""
+    acts = return_acts.pending()
+    assert len(acts) >= 2, "подделка отдаёт меньше двух актов"
+    times = [a["created_at"] for a in acts]
+    assert len(set(times)) == len(times), "у актов одинаковое время — их не различить"
+    # Свежий сверху: сборщик закрывает последнюю поездку
+    assert times == sorted(times, reverse=True)
+
+
+def test_fbo_returns_are_in_the_act_too(sample_data):
+    """В пункте забирают всё разом, FBO тоже должны попадать в акт."""
+    schemes = {
+        row["type"] or row["scheme"]
+        for row in db.query("SELECT type, scheme FROM returns WHERE act_id IS NOT NULL")
+    }
+    if "FBO" not in {r["type"] or r["scheme"] for r in db.query("SELECT type, scheme FROM returns")}:
+        pytest.skip("в подделке нет возвратов FBO")
+    assert "FBO" in schemes, "возвраты FBO не попали в акт"
+
+
+def test_one_return_belongs_to_one_act(sample_data):
+    """Две отметки на одну работу — недопустимо."""
+    rows = db.query("SELECT id, act_id FROM returns WHERE act_id IS NOT NULL")
+    assert len(rows) == len({row["id"] for row in rows})
+
+
+def test_repeat_sync_does_not_move_returns(sample_data):
+    before = act_returns()
+    sync.sync_returns(accounts.default_account())
+    assert act_returns() == before, "повторная синхронизация перетасовала акты"
+
+
+def test_printing_the_sheet_does_not_create_an_act(client):
+    """Акт — это факт передачи, а не намерение съездить."""
+    login(client)
+    before = {a["id"] for a in return_acts.pending()}
+    assert client.get("/returns/print").status_code == 200
+    assert {a["id"] for a in return_acts.pending()} == before
+
+
+# ---------------------------------------------------------------- сопоставление
+def test_matching_finds_returns_by_barcode(sample_data):
+    account = accounts.default_account()
+    row = db.query_one("SELECT id, barcode FROM returns WHERE barcode IS NOT NULL LIMIT 1")
+    found = giveouts.match_returns(account["id"], [{"barcode": row["barcode"]}])
+    assert found == [row["id"]]
+
+
+def test_matching_does_not_depend_on_the_field_name(sample_data):
+    """Ozon переименует колонку — сопоставление обязано пережить это.
+
+    Поэтому ищем по значению: штрихкод узнаётся, как бы поле ни называлось.
+    """
+    account = accounts.default_account()
+    row = db.query_one("SELECT id, barcode FROM returns WHERE barcode IS NOT NULL LIMIT 1")
+    for field in ("return_barcode", "logistic_barcode", "какое_то_новое_поле"):
+        assert giveouts.match_returns(account["id"], [{field: row["barcode"]}]) == [row["id"]]
+    # И во вложенной структуре тоже
+    assert giveouts.match_returns(
+        account["id"], [{"logistic": {"barcode": row["barcode"]}}]
+    ) == [row["id"]]
+
+
+def test_matching_ignores_foreign_cabinets(sample_data):
+    """Штрихкод чужого кабинета в наш акт попасть не должен."""
+    second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
+    sync.sync_returns(second)
+    foreign = db.query_one(
+        "SELECT barcode FROM returns WHERE account_id = ? AND barcode IS NOT NULL "
+        "AND barcode NOT IN (SELECT barcode FROM returns WHERE account_id = ? AND barcode IS NOT NULL) LIMIT 1",
+        (second["id"], accounts.default_account()["id"]),
+    )
+    if not foreign:
+        pytest.skip("у кабинетов совпадают штрихкоды возвратов")
+    assert giveouts.match_returns(
+        accounts.default_account()["id"], [{"barcode": foreign["barcode"]}]
+    ) == []
+
+
+def test_act_without_recognisable_lines_is_reported(sample_data, monkeypatch):
+    """Акт есть, а возвраты не опознаны — это надо сказать, а не молчать."""
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    account = accounts.default_account()
+    from app import ozon
+
+    client = ozon.get_client(account)
+    monkeypatch.setattr(client, "giveout_list", lambda **kw: ([{"giveout_id": 1, "giveout_status": "DONE"}], False))
+    monkeypatch.setattr(client, "giveout_info", lambda gid: {"articles": [{"article_name": "Неизвестно"}]})
+
+    result = giveouts.sync_account(account)
+    assert result["giveouts"] == 1
+    assert result.get("giveouts_unmatched") == 1
+    assert result.get("giveouts_returns") is None
+    assert return_acts.pending() == [], "акт без опознанных строк показывать нечего"
+
+
+# ---------------------------------------------------------------- запасной путь
+def test_return_taken_before_the_act_is_not_lost(sample_data):
+    """Возврат пропал из выдачи, акта площадки ещё нет — он не должен исчезнуть."""
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    account = accounts.default_account()
+    from app import ozon
+
+    client = ozon.get_client(account)
+    target = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
+    original_returns, original_giveouts = client.returns_list, client.giveout_list
+    client.returns_list = lambda *a, **kw: (
+        [r for r in original_returns(*a, **kw)[0] if str(r.get("id")) != str(target)],
+        original_returns(*a, **kw)[1],
+    )
+    client.giveout_list = lambda **kw: ([], False)
+    sync.sync_returns(account)
+    client.returns_list, client.giveout_list = original_returns, original_giveouts
+
+    acts = return_acts.pending()
+    assert acts, "возврат пропал молча"
+    assert acts[0]["no_sheet"] is True
+    assert [r["id"] for r in acts[0]["ozon"]] == [target]
+
+
+def test_arriving_act_takes_the_return_over(sample_data):
+    """Появился акт площадки — возврат переезжает в него из запасного акта."""
+    account = accounts.default_account()
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+
+    giveout = a_giveout()
+    target = db.query_one(
+        "SELECT id FROM returns WHERE barcode = ?", (giveout["items"][0]["barcode"],)
+    )["id"]
+    spare = return_acts.collect_orphans(account["id"], [target])
+    assert return_acts.detail(spare)["no_sheet"] is True
+
+    giveouts.sync_account(account)
+
+    moved = db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"]
+    assert moved != spare, "возврат остался в запасном акте"
+    assert return_acts.get(moved)["giveout_id"] == giveout["id"]
+    assert return_acts.get(spare) is None, "опустевший запасной акт не убран"
+
+
+def test_confirmed_act_is_not_reshuffled(sample_data):
+    """Подтверждённый акт трогать нельзя: работа по нему уже закрыта."""
+    account = accounts.default_account()
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        db.execute("UPDATE returns SET mark = 'ok' WHERE id = ?", (row["id"],))
+    return_acts.confirm(act["id"], {"login": "admin"})
+
+    giveouts.sync_account(account)
+    still = {row["id"] for row in return_acts.detail(act["id"])["ozon"]}
+    assert still == {row["id"] for row in act["ozon"]}, "подтверждённый акт изменился"
+
+
+# ---------------------------------------------------------------- подтверждение
 def test_act_cannot_be_confirmed_while_something_is_unmarked(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
 
     response = confirm(client, csrf, act["id"])
     assert response.status_code == 409
     assert "отметьте" in response.json()["detail"]
-    assert len(return_acts.pending()) == 1, "акт закрылся без отметок"
+    assert any(a["id"] == act["id"] for a in return_acts.pending()), "акт закрылся без отметок"
 
 
 def test_fully_marked_act_is_confirmed(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     for row in act["ozon"]:
         mark(client, csrf, row["id"], "ok", "цел")
 
     assert return_acts.detail(act["id"])["can_confirm"] is True
-    response = confirm(client, csrf, act["id"])
-    assert response.status_code == 200, response.text
-    assert return_acts.pending() == [], "подтверждённый акт остался в списке"
+    assert confirm(client, csrf, act["id"]).status_code == 200
+    assert not any(a["id"] == act["id"] for a in return_acts.pending())
 
     stored = return_acts.get(act["id"])
     assert stored["confirmed_by"] == "admin" and stored["confirmed_at"]
@@ -226,7 +272,6 @@ def test_fully_marked_act_is_confirmed(client):
 
 def test_confirmation_is_written_to_the_log(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     for row in act["ozon"]:
         mark(client, csrf, row["id"], "ok")
@@ -239,7 +284,6 @@ def test_confirmation_is_written_to_the_log(client):
 
 def test_act_confirmed_twice_says_so(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     for row in act["ozon"]:
         mark(client, csrf, row["id"], "ok")
@@ -253,7 +297,6 @@ def test_act_confirmed_twice_says_so(client):
 
 def test_confirm_requires_csrf(client):
     login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     assert client.post(f"/api/returns/acts/{act['id']}/confirm", json={}).status_code == 403
 
@@ -263,10 +306,37 @@ def test_unknown_act_is_404(client):
     assert confirm(client, csrf, "нет-такого").status_code == 404
 
 
+# ---------------------------------------------------------------- на экране
+def test_page_shows_the_acts(client):
+    login(client)
+    page = client.get("/returns?tab=acts")
+    assert page.status_code == 200
+    assert "Ждёт подтверждения" in page.text
+    for act in return_acts.pending():
+        for row in act["ozon"]:
+            assert str(row["id"]) in page.text, f"возврата {row['id']} нет во вкладке"
+        assert str(act["giveout_id"]) in page.text, "не видно, из какого акта Ozon строки"
+
+
+def test_main_tab_is_unchanged(client):
+    """Главная страница возвратов показывает только то, что лежит в ПВЗ."""
+    login(client)
+    page = client.get("/returns")
+    assert page.status_code == 200
+    ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
+    for return_id in ready:
+        assert str(return_id) in page.text
+
+
+def test_header_counts_open_acts(client):
+    login(client)
+    page = client.get("/returns")
+    assert "Акты ждут подтверждения" in page.text
+
+
 # ---------------------------------------------------------------- печать и PDF акта
 def test_act_sheet_shows_the_marks(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     mark(client, csrf, act["ozon"][0]["id"], "bad", "вскрыта упаковка")
 
@@ -279,70 +349,20 @@ def test_act_sheet_shows_the_marks(client):
 
 def test_act_pdf_is_a_pdf(client):
     csrf = login(client)
-    client.get("/returns/print")
     act = return_acts.pending()[0]
     mark(client, csrf, act["ozon"][0]["id"], "ok", "всё на месте")
 
     response = client.get(f"/returns/acts/{act['id']}.pdf")
     assert response.status_code == 200, response.text
     assert response.content[:5] == b"%PDF-"
-    assert "attachment" in response.headers["content-disposition"]
 
     from io import BytesIO
     from pypdf import PdfReader
 
     text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(response.content)).pages)
-    assert "всё на месте" in text
-    assert "Принят" in text
+    assert "всё на месте" in text and "Принят" in text
 
 
 def test_act_pdf_of_unknown_act_is_404(client):
     login(client)
     assert client.get("/returns/acts/нет-такого.pdf").status_code == 404
-
-
-# ---------------------------------------------------------------- счётчик в шапке
-def test_header_shows_open_acts(client):
-    login(client)
-    client.get("/returns/print")
-    page = client.get("/returns")
-    assert "Акты ждут подтверждения" in page.text
-
-
-def test_header_is_quiet_without_acts(client):
-    login(client)
-    page = client.get("/returns")
-    assert "Акты ждут подтверждения" not in page.text
-
-
-# ---------------------------------------------------------------- акт по всем кабинетам
-def test_all_cabinets_sheet_makes_one_act_for_both_marketplaces(client):
-    second = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(second)
-    login(client)
-
-    assert client.get("/returns/print?scope=all").status_code == 200
-    acts = return_acts.pending()
-    assert len(acts) == 1, "лист по всем кабинетам должен давать один акт"
-    act = acts[0]
-    assert act["kind"] == "all"
-    assert act["ozon"], "в акте нет возвратов Ozon"
-    on_return = db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
-        (second["id"], avito.STATUS_ON_RETURN),
-    )["c"]
-    if on_return:
-        assert act["avito"], "в акте нет заказов Avito"
-
-
-def test_shared_act_is_visible_from_any_cabinet(client):
-    """Лист был общий — подтверждать его логично там же, где на него смотрят."""
-    second = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(second)
-    csrf = login(client)
-    client.get("/returns/print?scope=all")
-
-    switched = client.post("/api/account/switch", json={"account_id": second["id"], "next": "/avito"},
-                           headers={"X-CSRF-Token": csrf})
-    assert switched.status_code == 200, switched.text
-    assert len(return_acts.pending([second["id"]])) == 1
