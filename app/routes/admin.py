@@ -40,7 +40,7 @@ EVENT_LABELS = {
     "returns_pdf": "Лист возвратов в PDF",
     "return_mark": "Отметка о возврате",
     "return_act_confirm": "Акт возвратов подтверждён",
-    "return_act_received": "Акт возвратов собран по полученным",
+    "return_act_received": "Составлен акт возвратов",
     "return_act_upload": "Акт возвратов загружен файлом",
     "return_act_import": "Акты возвратов добавлены из Ozon",
     "returns_giveout": "Штрихкод выдачи",
@@ -447,8 +447,8 @@ def api_received_statuses(request: Request, payload: dict = Body(...), admin: di
                           account: dict = Depends(require_ozon_account)):
     """В каких статусах возврат считается полученным — из них собирается акт.
 
-    Пустой список разрешён: это «не вести акты автоматически». Отказывать здесь,
-    как в списке к выдаче, нельзя — иначе выключить акты было бы невозможно.
+    Пустой список разрешён: это «акты не вести». Отказывать здесь, как в списке
+    к выдаче, нельзя — иначе выключить акты было бы невозможно.
     """
     check_csrf(request)
     raw = payload.get("statuses") or []
@@ -465,11 +465,11 @@ def api_received_statuses(request: Request, payload: dict = Body(...), admin: di
         raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
     if not statuses:
         return {"status": "ok", "result": result,
-                "message": "Акты по статусу больше не собираются: полученные возвраты не загружаются."}
+                "message": "Акты больше не из чего составлять: полученные возвраты не загружаются."}
     names = ", ".join(options.status_label(code) for code in statuses)
     return {
         "status": "ok",
         "message": f"Полученными считаются возвраты в статусах: {names}. "
-                   f"Новых получено: {result.get('returns_received', 0)}.",
+                   f"Ждёт акта возвратов: {result.get('returns_waiting_act', 0)}.",
         "result": result,
     }

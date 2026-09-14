@@ -259,13 +259,6 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
             [account_id] + wanted,
         ).rowcount or 0
 
-        # Возвраты, перешедшие в «Получен», — это факт: они уже у нас, и по
-        # каждому нужна отметка. Сводим их в один акт на подтверждение. Делаем
-        # это до разбора пропавших: получение известно точно, а пропажа — это
-        # только догадка, и два акта на один возврат означали бы две отметки
-        # на одну работу.
-        result_received = return_acts.from_received(account_id).get("added") or 0
-
         if stale:
             # Возврат пропал из выдачи, а «Получен» по нему не приходил: акта у
             # строки нет, и она исчезла бы с экрана молча. Собираем такие в акт
@@ -278,14 +271,16 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
                 )
             ]
             return_acts.collect_orphans(account_id, orphans)
-    else:
-        result_received = 0
 
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}
-    if result_received:
-        result["returns_received"] = result_received
+    # Акт составляет человек, а не обновление: когда поездка закончилась, знает
+    # только он. Поэтому здесь не создаём акт, а говорим, сколько полученных
+    # возвратов его ждёт, — иначе о них можно просто забыть.
+    waiting = len(return_acts.received_returns(account_id))
+    if waiting:
+        result["returns_waiting_act"] = waiting
     if skipped:
         result["returns_skipped"] = skipped
     if gone:

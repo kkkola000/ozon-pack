@@ -214,7 +214,7 @@ def test_act_columns_appear_in_old_database():
     )
     db.init_db()
     columns = set(db._columns(db.connect(), "return_acts"))
-    for name in ("received_day", "giveout_id", "giveout_status"):
+    for name in ("received_day", "day_seq", "giveout_id", "giveout_status"):
         assert name in columns, name
 
 

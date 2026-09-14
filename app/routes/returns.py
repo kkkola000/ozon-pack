@@ -173,9 +173,10 @@ def returns_page(
             "all_total": ready_everywhere(),
             "tab": "acts" if tab == "acts" else "ready",
             "acts": return_acts.pending([account["id"]]),
-            # Числа, за которые есть полученные возвраты без акта: подсказка к
-            # ручной загрузке, чтобы не гадать, какое число выбирать.
+            # Числа, за которые есть полученные возвраты без акта: по ним и
+            # составляют акт, гадать с календарём не нужно.
             "received_days": return_acts.received_days(account["id"]),
+            "waiting_act": len(return_acts.received_returns(account["id"])),
             "today": store.local_day(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
@@ -187,11 +188,15 @@ def returns_page(
 def api_act_by_day(request: Request, payload: dict = Body(...),
                    admin: dict = Depends(require_admin),
                    account: dict = Depends(require_ozon_account)):
-    """Собрать акт из возвратов, полученных за указанное число. Только админу.
+    """Составить акт из возвратов, полученных за указанное число. Только админу.
 
-    Обычно акт собирается сам, как только возврат перешёл в «Получен». Ручная
-    загрузка нужна, когда обновление не работало или статус пришёл с задержкой:
-    возвраты уже в базе, а акта на них нет.
+    Акт составляет человек: когда поездка закончилась, знает только он. Панель
+    копит полученные возвраты, а кнопка сводит в акт те из них, что ещё ни в
+    один акт не вошли.
+
+    За возвратами ездят несколько раз в день, поэтому актов за одно число
+    бывает несколько — каждое нажатие делает новый. Задвоения при этом нет: в
+    акт берутся только свободные возвраты, и нажать дважды подряд безопасно.
 
     Число одно, а не промежуток: акт — это поездка в пункт выдачи, и смешивать
     в нём разные дни значило бы подтверждать одной подписью две работы.
@@ -204,10 +209,10 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
             "status": "ok" if ids else "warning",
             "found": len(ids),
             "day": day,
-            "message": (f"Полученных возвратов за это число: {len(ids)}" if ids else
+            "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
                         "За это число полученных возвратов без акта нет"),
         }
-    return return_acts.from_received(account["id"], user=admin, day=day)
+    return return_acts.from_received(account["id"], day, user=admin)
 
 
 def _valid_day(day: str) -> str:
@@ -473,17 +478,18 @@ def api_returns_sync(request: Request, payload: dict = Body(default={}), user: d
 
 
 def _sync_message(result: dict) -> str:
-    """Что именно сделала синхронизация — вместе с актом на подтверждение.
+    """Что сделало обновление и что теперь ждёт человека.
 
-    Акт собирается молча, и по одной строке «обновлено возвратов» нельзя
-    понять, попало ли полученное в акт. Поэтому говорим прямо.
+    Акт панель не составляет — это решение сборщика. Поэтому здесь главное
+    сказать, сколько полученных возвратов ждёт акта: молча они просто
+    накопятся, и о них забудут.
     """
     parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
-    if result.get("returns_received"):
-        parts.append(f"получено новых: {result['returns_received']} — они в акте "
-                     "во вкладке «Ждёт подтверждения»")
+    if result.get("returns_waiting_act"):
+        parts.append(f"получено и ждёт акта: {result['returns_waiting_act']} — "
+                     "составьте акт во вкладке «Ждёт подтверждения»")
     else:
-        parts.append("новых полученных нет")
+        parts.append("полученных возвратов без акта нет")
     if result.get("returns_gone"):
         parts.append(f"ушло из выдачи: {result['returns_gone']}")
     return ". ".join(parts)

@@ -217,14 +217,16 @@ CREATE TABLE IF NOT EXISTS return_acts (
     id           TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
     created_by   TEXT,
-    -- received — возвраты перешли в статус «Получен», акт собрался сам;
-    -- byday    — администратор загрузил полученные возвраты за указанное число;
+    -- byday    — полученные за указанное число свёл в акт человек;
     -- nosheet  — возврат пропал из выдачи, а «Получен» по нему не приходил;
-    -- ozon | upload | account | all — акты прежних версий.
+    -- received | ozon | upload | account | all — акты прежних версий.
     kind         TEXT NOT NULL DEFAULT 'account',
     account_id   INTEGER,
     -- Число, за которое собран акт (для kind = byday): местная дата получения.
     received_day TEXT,
+    -- Номер акта внутри этого числа. За возвратами ездят несколько раз в день,
+    -- и два акта, составленные в одну минуту, иначе неотличимы в списке.
+    day_seq      INTEGER,
     -- Колонки актов выдачи Ozon. Оставлены ради баз прежних версий: акты о
     -- возвратах площадка не отдаёт, и новые акты их не заполняют.
     giveout_id   TEXT,

@@ -1,9 +1,8 @@
-/* Загрузка полученных возвратов за число — только у администратора.
+/* Составление акта за число — только у администратора.
 
-   Обычно акт собирается сам, как только возврат перешёл в «Получен». Ручная
-   загрузка нужна, когда обновление не работало или статус пришёл с задержкой.
-   Сначала показываем, что попадёт в акт, и лишь потом создаём: акт удалить
-   нельзя, а число легко перепутать. */
+   Акт составляет человек: панель не знает, когда поездка закончилась. Сначала
+   показываем, что попадёт в акт, и лишь потом составляем: акт удалить нельзя,
+   а число легко перепутать. */
 const byDay = document.getElementById('act-byday');
 
 if (byDay) {
@@ -44,6 +43,7 @@ if (byDay) {
       if (!data) { result.textContent = ''; return; }
       result.innerHTML = `<b>${escapeHtml(data.message)}</b>`;
       createButton.hidden = !data.found;
+      createButton.textContent = `Составить акт на ${data.found}`;
     } catch (error) {
       result.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
     } finally {
@@ -53,16 +53,20 @@ if (byDay) {
 
   createButton.onclick = async () => {
     createButton.disabled = true;
+    createButton.textContent = 'Составляем…';
     try {
       const data = await send(false);
       if (data) {
         toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
-        if (data.act_id) setTimeout(() => window.location.reload(), 900);
-        else createButton.disabled = false;
+        if (data.act_id) { setTimeout(() => window.location.reload(), 900); return; }
+        /* Составлять нечего: возвраты забрал акт из соседней вкладки.
+           Прячем кнопку — второе нажатие ничего не изменит. */
+        createButton.hidden = true;
       }
     } catch (error) {
       toast(error.message, 'error', 10000);
       createButton.disabled = false;
+      createButton.textContent = 'Составить акт';
     }
   };
 }

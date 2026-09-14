@@ -1,9 +1,13 @@
 """Акты получения возвратов.
 
-Акт — одна поездка в пункт выдачи. Составляет его панель, а не площадка:
-актов о возвратах Ozon не отдаёт. Признак получения — статус возврата
-«Получен» (ReceivedBySeller): он означает, что возврат уже у нас, и по нему
-нужна отметка.
+Акт — одна поездка в пункт выдачи. Составляет его человек за выбранное число:
+панель не знает, когда поездка закончилась. Признак получения — статус
+возврата «Получен» (ReceivedBySeller): он означает, что возврат уже у нас, и
+по нему нужна отметка.
+
+За возвратами ездят несколько раз в день, поэтому актов за одно число бывает
+несколько. Главное, что здесь проверяется: возврат не может попасть в два акта
+ни при каком порядке действий — иначе по одной работе будет две отметки.
 
 Суть раздела: возврат нельзя терять с экрана в тот момент, когда его забрали.
 Ozon перестаёт отдавать забранный возврат как «В пункте выдачи», и строка
@@ -15,6 +19,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from datetime import datetime, timedelta
+
 from app import accounts, db, options, return_acts, store, sync
 from app.main import app
 
@@ -22,8 +28,8 @@ from app.main import app
 def take_everything(account=None):
     """Съездить за возвратами: всё из пункта выдачи переходит в «Получен».
 
-    Дальше обновление само заметит перемену статуса и соберёт акт — ровно так
-    это происходит в жизни, без единого действия человека в панели.
+    Обновление это заметит и запишет момент получения, но акта не составит:
+    акт — решение человека.
     """
     from app import ozon
 
@@ -33,12 +39,21 @@ def take_everything(account=None):
     return taken
 
 
+def make_act(account=None, day=None, user=None):
+    """Составить акт за число — то же, что нажать кнопку во вкладке."""
+    account = account or accounts.default_account()
+    return return_acts.from_received(
+        account["id"], day or store.local_day(), user=user or {"login": "admin"}
+    )
+
+
 @pytest.fixture
 def acts(sample_data):
-    """Возвраты забрали, панель это заметила."""
+    """Возвраты забрали и свели в акт."""
     take_everything()
+    assert make_act()["status"] == "ok"
     pending = return_acts.pending()
-    assert pending, "полученные возвраты не собрались в акт"
+    assert pending, "полученные возвраты не попали в акт"
     return pending
 
 
@@ -83,42 +98,50 @@ def mark_all(act):
         db.execute("UPDATE avito_orders SET mark = 'ok' WHERE id = ?", (row["id"],))
 
 
-# ------------------------------------------------- акт собирается по статусу
-def test_received_return_becomes_an_act(sample_data):
-    """Возврат перешёл в «Получен» — панель сама завела акт на подтверждение."""
+# ------------------------------------------------- акт составляет человек
+def test_sync_does_not_make_acts(sample_data):
+    """Обновление акта не составляет: когда поездка кончилась, знает человек."""
     taken = take_everything()
     assert taken, "подделка не отдала ни одного возврата из пункта выдачи"
-
-    acts = return_acts.pending()
-    assert len(acts) == 1, "полученное должно быть одним актом, а не россыпью"
-    assert acts[0]["auto"] is True
-    assert {str(row["id"]) for row in acts[0]["ozon"]} >= set(taken)
+    assert return_acts.pending() == [], "обновление составило акт само"
+    # Но получение записано — акт будет из чего составить.
+    assert set(return_acts.received_returns(accounts.default_account()["id"])) >= set(taken)
 
 
-def test_one_act_covers_all_the_items(sample_data):
-    """Съездили один раз — акт один, по всем товарам сразу."""
+def test_sync_reports_what_is_waiting_for_an_act(sample_data):
+    """Молча копить полученные нельзя: о них забудут."""
     take_everything()
-    acts = return_acts.pending()
-    assert len(acts) == 1
-    received = db.query_one(
-        "SELECT COUNT(*) AS c FROM returns WHERE received_at IS NOT NULL"
-    )["c"]
-    assert acts[0]["total"] == received, "не все полученные попали в один акт"
+    result = sync.sync_returns(accounts.default_account())
+    waiting = len(return_acts.received_returns(accounts.default_account()["id"]))
+    assert result["returns_waiting_act"] == waiting > 0
 
 
-def test_act_is_dated_by_the_moment_it_was_formed(sample_data):
-    """Акт за текущие дату и время: за возвратами ездят несколько раз в день."""
-    before = db.now_iso()
+def test_act_takes_everything_received_that_day(sample_data):
+    """Один акт — все свободные полученные возвраты выбранного числа."""
     take_everything()
+    result = make_act()
+    acts = return_acts.pending()
+    assert len(acts) == 1 and acts[0]["by_day"] is True
+    assert acts[0]["received_day"] == store.local_day()
+    assert acts[0]["total"] == result["added"]
+    assert not return_acts.received_returns(accounts.default_account()["id"])
+
+
+def test_act_title_names_the_day_the_number_and_the_time(sample_data):
+    """За одно число актов несколько — по заголовку их надо различать."""
+    take_everything()
+    make_act()
     act = return_acts.pending()[0]
-    assert before <= act["created_at"] <= db.now_iso()
     assert act["title"].startswith("Возвраты за ")
-    assert act["created_local"] in act["title"]
+    assert store.local_time(act["created_at"], "%d.%m.%Y") in act["title"]
+    assert store.local_time(act["created_at"], "%H:%M") in act["title"]
+    assert "№1" in act["title"], "первый акт числа должен быть номером 1"
 
 
 def test_fbo_returns_are_in_the_act_too(sample_data):
     """В пункте забирают всё разом, FBO тоже должны попадать в акт."""
     take_everything()
+    make_act()
     all_schemes = {r["type"] or r["scheme"] for r in db.query("SELECT type, scheme FROM returns")}
     if "FBO" not in all_schemes:
         pytest.skip("в подделке нет возвратов FBO")
@@ -137,49 +160,89 @@ def test_received_returns_leave_the_pickup_list(sample_data):
     assert rows and all(row["is_ready"] == 0 for row in rows)
 
 
-def test_a_second_trip_is_a_second_act(sample_data, monkeypatch):
-    """Две поездки в разное время — два акта: подписывают их отдельно."""
-    from app import ozon
-
-    account = accounts.default_account()
-    client = ozon.get_client(account)
-    first = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
-    client.receive(first)
-    sync.sync_returns(account)
-    assert len(return_acts.pending()) == 1
-
-    # Вторая поездка позже: акт, собранный час назад, для неё уже закрыт.
-    old = db.now_iso()
-    db.execute("UPDATE return_acts SET created_at = datetime(?, '-3 hours')", (old,))
-    client.receive()
-    sync.sync_returns(account)
-
-    acts = return_acts.pending()
-    assert len(acts) == 2, "вторая поездка попала в акт первой"
-    assert acts[0]["created_at"] > acts[1]["created_at"], "свежий акт должен быть сверху"
-
-
-def test_returns_of_one_trip_do_not_split(sample_data, monkeypatch):
-    """Площадка провела часть возвратов позже — акт всё равно один.
-
-    Статусы меняются не одномоментно, а обновление идёт раз в несколько минут.
-    Без этого одна поездка разошлась бы по нескольким актам.
-    """
+# ------------------------------------ несколько актов за одно число, без задвоения
+def test_several_acts_a_day_split_the_returns(sample_data):
+    """Две поездки за день — два акта, и в каждом только свои возвраты."""
     from app import ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
     ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
-    assert len(ready) >= 2
+    assert len(ready) >= 3, "для проверки нужно хотя бы три возврата в ПВЗ"
+
+    first_trip, second_trip = ready[:2], ready[2:]
+    client.receive(*first_trip)
+    sync.sync_returns(account)
+    first = make_act()
+
+    client.receive(*second_trip)
+    sync.sync_returns(account)
+    second = make_act()
+
+    assert first["act_id"] != second["act_id"], "вторая поездка попала в акт первой"
+    # Два акта одного числа различимы даже составленные в одну минуту.
+    titles = [return_acts.detail(a)["title"] for a in (first["act_id"], second["act_id"])]
+    assert titles[0] != titles[1], "акты одного числа неразличимы в списке"
+    assert return_acts.get(second["act_id"])["day_seq"] == 2
+    in_first = {row["id"] for row in return_acts.detail(first["act_id"])["ozon"]}
+    in_second = {row["id"] for row in return_acts.detail(second["act_id"])["ozon"]}
+    assert in_first & in_second == set(), "возврат оказался в двух актах сразу"
+    assert set(second_trip) <= in_second
+    assert set(second_trip) & in_first == set(), "второй завоз попал в первый акт"
+
+
+def test_second_act_the_same_day_takes_only_the_new_returns(sample_data):
+    """Возврат из первого акта во второй не переезжает и не дублируется."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
 
     client.receive(ready[0])
     sync.sync_returns(account)
-    client.receive(*ready[1:])
-    sync.sync_returns(account)
+    first = make_act()
+    in_first = {row["id"] for row in return_acts.detail(first["act_id"])["ozon"]}
+    assert ready[0] in in_first
 
-    acts = return_acts.pending()
-    assert len(acts) == 1, "одна поездка разошлась по нескольким актам"
-    assert acts[0]["total"] >= len(ready)
+    client.receive(ready[1])
+    sync.sync_returns(account)
+    second = make_act()
+
+    assert second["added"] == 1, "во второй акт попало не только новое"
+    assert [row["id"] for row in return_acts.detail(second["act_id"])["ozon"]] == [ready[1]]
+    assert {row["id"] for row in return_acts.detail(first["act_id"])["ozon"]} == in_first, \
+        "первый акт изменился после составления второго"
+
+
+def test_pressing_twice_with_nothing_new_makes_no_act(sample_data):
+    """Нажали кнопку дважды подряд — второго акта нет и быть не должно."""
+    take_everything()
+    first = make_act()
+    again = make_act()
+
+    assert first["status"] == "ok" and first["act_id"]
+    assert again["status"] == "warning" and again["act_id"] is None and again["added"] == 0
+    assert len(return_acts.pending()) == 1, "пустой второй акт всё-таки завёлся"
+
+
+def test_a_return_is_never_in_two_acts(sample_data):
+    """Общее правило раздела, при любом порядке действий."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
+    for chunk in (ready[:1], ready[1:3], ready[3:]):
+        client.receive(*chunk)
+        sync.sync_returns(account)
+        make_act()
+        make_act()  # повтор вхолостую — акта из ничего быть не должно
+
+    rows = db.query("SELECT id, act_id FROM returns WHERE act_id IS NOT NULL")
+    assert len(rows) == len({row["id"] for row in rows}), "возврат числится в двух актах"
+    total_in_acts = sum(act["total"] for act in return_acts.pending())
+    assert total_in_acts == len(rows), "сумма по актам разошлась со строками"
 
 
 # --------------------------------------------- защита от повторной загрузки
@@ -190,11 +253,12 @@ def test_repeat_sync_does_not_move_returns(acts):
 
 
 def test_return_still_reported_as_received_is_not_taken_twice(acts):
-    """Ozon отдаёт «Получен» и дальше — второго акта на тот же возврат нет."""
+    """Ozon отдаёт «Получен» и дальше — в новый акт возврат не попадёт."""
     act = return_acts.pending()[0]
     before = {row["id"] for row in act["ozon"]}
     for _ in range(3):
         sync.sync_returns(accounts.default_account())
+        make_act()
     assert len(return_acts.pending()) == 1, "повтор статуса завёл лишний акт"
     assert {row["id"] for row in return_acts.pending()[0]["ozon"]} == before
 
@@ -214,58 +278,53 @@ def test_return_of_a_confirmed_act_is_never_taken_again(acts):
     return_acts.confirm(act["id"], {"login": "admin"})
 
     sync.sync_returns(accounts.default_account())
-    assert return_acts.pending() == [], "подтверждённые возвраты собрались заново"
-    still = {row["act_id"] for row in db.query(
-        "SELECT act_id FROM returns WHERE id IN (SELECT id FROM returns WHERE act_id IS NOT NULL)"
-    )}
+    assert make_act()["act_id"] is None, "подтверждённые возвраты собрались заново"
+    assert return_acts.pending() == []
+    still = {row["act_id"] for row in db.query("SELECT act_id FROM returns WHERE act_id IS NOT NULL")}
     assert still == {act["id"]}
 
 
-# ----------------------------------------------------- загрузка за число
-def test_loading_a_day_makes_one_act(sample_data):
-    """Полученные за указанное число собираются в один акт."""
-    from app import ozon
-
-    account = accounts.default_account()
-    ozon.get_client(account).receive()
-    # Возвраты уже полученные, но акта на них нет: так выглядит база, если
-    # обновление в тот день не отработало.
-    sync.sync_returns(account)
-    db.execute("DELETE FROM return_acts")
-    db.execute("UPDATE returns SET act_id = NULL")
-
-    day = store.local_day()
-    result = return_acts.from_received(account["id"], user={"login": "admin"}, day=day)
-    assert result["status"] == "ok"
-    acts = return_acts.pending()
-    assert len(acts) == 1 and acts[0]["by_day"] is True
-    assert acts[0]["received_day"] == day
-    assert day.replace("-", ".") not in acts[0]["title"]  # число показываем по-русски
-    assert acts[0]["total"] == result["added"]
-
-
-def test_loading_the_same_day_twice_adds_nothing(sample_data):
-    """Второй раз то же число — второго акта и вторых отметок не будет."""
+# ------------------------------------------------------- выбор числа и кнопка
+def test_only_the_chosen_day_gets_into_the_act(sample_data):
+    """Акт за число — только это число: смешать дни значило бы смешать поездки."""
     account = accounts.default_account()
     take_everything()
-    db.execute("DELETE FROM return_acts")
-    db.execute("UPDATE returns SET act_id = NULL")
+    # Часть возвратов получена вчера: их акт сегодняшнего числа брать не должен.
+    yesterday = store.local_time(
+        (datetime.fromisoformat(db.now_iso()) - timedelta(days=1)).isoformat(), "%Y-%m-%d"
+    )
+    old = [row["id"] for row in db.query(
+        "SELECT id FROM returns WHERE received_at IS NOT NULL LIMIT 2")]
+    placeholders = ",".join("?" for _ in old)
+    db.execute(f"UPDATE returns SET received_day = ? WHERE id IN ({placeholders})",
+               [yesterday] + old)
 
-    day = store.local_day()
-    first = return_acts.from_received(account["id"], user={"login": "admin"}, day=day)
-    again = return_acts.from_received(account["id"], user={"login": "admin"}, day=day)
+    today = make_act(account, day=store.local_day())
+    in_today = {row["id"] for row in return_acts.detail(today["act_id"])["ozon"]}
+    assert in_today & set(old) == set(), "в акт попало чужое число"
 
-    assert again["added"] == 0 and again["status"] == "warning"
-    assert len(return_acts.pending()) == 1
-    assert return_acts.pending()[0]["id"] == first["act_id"]
+    before = make_act(account, day=yesterday)
+    assert sorted(row["id"] for row in return_acts.detail(before["act_id"])["ozon"]) == sorted(old)
 
 
-def test_loading_a_day_without_receipts_says_so(sample_data):
+def test_day_without_receipts_says_so(sample_data):
     account = accounts.default_account()
-    result = return_acts.from_received(account["id"], user={"login": "admin"}, day="2001-01-01")
+    result = return_acts.from_received(account["id"], "2001-01-01", user={"login": "admin"})
     assert result["status"] == "warning"
     assert result["act_id"] is None
     assert "01.01.2001" in result["message"]
+
+
+def test_days_hint_lists_what_is_waiting(sample_data):
+    """Подсказка с числами — это и есть выбор числа, гадать не нужно."""
+    account = accounts.default_account()
+    take_everything()
+    days = return_acts.received_days(account["id"])
+    assert days and days[0]["day"] == store.local_day()
+    assert days[0]["count"] == len(return_acts.received_returns(account["id"]))
+
+    make_act(account)
+    assert return_acts.received_days(account["id"]) == [], "число осталось в подсказке после акта"
 
 
 def login_as_packer(client) -> str:
@@ -289,6 +348,7 @@ def test_day_endpoint_is_admin_only(client):
 
 
 def test_day_endpoint_previews_before_creating(client):
+    """Сначала видно, что попадёт в акт, и только потом акт составляется."""
     csrf = login(client)
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL")
@@ -304,6 +364,12 @@ def test_day_endpoint_previews_before_creating(client):
                           headers={"X-CSRF-Token": csrf})
     assert created.status_code == 200, created.text
     assert created.json()["act_id"]
+    assert len(return_acts.pending()) == 1
+
+    # Второе нажатие подряд: акта из ничего быть не должно.
+    again = client.post("/api/returns/acts/by-day", json={"day": store.local_day()},
+                        headers={"X-CSRF-Token": csrf})
+    assert again.status_code == 200 and again.json()["act_id"] is None
     assert len(return_acts.pending()) == 1
 
 
@@ -345,7 +411,11 @@ def test_return_gone_without_the_received_status_is_not_lost(sample_data):
 
 
 def test_received_status_takes_the_return_over(sample_data):
-    """Пришёл «Получен» — возврат переезжает из запасного акта в акт получения."""
+    """Пришёл «Получен» — возврат переезжает из запасного акта в акт за число.
+
+    Догадка о пропаже слабее факта получения, а два акта на один возврат — это
+    две отметки на одну работу.
+    """
     account = accounts.default_account()
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
@@ -355,10 +425,11 @@ def test_received_status_takes_the_return_over(sample_data):
     assert return_acts.detail(spare)["no_sheet"] is True
 
     take_everything(account)
+    make_act(account)
 
     moved = db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"]
     assert moved != spare, "возврат остался в запасном акте"
-    assert return_acts.get(moved)["kind"] == return_acts.RECEIVED
+    assert return_acts.get(moved)["kind"] == return_acts.BY_DAY
     assert return_acts.get(spare) is None, "опустевший запасной акт не убран"
 
 

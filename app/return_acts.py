@@ -5,24 +5,30 @@
 «Ждёт подтверждения»; подтверждённый уходит в «Отчёты».
 
 Что считается фактом получения. Возврат перешёл в статус «Получен»
-(ReceivedBySeller) — значит, он уже у нас. Панель замечает это при обновлении
-возвратов и сводит все такие возвраты в один акт за текущие дату и время.
-Актов о возвратах Ozon не отдаёт: своего документа, по которому можно было бы
-собрать состав, у площадки нет, поэтому состав собирается по статусам.
+(ReceivedBySeller) — значит, он уже у нас. Актов о возвратах Ozon не отдаёт:
+своего документа, по которому можно было бы собрать состав, у площадки нет,
+поэтому состав собирается по статусам.
 
-Запасной путь — загрузить полученные возвраты за указанное число: обновление
-могло не работать, версия панели могла быть старой, статус мог прийти позже.
-Одно число, а не промежуток: акт — это поездка, а не отчётный период.
+Акт формирует человек, а не обновление. Панель не знает, когда поездка
+закончилась: возвраты переходят в «Получен» по одному, растянуто во времени, и
+любой срок, через который «акт считается закрытым», был бы выдумкой. Поэтому
+панель только копит полученные возвраты, а акт за выбранное число составляют
+кнопкой — когда вернулись из пункта и готовы проверять.
 
-Защита от повторной загрузки. Возврат, попавший в акт, второй раз в акт не
-попадёт: act_id ставится один раз и не снимается даже после подтверждения.
-Момент получения (received_at) тоже пишется однократно, поэтому возврат,
-который Ozon отдаёт «полученным» неделю подряд, остаётся в своём акте.
+Число, а не промежуток: акт — это поездка, а не отчётный период. За возвратами
+ездят несколько раз в день, поэтому актов за одно число бывает несколько —
+каждый со своим временем составления, и в каждый попадает только то, что ещё
+ни в один акт не вошло.
+
+Защита от задвоения. Возврат, попавший в акт, второй раз в акт не попадёт:
+act_id ставится один раз и не снимается даже после подтверждения. Момент
+получения (received_at) тоже пишется однократно, поэтому возврат, который Ozon
+отдаёт «полученным» неделю подряд, остаётся в своём акте.
 """
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from . import db, store
 
@@ -30,24 +36,25 @@ from . import db, store
 # собираем в акт за день, иначе они исчезли бы с экрана молча — то есть ровно
 # так, как было до актов.
 NO_SHEET = "nosheet"
-# Акт собрался сам: возвраты перешли в статус «Получен».
-RECEIVED = "received"
-# Акт за указанное число: полученные возвраты загрузил администратор.
+# Акт за указанное число: полученные возвраты свёл в акт человек.
 BY_DAY = "byday"
 # Виды актов прежних версий. Новые такими не создаются, но старые ещё лежат в
 # базе и должны нормально показываться и подтверждаться.
+RECEIVED = "received"
 UPLOADED = "upload"
 FROM_GIVEOUT = "ozon"
-
-# Сколько акт «собирается сам» остаётся открытым для новых полученных возвратов.
-# Обновление идёт раз в несколько минут, и одна поездка иначе разошлась бы по
-# нескольким актам: часть возвратов площадка проводит позже остальных. Две
-# поездки в один день разделены больше чем этим сроком.
-MERGE_WINDOW = timedelta(hours=2)
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex[:16]
+
+
+def _returns_word(count: int) -> str:
+    """«1 возврат», «2 возврата», «5 возвратов» — число всегда на виду."""
+    tail_100, tail_10 = count % 100, count % 10
+    if 11 <= tail_100 <= 14 or tail_10 == 0 or tail_10 >= 5:
+        return f"{count} возвратов"
+    return f"{count} возврат" + ("" if tail_10 == 1 else "а")
 
 
 # --------------------------------------------------------------- сбор актов
@@ -93,97 +100,61 @@ def received_days(account_id: int) -> list[dict]:
     ]
 
 
-def from_received(account_id: int, *, user: dict | None = None,
-                  day: str | None = None) -> dict:
-    """Свести полученные возвраты в один акт.
+def from_received(account_id: int, day: str, *, user: dict | None = None) -> dict:
+    """Свести в акт полученные возвраты за указанное число.
 
-    Без day — всё, что панель зарегистрировала полученным и ещё не закрыла
-    актом; так работает обновление возвратов. С day — полученное за указанное
-    число, так работает загрузка администратором.
+    Каждый вызов — отдельный акт: за возвратами ездят несколько раз в день, и
+    каждая поездка подписывается отдельно. В акт попадает только то, что ещё ни
+    в один акт не вошло, поэтому нажать кнопку дважды подряд не страшно —
+    второй акт просто не из чего собрать.
 
-    Возвращает {'status', 'message', 'act_id', 'added', 'merged'}. Ошибкой
-    отсутствие возвратов не считается: обновление идёт постоянно, и «ничего
-    нового» — обычное его состояние.
+    Возвращает {'status', 'message', 'act_id', 'added'}.
     """
     ids = received_returns(account_id, day)
     if not ids:
         return {
             "status": "warning",
-            "message": (f"За {_day_label(day)} полученных возвратов нет — либо их ещё не "
-                        "забрали, либо они уже в акте.") if day
-                       else "Новых полученных возвратов нет.",
+            "message": f"За {_day_label(day)} полученных возвратов без акта нет — "
+                       "либо их ещё не забрали, либо они уже в акте.",
             "act_id": None,
             "added": 0,
-            "merged": False,
         }
 
+    act_id = _new_id()
+    now = db.now_iso()
     with db.write() as conn:
-        act_id, merged = _open_act(conn, account_id, day=day, user=user)
+        # Номер акта за это число. Две поездки подряд могут уложиться в одну
+        # минуту, и по времени такие акты в списке не различить.
+        seq = conn.execute(
+            "SELECT COUNT(*) AS c FROM return_acts WHERE kind = ? AND account_id = ? AND received_day = ?",
+            (BY_DAY, account_id, day),
+        ).fetchone()["c"] + 1
+        conn.execute(
+            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day, day_seq) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (act_id, now, (user or {}).get("login"), BY_DAY, account_id, day, seq),
+        )
         added = _claim(conn, act_id, account_id, ids)
         if not added:
-            # Возвраты разобрали между выборкой и записью — параллельное
-            # обновление. Пустой акт оставлять нельзя: его нельзя удалить.
-            if not merged:
-                conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
-            return {"status": "warning", "message": "Полученные возвраты уже разнесены по актам",
-                    "act_id": None, "added": 0, "merged": merged}
+            # Возвраты разобрали между выборкой и записью: акт за то же число
+            # составили в соседней вкладке. Пустой акт оставлять нельзя — его
+            # потом не удалить.
+            conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
+            return {"status": "warning", "act_id": None, "added": 0,
+                    "message": "Эти возвраты только что попали в другой акт"}
         _drop_empty_spares(conn)
 
     act = detail(act_id)
     db.log_event(
         "return_act_received", account_id=account_id, user=user,
-        message=f"{act['title']}: {'добавлено' if merged else 'акт создан'} {added} возвратов"
-                + (f" за {day}" if day else ""),
+        message=f"{act['title']}: {_returns_word(added)}",
     )
     return {
         "status": "ok",
         "act_id": act_id,
         "added": added,
-        "merged": merged,
-        "message": (f"{act['title']}: добавлено возвратов {added}, всего в акте {act['total']}"
-                    if merged else f"{act['title']}: акт на {added} возвратов"),
+        "message": f"{act['title']}: {_returns_word(added)}",
     }
-
-
-def _open_act(conn, account_id: int, *, day: str | None, user: dict | None) -> tuple[str, bool]:
-    """Куда класть полученные возвраты: открытый акт или новый.
-
-    Акт за число один: загрузили то же число второй раз — возвраты доедут в тот
-    же акт, а не разойдутся по двум. Акт, который собрался сам, остаётся
-    открытым MERGE_WINDOW: одна поездка не должна разваливаться на части.
-    """
-    if day:
-        row = conn.execute(
-            "SELECT id FROM return_acts WHERE kind = ? AND account_id = ? AND received_day = ? "
-            "AND confirmed_at IS NULL",
-            (BY_DAY, account_id, day),
-        ).fetchone()
-        if row:
-            return row["id"], True
-        act_id = _new_id()
-        conn.execute(
-            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day) "
-            "VALUES(?,?,?,?,?,?)",
-            (act_id, db.now_iso(), (user or {}).get("login"), BY_DAY, account_id, day),
-        )
-        return act_id, False
-
-    fresh = (datetime.now(timezone.utc) - MERGE_WINDOW).strftime("%Y-%m-%dT%H:%M:%S")
-    row = conn.execute(
-        "SELECT id FROM return_acts WHERE kind = ? AND account_id = ? AND confirmed_at IS NULL "
-        "AND created_at >= ? ORDER BY created_at DESC LIMIT 1",
-        (RECEIVED, account_id, fresh),
-    ).fetchone()
-    if row:
-        return row["id"], True
-    act_id = _new_id()
-    now = db.now_iso()
-    conn.execute(
-        "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day) "
-        "VALUES(?,?,?,?,?,?)",
-        (act_id, now, (user or {}).get("login"), RECEIVED, account_id, store.local_day(now)),
-    )
-    return act_id, False
 
 
 def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
@@ -304,9 +275,16 @@ def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
 
 
 def _title(act: dict) -> str:
-    """Подпись акта. Акт за число называем числом: его выбрал человек."""
+    """Подпись акта: число получения, номер за это число и время составления.
+
+    Номер обязателен: за одно число актов бывает несколько — ездят по разу за
+    партию. Времени мало, две поездки подряд укладываются в одну минуту, и
+    тогда два акта в списке не различить, а подписывают их отдельно.
+    """
     if act.get("kind") == BY_DAY and act.get("received_day"):
-        return "Возвраты, полученные " + _day_label(act["received_day"])
+        seq = f" №{act['day_seq']}" if act.get("day_seq") else ""
+        return (f"Возвраты за {_day_label(act['received_day'])}, акт{seq}"
+                f" от {store.local_time(act.get('created_at'), '%H:%M')}")
     return f"Возвраты за {store.local_time(act.get('created_at'))}"
 
 
@@ -323,8 +301,7 @@ def _source_label(act: dict) -> str:
     if kind == RECEIVED:
         return "возвраты перешли в статус «Получен»"
     if kind == BY_DAY:
-        return f"загружены за {_day_label(act.get('received_day'))}" + (
-            f", {act['created_by']}" if act.get("created_by") else "")
+        return "составил " + (act.get("created_by") or "—")
     if kind == NO_SHEET:
         return "пропали из выдачи, статус «Получен» не приходил"
     if kind == UPLOADED:
