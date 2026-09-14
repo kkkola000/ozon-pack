@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import accounts, db, giveouts, return_acts, sync
+from app.ozon import OzonError
 from app.main import app
 
 
@@ -178,6 +179,8 @@ def test_act_without_recognisable_lines_is_reported(sample_data, monkeypatch):
     client = ozon.get_client(account)
     monkeypatch.setattr(client, "giveout_list", lambda **kw: ([{"giveout_id": 1, "giveout_status": "DONE"}], False))
     monkeypatch.setattr(client, "giveout_info", lambda gid: {"articles": [{"article_name": "Неизвестно"}]})
+    # Проверяем именно разбор списка: запасной путь через документ выключаем.
+    monkeypatch.setattr(giveouts, "_document_is_due", lambda account_id: False)
 
     result = giveouts.sync_account(account)
     assert result["giveouts"] == 1
@@ -202,8 +205,12 @@ def test_return_taken_before_the_act_is_not_lost(sample_data):
         original_returns(*a, **kw)[1],
     )
     client.giveout_list = lambda **kw: ([], False)
+    # Ни списка, ни документа: проверяем именно запасной акт «без листа».
+    original_pdf = client.giveout_pdf
+    client.giveout_pdf = lambda: (_ for _ in ()).throw(OzonError("нет документа", status=404))
     sync.sync_returns(account)
     client.returns_list, client.giveout_list = original_returns, original_giveouts
+    client.giveout_pdf = original_pdf
 
     acts = return_acts.pending()
     assert acts, "возврат пропал молча"

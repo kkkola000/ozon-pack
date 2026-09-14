@@ -131,12 +131,20 @@ def make_label_pdf(pages: list[dict]) -> bytes:
     return _pdf(rendered)
 
 
-def make_giveout_pdf(code: str) -> bytes:
-    """Тестовый штрихкод на выдачу возвратов, A4."""
+def make_giveout_pdf(code: str, barcodes: list[str] | None = None) -> bytes:
+    """Тестовый документ на выдачу возвратов, A4.
+
+    В настоящем документе Ozon перечисляет и сами возвраты — по этим строкам
+    панель собирает акт, если список актов недоступен.
+    """
     width, height = 210 * MM, 297 * MM
     c = _Content()
     c.text(40, height - 60, 18, "ВЫДАЧА ВОЗВРАТОВ (ТЕСТ)", bold=True)
     c.text(40, height - 84, 11, "Покажите штрихкод сотруднику пункта выдачи")
     c.barcode(code, 40, height - 190, width - 80, 80)
     c.text(40, height - 208, 14, code, bold=True)
+    y = height - 240
+    for barcode in (barcodes or []):
+        c.text(40, y, 10, barcode)
+        y -= 14
     return _pdf([(width, height, c.build())])

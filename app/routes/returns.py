@@ -197,6 +197,22 @@ def api_giveout_raw(giveout_id: str, admin: dict = Depends(require_admin),
     return {"giveout_id": giveout_id, "raw": raw}
 
 
+@router.post("/api/returns/acts/from-ozon")
+def api_act_from_ozon(request: Request, payload: dict = Body(default={}),
+                      admin: dict = Depends(require_admin),
+                      account: dict = Depends(require_ozon_account)):
+    """Забрать документ выдачи у Ozon и собрать по нему акт — без файла.
+
+    Панель делает это и сама при синхронизации, когда список актов ничего не
+    дал. Кнопка нужна, чтобы не ждать: съездили за возвратами — нажали.
+    """
+    check_csrf(request)
+    result = giveouts.act_from_document(account, admin, dry_run=bool(payload.get("dry_run")))
+    if result["status"] == "error":
+        raise HTTPException(status_code=502, detail=result["message"])
+    return result
+
+
 @router.post("/api/returns/acts/upload")
 async def api_upload_act(
     request: Request,
@@ -545,13 +561,20 @@ def _sync_message(result: dict) -> str:
     """
     parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
     if result.get("giveouts_error"):
-        parts.append(f"акты выдачи недоступны ({result['giveouts_error']}) — акт можно загрузить файлом")
+        parts.append(f"акты выдачи недоступны ({result['giveouts_error']})")
+        parts.append(result["giveouts_document"].lower() if result.get("giveouts_document")
+                     else "акт можно забрать документом Ozon или загрузить файлом")
         return ". ".join(parts)
     acts = result.get("giveouts", 0)
     if not acts:
-        parts.append("актов выдачи Ozon пока не отдал")
+        if result.get("giveouts_document"):
+            parts.append(result["giveouts_document"].lower())
+        else:
+            parts.append("актов выдачи Ozon пока не отдал")
         return ". ".join(parts)
     parts.append(f"актов выдачи: {acts}")
+    if result.get("giveouts_document"):
+        parts.append(result["giveouts_document"].lower())
     if result.get("giveouts_returns"):
         parts.append(f"возвратов по ним: {result['giveouts_returns']}")
     if result.get("giveouts_unmatched"):

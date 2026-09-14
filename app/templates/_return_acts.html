@@ -20,16 +20,22 @@
 <details class="act no-print" id="act-upload" style="margin-bottom:18px">
   <summary class="act-head">
     <div class="grow">
-      <div class="act-title">Загрузить акт файлом</div>
+      <div class="act-title">Забрать акт вручную</div>
       <div class="act-sub">
-        Если акта нет в списке: возьмите его в личном кабинете Ozon и загрузите.
-        Подойдёт PDF, XLSX, CSV или ответ API в JSON — панель найдёт в файле
-        штрихкоды возвратов кабинета «{{ account.title }}».
+        Обычно акт приходит сам. Здесь — если он нужен прямо сейчас: панель
+        заберёт документ выдачи у Ozon либо разберёт файл, который вы дадите
+        (PDF, XLSX, CSV, JSON). Ищутся штрихкоды возвратов кабинета
+        «{{ account.title }}».
       </div>
     </div>
   </summary>
   <div class="act-body">
-    <div class="row" style="margin-top:8px; flex-wrap:wrap">
+    <div class="row" style="margin-top:8px">
+      <button class="btn primary" id="act-from-ozon">Забрать документ выдачи у Ozon</button>
+      <span class="muted small">без файла — панель запросит документ сама</span>
+    </div>
+
+    <div class="row" style="margin-top:14px; flex-wrap:wrap">
       <input type="file" id="act-file" accept=".pdf,.xlsx,.xlsm,.csv,.tsv,.json,.txt">
       <button class="btn" id="act-check">Посмотреть, что в файле</button>
       <button class="btn primary" id="act-create" hidden>Создать акт</button>

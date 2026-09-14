@@ -56,6 +56,23 @@ if (actUpload) {
     }
   };
 
+  /* Тот же результат, но документ панель берёт у Ozon сама. */
+  document.getElementById('act-from-ozon').onclick = async (event) => {
+    const button = event.target;
+    button.disabled = true;
+    result.textContent = 'Запрашиваем документ у Ozon…';
+    try {
+      const data = await api('/api/returns/acts/from-ozon', {});
+      result.innerHTML = `<b>${escapeHtml(data.message)}</b>`;
+      toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
+      if (data.act_id) setTimeout(() => window.location.reload(), 1200);
+    } catch (error) {
+      result.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   createButton.onclick = async () => {
     createButton.disabled = true;
     try {

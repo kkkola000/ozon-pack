@@ -12,7 +12,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, db, giveouts, ozon, sync
+from app import accounts, db, giveouts, ozon, return_acts, sync
 from app.main import app
 from app.ozon import OzonError
 
@@ -195,17 +195,41 @@ def test_sync_button_reports_the_acts(client):
     assert "возвратов по ним" in message, message
 
 
-def test_sync_button_explains_a_missing_method(client, monkeypatch):
-    """Метод выключен — надо сказать это словами и подсказать запасной ход."""
+def test_missing_list_falls_back_to_the_document(client, monkeypatch):
+    """Списка актов нет — панель берёт у Ozon сам документ выдачи.
+
+    В документе штрихкоды напечатаны, поэтому акт собирается и там, где
+    /v1/return/giveout/list выключен.
+    """
     from app import ozon
 
     account = accounts.default_account()
     ozon_client = ozon.get_client(account)
+    monkeypatch.setattr(ozon_client, "giveout_list",
+                        lambda **kw: (_ for _ in ()).throw(OzonError("Method not found", status=404)))
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
 
-    def refuse(*a, **kw):
-        raise OzonError("Method not found", status=404)
+    csrf = login(client)
+    body = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()
+    assert "акты выдачи недоступны" in body["message"]
+    assert "акт собран по документу ozon" in body["message"].lower(), body["message"]
+    assert return_acts.pending(), "акт по документу не появился"
 
-    monkeypatch.setattr(ozon_client, "giveout_list", refuse)
+
+def test_both_ways_failing_says_what_to_do(client, monkeypatch):
+    """Не вышло ни списком, ни документом — предложить загрузку файлом."""
+    from app import ozon
+
+    account = accounts.default_account()
+    ozon_client = ozon.get_client(account)
+    monkeypatch.setattr(ozon_client, "giveout_list",
+                        lambda **kw: (_ for _ in ()).throw(OzonError("Method not found", status=404)))
+    monkeypatch.setattr(ozon_client, "giveout_pdf",
+                        lambda: (_ for _ in ()).throw(OzonError("Giveout disabled", status=403)))
+    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
+
     csrf = login(client)
     body = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()
     assert body["status"] == "warning"
@@ -226,3 +250,102 @@ def test_sync_button_reports_unmatched_acts(client, monkeypatch):
     csrf = login(client)
     message = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()["message"]
     assert "не опознано актов: 1" in message, message
+
+
+# ---------------------------------------------------------------- документ выдачи
+def test_act_is_built_from_the_ozon_document(sample_data):
+    """Панель забирает документ у Ozon сама — файл от человека не нужен."""
+    account = accounts.default_account()
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+
+    result = giveouts.act_from_document(account)
+    assert result["status"] == "ok", result["message"]
+    assert result["found"] > 0
+    act = return_acts.detail(result["act_id"])
+    assert act["total"] == result["found"]
+    assert "документ выдачи Ozon" in act["giveout_label"]
+
+
+def test_document_preview_creates_nothing(sample_data):
+    account = accounts.default_account()
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+
+    result = giveouts.act_from_document(account, dry_run=True)
+    assert result["status"] == "ok" and result["found"] > 0
+    assert return_acts.pending() == [], "предпросмотр завёл акт"
+
+
+def test_second_document_call_does_not_duplicate(sample_data):
+    """Документ у Ozon один: повторный вызов не должен плодить акты."""
+    account = accounts.default_account()
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+
+    giveouts.act_from_document(account)
+    again = giveouts.act_from_document(account)
+    assert again["status"] == "warning"
+    assert "уже разнесены" in again["message"]
+    assert len(return_acts.pending()) == 1
+
+
+def test_document_is_not_requested_too_often(sample_data, monkeypatch):
+    """Лишний запрос к Ozon каждую минуту не нужен: выдача меняется реже."""
+    account = accounts.default_account()
+    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
+    assert giveouts._document_is_due(account["id"]) is True
+    assert giveouts._document_is_due(account["id"]) is False, "документ запрошен второй раз подряд"
+
+
+def test_document_button_is_admin_only(client):
+    from app.security import hash_password
+
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) "
+        "VALUES('sklad3', ?, 'packer', 1, ?)",
+        (hash_password("secret123"), db.now_iso()),
+    )
+    client.post("/login", data={"login": "sklad3", "password": "secret123", "next": "/returns"})
+    page = client.get("/returns")
+    csrf = re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
+    response = client.post("/api/returns/acts/from-ozon", json={}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 403
+
+
+def test_document_button_works_for_admin(client):
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    csrf = login(client)
+    response = client.post("/api/returns/acts/from-ozon", json={}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200, response.text
+    assert response.json()["found"] > 0
+    assert return_acts.pending(), "акт по документу не появился"
+
+
+def test_document_failure_is_explained(client, monkeypatch):
+    from app import ozon
+
+    ozon_client = ozon.get_client(accounts.default_account())
+    monkeypatch.setattr(ozon_client, "giveout_pdf",
+                        lambda: (_ for _ in ()).throw(OzonError("Giveout disabled", status=403)))
+    csrf = login(client)
+    response = client.post("/api/returns/acts/from-ozon", json={}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 502
+    assert "Giveout disabled" in response.json()["detail"]
+
+
+def test_cabinet_without_keys_gets_a_clear_answer(client, monkeypatch):
+    """Кабинет без ключей — обычное состояние панели, а не повод для 500.
+
+    Ключи спрашивает get_client, и он тоже кидает OzonError: если не поймать
+    его, администратор вместо «внесите ключи» получает пятисотку.
+    """
+    def no_keys(account=None):
+        raise OzonError("У кабинета «Ozon» не заданы ключи Ozon — внесите их в «Настройках»")
+
+    monkeypatch.setattr(giveouts.ozon, "get_client", no_keys)
+    csrf = login(client)
+    response = client.post("/api/returns/acts/from-ozon", json={}, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 502, response.text
+    assert "ключи" in response.json()["detail"]

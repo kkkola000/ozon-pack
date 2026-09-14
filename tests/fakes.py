@@ -311,9 +311,11 @@ class FakeOzonClient(OzonClient):
         raise OzonError(f"Акт {giveout_id} не найден", status=404)
 
     def giveout_pdf(self):  # type: ignore[override]
+        """Документ выдачи со штрихкодами возвратов, как у Ozon."""
         from tests.pdfstub import make_giveout_pdf
 
-        return make_giveout_pdf("FAKE-GIVEOUT-0001")
+        barcodes = [r["logistic"]["barcode"] for r in self._returns[:3]]
+        return make_giveout_pdf(f"FAKE-GIVEOUT-{self._seed:04d}", barcodes)
 
     def ping(self):  # type: ignore[override]
         return {"ok": True, "fake": True}

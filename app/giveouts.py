@@ -114,6 +114,78 @@ def match_returns(account_id: int, items: list[dict]) -> list[str]:
     return sorted(set(found))
 
 
+def act_from_document(account: dict, user: dict | None = None, *, dry_run: bool = False) -> dict:
+    """Забрать документ выдачи у Ozon и собрать по нему акт.
+
+    Второй путь получения акта, без участия человека: /v1/return/giveout/get-pdf
+    отдаёт сам документ, а разбираем его тем же способом, что и загруженный
+    файл — по содержимому. Помогает там, где /v1/return/giveout/list выключен
+    или отдаёт состав в незнакомых полях: в документе штрихкоды всё равно
+    напечатаны.
+
+    Документ у Ozon один — текущая активная выдача. Поэтому повторный вызов
+    безвреден: возвраты, уже разложенные по актам, второй раз не заберутся, и
+    пустой акт не появится.
+    """
+    from . import act_upload, return_acts
+
+    try:
+        # get_client тоже кидает OzonError — у кабинета может не быть ключей.
+        # Это обычное состояние панели, и отвечать на него 500 нельзя.
+        data = ozon.get_client(account).giveout_pdf()
+    except OzonError as exc:
+        return {"status": "error", "message": f"Ozon не отдал документ выдачи: {exc.message}"}
+
+    try:
+        found = act_upload.parse("giveout.pdf", data)
+    except act_upload.UploadRejected as exc:
+        return {"status": "error", "message": str(exc)}
+
+    return_ids = match_returns(account["id"], [{"code": code} for code in found])
+    if not return_ids:
+        return {
+            "status": "warning",
+            "found": 0,
+            "codes": len(found),
+            "message": f"В документе выдачи {len(found)} кодов, но ни один не совпал с возвратами "
+                       f"кабинета «{account['title']}».",
+        }
+    if dry_run:
+        return {"status": "ok", "found": len(return_ids), "codes": len(found),
+                "message": f"В документе выдачи Ozon нашлось возвратов: {len(return_ids)}"}
+
+    act_id = return_acts.from_upload(
+        account["id"], user or {"login": "синхронизация"},
+        source="документ выдачи Ozon", return_ids=return_ids,
+    )
+    if not act_id:
+        return {"status": "warning", "found": len(return_ids),
+                "message": "Все возвраты из документа выдачи уже разнесены по актам"}
+    return {"status": "ok", "found": len(return_ids), "act_id": act_id,
+            "message": f"Акт собран по документу Ozon: {len(return_ids)} возвратов"}
+
+
+# Документ выдачи — отдельный запрос к Ozon, и дёргать его каждую минуту не за
+# чем: активная выдача меняется куда реже. Пробуем не чаще, чем раз в столько.
+DOCUMENT_RETRY_MINUTES = 15
+
+
+def _document_is_due(account_id: int) -> bool:
+    from datetime import datetime, timedelta, timezone
+
+    key = f"giveout_doc_try_{account_id}"
+    last = db.kv_get(key)
+    if last:
+        try:
+            moment = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        except ValueError:
+            moment = None
+        if moment and datetime.now(timezone.utc) - moment < timedelta(minutes=DOCUMENT_RETRY_MINUTES):
+            return False
+    db.kv_set(key, db.now_iso())
+    return True
+
+
 def sync_account(account: dict) -> dict:
     """Загрузить акты выдачи кабинета. Мягко к отсутствию метода.
 
@@ -133,6 +205,12 @@ def sync_account(account: dict) -> dict:
             giveouts, has_next = client.giveout_list(limit=PAGE_LIMIT, last_id=last_id)
         except OzonError as exc:
             log.warning("Акты выдачи недоступны: %s", exc)
+            # Списка нет — документ выдачи может быть, и штрихкоды в нём есть.
+            if _document_is_due(account_id):
+                from_document = act_from_document(account)
+                if from_document.get("found"):
+                    return _result(saved, from_document["found"], unmatched,
+                                   error=exc.message, document=from_document["message"])
             return _result(saved, matched, unmatched, error=exc.message)
         if not giveouts:
             break
@@ -176,15 +254,27 @@ def sync_account(account: dict) -> dict:
         if not has_next or not last_id:
             break
 
+    # Список актов ничего полезного не дал — пробуем сам документ выдачи. Там
+    # штрихкоды напечатаны, и он работает даже когда список выключен или отдаёт
+    # состав в незнакомых полях.
+    if not matched and _document_is_due(account_id):
+        from_document = act_from_document(account)
+        if from_document.get("found"):
+            matched += from_document["found"]
+            return _result(saved, matched, unmatched, document=from_document["message"])
+
     return _result(saved, matched, unmatched)
 
 
-def _result(saved: int, matched: int, unmatched: int, *, error: str | None = None) -> dict:
+def _result(saved: int, matched: int, unmatched: int, *, error: str | None = None,
+            document: str | None = None) -> dict:
     result: dict = {"giveouts": saved}
     if matched:
         result["giveouts_returns"] = matched
     if unmatched:
         result["giveouts_unmatched"] = unmatched
+    if document:
+        result["giveouts_document"] = document
     if error:
         result["giveouts_error"] = error
     return result
