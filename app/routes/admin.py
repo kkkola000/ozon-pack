@@ -41,6 +41,7 @@ EVENT_LABELS = {
     "return_mark": "Отметка о возврате",
     "return_act_confirm": "Акт возвратов подтверждён",
     "return_act_upload": "Акт возвратов загружен файлом",
+    "return_act_import": "Акты возвратов добавлены из Ozon",
     "returns_giveout": "Штрихкод выдачи",
     "returns_statuses_set": "Изменены статусы возвратов",
     "user_created": "Создан пользователь",

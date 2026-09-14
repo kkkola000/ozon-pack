@@ -72,6 +72,28 @@ def from_giveout(account_id: int, giveout_id: str, *, created_at: str | None,
     return act_id
 
 
+def free_returns(account_id: int, return_ids: list[str]) -> list[str]:
+    """Из перечисленных — те, что ещё можно забрать в акт.
+
+    Возврат из подтверждённого акта занят: работа по нему закрыта. Показывать
+    его как «добавится» нельзя — человек нажмёт и не поймёт, почему ничего не
+    произошло.
+    """
+    if not return_ids:
+        return []
+    placeholders = ",".join("?" for _ in return_ids)
+    rows = db.query(
+        f"""
+        SELECT id FROM returns
+        WHERE account_id = ? AND id IN ({placeholders})
+          AND (act_id IS NULL
+               OR act_id IN (SELECT id FROM return_acts WHERE kind = ? AND confirmed_at IS NULL))
+        """,
+        [account_id] + return_ids + [NO_SHEET],
+    )
+    return [row["id"] for row in rows]
+
+
 def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
     """Забрать возвраты в акт. Возвращает, сколько реально переехало.
 

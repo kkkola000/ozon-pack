@@ -16,12 +16,30 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import accounts, db, giveouts, return_acts, sync
-from app.ozon import OzonError
 from app.main import app
 
 
 @pytest.fixture
-def client(sample_data):
+def acts(sample_data):
+    """Акты, заведённые в панель.
+
+    Какие поездки открыть — решает администратор кнопкой «Получить акты
+    возвратов», поэтому в проверках заводим их явно, а не ждём от
+    синхронизации.
+    """
+    account = accounts.default_account()
+    ids = [
+        row["id"] for row in db.query(
+            "SELECT id FROM ozon_giveouts WHERE account_id = ?", (account["id"],)
+        )
+    ]
+    assert ids, "подделка не отдала актов выдачи"
+    giveouts.import_acts(account, {"login": "admin"}, ids)
+    return return_acts.pending()
+
+
+@pytest.fixture
+def client(acts):
     with TestClient(app, follow_redirects=False) as test_client:
         yield test_client
 
@@ -62,7 +80,7 @@ def confirm(client, csrf, act_id):
 
 
 # ---------------------------------------------------------------- акт от площадки
-def test_giveout_becomes_an_act(sample_data):
+def test_giveout_becomes_an_act(acts):
     """Акт выдачи Ozon раскладывается в раздел «Ждёт подтверждения»."""
     acts = return_acts.pending()
     assert acts, "акты площадки не превратились в акты панели"
@@ -70,7 +88,7 @@ def test_giveout_becomes_an_act(sample_data):
     assert all(act["giveout_id"] for act in acts)
 
 
-def test_act_rows_come_from_the_giveout(sample_data):
+def test_act_rows_come_from_the_giveout(acts):
     """В акте ровно те возвраты, что перечислены в акте площадки."""
     giveout = a_giveout()
     act = next(a for a in return_acts.pending() if a["giveout_id"] == giveout["id"])
@@ -80,7 +98,7 @@ def test_act_rows_come_from_the_giveout(sample_data):
     assert in_act == barcodes, "состав акта разошёлся с актом площадки"
 
 
-def test_act_keeps_the_platform_time_and_number(sample_data):
+def test_act_keeps_the_platform_time_and_number(acts):
     """Время выдачи берём у площадки: возвраты забирают несколько раз в день."""
     giveout = a_giveout()
     act = next(a for a in return_acts.pending() if a["giveout_id"] == giveout["id"])
@@ -89,7 +107,7 @@ def test_act_keeps_the_platform_time_and_number(sample_data):
     assert act["giveout_status"], "статус акта площадки не сохранён"
 
 
-def test_two_pickups_a_day_are_two_acts(sample_data):
+def test_two_pickups_a_day_are_two_acts(acts):
     """Съездили дважды — два акта, каждый со своим временем."""
     acts = return_acts.pending()
     assert len(acts) >= 2, "подделка отдаёт меньше двух актов"
@@ -99,7 +117,7 @@ def test_two_pickups_a_day_are_two_acts(sample_data):
     assert times == sorted(times, reverse=True)
 
 
-def test_fbo_returns_are_in_the_act_too(sample_data):
+def test_fbo_returns_are_in_the_act_too(acts):
     """В пункте забирают всё разом, FBO тоже должны попадать в акт."""
     schemes = {
         row["type"] or row["scheme"]
@@ -110,13 +128,13 @@ def test_fbo_returns_are_in_the_act_too(sample_data):
     assert "FBO" in schemes, "возвраты FBO не попали в акт"
 
 
-def test_one_return_belongs_to_one_act(sample_data):
+def test_one_return_belongs_to_one_act(acts):
     """Две отметки на одну работу — недопустимо."""
     rows = db.query("SELECT id, act_id FROM returns WHERE act_id IS NOT NULL")
     assert len(rows) == len({row["id"] for row in rows})
 
 
-def test_repeat_sync_does_not_move_returns(sample_data):
+def test_repeat_sync_does_not_move_returns(acts):
     before = act_returns()
     sync.sync_returns(accounts.default_account())
     assert act_returns() == before, "повторная синхронизация перетасовала акты"
@@ -179,8 +197,6 @@ def test_act_without_recognisable_lines_is_reported(sample_data, monkeypatch):
     client = ozon.get_client(account)
     monkeypatch.setattr(client, "giveout_list", lambda **kw: ([{"giveout_id": 1, "giveout_status": "DONE"}], False))
     monkeypatch.setattr(client, "giveout_info", lambda gid: {"articles": [{"article_name": "Неизвестно"}]})
-    # Проверяем именно разбор списка: запасной путь через документ выключаем.
-    monkeypatch.setattr(giveouts, "_document_is_due", lambda account_id: False)
 
     result = giveouts.sync_account(account)
     assert result["giveouts"] == 1
@@ -205,12 +221,8 @@ def test_return_taken_before_the_act_is_not_lost(sample_data):
         original_returns(*a, **kw)[1],
     )
     client.giveout_list = lambda **kw: ([], False)
-    # Ни списка, ни документа: проверяем именно запасной акт «без листа».
-    original_pdf = client.giveout_pdf
-    client.giveout_pdf = lambda: (_ for _ in ()).throw(OzonError("нет документа", status=404))
     sync.sync_returns(account)
     client.returns_list, client.giveout_list = original_returns, original_giveouts
-    client.giveout_pdf = original_pdf
 
     acts = return_acts.pending()
     assert acts, "возврат пропал молча"
@@ -218,8 +230,8 @@ def test_return_taken_before_the_act_is_not_lost(sample_data):
     assert [r["id"] for r in acts[0]["ozon"]] == [target]
 
 
-def test_arriving_act_takes_the_return_over(sample_data):
-    """Появился акт площадки — возврат переезжает в него из запасного акта."""
+def test_added_act_takes_the_return_over(sample_data):
+    """Завели акт площадки — возврат переезжает в него из запасного акта."""
     account = accounts.default_account()
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL")
@@ -231,7 +243,7 @@ def test_arriving_act_takes_the_return_over(sample_data):
     spare = return_acts.collect_orphans(account["id"], [target])
     assert return_acts.detail(spare)["no_sheet"] is True
 
-    giveouts.sync_account(account)
+    giveouts.import_acts(account, {"login": "admin"}, [giveout["id"]])
 
     moved = db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"]
     assert moved != spare, "возврат остался в запасном акте"
@@ -239,7 +251,7 @@ def test_arriving_act_takes_the_return_over(sample_data):
     assert return_acts.get(spare) is None, "опустевший запасной акт не убран"
 
 
-def test_confirmed_act_is_not_reshuffled(sample_data):
+def test_confirmed_act_is_not_reshuffled(acts):
     """Подтверждённый акт трогать нельзя: работа по нему уже закрыта."""
     account = accounts.default_account()
     act = return_acts.pending()[0]

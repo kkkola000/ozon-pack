@@ -56,18 +56,89 @@ if (actUpload) {
     }
   };
 
-  /* Тот же результат, но документ панель берёт у Ozon сама. */
+  /* Список актов Ozon за последние дни: выбрать нужные и завести в панель.
+     Это основной способ — акт целиком, с его номером, временем и составом. */
+  const actList = document.getElementById('act-list');
+  const daysField = document.getElementById('act-days');
+
+  function renderActs(acts) {
+    if (!acts.length) {
+      actList.innerHTML = '<div class="muted small">За выбранный срок актов у Ozon нет.</div>';
+      return;
+    }
+    const rows = acts.map((act) => {
+      /* Нечего добавлять — отмечать тоже нечего: иначе человек нажмёт и
+         не поймёт, почему ничего не произошло. */
+      const locked = act.in_panel || !act.free;
+      const why = act.in_panel ? 'уже в панели'
+        : !act.matched ? 'возвраты не опознаны'
+        : !act.free ? 'возвраты уже в других актах' : '';
+      return `<tr>
+        <td style="width:34px">
+          <input type="checkbox" class="act-pick" value="${escapeHtml(act.id)}"
+                 ${locked ? 'disabled' : 'checked'}>
+        </td>
+        <td class="mono">${escapeHtml(act.id)}</td>
+        <td class="small">${escapeHtml(act.created_local || '—')}</td>
+        <td class="small">${escapeHtml(act.status_label || act.status || '—')}</td>
+        <td class="small">${act.items} поз. · опознано ${act.matched}
+          ${why ? `<span class="badge warn">${escapeHtml(why)}</span>` : ''}
+          <div class="muted">${act.names.map(escapeHtml).join(', ')}</div>
+        </td>
+      </tr>`;
+    }).join('');
+    actList.innerHTML = `
+      <table><thead><tr>
+        <th></th><th style="width:130px">Акт Ozon</th><th style="width:140px">Составлен</th>
+        <th style="width:130px">Статус</th><th>Состав</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+      <div class="row" style="margin-top:12px">
+        <span class="grow"></span>
+        <button class="btn primary" id="act-import">Добавить выбранные</button>
+      </div>`;
+    document.getElementById('act-import').onclick = importPicked;
+  }
+
+  async function importPicked(event) {
+    const picked = [...actList.querySelectorAll('.act-pick:checked')].map((box) => box.value);
+    if (!picked.length) { toast('Отметьте хотя бы один акт', 'error'); return; }
+    event.target.disabled = true;
+    try {
+      const data = await api('/api/returns/acts/import', { giveout_ids: picked });
+      toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
+      if (data.added) setTimeout(() => window.location.reload(), 900);
+      else event.target.disabled = false;
+    } catch (error) {
+      toast(error.message, 'error', 10000);
+      event.target.disabled = false;
+    }
+  }
+
+  document.getElementById('act-fetch').onclick = async (event) => {
+    event.target.disabled = true;
+    actList.innerHTML = '<div class="muted small">Спрашиваем Ozon…</div>';
+    try {
+      const data = await api(`/api/returns/acts/available?days=${daysField.value}`, undefined, 'GET');
+      renderActs(data.acts || []);
+    } catch (error) {
+      actList.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+    } finally {
+      event.target.disabled = false;
+    }
+  };
+
+  /* Запасной ход: списка актов у кабинета нет, но есть текущий документ. */
   document.getElementById('act-from-ozon').onclick = async (event) => {
     const button = event.target;
     button.disabled = true;
-    result.textContent = 'Запрашиваем документ у Ozon…';
+    actList.textContent = 'Запрашиваем документ у Ozon…';
     try {
       const data = await api('/api/returns/acts/from-ozon', {});
-      result.innerHTML = `<b>${escapeHtml(data.message)}</b>`;
+      actList.innerHTML = `<b>${escapeHtml(data.message)}</b>`;
       toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
       if (data.act_id) setTimeout(() => window.location.reload(), 1200);
     } catch (error) {
-      result.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+      actList.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
     } finally {
       button.disabled = false;
     }

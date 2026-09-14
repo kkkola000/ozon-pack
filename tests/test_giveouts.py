@@ -191,44 +191,32 @@ def test_sync_button_reports_the_acts(client):
     assert response.status_code == 200, response.text
     message = response.json()["message"]
     assert "Обновлено возвратов" in message
-    assert "актов выдачи" in message, message
-    assert "возвратов по ним" in message, message
+    assert "актов выдачи у Ozon" in message, message
+    assert "Ждёт подтверждения" in message, message
 
 
-def test_missing_list_falls_back_to_the_document(client, monkeypatch):
-    """Списка актов нет — панель берёт у Ozon сам документ выдачи.
+def test_sync_does_not_create_acts_by_itself(client):
+    """Синхронизация приносит список, но поездки заводит человек.
 
-    В документе штрихкоды напечатаны, поэтому акт собирается и там, где
-    /v1/return/giveout/list выключен.
+    Иначе выбирать будет нечего: к моменту, когда администратор откроет
+    список, все акты уже окажутся заведёнными.
     """
-    from app import ozon
-
-    account = accounts.default_account()
-    ozon_client = ozon.get_client(account)
-    monkeypatch.setattr(ozon_client, "giveout_list",
-                        lambda **kw: (_ for _ in ()).throw(OzonError("Method not found", status=404)))
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL")
-    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
+    sync.sync_returns(accounts.default_account())
 
-    csrf = login(client)
-    body = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()
-    assert "акты выдачи недоступны" in body["message"]
-    assert "акт собран по документу ozon" in body["message"].lower(), body["message"]
-    assert return_acts.pending(), "акт по документу не появился"
+    from_ozon = [act for act in return_acts.pending() if act["from_ozon"]]
+    assert from_ozon == [], "синхронизация завела акты сама"
+    assert stored(), "акты Ozon не загрузились — выбирать будет не из чего"
 
 
-def test_both_ways_failing_says_what_to_do(client, monkeypatch):
-    """Не вышло ни списком, ни документом — предложить загрузку файлом."""
+def test_missing_list_says_what_to_do(client, monkeypatch):
+    """Списка актов нет — назвать причину и запасные ходы."""
     from app import ozon
 
-    account = accounts.default_account()
-    ozon_client = ozon.get_client(account)
+    ozon_client = ozon.get_client(accounts.default_account())
     monkeypatch.setattr(ozon_client, "giveout_list",
                         lambda **kw: (_ for _ in ()).throw(OzonError("Method not found", status=404)))
-    monkeypatch.setattr(ozon_client, "giveout_pdf",
-                        lambda: (_ for _ in ()).throw(OzonError("Giveout disabled", status=403)))
-    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
 
     csrf = login(client)
     body = client.post("/api/returns/sync", json={}, headers={"X-CSRF-Token": csrf}).json()
@@ -290,14 +278,6 @@ def test_second_document_call_does_not_duplicate(sample_data):
     assert len(return_acts.pending()) == 1
 
 
-def test_document_is_not_requested_too_often(sample_data, monkeypatch):
-    """Лишний запрос к Ozon каждую минуту не нужен: выдача меняется реже."""
-    account = accounts.default_account()
-    db.execute("DELETE FROM kv WHERE key LIKE 'giveout_doc_try_%'")
-    assert giveouts._document_is_due(account["id"]) is True
-    assert giveouts._document_is_due(account["id"]) is False, "документ запрошен второй раз подряд"
-
-
 def test_document_button_is_admin_only(client):
     from app.security import hash_password
 
@@ -349,3 +329,133 @@ def test_cabinet_without_keys_gets_a_clear_answer(client, monkeypatch):
     response = client.post("/api/returns/acts/from-ozon", json={}, headers={"X-CSRF-Token": csrf})
     assert response.status_code == 502, response.text
     assert "ключи" in response.json()["detail"]
+# ---------------------------------------------------------------- список актов на выбор
+def test_available_asks_ozon_for_the_act_list(client):
+    """Кнопка «Получить акты возвратов» спрашивает список у Ozon и показывает его.
+
+    Сама ничего не заводит: какие поездки добавить в панель — решает человек.
+    """
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    login(client)
+
+    response = client.get("/api/returns/acts/available?days=7")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["acts"], "акты не показаны"
+    first = body["acts"][0]
+    assert first["items"] > 0 and first["matched"] > 0
+    assert first["in_panel"] is False
+    assert first["created_local"], "не видно, когда акт составлен"
+    assert return_acts.pending() == [], "просмотр списка завёл акт"
+
+
+def test_available_hides_older_acts(client, monkeypatch):
+    """«За последнюю неделю» — значит старое в список не попадает."""
+    from datetime import datetime, timedelta, timezone
+
+    ozon_client = ozon.get_client(accounts.default_account())
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat().replace("+00:00", "Z")
+    monkeypatch.setattr(ozon_client, "giveout_list",
+                        lambda **kw: ([{"giveout_id": 55, "giveout_status": "DONE", "created_at": old}], False))
+    monkeypatch.setattr(ozon_client, "giveout_info", lambda gid: {"articles": []})
+    login(client)
+
+    assert client.get("/api/returns/acts/available?days=7").json()["acts"] == []
+    assert client.get("/api/returns/acts/available?days=60").json()["acts"], "акт не показан и за 60 дней"
+
+
+def test_available_marks_acts_already_in_panel(client):
+    """Заведённый акт видно сразу — иначе его добавят второй раз."""
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    csrf = login(client)
+    acts = client.get("/api/returns/acts/available?days=30").json()["acts"]
+    assert not any(act["in_panel"] for act in acts), "акт помечен заведённым раньше времени"
+
+    client.post("/api/returns/acts/import", json={"giveout_ids": [acts[0]["id"]]},
+                headers={"X-CSRF-Token": csrf})
+    after = client.get("/api/returns/acts/available?days=30").json()["acts"]
+    taken = next(act for act in after if act["id"] == acts[0]["id"])
+    assert taken["in_panel"] is True
+
+
+def test_import_adds_only_the_chosen_acts(client):
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    csrf = login(client)
+    acts = client.get("/api/returns/acts/available?days=30").json()["acts"]
+    assert len(acts) >= 2, "для проверки нужно минимум два акта"
+    chosen = acts[0]["id"]
+
+    response = client.post("/api/returns/acts/import", json={"giveout_ids": [chosen]},
+                           headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200, response.text
+    assert response.json()["added"] == 1
+
+    added = return_acts.pending()
+    assert len(added) == 1, "заведено больше актов, чем выбрали"
+    assert added[0]["giveout_id"] == chosen
+
+
+def test_import_without_choice_is_refused(client):
+    csrf = login(client)
+    response = client.post("/api/returns/acts/import", json={"giveout_ids": []},
+                           headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 400
+    assert "не выбрано" in response.json()["detail"].lower()
+
+
+def test_import_of_an_already_added_act_says_so(client):
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    csrf = login(client)
+    chosen = client.get("/api/returns/acts/available?days=30").json()["acts"][0]["id"]
+    client.post("/api/returns/acts/import", json={"giveout_ids": [chosen]},
+                headers={"X-CSRF-Token": csrf})
+
+    again = client.post("/api/returns/acts/import", json={"giveout_ids": [chosen]},
+                        headers={"X-CSRF-Token": csrf}).json()
+    assert again["status"] == "warning"
+    assert again["added"] == 0
+    assert len(return_acts.pending()) == 1
+
+
+def test_available_is_admin_only(client):
+    from app.security import hash_password
+
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) "
+        "VALUES('sklad4', ?, 'packer', 1, ?)",
+        (hash_password("secret123"), db.now_iso()),
+    )
+    client.post("/login", data={"login": "sklad4", "password": "secret123", "next": "/returns"})
+    assert client.get("/api/returns/acts/available").status_code == 403
+
+
+def test_import_requires_csrf(client):
+    login(client)
+    assert client.post("/api/returns/acts/import", json={"giveout_ids": ["1"]}).status_code == 403
+
+
+def test_import_is_written_to_the_log(client):
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+    csrf = login(client)
+    acts = client.get("/api/returns/acts/available?days=30").json()["acts"]
+    client.post("/api/returns/acts/import", json={"giveout_ids": [acts[0]["id"]]},
+                headers={"X-CSRF-Token": csrf})
+    row = db.query_one("SELECT message FROM events WHERE kind = 'return_act_import'")
+    assert row is not None, "добавление актов не попало в журнал"
+    assert "актов: 1" in row["message"]
+
+
+def test_available_explains_a_missing_method(client, monkeypatch):
+    """Списка у кабинета нет — сказать это, а не показать пустую таблицу."""
+    ozon_client = ozon.get_client(accounts.default_account())
+    monkeypatch.setattr(ozon_client, "giveout_list",
+                        lambda **kw: (_ for _ in ()).throw(OzonError("Method not found", status=404)))
+    login(client)
+    response = client.get("/api/returns/acts/available")
+    assert response.status_code == 502
+    assert "Method not found" in response.json()["detail"]

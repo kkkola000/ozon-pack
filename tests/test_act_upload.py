@@ -323,14 +323,15 @@ def test_packer_does_not_see_the_upload_block(client):
     login(client, "sklad2", "secret123")
     page = client.get("/returns?tab=acts")
     assert page.status_code == 200
-    assert "Забрать акт вручную" not in page.text
+    assert "Получить акты возвратов" not in page.text
 
 
 def test_admin_sees_the_upload_block(client):
     login(client)
     page = client.get("/returns?tab=acts")
-    assert "Забрать акт вручную" in page.text
-    assert "Забрать документ выдачи у Ozon" in page.text
+    assert "Получить акты возвратов" in page.text
+    assert "Добавить выбранные" in client.get("/static/returns.js").text
     script = client.get("/static/returns.js").text
-    assert "/api/returns/acts/upload" in script
-    assert "/api/returns/acts/from-ozon" in script
+    for path in ("/api/returns/acts/available", "/api/returns/acts/import",
+                 "/api/returns/acts/upload", "/api/returns/acts/from-ozon"):
+        assert path in script, path

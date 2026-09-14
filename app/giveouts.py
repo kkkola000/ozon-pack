@@ -114,6 +114,123 @@ def match_returns(account_id: int, items: list[dict]) -> list[str]:
     return sorted(set(found))
 
 
+def available(account: dict, days: int = 7) -> dict:
+    """Акты выдачи Ozon за последние дни — список на выбор.
+
+    Показываем, что у площадки есть, и сколько возвратов кабинета в каждом акте
+    узнаётся. Дальше администратор отмечает нужные и добавляет их в панель:
+    решать, какие поездки заводить, ему, а не синхронизации.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        raw_acts, _ = ozon.get_client(account).giveout_list(limit=PAGE_LIMIT)
+    except OzonError as exc:
+        return {"status": "error", "message": f"Ozon не отдал список актов: {exc.message}"}
+
+    since = datetime.now(timezone.utc) - timedelta(days=max(days, 1))
+    taken = {
+        row["giveout_id"]
+        for row in db.query("SELECT giveout_id FROM return_acts WHERE giveout_id IS NOT NULL")
+    }
+
+    found = []
+    for raw in raw_acts:
+        giveout_id = _pick(raw, ID_KEYS)
+        if not giveout_id:
+            continue
+        created = _pick(raw, CREATED_KEYS)
+        if created and not _within(created, since):
+            continue
+        info: dict = {}
+        try:
+            info = ozon.get_client(account).giveout_info(giveout_id)
+        except OzonError as exc:
+            log.info("Состав акта %s недоступен: %s", giveout_id, exc)
+        merged = {**raw, **info}
+        items = _items_of(merged)
+        _upsert(account["id"], giveout_id, merged, items)
+        matched = match_returns(account["id"], items)
+        # Возврат, уже лежащий в чужом подтверждённом акте, второй раз не
+        # заберётся — показываем только то, что реально добавится.
+        free = return_acts.free_returns(account["id"], matched)
+        found.append({
+            "id": giveout_id,
+            "created_at": created,
+            "created_local": store.local_time(created),
+            "status": _pick(merged, STATUS_KEYS),
+            "status_label": status_label(_pick(merged, STATUS_KEYS)),
+            "items": len(items),
+            "matched": len(matched),
+            "free": len(free),
+            "in_panel": giveout_id in taken,
+            "names": [
+                (item.get("article_name") or item.get("name") or item.get("product_name") or "—")
+                for item in items[:5]
+            ],
+        })
+
+    found.sort(key=lambda act: act["created_at"] or "", reverse=True)
+    return {"status": "ok", "days": days, "acts": found}
+
+
+def _within(created: str, since) -> bool:
+    from datetime import datetime, timezone
+
+    try:
+        moment = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+    except ValueError:
+        # Дату не разобрали — не прячем акт: пусть человек сам решит.
+        return True
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment >= since
+
+
+def import_acts(account: dict, user: dict, giveout_ids: list[str]) -> dict:
+    """Завести в панели выбранные акты выдачи."""
+    added = 0
+    returns = 0
+    skipped = []
+    for giveout_id in giveout_ids:
+        # Акт уже заведён: повторный импорт не добавляет работы, он только
+        # обновил бы статус. Считать его добавленным нельзя — человек решит,
+        # что завёл поездку, которой в списке нет.
+        if db.query_one("SELECT id FROM return_acts WHERE giveout_id = ?", (giveout_id,)):
+            skipped.append(giveout_id)
+            continue
+        row = db.query_one(
+            "SELECT * FROM ozon_giveouts WHERE account_id = ? AND id = ?", (account["id"], giveout_id)
+        )
+        if not row:
+            skipped.append(giveout_id)
+            continue
+        act = view(row)
+        matched = match_returns(account["id"], act["items"])
+        act_id = return_acts.from_giveout(
+            account["id"], giveout_id, created_at=act.get("created_at"),
+            status=act.get("status"), return_ids=matched,
+        )
+        if act_id:
+            added += 1
+            returns += len(matched)
+        else:
+            skipped.append(giveout_id)
+
+    if added:
+        db.log_event(
+            "return_act_import", account_id=account["id"], user=user,
+            message=f"актов: {added}, возвратов: {returns}",
+        )
+    if added:
+        message = f"Добавлено актов: {added}, возвратов в них: {returns}"
+    else:
+        message = ("Ни один акт не добавлен: они уже в панели, "
+                   "либо их возвраты разнесены по другим актам или не опознаны")
+    return {"status": "ok" if added else "warning", "added": added, "returns": returns,
+            "skipped": skipped, "message": message}
+
+
 def act_from_document(account: dict, user: dict | None = None, *, dry_run: bool = False) -> dict:
     """Забрать документ выдачи у Ozon и собрать по нему акт.
 
@@ -127,7 +244,7 @@ def act_from_document(account: dict, user: dict | None = None, *, dry_run: bool 
     безвреден: возвраты, уже разложенные по актам, второй раз не заберутся, и
     пустой акт не появится.
     """
-    from . import act_upload, return_acts
+    from . import act_upload
 
     try:
         # get_client тоже кидает OzonError — у кабинета может не быть ключей.
@@ -165,25 +282,6 @@ def act_from_document(account: dict, user: dict | None = None, *, dry_run: bool 
             "message": f"Акт собран по документу Ozon: {len(return_ids)} возвратов"}
 
 
-# Документ выдачи — отдельный запрос к Ozon, и дёргать его каждую минуту не за
-# чем: активная выдача меняется куда реже. Пробуем не чаще, чем раз в столько.
-DOCUMENT_RETRY_MINUTES = 15
-
-
-def _document_is_due(account_id: int) -> bool:
-    from datetime import datetime, timedelta, timezone
-
-    key = f"giveout_doc_try_{account_id}"
-    last = db.kv_get(key)
-    if last:
-        try:
-            moment = datetime.fromisoformat(last.replace("Z", "+00:00"))
-        except ValueError:
-            moment = None
-        if moment and datetime.now(timezone.utc) - moment < timedelta(minutes=DOCUMENT_RETRY_MINUTES):
-            return False
-    db.kv_set(key, db.now_iso())
-    return True
 
 
 def sync_account(account: dict) -> dict:
@@ -205,12 +303,6 @@ def sync_account(account: dict) -> dict:
             giveouts, has_next = client.giveout_list(limit=PAGE_LIMIT, last_id=last_id)
         except OzonError as exc:
             log.warning("Акты выдачи недоступны: %s", exc)
-            # Списка нет — документ выдачи может быть, и штрихкоды в нём есть.
-            if _document_is_due(account_id):
-                from_document = act_from_document(account)
-                if from_document.get("found"):
-                    return _result(saved, from_document["found"], unmatched,
-                                   error=exc.message, document=from_document["message"])
             return _result(saved, matched, unmatched, error=exc.message)
         if not giveouts:
             break
@@ -231,18 +323,15 @@ def sync_account(account: dict) -> dict:
             saved += 1
             # Строки акта — это и есть «Ждёт подтверждения»: площадка сама
             # сказала, какие возвраты отдала и когда.
+            # Акт в панель не заводим: какие поездки открыть — решает человек
+            # во вкладке «Ждёт подтверждения». Синхронизация только приносит
+            # список, чтобы было из чего выбирать.
             return_ids = match_returns(account_id, items)
-            return_acts.from_giveout(
-                account_id, giveout_id,
-                created_at=_pick(merged, CREATED_KEYS) or None,
-                status=_pick(merged, STATUS_KEYS) or None,
-                return_ids=return_ids,
-            )
             matched += len(return_ids)
             if items and not return_ids:
-                # Акт есть, а возвраты по нему не нашлись: у нас нет их строк
-                # или в акте нет ни штрихкода, ни номера. Молчать нельзя —
-                # иначе раздел останется пустым без объяснения.
+                # Возвраты по акту не опознаны: их нет в панели или в акте нет
+                # ни штрихкода, ни номера. Молчать нельзя — иначе выбирать
+                # будет не из чего и непонятно почему.
                 unmatched += 1
                 log.info("Акт %s: ни один из %s товаров не сопоставлен с возвратами",
                          giveout_id, len(items))
@@ -253,15 +342,6 @@ def sync_account(account: dict) -> dict:
             break
         if not has_next or not last_id:
             break
-
-    # Список актов ничего полезного не дал — пробуем сам документ выдачи. Там
-    # штрихкоды напечатаны, и он работает даже когда список выключен или отдаёт
-    # состав в незнакомых полях.
-    if not matched and _document_is_due(account_id):
-        from_document = act_from_document(account)
-        if from_document.get("found"):
-            matched += from_document["found"]
-            return _result(saved, matched, unmatched, document=from_document["message"])
 
     return _result(saved, matched, unmatched)
 

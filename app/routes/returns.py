@@ -197,6 +197,32 @@ def api_giveout_raw(giveout_id: str, admin: dict = Depends(require_admin),
     return {"giveout_id": giveout_id, "raw": raw}
 
 
+@router.get("/api/returns/acts/available")
+def api_available_acts(days: int = 7, admin: dict = Depends(require_admin),
+                       account: dict = Depends(require_ozon_account)):
+    """Акты выдачи Ozon за последние дни — список на выбор.
+
+    Показывает, что есть у площадки и сколько возвратов кабинета в каждом акте
+    узнаётся. Ничего не создаёт: выбирает и добавляет человек.
+    """
+    result = giveouts.available(account, days=max(1, min(days, 90)))
+    if result["status"] == "error":
+        raise HTTPException(status_code=502, detail=result["message"])
+    return result
+
+
+@router.post("/api/returns/acts/import")
+def api_import_acts(request: Request, payload: dict = Body(...),
+                    admin: dict = Depends(require_admin),
+                    account: dict = Depends(require_ozon_account)):
+    """Завести в панели отмеченные акты выдачи."""
+    check_csrf(request)
+    ids = [str(item).strip() for item in (payload.get("giveout_ids") or []) if str(item).strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="Не выбрано ни одного акта")
+    return giveouts.import_acts(account, admin, ids)
+
+
 @router.post("/api/returns/acts/from-ozon")
 def api_act_from_ozon(request: Request, payload: dict = Body(default={}),
                       admin: dict = Depends(require_admin),
@@ -561,22 +587,17 @@ def _sync_message(result: dict) -> str:
     """
     parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
     if result.get("giveouts_error"):
-        parts.append(f"акты выдачи недоступны ({result['giveouts_error']})")
-        parts.append(result["giveouts_document"].lower() if result.get("giveouts_document")
-                     else "акт можно забрать документом Ozon или загрузить файлом")
+        parts.append(f"акты выдачи недоступны ({result['giveouts_error']}) — "
+                     "акт можно забрать документом Ozon или загрузить файлом")
         return ". ".join(parts)
     acts = result.get("giveouts", 0)
     if not acts:
-        if result.get("giveouts_document"):
-            parts.append(result["giveouts_document"].lower())
-        else:
-            parts.append("актов выдачи Ozon пока не отдал")
+        parts.append("актов выдачи Ozon пока не отдал")
         return ". ".join(parts)
-    parts.append(f"актов выдачи: {acts}")
-    if result.get("giveouts_document"):
-        parts.append(result["giveouts_document"].lower())
+    parts.append(f"актов выдачи у Ozon: {acts}")
     if result.get("giveouts_returns"):
-        parts.append(f"возвратов по ним: {result['giveouts_returns']}")
+        parts.append(f"возвратов в них: {result['giveouts_returns']}")
+    parts.append("добавить — во вкладке «Ждёт подтверждения»")
     if result.get("giveouts_unmatched"):
         parts.append(
             f"не опознано актов: {result['giveouts_unmatched']} — в их составе нет знакомых штрихкодов"

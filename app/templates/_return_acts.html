@@ -20,22 +20,33 @@
 <details class="act no-print" id="act-upload" style="margin-bottom:18px">
   <summary class="act-head">
     <div class="grow">
-      <div class="act-title">Забрать акт вручную</div>
+      <div class="act-title">Получить акты возвратов</div>
       <div class="act-sub">
-        Обычно акт приходит сам. Здесь — если он нужен прямо сейчас: панель
-        заберёт документ выдачи у Ozon либо разберёт файл, который вы дадите
-        (PDF, XLSX, CSV, JSON). Ищутся штрихкоды возвратов кабинета
+        Показать акты выдачи, которые есть у Ozon, и выбрать те, что нужно
+        завести в панель. Ищутся штрихкоды возвратов кабинета
         «{{ account.title }}».
       </div>
     </div>
   </summary>
   <div class="act-body">
     <div class="row" style="margin-top:8px">
-      <button class="btn primary" id="act-from-ozon">Забрать документ выдачи у Ozon</button>
-      <span class="muted small">без файла — панель запросит документ сама</span>
+      <button class="btn primary" id="act-fetch">Получить акты возвратов</button>
+      <label class="muted small">за последние
+        <select id="act-days" style="padding:4px 8px">
+          <option value="7" selected>7 дней</option>
+          <option value="14">14 дней</option>
+          <option value="30">30 дней</option>
+        </select>
+      </label>
+      <span class="grow"></span>
+      <button class="btn" id="act-from-ozon" title="Если списка актов у кабинета нет">
+        Забрать текущий документ выдачи
+      </button>
     </div>
+    <div id="act-list" style="margin-top:14px"></div>
 
-    <div class="row" style="margin-top:14px; flex-wrap:wrap">
+    <div class="row" style="margin-top:18px; flex-wrap:wrap">
+      <span class="muted small">Нет в списке? Загрузите файл акта:</span>
       <input type="file" id="act-file" accept=".pdf,.xlsx,.xlsm,.csv,.tsv,.json,.txt">
       <button class="btn" id="act-check">Посмотреть, что в файле</button>
       <button class="btn primary" id="act-create" hidden>Создать акт</button>
