@@ -470,6 +470,6 @@ def api_received_statuses(request: Request, payload: dict = Body(...), admin: di
     return {
         "status": "ok",
         "message": f"Полученными считаются возвраты в статусах: {names}. "
-                   f"Ждёт акта возвратов: {result.get('returns_waiting_act', 0)}.",
+                   f"Обновлено возвратов: {result.get('returns', 0)}.",
         "result": result,
     }

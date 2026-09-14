@@ -634,8 +634,57 @@ DATA_TABLES = (
 )
 KV_GENERATED_CLEANED = "generated_data_cleaned"
 KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
+KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
 # Таблицы, у которых есть колонка raw с ответом площадки целиком.
 RAW_TABLES = ("postings", "returns", "avito_orders")
+
+
+def _drop_auto_return_acts(conn: sqlite3.Connection) -> None:
+    """Убрать акты возвратов, которые версия 1.17 составляла сама.
+
+    В 1.17 акт собирался при обновлении, как только возврат переходил в статус
+    «Получен». Вместе с этим статусом Ozon отдаёт весь архив полученных
+    возвратов, а момент получения панель ставила свой — «сейчас». В итоге
+    первое же обновление сваливало в один акт всю историю: на живом складе
+    вышел акт на 2446 позиций за одну минуту.
+
+    С 1.18 акт составляет человек за выбранное число, и такие акты не
+    создаются. Оставшиеся от 1.17 убираем: подтверждать разом тысячи возвратов
+    никто не станет, а висящий акт закрывает собой настоящие.
+
+    Отметки сборщика при этом не теряются — они лежат в строках возвратов, а не
+    в акте. Строку с отметкой из акта не освобождаем: по ней работа шла, и
+    решать её судьбу должен человек. Подтверждённые акты не трогаем вовсе:
+    работа по ним закрыта.
+    """
+    if not _table_exists(conn, "return_acts"):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_AUTO_ACTS_CLEANED,)).fetchone()
+    if done:
+        return
+    rows = conn.execute(
+        "SELECT id FROM return_acts WHERE kind = 'received' AND confirmed_at IS NULL"
+    ).fetchall()
+    for row in rows:
+        # Возврат без отметки возвращается в работу, и вместе с ним сбрасывается
+        # выдуманный момент получения: следующее обновление возьмёт настоящий у
+        # площадки, и возврат встанет на своё число, а не на день обновления.
+        conn.execute(
+            "UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL "
+            "WHERE act_id = ? AND mark IS NULL AND note IS NULL",
+            (row["id"],),
+        )
+        left = conn.execute(
+            "SELECT COUNT(*) AS c FROM returns WHERE act_id = ?", (row["id"],)
+        ).fetchone()["c"]
+        if not left:
+            conn.execute("DELETE FROM return_acts WHERE id = ?", (row["id"],))
+    if rows:
+        log.info("Убрано автоматических актов возвратов: %d", len(rows))
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_AUTO_ACTS_CLEANED, now_iso()),
+    )
 
 
 def _drop_generated_data(conn: sqlite3.Connection) -> None:
@@ -756,6 +805,7 @@ def init_db() -> None:
         try:
             _drop_generated_data(conn)
             _drop_buyer_contacts(conn)
+            _drop_auto_return_acts(conn)
             _encrypt_account_keys(conn)
         except Exception:
             conn.execute("ROLLBACK")

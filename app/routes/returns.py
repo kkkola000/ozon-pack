@@ -173,10 +173,6 @@ def returns_page(
             "all_total": ready_everywhere(),
             "tab": "acts" if tab == "acts" else "ready",
             "acts": return_acts.pending([account["id"]]),
-            # Числа, за которые есть полученные возвраты без акта: по ним и
-            # составляют акт, гадать с календарём не нужно.
-            "received_days": return_acts.received_days(account["id"]),
-            "waiting_act": len(return_acts.received_returns(account["id"])),
             "today": store.local_day(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
@@ -478,18 +474,8 @@ def api_returns_sync(request: Request, payload: dict = Body(default={}), user: d
 
 
 def _sync_message(result: dict) -> str:
-    """Что сделало обновление и что теперь ждёт человека.
-
-    Акт панель не составляет — это решение сборщика. Поэтому здесь главное
-    сказать, сколько полученных возвратов ждёт акта: молча они просто
-    накопятся, и о них забудут.
-    """
+    """Что сделало обновление. Акт панель не составляет — это решение сборщика."""
     parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
-    if result.get("returns_waiting_act"):
-        parts.append(f"получено и ждёт акта: {result['returns_waiting_act']} — "
-                     "составьте акт во вкладке «Ждёт подтверждения»")
-    else:
-        parts.append("полученных возвратов без акта нет")
     if result.get("returns_gone"):
         parts.append(f"ушло из выдачи: {result['returns_gone']}")
     return ". ".join(parts)

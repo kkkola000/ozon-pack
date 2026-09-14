@@ -11,61 +11,38 @@
 </div>
 
 {% if user.role == 'admin' %}
-{# Главное действие вкладки, а не запасной ход: без него акта не будет вовсе.
+{# Главное действие вкладки: выбрали число — нажали «Составить акт». Сколько
+   попадёт, считается при выборе числа, отдельной кнопки для этого нет.
    Только администратору — акт нельзя удалить. #}
-<details class="act no-print" id="act-byday" style="margin-bottom:18px"
-         {{ 'open' if waiting_act and not acts }}>
-  <summary class="act-head">
+<div class="act no-print" id="act-byday" style="margin-bottom:18px">
+  <div class="act-head">
     <div class="grow">
-      <div class="act-title">Составить акт за число</div>
+      <div class="act-title">Составить акт</div>
       <div class="act-sub">
         Возвраты кабинета «{{ account.title }}», полученные в выбранный день и
         ещё не попавшие ни в один акт.
       </div>
     </div>
-    {% if waiting_act %}
-      <span class="badge warn">{{ waiting_act }} ждёт акта</span>
-    {% endif %}
-  </summary>
+  </div>
   <div class="act-body">
     <div class="row" style="margin-top:8px; flex-wrap:wrap">
-      <label class="muted small">Число получения
+      <label class="muted small">Дата получения
         <input type="date" id="act-day" value="{{ today }}" max="{{ today }}"
                style="padding:4px 8px; margin-left:6px">
       </label>
-      <button class="btn" id="act-check">Посмотреть, что попадёт</button>
-      <button class="btn primary" id="act-create" hidden>Составить акт</button>
+      <button class="btn primary" id="act-create" disabled>Составить акт</button>
+      <span id="act-byday-result" class="small muted"></span>
     </div>
-
-    {% if received_days %}
-      <div class="small muted" style="margin-top:12px">
-        Получено и ждёт акта:
-        {% for row in received_days %}
-          <a href="#" data-pick-day="{{ row.day }}">{{ row.day }}</a>
-          <span class="muted">({{ row.count }})</span>{% if not loop.last %} · {% endif %}
-        {% endfor %}
-      </div>
-    {% else %}
-      <div class="small muted" style="margin-top:12px">
-        Полученных возвратов без акта нет — всё уже разнесено по актам.
-      </div>
-    {% endif %}
-
-    <div id="act-byday-result" class="small" style="margin-top:14px"></div>
   </div>
-</details>
+</div>
 {% endif %}
 
 {% if not acts %}
   <div class="empty">
-    {% if waiting_act %}
-      Актов пока нет, но {{ waiting_act }} полученных возвратов его ждут —
-      {% if user.role == 'admin' %}составьте акт кнопкой выше.
-      {% else %}попросите администратора составить акт.{% endif %}
-    {% else %}
-      Неподтверждённых актов нет. Акт составляют после поездки в пункт выдачи,
-      когда возвраты перейдут в статус «Получен».
-    {% endif %}
+    Неподтверждённых актов нет. Акт составляют после поездки в пункт выдачи,
+    когда возвраты перейдут в статус «Получен»:
+    {% if user.role == 'admin' %}выберите дату и нажмите «Составить акт».
+    {% else %}это делает администратор.{% endif %}
   </div>
 {% endif %}
 

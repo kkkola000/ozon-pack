@@ -266,3 +266,64 @@ def test_create_sql_survives_semicolon_in_comment():
             sql = db.create_sql(table)
             assert sql.count("(") == sql.count(")"), f"{table}: оператор оборван"
             assert sql.rstrip().endswith(");"), f"{table}: оператор оборван"
+
+
+def test_automatic_acts_of_1_17_are_removed():
+    """Акт, который версия 1.17 собрала сама, при обновлении убирается.
+
+    В 1.17 акт собирался при обновлении по статусу «Получен», а вместе с этим
+    статусом Ozon отдаёт весь архив — на живом складе вышел один акт на 2446
+    позиций. Такой акт не подтвердить, и он закрывает собой настоящие.
+    """
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("auto1", db.now_iso(), "received", account_id),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, act_id, received_at, received_day) "
+        "VALUES(?,?,?,?,?,?)",
+        (account_id, "R-archive", 0, "auto1", db.now_iso(), db.now_iso()[:10]),
+    )
+
+    db.init_db()
+
+    assert db.query_one("SELECT id FROM return_acts WHERE id = 'auto1'") is None
+    row = db.query_one("SELECT act_id, received_at, received_day FROM returns WHERE id = 'R-archive'")
+    assert row["act_id"] is None, "возврат не вернулся в работу"
+    # Момент получения сброшен: следующее обновление возьмёт настоящий у Ozon,
+    # и возврат встанет на своё число, а не на день обновления.
+    assert row["received_at"] is None and row["received_day"] is None
+
+
+def test_cleanup_keeps_marked_returns_and_runs_once():
+    """Работу сборщика чистка не трогает и второй раз не запускается."""
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("auto2", db.now_iso(), "received", account_id),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, act_id, mark, note) VALUES(?,?,?,?,?,?)",
+        (account_id, "R-marked", 0, "auto2", "bad", "вскрыта упаковка"),
+    )
+    db.init_db()
+
+    row = db.query_one("SELECT act_id, note FROM returns WHERE id = 'R-marked'")
+    assert row["act_id"] == "auto2", "строка с отметкой вырвана из акта"
+    assert row["note"] == "вскрыта упаковка"
+    assert db.query_one("SELECT id FROM return_acts WHERE id = 'auto2'"), "акт с работой удалён"
+
+    # Второй запуск ничего не делает: отметка о чистке уже стоит.
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("auto3", db.now_iso(), "received", account_id),
+    )
+    db.init_db()
+    assert db.query_one("SELECT id FROM return_acts WHERE id = 'auto3'"), "чистка сработала второй раз"

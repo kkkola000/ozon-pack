@@ -275,12 +275,6 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}
-    # Акт составляет человек, а не обновление: когда поездка закончилась, знает
-    # только он. Поэтому здесь не создаём акт, а говорим, сколько полученных
-    # возвратов его ждёт, — иначе о них можно просто забыть.
-    waiting = len(return_acts.received_returns(account_id))
-    if waiting:
-        result["returns_waiting_act"] = waiting
     if skipped:
         result["returns_skipped"] = skipped
     if gone:

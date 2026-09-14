@@ -105,15 +105,8 @@ def test_sync_does_not_make_acts(sample_data):
     assert taken, "подделка не отдала ни одного возврата из пункта выдачи"
     assert return_acts.pending() == [], "обновление составило акт само"
     # Но получение записано — акт будет из чего составить.
-    assert set(return_acts.received_returns(accounts.default_account()["id"])) >= set(taken)
-
-
-def test_sync_reports_what_is_waiting_for_an_act(sample_data):
-    """Молча копить полученные нельзя: о них забудут."""
-    take_everything()
-    result = sync.sync_returns(accounts.default_account())
-    waiting = len(return_acts.received_returns(accounts.default_account()["id"]))
-    assert result["returns_waiting_act"] == waiting > 0
+    free = return_acts.received_returns(accounts.default_account()["id"], store.local_day())
+    assert set(free) >= set(taken)
 
 
 def test_act_takes_everything_received_that_day(sample_data):
@@ -124,7 +117,7 @@ def test_act_takes_everything_received_that_day(sample_data):
     assert len(acts) == 1 and acts[0]["by_day"] is True
     assert acts[0]["received_day"] == store.local_day()
     assert acts[0]["total"] == result["added"]
-    assert not return_acts.received_returns(accounts.default_account()["id"])
+    assert not return_acts.received_returns(accounts.default_account()["id"], store.local_day())
 
 
 def test_act_title_names_the_day_the_number_and_the_time(sample_data):
@@ -158,6 +151,50 @@ def test_received_returns_leave_the_pickup_list(sample_data):
     placeholders = ",".join("?" for _ in taken)
     rows = db.query(f"SELECT id, is_ready FROM returns WHERE id IN ({placeholders})", taken)
     assert rows and all(row["is_ready"] == 0 for row in rows)
+
+
+def test_receipt_date_comes_from_the_platform(sample_data):
+    """Дата получения — площадки, а не «сейчас».
+
+    По статусу «Получен» Ozon отдаёт весь архив: возвраты, полученные месяцы
+    назад, приходят в том же ответе. Со временем «сейчас» первое же обновление
+    объявило бы их полученными сегодня — так и вышел акт на 2446 позиций.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    # Архив: возврат получен давно, площадка помнит момент смены статуса.
+    old = client._returns[0]
+    old["visual"]["status"]["sys_name"] = "ReceivedBySeller"
+    old["visual"]["status"]["display_name"] = "Получен продавцом"
+    old["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
+    sync.sync_returns(account)
+
+    row = db.query_one("SELECT received_day FROM returns WHERE id = ?", (str(old["id"]),))
+    assert row["received_day"] == "2026-03-02", "архив записан сегодняшним числом"
+    assert str(old["id"]) not in return_acts.received_returns(account["id"], store.local_day())
+
+
+def test_archive_does_not_get_into_todays_act(sample_data):
+    """Акт за сегодня — только сегодняшняя поездка, без истории склада."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    for item in client._returns[:5]:
+        item["visual"]["status"]["sys_name"] = "ReceivedBySeller"
+        item["visual"]["status"]["display_name"] = "Получен продавцом"
+        item["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
+    sync.sync_returns(account)
+
+    today = [r["id"] for r in db.query("SELECT id FROM returns WHERE is_ready = 1")]
+    client.receive(*today)
+    sync.sync_returns(account)
+
+    result = make_act(account)
+    in_act = {row["id"] for row in return_acts.detail(result["act_id"])["ozon"]}
+    assert in_act == set(today), "в сегодняшний акт попал архив площадки"
 
 
 # ------------------------------------ несколько актов за одно число, без задвоения
@@ -313,18 +350,6 @@ def test_day_without_receipts_says_so(sample_data):
     assert result["status"] == "warning"
     assert result["act_id"] is None
     assert "01.01.2001" in result["message"]
-
-
-def test_days_hint_lists_what_is_waiting(sample_data):
-    """Подсказка с числами — это и есть выбор числа, гадать не нужно."""
-    account = accounts.default_account()
-    take_everything()
-    days = return_acts.received_days(account["id"])
-    assert days and days[0]["day"] == store.local_day()
-    assert days[0]["count"] == len(return_acts.received_returns(account["id"]))
-
-    make_act(account)
-    assert return_acts.received_days(account["id"]) == [], "число осталось в подсказке после акта"
 
 
 def login_as_packer(client) -> str:

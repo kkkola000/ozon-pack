@@ -1,72 +1,51 @@
 /* Составление акта за число — только у администратора.
 
-   Акт составляет человек: панель не знает, когда поездка закончилась. Сначала
-   показываем, что попадёт в акт, и лишь потом составляем: акт удалить нельзя,
-   а число легко перепутать. */
+   Два действия, как в жизни: выбрали дату — нажали «Составить акт». Сколько
+   возвратов попадёт, панель считает сама при выборе даты и пишет прямо на
+   кнопке: акт удалить нельзя, и вслепую его заводить не надо. */
 const byDay = document.getElementById('act-byday');
 
 if (byDay) {
   const dayField = document.getElementById('act-day');
-  const checkButton = document.getElementById('act-check');
   const createButton = document.getElementById('act-create');
   const result = document.getElementById('act-byday-result');
 
-  /* Подсказка «есть полученные за такое-то число» — она же и выбор числа:
-     переписывать дату руками, глядя на список рядом, незачем. */
-  byDay.addEventListener('click', (event) => {
-    const link = event.target.closest('[data-pick-day]');
-    if (!link) return;
-    event.preventDefault();
-    dayField.value = link.dataset.pickDay;
-    createButton.hidden = true;
-    checkButton.click();
-  });
-
-  /* Новое число — старый ответ уже не про него: прятать кнопку обязательно,
-     иначе акт создастся за то число, которое человек только что заменил. */
-  dayField.addEventListener('change', () => {
-    createButton.hidden = true;
-    result.textContent = '';
-  });
-
-  async function send(dryRun) {
-    if (!dayField.value) { toast('Выберите число', 'error'); return null; }
+  function send(dryRun) {
     return api('/api/returns/acts/by-day', { day: dayField.value, dry_run: dryRun });
   }
 
-  checkButton.onclick = async () => {
-    checkButton.disabled = true;
-    createButton.hidden = true;
+  /* Сколько попадёт в акт за выбранную дату. Кнопка заперта, пока это
+     неизвестно или пока за дату нечего собирать. */
+  async function count() {
+    createButton.disabled = true;
+    createButton.textContent = 'Составить акт';
+    if (!dayField.value) { result.textContent = 'Выберите дату'; return; }
     result.textContent = 'Считаем…';
     try {
       const data = await send(true);
-      if (!data) { result.textContent = ''; return; }
-      result.innerHTML = `<b>${escapeHtml(data.message)}</b>`;
-      createButton.hidden = !data.found;
-      createButton.textContent = `Составить акт на ${data.found}`;
+      result.textContent = data.found ? '' : data.message;
+      createButton.disabled = !data.found;
+      if (data.found) createButton.textContent = `Составить акт на ${data.found}`;
     } catch (error) {
       result.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
-    } finally {
-      checkButton.disabled = false;
     }
-  };
+  }
+
+  dayField.addEventListener('change', count);
+  count();
 
   createButton.onclick = async () => {
     createButton.disabled = true;
     createButton.textContent = 'Составляем…';
     try {
       const data = await send(false);
-      if (data) {
-        toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
-        if (data.act_id) { setTimeout(() => window.location.reload(), 900); return; }
-        /* Составлять нечего: возвраты забрал акт из соседней вкладки.
-           Прячем кнопку — второе нажатие ничего не изменит. */
-        createButton.hidden = true;
-      }
+      toast(data.message, data.status === 'ok' ? 'ok' : 'warning', 10000);
+      if (data.act_id) { setTimeout(() => window.location.reload(), 900); return; }
+      /* Составлять нечего: возвраты забрал акт из соседней вкладки. */
+      count();
     } catch (error) {
       toast(error.message, 'error', 10000);
-      createButton.disabled = false;
-      createButton.textContent = 'Составить акт';
+      count();
     }
   };
 }

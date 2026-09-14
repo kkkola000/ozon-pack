@@ -288,10 +288,19 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     is_ready = 1 if sys_name in set(get_returns_statuses()) else 0
     # «Получен» — возврат уже у нас, и по нему нужна отметка. Один и тот же
     # статус в обоих списках означает «ещё к выдаче»: сборщик за ним едет, а
-    # закрывать актом то, что не забрали, нельзя.
+    # класть в акт то, что не забрали, нельзя.
     received = not is_ready and sys_name in set(get_received_statuses())
 
     now = db.now_iso()
+    # Когда возврат получили — берём у площадки, а не ставим «сейчас». Ozon
+    # отдаёт по статусу «Получен» весь архив, и с временем «сейчас» первое же
+    # обновление объявило бы полученными сегодня тысячи старых возвратов —
+    # ровно один такой акт на 2446 позиций и получился в версии 1.17.
+    received_at = _dt(visual.get("change_moment")) if received else None
+    if received_at and received_at > now:
+        received_at = now
+    received_at = received_at or (now if received else None)
+
     existing = conn.execute(
         "SELECT first_seen_at FROM returns WHERE account_id = ? AND id = ?", (account_id, return_id)
     ).fetchone()
@@ -348,8 +357,8 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _raw_json(raw),
             (existing["first_seen_at"] if existing else now) or now,
             now,
-            now if received else None,
-            local_day(now) if received else None,
+            received_at,
+            local_day(received_at) if received_at else None,
         ),
     )
     return return_id

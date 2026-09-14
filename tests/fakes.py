@@ -288,6 +288,7 @@ class FakeOzonClient(OzonClient):
         получает всё, что лежит в пункте выдачи, — «съездили за всем разом».
         """
         wanted = {str(rid) for rid in return_ids}
+        now = _iso(datetime.now(timezone.utc))
         changed = []
         for item in self._returns:
             status = item["visual"]["status"]
@@ -297,6 +298,9 @@ class FakeOzonClient(OzonClient):
                 continue
             status["sys_name"] = "ReceivedBySeller"
             status["display_name"] = "Получен продавцом"
+            # Момент смены статуса площадка обновляет — по нему панель и узнаёт,
+            # когда возврат получен. Без этого он остался бы датой прибытия в ПВЗ.
+            item["visual"]["change_moment"] = now
             changed.append(str(item["id"]))
         return changed
 
