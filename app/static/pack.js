@@ -41,6 +41,21 @@ function renderActive(state) {
   document.getElementById('idle-panel').style.display = 'none';
   const posting = state.active;
   const percent = state.total ? Math.round((state.done / state.total) * 100) : 0;
+  /* Набор на площадке — обычный товар, а на складе это несколько вещей со
+     своими штрихкодами. Сборщик сканирует их, поэтому и видеть он должен их, а
+     не одну строку «набор 0/1», по которой непонятно, что ещё брать. */
+  const setParts = (item) => !item.is_set ? '' : `
+    <div class="set-parts">
+      ${item.parts.map((part) => `
+        <div class="set-part ${part.ok ? 'ok' : ''}">
+          <span class="qty">${part.scanned} / ${part.need}</span>
+          <span class="grow">${escapeHtml(part.name)}
+            ${part.barcode ? `<span class="muted mono"> · ${escapeHtml(part.barcode)}</span>` : ''}
+          </span>
+          ${part.ok ? '<span class="check">✔</span>' : ''}
+        </div>`).join('')}
+    </div>`;
+
   const items = state.items.map((item) => `
     <div class="item-row ${item.ok ? 'ok' : ''}">
       <div class="qty">${item.scanned} / ${item.need}</div>
@@ -55,7 +70,9 @@ function renderActive(state) {
           Артикул: ${escapeHtml(item.offer_id || '—')} · SKU: ${escapeHtml(item.sku)}
           ${item.barcodes?.length ? ' · ШК: ' + escapeHtml(item.barcodes.join(', ')) : ''}
           ${item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : ''}
+          ${item.is_set ? ' · <span class="tag">Набор из ' + item.parts.length + '</span>' : ''}
         </div>
+        ${setParts(item)}
       </div>
       ${item.ok ? '<div class="check">✔</div>' : ''}
     </div>`).join('');

@@ -317,3 +317,35 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .cabinet-card .head b { font-size: 15px; }
 .cabinet-card .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
 @media (max-width: 720px) { .cabinet-card .fields { grid-template-columns: 1fr; } }
+
+/* Подсказка при выборе товара: список поверх формы, чтобы не двигать её вниз. */
+.picker {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+.picker .pick { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.picker .pick:last-child { border-bottom: none; }
+.picker .pick:hover { background: var(--surface-2); }
+
+/* Состав набора на экране сборки: сборщик берёт с полки части, а не набор. */
+.set-parts { margin-top: 8px; display: grid; gap: 4px; }
+.set-part {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 14px;
+}
+.set-part.ok { opacity: .55; }
+.set-part .qty { font-weight: 800; min-width: 52px; }
+.set-part .check { color: var(--ok); font-weight: 800; }

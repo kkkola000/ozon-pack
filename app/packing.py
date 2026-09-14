@@ -15,7 +15,7 @@ import json
 import re
 from typing import Any
 
-from . import db, report, store
+from . import db, product_sets, report, store
 from .config import settings
 from . import ozon
 from .ozon import OzonError
@@ -137,14 +137,18 @@ def load_state(account: dict, user: dict) -> dict:
 
     scanned = json.loads(row["scanned"] or "{}")
     posting = store.posting_view(posting_row)
+    sets = product_sets.parts_for(account["id"], [item["sku"] for item in posting["items"]])
     items = []
     done = total = 0
     for item in posting["items"]:
         need = int(item["quantity"])
         got = int(scanned.get(item["sku"], 0))
+        row_extra: dict = {}
+        if sets.get(item["sku"]):
+            got, row_extra = _set_progress(item["sku"], need, got, sets[item["sku"]], scanned)
         total += need
         done += min(got, need)
-        items.append({**item, "need": need, "scanned": got, "ok": got >= need})
+        items.append({**item, "need": need, "scanned": got, "ok": got >= need, **row_extra})
     return {
         "active": posting,
         "scanned": scanned,
@@ -154,6 +158,45 @@ def load_state(account: dict, user: dict) -> dict:
         "complete": total > 0 and done >= total,
         "started_at": row["started_at"],
     }
+
+
+def part_slot(set_sku: str, part_key: str) -> str:
+    """Ключ прогресса по части набора внутри одного отправления."""
+    return f"{set_sku}#{part_key}"
+
+
+def _set_progress(set_sku: str, need: int, direct: int,
+                  parts: list[dict], scanned: dict) -> tuple[int, dict]:
+    """Сколько наборов собрано и что ещё осталось взять с полки.
+
+    Набор считается собранным, когда набраны все его части: по одной неполной
+    части нельзя закрыть позицию, иначе в коробку уедет половина комплекта.
+    Отсюда минимум по частям, а не сумма.
+
+    Штрихкод самого набора тоже засчитывается (direct) — если такая наклейка на
+    складе есть, сканировать части незачем. Тогда и частей нужно меньше.
+    """
+    from_parts = None
+    left = max(0, need - direct)
+    rows = []
+    for part in parts:
+        per_set = max(1, int(part.get("quantity") or 1))
+        got = int(scanned.get(part_slot(set_sku, part["part_key"]), 0))
+        part_need = per_set * left
+        from_parts = got // per_set if from_parts is None else min(from_parts, got // per_set)
+        rows.append({
+            "part_key": part["part_key"],
+            "sku": part.get("part_sku"),
+            "barcode": part.get("barcode"),
+            "name": product_sets.part_title(part),
+            "image": part.get("image"),
+            "per_set": per_set,
+            "need": part_need,
+            "scanned": got,
+            "ok": got >= part_need,
+        })
+    total = direct + min(from_parts or 0, left)
+    return total, {"is_set": True, "parts": rows}
 
 
 def clear_state(user: dict, conn=None) -> None:
@@ -292,6 +335,13 @@ def _dispatch_scan(account: dict, user: dict, code: str) -> ScanResult:
     if kind == "posting_unknown":
         return _scan_unknown_posting(account, user, target, code)
 
+    # Часть набора, которой нет в каталоге площадки: своего SKU у неё не
+    # бывает, поэтому classify до сюда её и доводит. Для сборщика это обычный
+    # товар с полки, и «код не распознан» было бы неправдой.
+    part = _scan_set_part(account, user, code, sku=None)
+    if part is not None:
+        return part
+
     # Последняя попытка: спросить Ozon по штрихкоду стикера.
     posting = _fetch_by_barcode(account, code)
     if posting:
@@ -318,6 +368,127 @@ def _dispatch_scan(account: dict, user: dict, code: str) -> ScanResult:
         action="unknown",
         state=state,
     )
+
+
+def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> ScanResult | None:
+    """Отсканирована часть набора. None — это не часть, идём дальше по обычному пути.
+
+    Набор на Ozon — обычный товар, и в отправлении он стоит одной позицией. На
+    складе его собирают из нескольких вещей, и сборщик сканирует именно их:
+    наклейки набора на полке нет. Значит, скан части — это работа по позиции
+    набора, а не чужой товар.
+    """
+    parents = product_sets.parents_of(
+        account["id"], sku=sku, barcodes=barcode_variants(code)
+    )
+    if not parents:
+        return None
+
+    state = load_state(account, user)
+    active = state["active"]
+    if not active:
+        return _pick_posting_for_set(account, user, parents, code, sku)
+
+    by_sku = {item["sku"]: item for item in state["items"] if item.get("is_set")}
+    # Часть может входить в несколько наборов. Берём тот, что есть в этом
+    # отправлении и ещё не собран: иначе скан уйдёт в уже закрытую позицию.
+    usable = [p for p in parents if p["set_sku"] in by_sku]
+    if not usable:
+        return None
+    parent = next((p for p in usable if not by_sku[p["set_sku"]]["ok"]), usable[0])
+    item = by_sku[parent["set_sku"]]
+    part = next(p for p in item["parts"] if p["part_key"] == parent["part_key"])
+    name = part["name"]
+    set_name = item.get("name") or parent["set_sku"]
+
+    if item["ok"] or part["scanned"] >= part["need"]:
+        with db.write() as conn:
+            db.log_event(
+                "scan_extra_product", level="warn", account_id=account["id"], user=user,
+                posting_number=active["posting_number"], sku=parent["set_sku"], barcode=code,
+                message=f"Часть набора сверх нужного: {name}", conn=conn,
+            )
+            report.record_error(
+                conn, account, user, "extra_product",
+                posting_number=active["posting_number"], barcode=code, sku=parent["set_sku"],
+                name=f"{set_name} — {name}", offer_id=item.get("offer_id"),
+            )
+        return ScanResult(
+            "warning",
+            f"«{name}» для набора «{set_name}» уже набран ({part['need']} шт). Лишнее не кладите.",
+            action="extra_product", sound="error", state=state,
+        )
+
+    scanned = dict(state["scanned"])
+    slot = part_slot(parent["set_sku"], parent["part_key"])
+    scanned[slot] = int(scanned.get(slot, 0)) + 1
+    was_done = item["scanned"]
+    with db.write() as conn:
+        _save_state(conn, account, user, active["posting_number"], scanned)
+        db.log_event(
+            "scan_set_part", account_id=account["id"], user=user,
+            posting_number=active["posting_number"], sku=parent["set_sku"], barcode=code,
+            message=f"{set_name}: {name} {scanned[slot]}/{part['need']}", conn=conn,
+        )
+
+    new_state = load_state(account, user)
+    new_item = next(i for i in new_state["items"] if i["sku"] == parent["set_sku"])
+    if new_item["scanned"] > was_done:
+        # Набор собран целиком — только теперь позиция зачтена в отчёт. Писать
+        # туда каждую часть нельзя: отгружен набор, а не его содержимое.
+        with db.write() as conn:
+            report.record_shipped(
+                conn, account, user, active["posting_number"],
+                {"sku": parent["set_sku"], "name": set_name, "offer_id": new_item.get("offer_id")},
+                new_item["scanned"], code,
+            )
+        new_state = load_state(account, user)
+        new_item = next(i for i in new_state["items"] if i["sku"] == parent["set_sku"])
+
+    if new_state["complete"]:
+        return ScanResult(
+            "ok",
+            f"Все товары собраны ({new_state['done']}/{new_state['total']}). "
+            "Наклейте и отсканируйте стикер отправления.",
+            action="ready_for_label", sound="done", state=new_state,
+        )
+    left = [p["name"] for p in new_item["parts"] if not p["ok"]]
+    tail = f" Осталось: {', '.join(left)}." if left else ""
+    return ScanResult(
+        "ok",
+        f"«{set_name}»: {name} {scanned[slot]}/{part['need']}. "
+        f"Набор {new_item['scanned']}/{new_item['need']}.{tail}",
+        action="set_part_scanned", state=new_state,
+    )
+
+
+def _pick_posting_for_set(account: dict, user: dict, parents: list[dict], code: str,
+                          sku: str | None) -> ScanResult | None:
+    """Свободное место, отсканирована часть набора — ищем отправление с набором.
+
+    Сюда доходят части, у которых своего товара в каталоге нет: у части-товара
+    отправление подбирается обычным путём, там набор идёт вторым вариантом.
+
+    Отправление берём «пустым», а скан проводим как часть: засчитать целый
+    набор по одной части нельзя.
+    """
+    seen: list[str] = []
+    for parent in parents:
+        if parent["set_sku"] not in seen:
+            seen.append(parent["set_sku"])
+    for set_sku in seen:
+        candidates = [c for c in candidates_for_sku(account, set_sku, user) if not c.get("locked_by")]
+        if not candidates:
+            continue
+        result = select_posting(account, user, candidates[0]["posting_number"], scan_code=code)
+        if result["status"] != "ok":
+            return result
+        credited = _scan_set_part(account, user, code, sku=sku)
+        if credited is not None:
+            result["state"] = credited["state"]
+            result["message"] = f"{result['message']} {credited['message']}"
+        return result
+    return None
 
 
 def _single_item_name(state: dict) -> str | None:
@@ -369,6 +540,12 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
         required = {item["sku"]: item["need"] for item in state["items"]}
         by_sku = {item["sku"]: item for item in state["items"]}
         if sku not in required:
+            # Прежде чем говорить «СТОП»: это может быть часть набора из этого
+            # же отправления. Сборщик берёт с полки части, а не набор — на
+            # складе такой наклейки просто нет.
+            part = _scan_set_part(account, user, code, sku=sku)
+            if part is not None:
+                return part
             with db.write() as conn:
                 db.log_event(
                     "scan_wrong_product",
@@ -455,8 +632,19 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             state=new_state,
         )
 
-    # Свободное рабочее место: подбираем отправление под товар.
+    # Свободное рабочее место: подбираем отправление под товар. Товар может
+    # быть и сам по себе, и частью набора — тогда годятся отправления обоих
+    # видов, и выбирает человек. Молча предпочесть одно значило бы увести
+    # сборщика не к той полке.
     all_candidates = candidates_for_sku(account, sku, user)
+    seen = {c["posting_number"] for c in all_candidates}
+    for parent in product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code)):
+        for candidate in candidates_for_sku(account, parent["set_sku"], user):
+            if candidate["posting_number"] not in seen:
+                seen.add(candidate["posting_number"])
+                # Помечаем, что отправление подошло не самим товаром, а набором:
+                # засчитывать по такому скану целый набор нельзя.
+                all_candidates.append({**candidate, "via_set": parent["set_sku"]})
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
@@ -528,9 +716,21 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             "scan_choice", account_id=account["id"], user=user, sku=sku, barcode=code,
             message=f"{len(candidates)} отправлений с этим товаром, взято {chosen['posting_number']}",
         )
-    result = select_posting(
-        account, user, chosen["posting_number"], first_sku=sku, scan_code=code
-    )
+    if chosen.get("via_set"):
+        # Отсканирована часть набора: отправление берём, но целый набор по
+        # одной части не засчитываем — он закрывается, только когда набраны
+        # все части. Поэтому берём отправление «пустым» и тут же проводим скан
+        # как часть, уже по обычному пути.
+        result = select_posting(account, user, chosen["posting_number"], scan_code=code)
+        if result["status"] == "ok":
+            credited = _scan_set_part(account, user, code, sku=sku)
+            if credited is not None:
+                result["state"] = credited["state"]
+                result["message"] = f"{result['message']} {credited['message']}"
+    else:
+        result = select_posting(
+            account, user, chosen["posting_number"], first_sku=sku, scan_code=code
+        )
     if len(candidates) > 1 and result["status"] == "ok":
         # Говорим, сколько ещё впереди: сборщик должен понимать, что отсканирует
         # этот штрихкод снова и получит следующее отправление, а не дубль.

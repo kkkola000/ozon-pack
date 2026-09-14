@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import accounts, db, deps, security, sync
 from .config import BASE_DIR
-from .routes import admin, auth, avito, orders, pack, reports, returns
+from .routes import admin, auth, avito, orders, pack, products, reports, returns
 from .version import get_commit, get_version
 
 logging.basicConfig(
@@ -179,6 +179,7 @@ app.include_router(auth.router)
 app.include_router(pack.router)
 app.include_router(orders.router)
 app.include_router(returns.router)
+app.include_router(products.router)
 app.include_router(avito.router)
 app.include_router(reports.router)
 app.include_router(admin.router)

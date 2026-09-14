@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}Товары · Ozon Pack{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Товары кабинета «{{ account.title }}»</h2>
+    <span class="muted small">{{ total }} в каталоге · наборов: {{ sets | length }}</span>
+  </div>
+
+  <div class="tabs" style="margin-top:16px">
+    <a href="/products" class="{{ 'active' if tab == 'catalog' }}">Каталог</a>
+    <a href="/products?tab=sets" class="{{ 'active' if tab == 'sets' }}">
+      Наборы{% if sets %}<span class="badge">{{ sets | length }}</span>{% endif %}
+    </a>
+  </div>
+
+  {% if tab == 'sets' %}
+    <div class="small muted" style="margin-top:12px">
+      На Ozon набор — обычный товар: один SKU, один штрихкод. А на складе его
+      собирают из нескольких вещей, и сборщик сканирует именно их — наклейки
+      набора на полке нет. Состав задаётся здесь: по нему панель и засчитывает
+      сборку. Набор считается собранным, когда набраны <b>все</b> его части.
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button class="btn primary" id="set-new">Создать набор</button>
+    </div>
+
+    <div id="set-editor" class="act" style="margin-top:14px" hidden>
+      <div class="act-body">
+        <div class="row" style="flex-wrap:wrap; align-items:flex-start">
+          <label class="grow" style="min-width:280px; position:relative">
+            <div class="muted small">Товар-набор — тот, что продаётся на площадке</div>
+            <input type="search" id="set-product" placeholder="Название, артикул, SKU или штрихкод"
+                   autocomplete="off" style="width:100%">
+            <div id="set-product-found" class="picker" hidden></div>
+            <div id="set-product-chosen" class="small" style="margin-top:6px"></div>
+          </label>
+          <label style="min-width:220px">
+            <div class="muted small">Название набора — необязательно</div>
+            <input type="text" id="set-title" placeholder="Как называть его в панели" style="width:100%">
+          </label>
+        </div>
+
+        <h3 style="margin:18px 0 6px; font-size:16px">Состав</h3>
+        <div class="muted small">
+          Часть можно выбрать из каталога или вписать штрихкодом — не всё, что
+          лежит в наборе, продаётся отдельно.
+        </div>
+
+        <table style="margin-top:10px" id="set-parts">
+          <thead>
+            <tr>
+              <th>Часть</th>
+              <th style="width:170px">Штрихкод</th>
+              <th style="width:120px">На один набор</th>
+              <th style="width:60px"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+
+        <div class="row" style="margin-top:10px; flex-wrap:wrap">
+          <label class="grow" style="min-width:260px; position:relative">
+            <input type="search" id="part-search" placeholder="Добавить часть из каталога"
+                   autocomplete="off" style="width:100%">
+            <div id="part-found" class="picker" hidden></div>
+          </label>
+          <label style="min-width:180px">
+            <input type="text" id="part-barcode" placeholder="…или штрихкод вручную" style="width:100%">
+          </label>
+          <label style="min-width:180px">
+            <input type="text" id="part-title" placeholder="Как называется — для сборщика" style="width:100%">
+          </label>
+          <button class="btn" id="part-add-barcode">Добавить штрихкод</button>
+        </div>
+
+        <div class="row" style="margin-top:18px">
+          <button class="btn primary" id="set-save">Сохранить набор</button>
+          <button class="btn" id="set-cancel">Отмена</button>
+          <span class="grow"></span>
+          <span id="set-msg" class="small"></span>
+        </div>
+      </div>
+    </div>
+
+    {% if sets %}
+      {% for s in sets %}
+      <details class="act" style="margin-top:12px">
+        <summary class="act-head">
+          <div class="grow">
+            <div class="act-title">{{ s.title or s.product_name or s.sku }}</div>
+            <div class="act-sub">
+              Артикул {{ s.offer_id or '—' }} · SKU {{ s.sku }} ·
+              частей {{ s.parts | length }}, всего {{ s.parts_total }} шт.
+            </div>
+          </div>
+          <button class="btn small" data-edit-set="{{ s.sku }}">Изменить</button>
+          <button class="btn small danger" data-del-set="{{ s.sku }}">Удалить</button>
+        </summary>
+        <div class="act-body">
+          <table>
+            <thead>
+              <tr><th>Часть</th><th style="width:180px">Штрихкод</th>
+                  <th style="width:150px">SKU</th><th style="width:120px">Кол-во</th></tr>
+            </thead>
+            <tbody>
+              {% for part in s['parts'] %}
+              <tr>
+                <td>{{ part.title or part.barcode or part.part_sku or '—' }}</td>
+                <td class="mono small">{{ part.barcode or '—' }}</td>
+                <td class="mono small">{{ part.part_sku or 'нет в каталоге' }}</td>
+                <td style="font-weight:700">{{ part.quantity }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+      {% endfor %}
+    {% else %}
+      <div class="empty">
+        Наборов нет. Создайте набор, если какой-то товар на складе собирается из
+        нескольких вещей: иначе при сборке их скан будет «товар не из этого
+        отправления».
+      </div>
+    {% endif %}
+
+  {% else %}
+    <form class="row" method="get" action="/products" style="margin-top:14px">
+      <input type="search" name="q" value="{{ q }}" placeholder="Название, артикул, SKU или штрихкод"
+             class="grow" autocomplete="off">
+      <button class="btn" type="submit">Найти</button>
+      {% if q %}<a class="btn" href="/products">Сбросить</a>{% endif %}
+    </form>
+
+    {% if items %}
+    <table style="margin-top:14px">
+      <thead>
+        <tr>
+          <th style="width:56px"></th>
+          <th>Товар</th>
+          <th style="width:150px">Артикул</th>
+          <th style="width:130px">SKU</th>
+          <th style="width:230px">Штрихкоды</th>
+          <th style="width:110px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td>
+            {% if item.image %}
+              <img src="{{ item.image }}" alt="" loading="lazy"
+                   style="width:44px;height:44px;object-fit:cover;border-radius:6px">
+            {% endif %}
+          </td>
+          <td>
+            {{ item.name or 'Без названия' }}
+            {% if item.sku in taken %}<span class="badge accent" title="У товара задан состав">набор</span>{% endif %}
+          </td>
+          <td class="small mono">{{ item.offer_id or '—' }}</td>
+          <td class="small mono">{{ item.sku }}</td>
+          <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
+          <td>
+            {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}
+            <a class="btn small" href="/products?tab=sets&edit={{ item.sku }}">
+              {{ 'Состав' if item.sku in taken else 'Сделать набором' }}
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if truncated %}
+      <div class="muted small" style="margin-top:10px">
+        Показаны первые {{ items | length }} — уточните поиск.
+      </div>
+    {% endif %}
+    {% else %}
+      <div class="empty">
+        {% if q %}Ничего не нашлось по запросу «{{ q }}».
+        {% else %}Каталог пуст. Он наполняется сам при обновлении заказов и возвратов.{% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+</div>
+
+<script src="/static/products.js"></script>
+{% endblock %}

@@ -128,6 +128,40 @@ CREATE TABLE IF NOT EXISTS product_barcodes (
 );
 CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
 
+-- Набор: товар площадки, который физически собирается из нескольких разных
+-- товаров со своими штрихкодами. Площадка о составе не знает — в отправлении
+-- стоит одна позиция с одним SKU, а сборщик сканирует то, что лежит на полке.
+-- Без состава такой скан был бы «товар не из этого отправления».
+CREATE TABLE IF NOT EXISTS product_sets (
+    account_id INTEGER NOT NULL,
+    sku        TEXT NOT NULL,
+    title      TEXT,
+    active     INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT,
+    created_by TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (account_id, sku)
+);
+
+-- Часть набора. Может быть товаром площадки (part_sku) или просто штрихкодом,
+-- если такого товара в каталоге нет: набор собирают из того, что есть на
+-- складе, и не всё из этого продаётся отдельно.
+CREATE TABLE IF NOT EXISTS product_set_items (
+    account_id INTEGER NOT NULL,
+    set_sku    TEXT NOT NULL,
+    -- Ключ части внутри набора: SKU товара либо 'bc:<штрихкод>'. По нему
+    -- считается прогресс сборки, поэтому он обязан быть устойчивым.
+    part_key   TEXT NOT NULL,
+    part_sku   TEXT,
+    barcode    TEXT,
+    title      TEXT,
+    quantity   INTEGER NOT NULL DEFAULT 1,
+    sort       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, set_sku, part_key)
+);
+CREATE INDEX IF NOT EXISTS idx_set_items_sku ON product_set_items(account_id, part_sku);
+CREATE INDEX IF NOT EXISTS idx_set_items_barcode ON product_set_items(account_id, barcode);
+
 CREATE TABLE IF NOT EXISTS pack_state (
     user_id        INTEGER PRIMARY KEY,
     account_id     INTEGER,
@@ -504,6 +538,7 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
     "postings", "posting_items", "products", "product_barcodes",
+    "product_sets", "product_set_items",
     "returns", "return_acts",
     "avito_orders", "avito_order_items",
     "shipped_items",
@@ -629,7 +664,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 DATA_TABLES = (
-    "postings", "posting_items", "products", "product_barcodes", "returns",
+    "postings", "posting_items", "products", "product_barcodes",
+    "product_sets", "product_set_items", "returns",
     "avito_orders", "avito_order_items",
 )
 KV_GENERATED_CLEANED = "generated_data_cleaned"
