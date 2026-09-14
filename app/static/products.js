@@ -64,42 +64,76 @@ if (editor) {
   });
 
   /* Подсказка по каталогу. Запрос уходит не на каждую букву: склад большой,
-     а искать по трём символам всё равно бессмысленно. */
+     а искать по двум символам всё равно бессмысленно.
+
+     Мышь по списку не должна уводить фокус из поля. Иначе так: человек тянет
+     полосу прокрутки, поле теряет фокус, и список прячется прямо под курсором —
+     пролистать до нужного товара невозможно. Поэтому на mousedown внутри
+     списка отменяем действие по умолчанию: фокус остаётся, клик работает. */
   function suggest(field, box, onPick) {
     let timer = null;
-    field.addEventListener('input', () => {
-      clearTimeout(timer);
+    let found = [];
+
+    function show(html) {
+      box.innerHTML = html;
+      box.hidden = false;
+    }
+
+    function render() {
+      /* Названия у вариантов одного товара совпадают до буквы — различает их
+         артикул. Поэтому он не в общей серой строке, а отдельно и заметно. */
+      show(found.map((item) => `
+        <div class="pick" data-sku="${escapeHtml(item.sku)}">
+          <b class="mono">${escapeHtml(item.offer_id || '—')}</b>
+          ${escapeHtml(item.name || 'Без названия')}
+          <div class="muted small mono">SKU ${escapeHtml(item.sku)}
+            ${item.barcodes.length ? ' · ' + escapeHtml(item.barcodes.join(', ')) : ''}</div>
+        </div>`).join(''));
+    }
+
+    async function search() {
       const query = field.value.trim();
       if (query.length < 2) { box.hidden = true; return; }
-      timer = setTimeout(async () => {
-        try {
-          const data = await api(`/api/products/search?q=${encodeURIComponent(query)}`, undefined, 'GET');
-          if (!data.items.length) {
-            box.innerHTML = '<div class="muted small" style="padding:8px">Ничего не нашлось</div>';
-            box.hidden = false;
-            return;
-          }
-          box.innerHTML = data.items.map((item) => `
-            <div class="pick" data-sku="${escapeHtml(item.sku)}">
-              ${escapeHtml(item.name || 'Без названия')}
-              <div class="muted small mono">${escapeHtml(item.offer_id || '—')} · SKU ${escapeHtml(item.sku)}
-                ${item.barcodes.length ? ' · ' + escapeHtml(item.barcodes.join(', ')) : ''}</div>
-            </div>`).join('');
-          box.hidden = false;
-          box.querySelectorAll('.pick').forEach((row) => {
-            row.onclick = () => {
-              onPick(data.items.find((item) => String(item.sku) === row.dataset.sku));
-              box.hidden = true;
-              field.value = '';
-            };
-          });
-        } catch (error) {
-          box.innerHTML = `<div class="small" style="padding:8px;color:var(--err)">${escapeHtml(error.message)}</div>`;
-          box.hidden = false;
+      try {
+        const data = await api(`/api/products/search?q=${encodeURIComponent(query)}&limit=50`,
+                               undefined, 'GET');
+        found = data.items;
+        if (!found.length) {
+          show('<div class="muted small" style="padding:10px">Ничего не нашлось</div>');
+          return;
         }
-      }, 250);
+        render();
+      } catch (error) {
+        found = [];
+        show(`<div class="small" style="padding:10px;color:var(--err)">${escapeHtml(error.message)}</div>`);
+      }
+    }
+
+    field.addEventListener('input', () => {
+      clearTimeout(timer);
+      if (field.value.trim().length < 2) { box.hidden = true; return; }
+      timer = setTimeout(search, 250);
     });
-    field.addEventListener('blur', () => setTimeout(() => { box.hidden = true; }, 200));
+
+    /* Вернулись в поле с прежним запросом — показываем, что уже нашли. */
+    field.addEventListener('focus', () => { if (found.length) render(); });
+    field.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { box.hidden = true; field.blur(); }
+    });
+
+    box.addEventListener('mousedown', (event) => event.preventDefault());
+    box.addEventListener('click', (event) => {
+      const row = event.target.closest('.pick');
+      if (!row) return;
+      onPick(found.find((item) => String(item.sku) === row.dataset.sku));
+      box.hidden = true;
+      found = [];
+      field.value = '';
+    });
+
+    /* Ушли из поля по-настоящему (Tab, клик в стороне) — список не нужен.
+       Клик по списку сюда не доходит: фокус не терялся. */
+    field.addEventListener('blur', () => { box.hidden = true; });
   }
 
   suggest(productField, productFound, (item) => {

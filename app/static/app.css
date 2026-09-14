@@ -207,6 +207,10 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 
 /* Акт получения возвратов: одна поездка в пункт выдачи — один блок */
 .act { border: 1px solid var(--line-strong); border-radius: 16px; margin-bottom: 14px; overflow: hidden; }
+/* Карточка с подсказкой внутри. overflow: hidden у .act нужен скруглённым
+   углам, но он же режет выпадающий список: видно полторы строки, и пролистать
+   нельзя. У формы шапки нет — скруглять нечего, и клип ей не нужен. */
+.act.has-picker { overflow: visible; }
 .act > .act-head {
   display: flex; align-items: center; gap: 16px; padding: 16px 20px;
   background: var(--surface); cursor: pointer; list-style: none;
@@ -331,7 +335,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
 }
-.picker .pick { padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.picker .pick { padding: 10px 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
 .picker .pick:last-child { border-bottom: none; }
 .picker .pick:hover { background: var(--surface-2); }
 
