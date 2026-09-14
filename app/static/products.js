@@ -245,3 +245,70 @@ document.addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
+
+/* Обновление каталога. Обход идёт в фоне — тысячи карточек за один запрос
+   браузера не успеть, — поэтому кнопка спрашивает о ходе, пока он не кончится. */
+const refreshButton = document.getElementById('catalog-refresh');
+
+if (refreshButton) {
+  const state = document.getElementById('catalog-state');
+  let timer = null;
+
+  function show(job) {
+    if (job.status === 'running' || job.running) {
+      refreshButton.disabled = true;
+      refreshButton.textContent = 'Обновляем…';
+      state.textContent = job.total
+        ? `Карточки: ${job.done} из ${job.total}…`
+        : 'Спрашиваем список товаров у Ozon…';
+      return true;
+    }
+    refreshButton.disabled = false;
+    refreshButton.textContent = 'Обновить каталог';
+    if (job.status === 'ok') {
+      state.textContent = `Каталог обновлён: ${job.live} товаров, `
+        + `архив пропущен — ${job.archived_skipped}.`;
+      /* Список на странице теперь старый — показываем свежий. */
+      setTimeout(() => window.location.reload(), 900);
+    } else if (job.status === 'error') {
+      state.innerHTML = `<span style="color:var(--err)">Каталог не обновился: `
+        + `${escapeHtml(job.error || 'причина неизвестна')}</span>`;
+    }
+    return false;
+  }
+
+  async function poll() {
+    try {
+      const job = await api('/api/products/catalog/status', undefined, 'GET');
+      if (!show(job)) clearInterval(timer);
+    } catch (error) {
+      clearInterval(timer);
+      refreshButton.disabled = false;
+      refreshButton.textContent = 'Обновить каталог';
+      state.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+    }
+  }
+
+  function watch() {
+    clearInterval(timer);
+    timer = setInterval(poll, 1500);
+  }
+
+  /* Страницу могли открыть, пока обход уже идёт, — тогда сразу следим. */
+  if (state.dataset.running) { refreshButton.disabled = true; watch(); }
+
+  refreshButton.onclick = async () => {
+    refreshButton.disabled = true;
+    state.textContent = 'Запускаем…';
+    try {
+      const data = await api('/api/products/catalog/refresh', {});
+      toast(data.message, 'ok');
+      watch();
+      poll();
+    } catch (error) {
+      refreshButton.disabled = false;
+      toast(error.message, 'error', 10000);
+      state.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+    }
+  };
+}

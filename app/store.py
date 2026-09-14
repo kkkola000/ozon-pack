@@ -236,11 +236,21 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     return number
 
 
+def product_key(item: dict) -> str:
+    """SKU карточки так, как его сохраняет панель.
+
+    Вынесено, чтобы загрузка каталога сверялась по тому же ключу, по которому
+    идёт запись: разойдись они — и каждый обход отправлял бы живой товар в
+    архив.
+    """
+    return str(item.get("sku") or item.get("id") or "")
+
+
 def upsert_products(conn: sqlite3.Connection, account_id: int, items: Iterable[dict]) -> int:
     """Карточки товаров: имя, фото и штрихкоды для сканирования."""
     count = 0
     for item in items:
-        sku = str(item.get("sku") or item.get("id") or "")
+        sku = product_key(item)
         if not sku:
             continue
         barcodes = [str(b).strip() for b in (item.get("barcodes") or []) if str(b).strip()]

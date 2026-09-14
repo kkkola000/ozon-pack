@@ -116,9 +116,14 @@ CREATE TABLE IF NOT EXISTS products (
     name       TEXT,
     image      TEXT,
     barcodes   TEXT,
+    -- Товар в архиве Ozon: он не продаётся, и в разделе «Товары» его быть не
+    -- должно. Строку при этом не удаляем — её штрихкоды могут понадобиться,
+    -- если архивный товар остался в несобранном заказе.
+    archived   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT,
     PRIMARY KEY (account_id, sku)
 );
+CREATE INDEX IF NOT EXISTS idx_products_live ON products(account_id, archived);
 
 CREATE TABLE IF NOT EXISTS product_barcodes (
     account_id INTEGER NOT NULL,

@@ -32,6 +32,19 @@ from app.avito import (
 from app.ozon import OzonClient, OzonError, _iso
 
 
+# Каталог кабинета шире того, что встречается в заказах: набор собирают из
+# складских остатков, а не из вчерашних продаж. Плюс архив — он у Ozon в том же
+# ответе, и панель обязана его отсеять.
+CATALOG_EXTRA = [
+    ("1234567900", "ART-101", "Подарочная коробка большая", "4600000000901"),
+    ("1234567901", "ART-102", "Лента атласная 2 м", "4600000000918"),
+    ("1234567902", "ART-103", "Открытка «Спасибо за заказ»", "4600000000925"),
+]
+CATALOG_ARCHIVED = [
+    ("1234567950", "ART-OLD-1", "Кружка старой серии (архив)", "4600000000932"),
+    ("1234567951", "ART-OLD-2", "Плед снят с продажи (архив)", "4600000000949"),
+]
+
 SAMPLE_PRODUCTS = [
     ("1234567890", "ART-001", "Кофе зерновой Arabica 1 кг", "4600000000017"),
     ("1234567891", "ART-002", "Чайник электрический 1.7 л", "4600000000024"),
@@ -243,11 +256,30 @@ class FakeOzonClient(OzonClient):
             raise OzonError("Нет отправлений для печати", status=404)
         return make_label_pdf(pages), "label-fake.pdf"
 
+    def product_list(self, *, limit=1000, last_id=""):  # type: ignore[override]
+        """Каталог кабинета: живые товары и архив в одном ответе, как у Ozon."""
+        rows = [(sku, offer, False) for sku, offer, _n, _b in SAMPLE_PRODUCTS + CATALOG_EXTRA]
+        rows += [(sku, offer, True) for sku, offer, _n, _b in CATALOG_ARCHIVED]
+        start = 0
+        if last_id:
+            ids = [offer for _sku, offer, _a in rows]
+            start = ids.index(last_id) + 1 if last_id in ids else len(rows)
+        page = rows[start : start + limit]
+        items = [
+            {"product_id": int(sku), "offer_id": offer, "archived": archived,
+             "has_fbs_stocks": not archived, "quants": []}
+            for sku, offer, archived in page
+        ]
+        tail = page[-1][1] if page and start + limit < len(rows) else ""
+        return items, tail, len(rows)
+
     def product_info(self, skus=None, offer_ids=None):  # type: ignore[override]
         wanted_sku = {str(s) for s in (skus or [])}
         wanted_offer = {str(o) for o in (offer_ids or [])}
         items = []
-        for sku, offer, name, barcode in SAMPLE_PRODUCTS:
+        known = [(*row, False) for row in SAMPLE_PRODUCTS + CATALOG_EXTRA]
+        known += [(*row, True) for row in CATALOG_ARCHIVED]
+        for sku, offer, name, barcode, archived in known:
             if sku in wanted_sku or offer in wanted_offer:
                 items.append(
                     {
@@ -257,6 +289,7 @@ class FakeOzonClient(OzonClient):
                         "name": name,
                         "barcodes": [barcode],
                         "primary_image": [],
+                        "is_archived": archived,
                     }
                 )
         return items

@@ -8,6 +8,7 @@
   POST /v2/posting/fbs/package-label/create + /v1/posting/fbs/package-label/get
                                        — асинхронная генерация стикера
   POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера
+  POST /v3/product/list                — каталог кабинета (артикулы, архив)
   POST /v3/product/info/list           — карточки товаров (штрихкоды, фото)
   POST /v1/returns/list                — возвраты FBO и FBS
   POST /v1/return/giveout/get-pdf      — штрихкод на выдачу возвратов в пункте
@@ -243,6 +244,19 @@ class OzonClient:
         raise OzonError("Истекло время ожидания генерации стикера")
 
     # ------------------------------------------------------------------ товары
+    def product_list(self, *, limit: int = 1000, last_id: str = "") -> tuple[list[dict], str, int]:
+        """Каталог кабинета: артикулы и признак архива, страницами по last_id.
+
+        Просим всё (visibility=ALL) и отсеиваем архив у себя. Фильтр площадки
+        сюда не годится: «видимые» — это товары в продаже и с остатком, а набор
+        можно собирать и из того, что временно кончилось.
+        """
+        payload = {"filter": {"visibility": "ALL"}, "limit": limit, "last_id": last_id}
+        data = self.post("/v3/product/list", payload)
+        body = data.get("result") if isinstance(data.get("result"), dict) else data
+        items = [item for item in (body.get("items") or []) if isinstance(item, dict)]
+        return items, str(body.get("last_id") or ""), int(body.get("total") or 0)
+
     def product_info(self, skus: list[str] | None = None, offer_ids: list[str] | None = None) -> list[dict]:
         payload: dict[str, Any] = {}
         if skus:

@@ -19,7 +19,7 @@ import json
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import db, product_sets
+from .. import catalog, db, product_sets
 from ..deps import check_csrf, require_admin, require_ozon_account, templates
 
 router = APIRouter()
@@ -38,12 +38,17 @@ def _view(row: dict) -> dict:
 
 
 def search(account_id: int, q: str = "", limit: int = PAGE_LIMIT) -> list[dict]:
-    """Товары кабинета. Ищем и по названию, и по артикулу, и по штрихкоду.
+    """Живые товары кабинета: по названию, артикулу или штрихкоду.
+
+    Архив не показываем: такой товар не продаётся, и в выборе для набора он
+    только мешает — их бывает больше, чем живых. Строка при этом остаётся в
+    базе, чтобы штрихкод архивного товара продолжал сканироваться, если тот
+    застрял в несобранном заказе.
 
     Штрихкод ищется через справочник, а не по колонке barcodes: там JSON, и
     LIKE по нему находил бы куски чужих кодов.
     """
-    conditions = ["p.account_id = ?"]
+    conditions = ["p.account_id = ?", "p.archived = 0"]
     params: list = [account_id]
     if q.strip():
         like = f"%{q.strip()}%"
@@ -83,13 +88,37 @@ def products_page(request: Request, q: str = "", tab: str = "catalog",
             "q": q,
             "tab": "sets" if tab == "sets" else "catalog",
             "total": db.query_one(
-                "SELECT COUNT(*) AS c FROM products WHERE account_id = ?", (aid,)
+                "SELECT COUNT(*) AS c FROM products WHERE account_id = ? AND archived = 0", (aid,)
             )["c"],
+            "archived": db.query_one(
+                "SELECT COUNT(*) AS c FROM products WHERE account_id = ? AND archived = 1", (aid,)
+            )["c"],
+            "job": catalog.job_status(aid),
             "truncated": len(items) >= PAGE_LIMIT,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "products",
         },
     )
+
+
+@router.post("/api/products/catalog/refresh")
+def api_refresh_catalog(request: Request, admin: dict = Depends(require_admin),
+                        account: dict = Depends(require_ozon_account)):
+    """Перечитать каталог кабинета у Ozon целиком.
+
+    Обычная синхронизация тянет только товары из заказов и возвратов — для
+    набора этого мало. Обход идёт в фоне: тысячи карточек за один запрос
+    браузера не успеть.
+    """
+    check_csrf(request)
+    return catalog.start(account, admin)
+
+
+@router.get("/api/products/catalog/status")
+def api_catalog_status(admin: dict = Depends(require_admin),
+                       account: dict = Depends(require_ozon_account)):
+    """Как идёт обход — кнопка спрашивает, пока он не закончится."""
+    return catalog.job_status(account["id"])
 
 
 @router.get("/api/products/search")

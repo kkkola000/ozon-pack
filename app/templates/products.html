@@ -5,7 +5,29 @@
 <div class="panel">
   <div class="row between">
     <h2 style="margin:0">Товары кабинета «{{ account.title }}»</h2>
-    <span class="muted small">{{ total }} в каталоге · наборов: {{ sets | length }}</span>
+    <div class="row">
+      <span class="muted small">
+        {{ total }} в каталоге{% if archived %} · {{ archived }} в архиве{% endif %} ·
+        наборов: {{ sets | length }}
+      </span>
+      <button class="btn" id="catalog-refresh"
+              title="Перечитать каталог у Ozon целиком. Архивные товары не загружаются.">
+        Обновить каталог
+      </button>
+    </div>
+  </div>
+  <div id="catalog-state" class="small muted" style="margin-top:8px"
+       data-running="{{ '1' if job.running else '' }}">
+    {%- if job.status == 'ok' %}
+      Каталог обновлён: {{ job.live }} товаров, архив пропущен — {{ job.archived_skipped }}.
+    {%- elif job.status == 'error' %}
+      <span style="color:var(--err)">Каталог не обновился: {{ job.error }}</span>
+    {%- elif job.running %}
+      Обновляем каталог…
+    {%- else %}
+      Каталог наполняется сам по заказам и возвратам. Кнопка перечитывает его у
+      Ozon целиком — это нужно, чтобы собирать наборы из любого товара склада.
+    {%- endif %}
   </div>
 
   <div class="tabs" style="margin-top:16px">
