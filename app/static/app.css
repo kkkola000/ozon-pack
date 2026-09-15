@@ -410,3 +410,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .hint-wrap:hover .hint-body, .hint-wrap:focus-within .hint-body { display: block; }
 /* У правого края экрана подсказка иначе уезжает за него. */
 .hint-wrap.to-left .hint-body { left: auto; right: 0; }
+
+/* Галочки разделов в строке сотрудника: в один ряд, чтобы строка не росла. */
+.sections { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.sections .check { font-size: 13px; }

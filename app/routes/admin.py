@@ -4,9 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import accounts, avito, db, options, report, security, sync
+from .. import access, accounts, avito, db, options, report, security, sync
 from ..avito import AvitoClient, AvitoError
-from ..deps import check_csrf, current_account, require_admin, require_ozon_account, templates
+from ..deps import (check_csrf, current_account, require_manager, require_section,
+                    require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonClient, OzonError
 
@@ -68,7 +69,7 @@ def logs_page(
     level: str = "",
     posting: str = "",
     limit: int = 300,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(require_section("logs")),
 ):
     """Журнал — только администратору.
 
@@ -111,8 +112,15 @@ def logs_page(
 
 
 @router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, user: dict = Depends(require_admin)):
-    users = [dict(row) for row in db.query("SELECT id, login, role, active, created_at FROM users ORDER BY login")]
+def settings_page(request: Request, user: dict = Depends(require_section("settings"))):
+    users = []
+    for row in db.query("SELECT id, login, role, sections, active, created_at FROM users ORDER BY role, login"):
+        item = dict(row)
+        item["sections"] = access.sections_of(item)
+        item["role_label"] = access.role_label(item["role"])
+        # Владельца администратор не трогает — кнопки ему показывать незачем.
+        item["editable"] = access.may_manage(user, item)
+        users.append(item)
     account = current_account(request)
     aid = (account["id"] if account else 0,)
     # Показываем счётчики текущего кабинета — и только те, что для его площадки.
@@ -157,6 +165,11 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
             "ozon": accounts.status(account),
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
+            "roles": [r for r in access.ROLES if access.may_set_role(user, r[0])],
+            "sections": access.SECTIONS,
+            "manager_only": access.MANAGER_ONLY,
+            "can_manage_users": access.is_manager(user),
+            "is_owner": access.is_owner(user),
             "returns_statuses": options.get_returns_statuses(),
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
@@ -168,52 +181,97 @@ def settings_page(request: Request, user: dict = Depends(require_admin)):
     )
 
 
+def _last_owner(user_id: int) -> bool:
+    """Останется ли панель без владельца, если этого убрать.
+
+    Без владельца некому менять пароли и права — чинить панель пришлось бы
+    руками в базе. Поэтому последнего не отключаем и не понижаем.
+    """
+    row = db.query_one(
+        "SELECT COUNT(*) AS c FROM users WHERE role = ? AND active = 1 AND id != ?",
+        (access.OWNER, user_id),
+    )
+    return not row["c"]
+
+
 @router.post("/api/users")
-def api_create_user(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+def api_create_user(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     check_csrf(request)
     login = str(payload.get("login") or "").strip()
     password = str(payload.get("password") or "").strip()
-    role = "admin" if payload.get("role") == "admin" else "packer"
+    role = str(payload.get("role") or access.PACKER)
+    if not access.may_set_role(admin, role):
+        raise HTTPException(status_code=403, detail="Владельца назначает только владелец")
     if len(login) < 3:
         raise HTTPException(status_code=400, detail="Логин короче 3 символов")
     if len(password) < MIN_PASSWORD:
         raise HTTPException(status_code=400, detail=f"Пароль короче {MIN_PASSWORD} символов")
     if db.query_one("SELECT id FROM users WHERE login = ?", (login,)):
         raise HTTPException(status_code=409, detail="Такой логин уже есть")
+    sections = access.dump_sections(role, payload.get("sections", access.DEFAULT_SECTIONS[role]))
     db.execute(
-        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
-        (login, security.hash_password(password), role, db.now_iso()),
+        "INSERT INTO users(login, password_hash, role, sections, active, created_at) VALUES(?,?,?,?,1,?)",
+        (login, security.hash_password(password), role, sections, db.now_iso()),
     )
-    db.log_event("user_created", user=admin, message=f"{login} ({role})")
-    return {"status": "ok", "message": f"Пользователь {login} создан"}
+    db.log_event("user_created", user=admin,
+                 message=f"{login} ({access.role_label(role)}): {sections}")
+    return {"status": "ok", "message": f"{access.role_label(role)} {login} создан"}
 
 
 @router.post("/api/users/{user_id}")
-def api_update_user(user_id: int, request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+def api_update_user(user_id: int, request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
+    """Роль, разделы, пароль и включение сотрудника.
+
+    Администратор владельца не трогает — ни роль, ни разделы, ни пароль. Иначе
+    «администратор» и «владелец» были бы одним и тем же: первый вторым же
+    ключом и открыл бы себе всё.
+    """
     check_csrf(request)
     row = db.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
     if not row:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
+    target = dict(row)
+    if not access.may_manage(admin, target):
+        raise HTTPException(status_code=403, detail=access.why_not(admin, target))
+
     changes = []
+    # Роль меняем первой: разделы чистятся уже по новой роли, иначе сборщику
+    # осталась бы галочка «Настройки» от прежней администраторской.
+    role = str(payload.get("role") or "")
+    if role and role != target["role"]:
+        if not access.may_set_role(admin, role):
+            raise HTTPException(status_code=403, detail="Владельца назначает только владелец")
+        if target["role"] == access.OWNER and _last_owner(user_id):
+            raise HTTPException(status_code=400, detail="Это последний владелец — панель останется без хозяина")
+        db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+        target["role"] = role
+        changes.append(f"роль: {access.role_label(role)}")
+
+    if "sections" in payload:
+        if target["role"] == access.OWNER:
+            raise HTTPException(status_code=400, detail="У владельца доступны все разделы — их не урезают")
+        sections = access.dump_sections(target["role"], payload.get("sections"))
+        db.execute("UPDATE users SET sections = ? WHERE id = ?", (sections, user_id))
+        names = [access.SECTION_LABELS[key] for key in access.clean_sections(target["role"], payload.get("sections"))]
+        changes.append("разделы: " + (", ".join(names) or "нет"))
+
     if "active" in payload:
         active = 1 if payload["active"] else 0
-        if not active and row["role"] == "admin":
-            others = db.query_one("SELECT COUNT(*) AS c FROM users WHERE role = 'admin' AND active = 1 AND id != ?", (user_id,))
-            if not others["c"]:
-                raise HTTPException(status_code=400, detail="Нельзя отключить последнего администратора")
+        if not active and target["role"] == access.OWNER and _last_owner(user_id):
+            raise HTTPException(status_code=400, detail="Нельзя отключить последнего владельца")
         db.execute("UPDATE users SET active = ? WHERE id = ?", (active, user_id))
         changes.append("включён" if active else "отключён")
+
     if payload.get("password"):
         password = str(payload["password"]).strip()
         if len(password) < MIN_PASSWORD:
             raise HTTPException(status_code=400, detail=f"Пароль короче {MIN_PASSWORD} символов")
         db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (security.hash_password(password), user_id))
         changes.append("сменён пароль")
-    if payload.get("role") in ("admin", "packer"):
-        db.execute("UPDATE users SET role = ? WHERE id = ?", (payload["role"], user_id))
-        changes.append(f"роль {payload['role']}")
-    db.log_event("user_updated", user=admin, message=f"{row['login']}: {', '.join(changes) or 'без изменений'}")
-    return {"status": "ok", "message": f"{row['login']}: {', '.join(changes) or 'без изменений'}"}
+
+    message = f"{row['login']}: {', '.join(changes) or 'без изменений'}"
+    db.log_event("user_updated", user=admin, message=message)
+    return {"status": "ok", "message": message}
 
 
 def _probe(marketplace: str, client_id: str, api_key: str) -> None:
@@ -260,7 +318,7 @@ def _probe(marketplace: str, client_id: str, api_key: str) -> None:
 
 
 @router.post("/api/accounts")
-def api_create_account(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+def api_create_account(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     """Добавить кабинет магазина. Ключи проверяются до сохранения."""
     check_csrf(request)
     marketplace = str(payload.get("marketplace") or "").strip()
@@ -287,7 +345,7 @@ def api_create_account(request: Request, payload: dict = Body(...), admin: dict 
 
 @router.post("/api/accounts/{account_id}")
 def api_update_account(account_id: int, request: Request, payload: dict = Body(...),
-                       admin: dict = Depends(require_admin)):
+                       admin: dict = Depends(require_manager)):
     """Изменить название, ключи или включённость кабинета."""
     check_csrf(request)
     account = accounts.get(account_id)
@@ -349,7 +407,7 @@ def api_update_account(account_id: int, request: Request, payload: dict = Body(.
 
 
 @router.post("/api/accounts/{account_id}/delete")
-def api_delete_account(account_id: int, request: Request, admin: dict = Depends(require_admin)):
+def api_delete_account(account_id: int, request: Request, admin: dict = Depends(require_manager)):
     """Удалить кабинет вместе с его заказами и товарами."""
     check_csrf(request)
     account = accounts.get(account_id)
@@ -362,7 +420,7 @@ def api_delete_account(account_id: int, request: Request, admin: dict = Depends(
 
 
 @router.post("/api/accounts/{account_id}/test")
-def api_test_account(account_id: int, request: Request, admin: dict = Depends(require_admin)):
+def api_test_account(account_id: int, request: Request, admin: dict = Depends(require_manager)):
     """Проверить связь с площадкой ключами кабинета."""
     check_csrf(request)
     account = accounts.get(account_id)
@@ -381,7 +439,7 @@ def api_test_account(account_id: int, request: Request, admin: dict = Depends(re
 
 
 @router.post("/api/postings/{posting_number}/reset")
-def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_admin),
+def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_manager),
                       account: dict = Depends(require_ozon_account)):
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
     check_csrf(request)
@@ -404,7 +462,7 @@ def api_reset_posting(posting_number: str, request: Request, admin: dict = Depen
 
 
 @router.post("/api/report/cutoff")
-def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin)):
+def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     """Во сколько закрывается отчётный день об отгрузке."""
     check_csrf(request)
     try:
@@ -419,7 +477,7 @@ def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict =
 
 
 @router.post("/api/returns/statuses")
-def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin),
+def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
                          account: dict = Depends(require_ozon_account)):
     """Какие статусы возвратов панель загружает и показывает как доступные."""
     check_csrf(request)
@@ -443,7 +501,7 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
 
 
 @router.post("/api/returns/received-statuses")
-def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_admin),
+def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
                           account: dict = Depends(require_ozon_account)):
     """В каких статусах возврат считается полученным — из них собирается акт.
 

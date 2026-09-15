@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
-from ..deps import (check_csrf, current_user, require_admin, require_avito_account,
+from ..deps import (check_csrf, require_section, require_manager, require_avito_account,
                     require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonError
@@ -127,7 +127,7 @@ def returns_page(
     place: str = "",
     q: str = "",
     tab: str = "ready",
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_section("returns")),
     account: dict = Depends(require_ozon_account),
 ):
     items = _filter_returns([account["id"]], scheme, place, q)
@@ -182,9 +182,9 @@ def returns_page(
 
 @router.post("/api/returns/acts/by-day")
 def api_act_by_day(request: Request, payload: dict = Body(...),
-                   admin: dict = Depends(require_admin),
+                   admin: dict = Depends(require_manager),
                    account: dict = Depends(require_ozon_account)):
-    """Составить акт из возвратов, полученных за указанное число. Только админу.
+    """Составить акт из возвратов за указанное число. Владелец и администратор.
 
     Акт составляет человек: когда поездка закончилась, знает только он. Панель
     копит полученные возвраты, а кнопка сводит в акт те из них, что ещё ни в
@@ -219,7 +219,7 @@ def _valid_day(day: str) -> str:
 
 
 @router.post("/api/returns/acts/{act_id}/confirm")
-def api_confirm_act(act_id: str, request: Request, user: dict = Depends(current_user)):
+def api_confirm_act(act_id: str, request: Request, user: dict = Depends(require_section("returns"))):
     """Подтвердить акт: по всем его возвратам решение принято."""
     check_csrf(request)
     result = return_acts.confirm(act_id, user)
@@ -237,7 +237,7 @@ def _act_or_404(act_id: str) -> dict:
 
 
 @router.get("/returns/acts/{act_id}/print", response_class=HTMLResponse)
-def act_print(act_id: str, request: Request, user: dict = Depends(current_user)):
+def act_print(act_id: str, request: Request, user: dict = Depends(require_section("returns"))):
     """Лист акта — тот же вид, что и лист выдачи, но уже с отметками."""
     act = _act_or_404(act_id)
     return templates.TemplateResponse(
@@ -260,7 +260,7 @@ def act_print(act_id: str, request: Request, user: dict = Depends(current_user))
 
 
 @router.get("/returns/acts/{act_id}.pdf")
-def act_pdf(act_id: str, user: dict = Depends(current_user)):
+def act_pdf(act_id: str, user: dict = Depends(require_section("returns"))):
     act = _act_or_404(act_id)
     printed_at = datetime.now(timezone.utc)
     try:
@@ -353,7 +353,7 @@ def returns_print(
     place: str = "",
     q: str = "",
     scope: str = "",
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_section("returns")),
 ):
     """Лист для печати: сборщик идёт с ним получать возвраты."""
     sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_print")
@@ -369,7 +369,7 @@ def returns_sheet_pdf(
     place: str = "",
     q: str = "",
     scope: str = "",
-    user: dict = Depends(current_user),
+    user: dict = Depends(require_section("returns")),
 ):
     """Тот же лист готовым файлом: сохранить, переслать, напечатать где угодно."""
     sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_pdf")
@@ -391,7 +391,7 @@ def returns_sheet_pdf(
 
 
 @router.post("/api/returns/mark")
-def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("returns"))):
     """Отметка сборщика о возврате: принят или нет, плюс комментарий.
 
     Отметку заводит панель, площадка о ней не знает — поэтому синхронизация
@@ -445,7 +445,7 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
 
 
 @router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(current_user), account: dict = Depends(require_ozon_account)):
+def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_ozon_account)):
     """Штрихкод Ozon на выдачу возвратов (FBS)."""
     try:
         pdf = ozon.get_client(account).giveout_pdf()
@@ -462,7 +462,7 @@ def api_giveout(user: dict = Depends(current_user), account: dict = Depends(requ
 
 
 @router.post("/api/returns/sync")
-def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user),
+def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("returns")),
                      account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     full = bool(payload.get("full"))

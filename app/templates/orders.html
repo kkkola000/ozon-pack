@@ -108,7 +108,7 @@
           {% else %}<span class="tag">{{ p.status_label }}</span>{% endif %}
           {% if p.local_state == 'packed' %}
             <div class="muted">Собрал: {{ p.packed_by }}<br>{{ p.packed_at_local }}</div>
-            {% if user.role == 'admin' %}
+            {% if is_manager(user) %}
               <button class="btn small no-print" data-reset="{{ p.posting_number }}" style="margin-top:4px">Снять отметку</button>
             {% endif %}
           {% elif p.printed_at %}

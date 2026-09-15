@@ -40,7 +40,7 @@
           {% for label, count in hidden_statuses %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
           — они скрыты и в панель не попадают.
         {% endif %}
-        {% if user.role == 'admin' %}<br><br><a href="/settings">Изменить статусы</a>{% endif %}
+        {% if is_manager(user) %}<br><br><a href="/settings">Изменить статусы</a>{% endif %}
       </span>
     </span>
   </div>

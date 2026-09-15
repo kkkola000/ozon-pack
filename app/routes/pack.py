@@ -4,9 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import db, packing, store
+from .. import access, db, packing, store
 from ..config import settings
-from ..deps import check_csrf, current_user, require_ozon_account, safe_filename, templates
+from ..deps import check_csrf, require_section, require_ozon_account, safe_filename, templates
 from ..ozon import OzonError
 
 router = APIRouter()
@@ -16,7 +16,7 @@ MAX_LABELS = 50
 
 
 @router.get("/pack", response_class=HTMLResponse)
-def pack_page(request: Request, user: dict = Depends(current_user),
+def pack_page(request: Request, user: dict = Depends(require_section("pack")),
               account: dict = Depends(require_ozon_account)):
     state = packing.load_state(account, user)
     counters = _counters(account)
@@ -59,12 +59,12 @@ def _counters(account: dict) -> dict:
 
 
 @router.get("/api/state")
-def api_state(user: dict = Depends(current_user), account: dict = Depends(require_ozon_account)):
+def api_state(user: dict = Depends(require_section("pack")), account: dict = Depends(require_ozon_account)):
     return {"state": packing.load_state(account, user), "counters": _counters(account)}
 
 
 @router.post("/api/scan")
-def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
              account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     result = packing.scan(account, user, str(payload.get("code") or ""))
@@ -73,7 +73,7 @@ def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(c
 
 
 @router.post("/api/release")
-def api_release(request: Request, user: dict = Depends(current_user),
+def api_release(request: Request, user: dict = Depends(require_section("pack")),
                 account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     result = packing.release(account, user)
@@ -82,14 +82,14 @@ def api_release(request: Request, user: dict = Depends(current_user),
 
 
 @router.post("/api/complete")
-def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(current_user),
+def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("pack")),
                  account: dict = Depends(require_ozon_account)):
     """Ручное завершение — например, если стикер не читается сканером."""
     check_csrf(request)
     state = packing.load_state(account, user)
     if not state["active"]:
         raise HTTPException(status_code=400, detail="Нет активного отправления")
-    if settings.require_all_items and not state["complete"] and user.get("role") != "admin":
+    if settings.require_all_items and not state["complete"] and not access.is_manager(user):
         # Говорим, чего именно не хватает: у набора — недостающие части, а не
         # его название. К полке с названием набора не пойдёшь.
         raise HTTPException(
@@ -105,7 +105,7 @@ def api_complete(request: Request, payload: dict = Body(default={}), user: dict 
 
 
 @router.get("/api/label/{posting_number}.pdf")
-def api_label(posting_number: str, user: dict = Depends(current_user),
+def api_label(posting_number: str, user: dict = Depends(require_section("pack")),
               account: dict = Depends(require_ozon_account)):
     try:
         pdf, filename = packing.label_pdf(account, user, [posting_number])
@@ -120,7 +120,7 @@ def api_label(posting_number: str, user: dict = Depends(current_user),
 
 
 @router.post("/api/labels.pdf")
-def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
                account: dict = Depends(require_ozon_account)):
     """Пачка стикеров — для печати нескольких отправлений сразу."""
     check_csrf(request)

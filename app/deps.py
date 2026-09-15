@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
+from . import access
 from .config import BASE_DIR, settings
 from .version import build_label
 
@@ -58,11 +59,43 @@ def require_avito_account(request: Request) -> dict:
     return account
 
 
-def require_admin(request: Request) -> dict:
+def require_manager(request: Request) -> dict:
+    """Настройка панели: сотрудники, доступы, ключи, статусы.
+
+    Это про роль, а не про раздел: галочкой такое не выдаётся. Кому нужно
+    настраивать панель — тот администратор, и роль у него должна быть честная.
+    """
     user = current_user(request)
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Доступно только администратору")
+    if not access.is_manager(user):
+        raise HTTPException(status_code=403, detail="Доступно владельцу и администратору")
     return user
+
+
+def require_owner(request: Request) -> dict:
+    user = current_user(request)
+    if not access.is_owner(user):
+        raise HTTPException(status_code=403, detail="Доступно только владельцу")
+    return user
+
+
+def require_section(section: str):
+    """Зависимость «этот раздел человеку выдан».
+
+    Разделы решают, какие экраны человек видит, — это отдельно от роли. Сборщик
+    с выданным разделом «Отчёты» их открывает; администратор без него — нет.
+    """
+
+    def dependency(request: Request) -> dict:
+        user = current_user(request)
+        if not access.can(user, section):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Раздел «{access.SECTION_LABELS.get(section, section)}» вам не выдан",
+            )
+        return user
+
+    dependency.__name__ = f"require_section_{section}"
+    return dependency
 
 
 def check_csrf(request: Request) -> None:
@@ -212,5 +245,12 @@ templates.env.globals["nav_counters"] = nav_counters
 templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version
+# Шапка рисуется по разделам, а не по роли: иначе сборщик с выданными
+# «Отчётами» просто не увидит на них ссылки.
+templates.env.globals["can_see"] = access.can
+templates.env.globals["role_label"] = access.role_label
+# «Настраивает панель» — это владелец или администратор. Сравнивать роль со
+# строкой в шаблоне нельзя: владелец под такое сравнение не подходит.
+templates.env.globals["is_manager"] = access.is_manager
 
 

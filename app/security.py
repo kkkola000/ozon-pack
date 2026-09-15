@@ -160,8 +160,10 @@ def session_user(session: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     if not session:
         return None
+    # Разделы читаются оттуда же и на каждом запросе: снятая галочка должна
+    # закрывать экран сразу, а не после следующего входа.
     row = db.query_one(
-        "SELECT id, login, role, active, password_hash FROM users WHERE id = ?",
+        "SELECT id, login, role, sections, active, password_hash FROM users WHERE id = ?",
         (session.get("uid"),),
     )
     if not row or not row["active"]:

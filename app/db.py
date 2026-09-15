@@ -27,7 +27,13 @@ CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     login         TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    -- owner | admin | packer. Владелец меняет права и пароли всем, включая
+    -- других владельцев; администратор — всем, кроме владельцев.
     role          TEXT NOT NULL DEFAULT 'packer',
+    -- Разделы, которые человек видит: список ключей в JSON. Пусто — значит не
+    -- настраивали, работает умолчание роли (app/access.py). У владельца поле
+    -- не читается: ему доступно всё.
+    sections      TEXT,
     active        INTEGER NOT NULL DEFAULT 1,
     created_at    TEXT NOT NULL
 );
@@ -676,8 +682,41 @@ DATA_TABLES = (
 KV_GENERATED_CLEANED = "generated_data_cleaned"
 KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
 KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
+KV_OWNER_SET = "owner_role_assigned"
 # Таблицы, у которых есть колонка raw с ответом площадки целиком.
 RAW_TABLES = ("postings", "returns", "avito_orders")
+
+
+def _ensure_owner(conn: sqlite3.Connection) -> None:
+    """Назначить владельца, если его ещё нет.
+
+    До 1.21 ролей было две, и «сменить пароль владельцу» или «выдать доступ»
+    было некому: после обновления в базе одни администраторы. Владельцем
+    становится самый первый администратор — тот, кого завёл установщик.
+
+    Один раз: дальше роли меняет человек, и понижение владельца обратно в
+    администраторы не должно откатываться при каждом перезапуске.
+    """
+    if not _table_exists(conn, "users"):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_OWNER_SET,)).fetchone()
+    if done:
+        return
+    if not conn.execute("SELECT id FROM users WHERE role = 'owner' LIMIT 1").fetchone():
+        first = conn.execute(
+            "SELECT id, login FROM users WHERE role = 'admin' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if first:
+            conn.execute("UPDATE users SET role = 'owner' WHERE id = ?", (first["id"],))
+            log.info("Владельцем панели назначен %s", first["login"])
+        elif conn.execute("SELECT id FROM users LIMIT 1").fetchone():
+            # Администраторов в базе нет вовсе — назначать владельца наугад
+            # нельзя, это выдача полных прав. Панель и так была без управления.
+            log.warning("В базе нет администраторов: владельца назначить некому")
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_OWNER_SET, now_iso()),
+    )
 
 
 def _drop_auto_return_acts(conn: sqlite3.Connection) -> None:
@@ -847,6 +886,7 @@ def init_db() -> None:
             _drop_generated_data(conn)
             _drop_buyer_contacts(conn)
             _drop_auto_return_acts(conn)
+            _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:
             conn.execute("ROLLBACK")
@@ -862,8 +902,11 @@ def _seed_admin() -> None:
     if row and row["c"]:
         return
     password = settings.admin_password or random_password()
+    # Первая учётка панели — владелец: тот, кто её поставил. Иначе на свежей
+    # установке владельца нет вовсе, и некому ни менять пароли, ни назначать
+    # владельцев — то есть половина прав недоступна никому.
     execute(
-        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?, ?, 'admin', 1, ?)",
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?, ?, 'owner', 1, ?)",
         (settings.admin_login, hash_password(password), now_iso()),
     )
     if not settings.admin_password:

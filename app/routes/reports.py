@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .. import accounts, report, return_acts
-from ..deps import require_admin, templates
+from ..deps import require_section, templates
 
 router = APIRouter()
 
@@ -36,7 +36,7 @@ def _valid_day(day: str) -> str:
 
 @router.get("/reports", response_class=HTMLResponse)
 def reports_page(request: Request, account_id: str | None = None,
-                 user: dict = Depends(require_admin)):
+                 user: dict = Depends(require_section("reports"))):
     chosen = _account_filter(account_id)
     return templates.TemplateResponse(
         request,
@@ -58,7 +58,7 @@ def reports_page(request: Request, account_id: str | None = None,
 
 @router.get("/reports/returns", response_class=HTMLResponse)
 def return_acts_page(request: Request, account_id: str | None = None,
-                     user: dict = Depends(require_admin)):
+                     user: dict = Depends(require_section("reports"))):
     """Подтверждённые акты получения возвратов.
 
     Пока по акту не приняли решение, он висит в «Возвратах». Подтверждённый
@@ -85,7 +85,7 @@ def return_acts_page(request: Request, account_id: str | None = None,
 
 
 @router.get("/reports/returns/{act_id}", response_class=HTMLResponse)
-def return_act_page(act_id: str, request: Request, user: dict = Depends(require_admin)):
+def return_act_page(act_id: str, request: Request, user: dict = Depends(require_section("reports"))):
     """Один подтверждённый акт: состав, отметки и комментарии сборщика."""
     act = return_acts.detail(act_id)
     if not act:
@@ -105,7 +105,7 @@ def return_act_page(act_id: str, request: Request, user: dict = Depends(require_
 
 @router.get("/reports/{day}", response_class=HTMLResponse)
 def report_day_page(day: str, request: Request, account_id: str | None = None,
-                    status: str | None = None, user: dict = Depends(require_admin)):
+                    status: str | None = None, user: dict = Depends(require_section("reports"))):
     day = _valid_day(day)
     chosen = _account_filter(account_id)
     return templates.TemplateResponse(
@@ -132,7 +132,7 @@ def report_day_page(day: str, request: Request, account_id: str | None = None,
 
 @router.get("/reports/{day}/csv")
 def report_csv(day: str, account_id: str | None = None, status: str | None = None,
-               user: dict = Depends(require_admin)):
+               user: dict = Depends(require_section("reports"))):
     day = _valid_day(day)
     blob = report.to_csv(day, account_id=_account_filter(account_id), status=status)
     name = f"otgruzka-{day}.csv"

@@ -173,41 +173,107 @@
 </div>
 
 <div class="panel">
-  <h2>Сотрудники</h2>
-  <table>
-    <thead><tr><th>Логин</th><th style="width:130px">Роль</th><th style="width:110px">Статус</th><th style="width:330px">Действия</th></tr></thead>
+  <div class="row between">
+    <h2 style="margin:0">Сотрудники и доступы</h2>
+    <span class="hint-wrap">
+      <button type="button" class="hint" aria-label="Как устроены роли и разделы">?</button>
+      <span class="hint-body">
+        <b>Роль</b> отвечает за то, что человеку можно делать с самой панелью.
+        <b>Владелец</b> видит и меняет всё, включая пароли и права других владельцев.
+        <b>Администратор</b> ведёт работу склада и выдаёт доступы, но владельца не трогает —
+        иначе роли ничем не отличались бы. <b>Сборщик</b> работает на складе.
+        <br><br><b>Разделы</b> — это уже про экраны: какие из них человек видит. Выдаются
+        галочками любой роли, кроме владельца: у него всё и всегда, иначе панель можно было бы
+        запереть так, что чинить её станет некому.
+        <br><br>«Настройки» сборщику не выдать: там ключи площадок и выдача прав. Кому это
+        нужно — тот администратор, и роль у него должна быть честная.
+      </span>
+    </span>
+  </div>
+
+  <table style="margin-top:14px">
+    <thead>
+      <tr>
+        <th>Логин</th>
+        <th style="width:190px">Роль</th>
+        <th>Разделы</th>
+        <th style="width:110px">Статус</th>
+        <th style="width:290px">Действия</th>
+      </tr>
+    </thead>
     <tbody>
       {% for u in users %}
-      <tr>
-        <td><b>{{ u.login }}</b></td>
-        <td>{{ 'Администратор' if u.role == 'admin' else 'Сборщик' }}</td>
+      <tr data-user="{{ u.id }}">
+        <td><b>{{ u.login }}</b>{% if u.id == user.id %} <span class="muted small">это вы</span>{% endif %}</td>
+        <td>
+          {% if u.editable and roles %}
+            <select data-role-for="{{ u.id }}">
+              {% for code, label, hint in roles %}
+                <option value="{{ code }}" {{ 'selected' if u.role == code }} title="{{ hint }}">{{ label }}</option>
+              {% endfor %}
+              {% if u.role not in roles | map(attribute=0) | list %}
+                <option value="{{ u.role }}" selected>{{ u.role_label }}</option>
+              {% endif %}
+            </select>
+          {% else %}
+            {{ u.role_label }}
+          {% endif %}
+        </td>
+        <td class="small">
+          {% if u.role == 'owner' %}
+            <span class="muted">все разделы — у владельца их не урезают</span>
+          {% elif u.editable %}
+            <div class="sections">
+              {% for key, label, url, hint in sections %}
+                {% set locked = key in manager_only and u.role == 'packer' %}
+                <label class="check" title="{{ hint }}{{ ' · сборщику не выдаётся' if locked }}">
+                  <input type="checkbox" data-section-for="{{ u.id }}" value="{{ key }}"
+                         {{ 'checked' if key in u.sections }} {{ 'disabled' if locked }}>
+                  <span class="{{ 'muted' if locked }}">{{ label }}</span>
+                </label>
+              {% endfor %}
+            </div>
+          {% else %}
+            <span class="muted">{{ u.sections | map('replace', '', '') | list | length }} разд. — менять может владелец</span>
+          {% endif %}
+        </td>
         <td>{% if u.active %}<span class="badge ok">активен</span>{% else %}<span class="badge">отключён</span>{% endif %}</td>
         <td class="row">
-          <button class="btn small" data-toggle="{{ u.id }}" data-active="{{ 0 if u.active else 1 }}">
-            {{ 'Отключить' if u.active else 'Включить' }}
-          </button>
-          <button class="btn small" data-password="{{ u.id }}" data-login="{{ u.login }}">Сменить пароль</button>
-          <button class="btn small" data-role="{{ u.id }}" data-new-role="{{ 'packer' if u.role == 'admin' else 'admin' }}">
-            Сделать {{ 'сборщиком' if u.role == 'admin' else 'администратором' }}
-          </button>
+          {% if u.editable %}
+            <button class="btn small primary" data-save-user="{{ u.id }}">Сохранить</button>
+            <button class="btn small" data-toggle="{{ u.id }}" data-active="{{ 0 if u.active else 1 }}">
+              {{ 'Отключить' if u.active else 'Включить' }}
+            </button>
+            <button class="btn small" data-password="{{ u.id }}" data-login="{{ u.login }}">Сменить пароль</button>
+          {% else %}
+            <span class="muted small">только владелец</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
+  {% if can_manage_users %}
   <h2 style="margin-top:18px">Добавить сотрудника</h2>
   <div class="row">
     <input type="text" id="new-login" placeholder="Логин" autocomplete="off">
     <input type="text" id="new-password" placeholder="Пароль (от 12 символов)" autocomplete="off">
-    <select id="new-role"><option value="packer">Сборщик</option><option value="admin">Администратор</option></select>
+    <select id="new-role">
+      {% for code, label, hint in roles %}<option value="{{ code }}" title="{{ hint }}">{{ label }}</option>{% endfor %}
+    </select>
     <button class="btn primary" id="btn-add">Создать</button>
   </div>
+  <div class="muted small" style="margin-top:8px">
+    Разделы новому сотруднику выдаются по умолчанию для его роли — поправьте галочками в таблице.
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+const MANAGER_ONLY = {{ manager_only | list | tojson }};
 
 
 
@@ -373,8 +439,36 @@ async function updateUser(id, payload) {
 document.querySelectorAll('[data-toggle]').forEach((button) => {
   button.onclick = () => updateUser(button.dataset.toggle, { active: button.dataset.active === '1' });
 });
-document.querySelectorAll('[data-role]').forEach((button) => {
-  button.onclick = () => updateUser(button.dataset.role, { role: button.dataset.newRole });
+/* Роль и разделы сохраняются одной кнопкой: менять их по одной галочке значило
+   бы дёргать сервер на каждый щелчок и перезагружать страницу посреди правки. */
+document.querySelectorAll('[data-save-user]').forEach((button) => {
+  button.onclick = () => {
+    const id = button.dataset.saveUser;
+    const role = document.querySelector(`[data-role-for="${id}"]`);
+    const boxes = [...document.querySelectorAll(`[data-section-for="${id}"]`)];
+    const payload = {};
+    if (role) payload.role = role.value;
+    /* У владельца галочек нет вовсе — и посылать пустой список нельзя: сервер
+       ответит «у владельца доступны все разделы». */
+    if (boxes.length) payload.sections = boxes.filter((b) => b.checked).map((b) => b.value);
+    updateUser(id, payload);
+  };
+});
+
+/* Сменили роль на «Сборщик» — «Настройки» ему не выдать: там ключи площадок и
+   выдача прав. Показываем это сразу, а не отказом после сохранения. */
+document.querySelectorAll('[data-role-for]').forEach((select) => {
+  const sync = () => {
+    const packer = select.value === 'packer';
+    document.querySelectorAll(`[data-section-for="${select.dataset.roleFor}"]`).forEach((box) => {
+      if (!MANAGER_ONLY.includes(box.value)) return;
+      box.disabled = packer;
+      if (packer) box.checked = false;
+      box.closest('label')?.classList.toggle('muted', packer);
+    });
+  };
+  select.addEventListener('change', sync);
+  sync();
 });
 document.querySelectorAll('[data-password]').forEach((button) => {
   button.onclick = () => {

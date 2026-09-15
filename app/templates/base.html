@@ -24,42 +24,53 @@
       </select>
     </label>
   {% endif %}
+  {# Шапка рисуется по выданным разделам, а не по роли: сборщик с выданными
+     «Отчётами» должен видеть на них ссылку, администратор без них — нет. #}
   <nav>
     {% if cab.current and cab.current.marketplace == 'avito' %}
-      <a href="/avito/pack" class="{{ 'active' if active_tab == 'avito_pack' }}">Сборка</a>
+      {% if can_see(user, 'pack') %}<a href="/avito/pack" class="{{ 'active' if active_tab == 'avito_pack' }}">Сборка</a>{% endif %}
+      {% if can_see(user, 'orders') %}
       <a href="/avito?tab=confirm" class="{{ 'active' if active_tab == 'avito' }}">
         Заказы Avito
         {% if c.avito_confirm %}<span class="badge warn" title="Подтвердите заказ">{{ c.avito_confirm }}</span>{% endif %}
         {% if c.avito_ship %}<span class="badge accent" title="Отправьте заказ">{{ c.avito_ship }}</span>{% endif %}
       </a>
+      {% endif %}
+      {% if can_see(user, 'returns') %}
       <a href="/avito/returns" class="{{ 'active' if active_tab == 'avito_returns' }}">
         Возвраты{% if c.avito_returns %}<span class="badge" title="Заберите заказ">{{ c.avito_returns }}</span>{% endif %}
         {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
       </a>
+      {% endif %}
     {% else %}
-      <a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>
+      {% if can_see(user, 'pack') %}<a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>{% endif %}
+      {% if can_see(user, 'orders') %}
       <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
         Заказы FBS
         {% if c.packaging %}<span class="badge warn" title="Ожидает сборки">{{ c.packaging }}</span>{% endif %}
         {% if c.deliver %}<span class="badge accent" title="Ожидает отгрузки">{{ c.deliver }}</span>{% endif %}
       </a>
+      {% endif %}
+      {% if can_see(user, 'returns') %}
       <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
         Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
         {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
       </a>
+      {% endif %}
     {% endif %}
-    {% if user and user.role == 'admin' %}
+    {% if can_see(user, 'products') %}
       <a href="/products" class="{{ 'active' if active_tab == 'products' }}"
          title="Каталог кабинета и наборы: из чего собирается товар">Товары</a>
-      <a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>
-      <a href="/reports" class="{{ 'active' if active_tab == 'reports' }}">Отчёты</a>
-      <a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>
     {% endif %}
+    {% if can_see(user, 'logs') %}<a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>{% endif %}
+    {% if can_see(user, 'reports') %}<a href="/reports" class="{{ 'active' if active_tab == 'reports' }}">Отчёты</a>{% endif %}
+    {% if can_see(user, 'settings') %}<a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>{% endif %}
   </nav>
   {% if not account_ready(request) %}
     <a class="badge warn" href="/settings" title="Панель не загружает заказы, пока не заданы ключи площадки">НЕТ КЛЮЧЕЙ</a>
   {% endif %}
-  <div class="user">{% if user %}<b>{{ user.login }}</b> · <a href="/logout">выход</a>{% endif %}</div>
+  <div class="user">{% if user %}<b>{{ user.login }}</b>
+    <span class="muted small">{{ role_label(user.role) }}</span> · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 
 <main class="wrap {% block wrap_class %}{% endblock %}">

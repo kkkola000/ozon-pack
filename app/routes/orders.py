@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from .. import db, packing, store, sync
-from ..deps import check_csrf, current_user, require_ozon_account, templates
+from ..deps import check_csrf, require_section, require_ozon_account, templates
 
 router = APIRouter()
 
@@ -39,7 +39,7 @@ def _list_postings(account: dict, tab: str, search: str = "", limit: int = 300) 
 
 
 @router.get("/orders", response_class=HTMLResponse)
-def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dict = Depends(current_user),
+def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dict = Depends(require_section("orders")),
                 account: dict = Depends(require_ozon_account)):
     if tab not in TABS:
         tab = "packaging"
@@ -70,13 +70,13 @@ def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dic
 
 
 @router.get("/api/orders")
-def api_orders(tab: str = "packaging", q: str = "", user: dict = Depends(current_user),
+def api_orders(tab: str = "packaging", q: str = "", user: dict = Depends(require_section("orders")),
                account: dict = Depends(require_ozon_account)):
     return {"postings": _list_postings(account, tab, q)}
 
 
 @router.post("/api/ship")
-def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(current_user),
+def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
              account: dict = Depends(require_ozon_account)):
     """Перевести отправления в «Ожидает отгрузки»."""
     check_csrf(request)
@@ -98,7 +98,7 @@ def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(c
 
 
 @router.post("/api/sync")
-def api_sync(request: Request, user: dict = Depends(current_user),
+def api_sync(request: Request, user: dict = Depends(require_section("orders")),
              account: dict = Depends(require_ozon_account)):
     """Обновить данные текущего кабинета по кнопке."""
     check_csrf(request)

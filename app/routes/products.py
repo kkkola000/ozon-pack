@@ -8,9 +8,9 @@
 складе его собирают из нескольких вещей со своими штрихкодами. Состав задаётся
 здесь и живёт только в панели.
 
-Раздел целиком для администратора. Состав набора меняет то, как панель
-засчитывает сборку: ошибка здесь тихо испортит проверку на складе, и заметят
-это не сразу — сборщик просто соберёт не то и не узнает об этом.
+Смотреть раздел может тот, кому он выдан галочкой. Менять наборы и перечитывать
+каталог — владелец и администратор: состав набора меняет то, как панель
+засчитывает сборку, и ошибка здесь тихо испортит проверку на складе.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from .. import catalog, db, product_sets
-from ..deps import check_csrf, require_admin, require_ozon_account, templates
+from ..deps import check_csrf, require_manager, require_section, require_ozon_account, templates
 
 router = APIRouter()
 
@@ -67,7 +67,7 @@ def search(account_id: int, q: str = "", limit: int = PAGE_LIMIT) -> list[dict]:
 
 @router.get("/products", response_class=HTMLResponse)
 def products_page(request: Request, q: str = "", tab: str = "catalog",
-                  user: dict = Depends(require_admin),
+                  user: dict = Depends(require_section("products")),
                   account: dict = Depends(require_ozon_account)):
     """Каталог кабинета и наборы."""
     aid = account["id"]
@@ -102,7 +102,7 @@ def products_page(request: Request, q: str = "", tab: str = "catalog",
 
 
 @router.post("/api/products/catalog/refresh")
-def api_refresh_catalog(request: Request, admin: dict = Depends(require_admin),
+def api_refresh_catalog(request: Request, admin: dict = Depends(require_manager),
                         account: dict = Depends(require_ozon_account)):
     """Перечитать каталог кабинета у Ozon целиком.
 
@@ -115,14 +115,14 @@ def api_refresh_catalog(request: Request, admin: dict = Depends(require_admin),
 
 
 @router.get("/api/products/catalog/status")
-def api_catalog_status(admin: dict = Depends(require_admin),
+def api_catalog_status(admin: dict = Depends(require_section("products")),
                        account: dict = Depends(require_ozon_account)):
     """Как идёт обход — кнопка спрашивает, пока он не закончится."""
     return catalog.job_status(account["id"])
 
 
 @router.get("/api/products/search")
-def api_search(q: str = "", limit: int = 20, admin: dict = Depends(require_admin),
+def api_search(q: str = "", limit: int = 20, admin: dict = Depends(require_section("products")),
                account: dict = Depends(require_ozon_account)):
     """Подсказка при выборе товара: и для набора, и для его частей."""
     found = search(account["id"], q, limit=max(1, min(limit, 50)))
@@ -136,7 +136,7 @@ def api_search(q: str = "", limit: int = 20, admin: dict = Depends(require_admin
 
 
 @router.get("/api/products/{sku}")
-def api_product(sku: str, admin: dict = Depends(require_admin),
+def api_product(sku: str, admin: dict = Depends(require_section("products")),
                 account: dict = Depends(require_ozon_account)):
     """Карточка товара вместе с тем, в какие наборы он входит."""
     row = db.query_one(
@@ -153,7 +153,7 @@ def api_product(sku: str, admin: dict = Depends(require_admin),
 
 @router.post("/api/products/sets")
 def api_save_set(request: Request, payload: dict = Body(...),
-                 admin: dict = Depends(require_admin),
+                 admin: dict = Depends(require_manager),
                  account: dict = Depends(require_ozon_account)):
     """Создать набор или переписать его состав."""
     check_csrf(request)
@@ -175,7 +175,7 @@ def api_save_set(request: Request, payload: dict = Body(...),
 
 
 @router.delete("/api/products/sets/{sku}")
-def api_delete_set(sku: str, request: Request, admin: dict = Depends(require_admin),
+def api_delete_set(sku: str, request: Request, admin: dict = Depends(require_manager),
                    account: dict = Depends(require_ozon_account)):
     """Убрать набор. Товар остаётся — просто собирается по своему штрихкоду."""
     check_csrf(request)
