@@ -99,6 +99,9 @@ tr.done td { opacity: .5; }
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
   background: var(--surface-2); color: var(--text); border: 1px solid transparent;
   padding: 10px 16px; border-radius: 12px; font-size: 14px; font-weight: 600; font-family: inherit;
+  /* Тот же множитель, что у полей ввода: у кнопки браузер ставит свой
+     line-height, и рядом с полем она выходила на пять пикселей ниже. */
+  line-height: 1.5;
   transition: background .12s, color .12s, border-color .12s;
 }
 .btn:hover { background: #e9ebee; text-decoration: none; }
@@ -114,16 +117,37 @@ tr.done td { opacity: .5; }
 .btn.big { padding: 16px 26px; font-size: 16px; border-radius: 14px; }
 .btn.small { padding: 6px 12px; font-size: 13px; border-radius: 9px; }
 
-input[type=text], input[type=password], input[type=search], input[type=number], select {
+/* Поля и кнопки стоят в одной строке, поэтому и выглядеть должны одинаково:
+   те же скругления, та же высота. Высоту задаём line-height, а не height, —
+   иначе крупный шрифт в системе обрежет текст внутри поля.
+   Тип date в этот список тоже входит: без него браузер рисует своё поле,
+   тонкое и квадратное, рядом с крупной кнопкой. */
+input[type=text], input[type=password], input[type=search], input[type=number],
+input[type=date], input[type=time], input[type=email], input[type=url], select {
   background: var(--bg); color: var(--text); border: 1px solid var(--line-strong);
-  border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit; min-width: 0;
+  border-radius: 12px; padding: 10px 14px; font-size: 14px; line-height: 1.5;
+  font-family: inherit; min-width: 0; box-sizing: border-box;
 }
+/* Свой значок вместо системного: иначе высота списка у каждого браузера своя. */
+select {
+  appearance: none; -webkit-appearance: none;
+  padding-right: 34px; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%236b7683' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+}
+/* У поля даты свои внутренние отступы — из-за них оно выше кнопки на пару
+   пикселей, и в ряду это заметно. */
+input[type=date]::-webkit-datetime-edit,
+input[type=date]::-webkit-datetime-edit-fields-wrapper { padding: 0; }
+input[type=date]::-webkit-calendar-picker-indicator { cursor: pointer; opacity: .6; }
+input[type=date]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 input::placeholder { color: #a3aeb9; }
 input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 textarea {
   width: 100%; box-sizing: border-box; resize: vertical;
   background: var(--bg); color: var(--text); border: 1px solid var(--line-strong);
-  border-radius: 12px; padding: 10px 14px; font-size: 14px; font-family: inherit;
+  border-radius: 12px; padding: 10px 14px; font-size: 14px; line-height: 1.5; font-family: inherit;
 }
 textarea::placeholder { color: #a3aeb9; }
 textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -207,10 +231,13 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 
 /* Акт получения возвратов: одна поездка в пункт выдачи — один блок */
 .act { border: 1px solid var(--line-strong); border-radius: 16px; margin-bottom: 14px; overflow: hidden; }
-/* Карточка с подсказкой внутри. overflow: hidden у .act нужен скруглённым
-   углам, но он же режет выпадающий список: видно полторы строки, и пролистать
-   нельзя. У формы шапки нет — скруглять нечего, и клип ей не нужен. */
-.act.has-picker { overflow: visible; }
+/* Карточка, из которой что-то выходит наружу: выпадающий список или подсказка.
+   overflow: hidden у .act нужен скруглённым углам, но он же режет их — видно
+   полторы строки, и пролистать нельзя. У формы шапки нет, скруглять нечего. */
+.act.has-popover { overflow: visible; }
+/* Значок ▶ обещает, что блок раскроется. У формы раскрывать нечего. */
+.act.has-popover > .act-head { cursor: default; }
+.act.has-popover > .act-head::before { content: none; }
 .act > .act-head {
   display: flex; align-items: center; gap: 16px; padding: 16px 20px;
   background: var(--surface); cursor: pointer; list-style: none;
@@ -353,3 +380,33 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .set-part.ok { opacity: .55; }
 .set-part .qty { font-weight: 800; min-width: 52px; }
 .set-part .check { color: var(--ok); font-weight: 800; }
+
+
+/* ---------- Подсказка под знаком «?» ----------
+   Объяснение нужно один раз — когда человек впервые видит экран. Дальше это
+   стена текста над рабочими кнопками, которую перестают читать. Поэтому текст
+   убран под знак и показывается по наведению.
+
+   Держится он и при наведении на сам текст: внутри бывают ссылки, и подсказка,
+   исчезающая по дороге к ссылке, — это подсказка, которой нельзя пользоваться.
+   По той же причине она остаётся открытой после щелчка (focus-within): с
+   телефона наведения нет вовсе. */
+.hint-wrap { position: relative; display: inline-flex; vertical-align: middle; }
+.hint {
+  width: 20px; height: 20px; padding: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-strong); background: var(--surface);
+  color: var(--muted); font: 700 12px/1 inherit; font-family: inherit; cursor: help;
+}
+.hint:hover, .hint-wrap:focus-within .hint { border-color: var(--accent); color: var(--accent); }
+.hint-body {
+  display: none; position: absolute; z-index: 40; top: calc(100% + 8px); left: 0;
+  width: max(320px, min(560px, 70vw));
+  padding: 12px 14px; border-radius: 12px;
+  background: var(--surface); border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
+  font-size: 13px; line-height: 1.5; font-weight: 400; color: var(--text); text-align: left;
+}
+.hint-wrap:hover .hint-body, .hint-wrap:focus-within .hint-body { display: block; }
+/* У правого края экрана подсказка иначе уезжает за него. */
+.hint-wrap.to-left .hint-body { left: auto; right: 0; }

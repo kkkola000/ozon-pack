@@ -1,23 +1,27 @@
 {# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по одной
    поездке в пункт выдачи. Акт составляет человек за выбранное число. #}
-<div class="small muted no-print" style="margin:14px 0 16px">
-  Возврат в статусе «Получен» уже у нас — панель копит такие возвраты, а акт вы
-  составляете сами за нужное число. За возвратами ездят несколько раз в день,
-  поэтому актов за одно число бывает несколько: в каждый попадает только то,
-  что ещё ни в один акт не вошло, — задвоить возврат нельзя. Возвраты акта
-  держатся здесь, даже когда площадка перестала их отдавать, пока по каждому не
-  поставят отметку и акт не подтвердят. Подтверждённый акт уходит в
-  <a href="/reports/returns">«Отчёты»</a>.
-</div>
-
 {% if user.role == 'admin' %}
 {# Главное действие вкладки: выбрали число — нажали «Составить акт». Сколько
    попадёт, считается при выборе числа, отдельной кнопки для этого нет.
    Только администратору — акт нельзя удалить. #}
-<div class="act no-print" id="act-byday" style="margin-bottom:18px">
+<div class="act has-popover no-print" id="act-byday" style="margin-bottom:18px">
   <div class="act-head">
     <div class="grow">
-      <div class="act-title">Составить акт</div>
+      <div class="act-title">
+        Составить акт
+        <span class="hint-wrap" style="margin-left:6px">
+          <button type="button" class="hint" aria-label="Как это работает">?</button>
+          <span class="hint-body">
+            Возврат в статусе «Получен» уже у нас — панель копит такие возвраты, а акт вы
+            составляете сами за нужное число. За возвратами ездят несколько раз в день,
+            поэтому актов за одно число бывает несколько: в каждый попадает только то, что
+            ещё ни в один акт не вошло, — задвоить возврат нельзя.
+            <br><br>Возвраты акта держатся здесь, даже когда площадка перестала их отдавать,
+            пока по каждому не поставят отметку и акт не подтвердят. Подтверждённый акт
+            уходит в <a href="/reports/returns">«Отчёты»</a>.
+          </span>
+        </span>
+      </div>
       <div class="act-sub">
         Возвраты кабинета «{{ account.title }}», полученные в выбранный день и
         ещё не попавшие ни в один акт.
@@ -26,9 +30,8 @@
   </div>
   <div class="act-body">
     <div class="row" style="margin-top:8px; flex-wrap:wrap">
-      <label class="muted small">Дата получения
-        <input type="date" id="act-day" value="{{ today }}" max="{{ today }}"
-               style="padding:4px 8px; margin-left:6px">
+      <label class="muted small row" style="gap:8px">Дата получения
+        <input type="date" id="act-day" value="{{ today }}" max="{{ today }}">
       </label>
       <button class="btn primary" id="act-create" disabled>Составить акт</button>
       <span id="act-byday-result" class="small muted"></span>
