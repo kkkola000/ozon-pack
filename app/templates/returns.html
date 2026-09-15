@@ -17,7 +17,9 @@
 
   {# Знак стоит рядом с вкладками, но не внутри них: ссылка в подсказке иначе
      получила бы вид вкладки — рамку и кружок. #}
-  <div class="row no-print" style="margin-top:16px; gap:8px">
+  {# Отступ снизу держит эта строка, а не сами вкладки: у .tabs он ушёл бы в
+     выравнивание и поднял знак «?» относительно вкладок. #}
+  <div class="row no-print" style="margin:16px 0; gap:8px">
     <div class="tabs" style="margin:0">
       <a href="/returns" class="{{ 'active' if tab == 'ready' }}">
         К выдаче <span class="badge">{{ totals.ready }}</span>
