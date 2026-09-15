@@ -443,3 +443,69 @@ def confirm(act_id: str, user: dict) -> dict:
                 f"не принято {act['marked_bad']}",
     )
     return {"status": "ok", "message": f"{act['title']}: акт подтверждён, ищите его в «Отчётах»"}
+
+
+def unconfirm(act_id: str, user: dict) -> dict:
+    """Вернуть подтверждённый акт в работу. Отметки остаются на местах.
+
+    Подтвердили рано — так бывает: нашлась ещё коробка, или решение по
+    возврату оказалось другим. Акт уходит из «Отчётов» обратно во вкладку
+    «Ждёт подтверждения», отметки целы — править нужно одну строку, а не
+    перепринимать всю поездку.
+    """
+    act = get(act_id)
+    if not act:
+        return {"status": "error", "message": "Акт не найден"}
+    title = _title(act)
+    if not act.get("confirmed_at"):
+        return {"status": "warning", "message": f"{title}: акт и так не подтверждён"}
+    db.execute(
+        "UPDATE return_acts SET confirmed_at = NULL, confirmed_by = NULL WHERE id = ?", (act_id,)
+    )
+    db.log_event(
+        "return_act_unconfirm", account_id=act.get("account_id"), user=user,
+        message=f"{title}: подтверждение снято, подтверждал {act.get('confirmed_by') or '—'}",
+    )
+    return {"status": "ok", "message": f"{title}: акт вернулся в «Ждёт подтверждения»"}
+
+
+def remove(act_id: str, user: dict) -> dict:
+    """Удалить акт: возвраты освобождаются, отметки с них снимаются.
+
+    Это «принять заново с нуля» — в отличие от снятия подтверждения, где
+    отметки остаются. Возвраты снова попадут в «Составить акт» за то же
+    число: момент получения — факт от площадки, его мы не трогаем.
+
+    Отметки снимаются намеренно. Акт, собранный из уже отмеченных строк,
+    подтверждается сразу, и принимать в нём нечего — а просили именно
+    принять заново. В журнале отметки остаются: каждая записана отдельным
+    событием, и кто что решил в прошлый раз, видно.
+    """
+    act = get(act_id)
+    if not act:
+        return {"status": "error", "message": "Акт не найден"}
+    title = _title(act)
+    freed = 0
+    with db.write() as conn:
+        for table in ("returns", "avito_orders"):
+            cursor = conn.execute(
+                f"UPDATE {table} SET act_id = NULL, mark = NULL, note = NULL, "
+                f"mark_at = NULL, mark_by = NULL WHERE act_id = ?",
+                (act_id,),
+            )
+            freed += cursor.rowcount or 0
+        conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
+    # Куда возвраты денутся дальше, зависит от того, откуда акт взялся: у акта
+    # за число есть само число, а «без статуса» собирается заново обновлением.
+    again = (f"составьте акт за {_day_label(act['received_day'])} заново"
+             if act.get("received_day") else
+             "они вернутся в список при ближайшем обновлении")
+    db.log_event(
+        "return_act_delete", account_id=act.get("account_id"), user=user,
+        message=f"{title}: акт удалён, освобождено {_returns_word(freed)}, отметки сняты",
+    )
+    return {
+        "status": "ok",
+        "freed": freed,
+        "message": f"{title}: акт удалён, {_returns_word(freed)} свободны — {again}",
+    }

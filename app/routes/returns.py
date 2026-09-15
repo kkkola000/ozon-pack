@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
-from ..deps import (check_csrf, require_section, require_avito_account,
+from ..deps import (check_csrf, require_owner, require_section, require_avito_account,
                     require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonError
@@ -227,6 +227,36 @@ def api_confirm_act(act_id: str, request: Request, user: dict = Depends(require_
     if result["status"] == "error":
         raise HTTPException(status_code=409 if "отметьте" in result["message"] else 404,
                             detail=result["message"])
+    return result
+
+
+@router.post("/api/returns/acts/{act_id}/unconfirm")
+def api_unconfirm_act(act_id: str, request: Request, user: dict = Depends(require_owner)):
+    """Вернуть подтверждённый акт в работу. Отметки остаются. Только владельцу.
+
+    Подтверждение — это подпись под принятой работой, и снимать её может
+    только тот, кто за склад отвечает. Администратору этого не дают: иначе
+    подпись владельца снималась бы без него.
+    """
+    check_csrf(request)
+    result = return_acts.unconfirm(act_id, user)
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["message"])
+    return result
+
+
+@router.post("/api/returns/acts/{act_id}/delete")
+def api_delete_act(act_id: str, request: Request, user: dict = Depends(require_owner)):
+    """Удалить акт, освободив возвраты и сняв с них отметки. Только владельцу.
+
+    Это «принять заново с нуля»: акт исчезает, а его возвраты снова попадают
+    в «Составить акт» за своё число. Отменить это нельзя — отметки прошлого
+    раза останутся только в журнале, — поэтому и владелец.
+    """
+    check_csrf(request)
+    result = return_acts.remove(act_id, user)
+    if result["status"] == "error":
+        raise HTTPException(status_code=404, detail=result["message"])
     return result
 
 

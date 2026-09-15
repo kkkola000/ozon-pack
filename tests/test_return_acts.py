@@ -629,6 +629,172 @@ def test_unknown_act_is_404(client):
     assert confirm(client, csrf, "нет-такого").status_code == 404
 
 
+# ------------------------------------------------------------------ переделать
+def login_as_admin(client) -> str:
+    """Администратор — не владелец: принятое переделывать ему не дают."""
+    from app.security import hash_password
+
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
+        ("admin9", hash_password("admin9123456"), "admin", db.now_iso()),
+    )
+    client.post("/login", data={"login": "admin9", "password": "admin9123456", "next": "/returns"})
+    page = client.get("/returns")
+    return re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
+
+
+def confirmed_act(client, csrf) -> dict:
+    """Акт, отмеченный и подтверждённый, — то, что лежит в «Отчётах»."""
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok", "цел")
+    assert confirm(client, csrf, act["id"]).status_code == 200
+    return act
+
+
+def unconfirm(client, csrf, act_id):
+    return client.post(f"/api/returns/acts/{act_id}/unconfirm", json={},
+                       headers={"X-CSRF-Token": csrf})
+
+
+def delete_act(client, csrf, act_id):
+    return client.post(f"/api/returns/acts/{act_id}/delete", json={},
+                       headers={"X-CSRF-Token": csrf})
+
+
+def test_owner_returns_a_confirmed_act_to_work(client):
+    """Подтвердили рано — акт возвращается в работу вместе с отметками."""
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+
+    response = unconfirm(client, csrf, act["id"])
+    assert response.status_code == 200, response.text
+    assert any(a["id"] == act["id"] for a in return_acts.pending()), "акт не вернулся во вкладку"
+
+    back = return_acts.detail(act["id"])
+    assert back["confirmed_at"] is None and back["confirmed_by"] is None
+    # Отметки на местах: править нужно строку, а не всю поездку.
+    assert back["unmarked"] == 0 and back["can_confirm"] is True
+    assert all(row["note"] == "цел" for row in back["ozon"])
+
+    # И подтвердить его можно снова.
+    assert confirm(client, csrf, act["id"]).status_code == 200
+
+
+def test_unconfirming_an_open_act_says_so(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    response = unconfirm(client, csrf, act["id"])
+    assert response.status_code == 200
+    assert response.json()["status"] == "warning"
+    assert "не подтверждён" in response.json()["message"]
+
+
+def test_owner_deletes_an_act_and_the_day_can_be_taken_again(client):
+    """Удалённый акт освобождает возвраты — поездку принимают с нуля."""
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+    ids = [row["id"] for row in act["ozon"]]
+    account = accounts.default_account()
+
+    response = delete_act(client, csrf, act["id"])
+    assert response.status_code == 200, response.text
+    assert response.json()["freed"] == act["total"]
+    assert return_acts.get(act["id"]) is None
+    assert not any(a["id"] == act["id"] for a in return_acts.pending())
+
+    # Возвраты свободны и без отметок: иначе новый акт подтвердился бы сразу.
+    for row in db.query(f"SELECT act_id, mark, note, mark_by FROM returns "
+                        f"WHERE id IN ({','.join('?' for _ in ids)})", ids):
+        assert row["act_id"] is None and row["mark"] is None
+        assert row["note"] is None and row["mark_by"] is None
+
+    # Момент получения — факт площадки, его не трогали: акт собирается за то же число.
+    assert set(return_acts.received_returns(account["id"], store.local_day())) == set(ids)
+    again = make_act()
+    assert again["status"] == "ok" and again["added"] == len(ids)
+    assert return_acts.detail(again["act_id"])["unmarked"] == len(ids)
+
+
+def test_unconfirmed_act_can_be_deleted_too(client):
+    """Собрали акт не за то число — его тоже надо уметь убрать."""
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    assert delete_act(client, csrf, act["id"]).status_code == 200
+    assert return_acts.pending() == []
+
+
+def test_deleting_says_when_to_make_the_act_again(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    message = delete_act(client, csrf, act["id"]).json()["message"]
+    assert store.local_time(db.now_iso(), "%d.%m.%Y") in message
+    assert "заново" in message
+
+
+def test_remaking_is_written_to_the_log(client):
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+    unconfirm(client, csrf, act["id"])
+    delete_act(client, csrf, act["id"])
+
+    kinds = {row["kind"] for row in db.query("SELECT kind FROM events")}
+    assert {"return_act_unconfirm", "return_act_delete"} <= kinds
+
+
+def test_admin_cannot_remake_an_act(client):
+    """Подпись под принятой работой снимает только тот, кто за склад отвечает."""
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    client.get("/logout")
+
+    csrf = login_as_admin(client)
+    # Администратор вошёл и работает — 403 именно про владельца, а не про вход.
+    assert client.get("/returns?tab=acts").status_code == 200
+    assert unconfirm(client, csrf, act["id"]).status_code == 403
+    assert delete_act(client, csrf, act["id"]).status_code == 403
+    assert return_acts.get(act["id"])["confirmed_at"], "администратор снял подтверждение"
+
+
+def test_packer_cannot_remake_an_act(client):
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    client.get("/logout")
+
+    csrf = login_as_packer(client)
+    assert unconfirm(client, csrf, act["id"]).status_code == 403
+    assert delete_act(client, csrf, act["id"]).status_code == 403
+
+
+def test_remaking_requires_csrf(client):
+    login(client)
+    act = return_acts.pending()[0]
+    assert client.post(f"/api/returns/acts/{act['id']}/unconfirm", json={}).status_code == 403
+    assert client.post(f"/api/returns/acts/{act['id']}/delete", json={}).status_code == 403
+    assert return_acts.get(act["id"]) is not None
+
+
+def test_remaking_an_unknown_act_is_404(client):
+    csrf = login(client)
+    assert unconfirm(client, csrf, "нет-такого").status_code == 404
+    assert delete_act(client, csrf, "нет-такого").status_code == 404
+
+
+def test_buttons_are_owner_only(client):
+    """Кнопок у администратора нет — не только запрет на сервере."""
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    page = client.get(f"/reports/returns/{act['id']}")
+    assert "data-unconfirm-act" in page.text and "data-delete-act" in page.text
+    client.get("/logout")
+
+    login_as_admin(client)
+    page = client.get(f"/reports/returns/{act['id']}")
+    assert page.status_code == 200
+    assert "data-unconfirm-act" not in page.text
+    assert "data-delete-act" not in page.text
+
+
 # ------------------------------------------------------- подтверждённое в отчёты
 def test_confirmed_act_moves_to_reports(client):
     csrf = login(client)

@@ -95,5 +95,47 @@
       {% endfor %}
     </tbody>
   </table>
+
+  {# Переделать принятое — дело владельца, и только отсюда: состав акта у него
+     перед глазами, а не одна строка в списке. #}
+  {% if is_owner(user) %}
+  <div class="act has-popover no-print" style="margin-top:16px">
+    <div class="act-head">
+      <div class="grow">
+        <div class="act-title">
+          Переделать
+          <span class="hint-wrap" style="margin-left:6px">
+            <button type="button" class="hint" aria-label="Чем отличаются эти два действия">?</button>
+            <span class="hint-body">
+              <b>Вернуть в работу</b> — акт уходит из «Отчётов» обратно во вкладку
+              <a href="/returns?tab=acts">«Ждёт подтверждения»</a> вместе с отметками.
+              Берут, когда подтвердили рано и надо поправить одну-две строки.
+              <br><br><b>Удалить акт</b> — акта не остаётся совсем: возвраты
+              освобождаются, отметки с них снимаются, и акт за то же число
+              составляется заново. Берут, когда поездку надо принять с нуля.
+              Отменить это нельзя, отметки прошлого раза останутся в
+              <a href="/logs">журнале</a>.
+            </span>
+          </span>
+        </div>
+        <div class="act-sub">Доступно только владельцу.</div>
+      </div>
+    </div>
+    <div class="act-body">
+      <div class="row">
+        {% if act.confirmed_at %}
+          <button class="btn" data-unconfirm-act="{{ act.id }}"
+                  data-act-title="{{ act.title }}">Вернуть в работу</button>
+        {% endif %}
+        <button class="btn danger" data-delete-act="{{ act.id }}"
+                data-act-title="{{ act.title }}" data-after="/reports/returns">Удалить акт</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/act_admin.js?v={{ static_version() }}"></script>
 {% endblock %}

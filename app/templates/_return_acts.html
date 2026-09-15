@@ -146,6 +146,15 @@
     </table>
 
     <div class="row no-print" style="margin-top:14px">
+      {# Удаление стоит внизу акта, а не в заголовке рядом с «Подтвердить»:
+         соседство этих двух кнопок само напрашивается на промах. #}
+      {% if is_owner(user) %}
+        <button class="btn small danger" data-delete-act="{{ act.id }}"
+                data-act-title="{{ act.title }}"
+                title="Удалить акт: возвраты освободятся и отметки снимутся">
+          Удалить акт
+        </button>
+      {% endif %}
       <span class="grow"></span>
       <a class="btn" href="/returns/acts/{{ act.id }}.pdf">Скачать акт PDF</a>
       <a class="btn" href="/returns/acts/{{ act.id }}/print" target="_blank">Печать акта</a>

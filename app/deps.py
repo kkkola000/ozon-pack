@@ -252,5 +252,8 @@ templates.env.globals["role_label"] = access.role_label
 # «Настраивает панель» — это владелец или администратор. Сравнивать роль со
 # строкой в шаблоне нельзя: владелец под такое сравнение не подходит.
 templates.env.globals["is_manager"] = access.is_manager
+# Снять подтверждение и удалить акт — только владельцу: это единственные
+# действия, которые стирают уже принятую работу.
+templates.env.globals["is_owner"] = access.is_owner
 
 
