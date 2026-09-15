@@ -73,6 +73,11 @@ a:hover { text-decoration: underline; }
   padding: 20px; box-shadow: var(--shadow);
 }
 .panel + .panel { margin-top: 16px; }
+/* Место для собираемого отправления стоит между панелями и пустует, пока
+   сборка не началась. Соседство «панель + панель» через него не перескакивает,
+   поэтому отступ вокруг него задаём отдельно — иначе на сборке сканирование и
+   очередь слипаются. */
+#active-panel > .panel, #active-panel + .panel { margin-top: 16px; }
 .panel h2 { margin: 0 0 14px; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
 .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .row.between { justify-content: space-between; }
@@ -232,23 +237,29 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 /* Акт получения возвратов: одна поездка в пункт выдачи — один блок */
 .act { border: 1px solid var(--line-strong); border-radius: 16px; margin-bottom: 14px; overflow: hidden; }
 /* Карточка, из которой что-то выходит наружу: выпадающий список или подсказка.
-   overflow: hidden у .act нужен скруглённым углам, но он же режет их — видно
-   полторы строки, и пролистать нельзя. У формы шапки нет, скруглять нечего. */
+   overflow: hidden у .act режет их — видно полторы строки, и пролистать
+   нельзя. Без него углы шапки скругляем сами, иначе они торчат за рамку. */
 .act.has-popover { overflow: visible; }
 /* Значок ▶ обещает, что блок раскроется. У формы раскрывать нечего. */
-.act.has-popover > .act-head { cursor: default; }
+.act.has-popover > .act-head { cursor: default; border-bottom: 1px solid var(--line); }
 .act.has-popover > .act-head::before { content: none; }
 .act > .act-head {
   display: flex; align-items: center; gap: 16px; padding: 16px 20px;
   background: var(--surface); cursor: pointer; list-style: none;
+  /* На пиксель меньше рамки: это радиус изнутри неё. */
+  border-radius: 15px;
 }
+/* Шапка с продолжением снизу скругляется только сверху. */
+.act[open] > .act-head, .act.has-popover > .act-head { border-radius: 15px 15px 0 0; }
 .act > .act-head::-webkit-details-marker { display: none; }
 .act > .act-head::before { content: "▶"; color: var(--muted); font-size: 12px; }
 .act[open] > .act-head::before { content: "▼"; }
 .act[open] > .act-head { border-bottom: 1px solid var(--line); }
 .act .act-title { font-size: 17px; font-weight: 700; }
 .act .act-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.act .act-body { padding: 0 20px 18px; }
+/* Отступ сверху тоже нужен: под шапкой стоят поля и кнопки, а в карточке без
+   шапки содержимое иначе упирается прямо в рамку. */
+.act .act-body { padding: 16px 20px 18px; }
 .progress.mini { width: 150px; height: 8px; }
 
 /* Окно поверх списка: отметка о возврате */
