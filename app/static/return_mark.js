@@ -65,7 +65,10 @@ if (markModal) {
      последний возврат, не понимает, что акт готов. */
   function paintAct(act) {
     if (!act) return;
-    const root = document.querySelector(`.act[data-act="${CSS.escape(act.id)}"]`);
+    /* Ищем перебором, а не селектором по id: экранировать ничего не нужно и
+       сломаться не на чем — а окно к этому моменту уже закрыто. */
+    const root = [...document.querySelectorAll('.act[data-act]')]
+      .find((node) => node.dataset.act === act.id);
     if (!root) return;
 
     const badges = root.querySelector('[data-act-badges]');
@@ -97,10 +100,13 @@ if (markModal) {
     button.disabled = true;
     try {
       const result = await api('/api/returns/mark', { marketplace, id, mark, note });
+      /* Сервер ответил — отметка записана, и окно закрываем первым делом.
+         Перерисовка списка идёт после: если споткнётся она, отметка всё равно
+         сохранена, а открытое окно с ошибкой говорило бы обратное. */
+      closeMark();
+      toast(result.message, mark === 'bad' ? 'warning' : 'ok');
       paintRow(button, result);
       paintAct(result.act);
-      toast(result.message, mark === 'bad' ? 'warning' : 'ok');
-      closeMark();
     } catch (error) {
       toast(error.message, 'error', 10000);
     } finally {

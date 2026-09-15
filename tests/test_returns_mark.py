@@ -67,12 +67,24 @@ def test_mark_and_comment_are_saved(client):
     assert row["mark_at"], "не записано, когда поставили отметку"
 
 
+def an_act_return() -> str:
+    """Съездить за возвратами и свести их в акт — там и живут отметки."""
+    from app import ozon, return_acts, store, sync
+
+    account = accounts.default_account()
+    ozon.get_client(account).receive()
+    sync.sync_returns(account)
+    result = return_acts.from_received(account["id"], store.local_day(), user={"login": "admin"})
+    assert result["status"] == "ok", result["message"]
+    return return_acts.detail(result["act_id"])["ozon"][0]["id"]
+
+
 def test_mark_shows_up_on_the_page(client):
     csrf = login(client)
-    return_id = a_return()
+    return_id = an_act_return()
     mark(client, csrf, marketplace="ozon", id=return_id, mark="ok", note="Всё на месте")
 
-    page = client.get("/returns")
+    page = client.get("/returns?tab=acts")
     assert page.status_code == 200
     assert "Принят" in page.text
     assert "Всё на месте" in page.text
@@ -162,6 +174,34 @@ def test_mark_is_written_to_the_log(client):
     row = db.query_one("SELECT message FROM events WHERE kind = 'return_mark'")
     assert row is not None, "отметка не попала в журнал"
     assert "Не принят" in row["message"] and "брак" in row["message"]
+
+
+# ------------------------------------------------------ где отметка есть, а где нет
+def test_pickup_list_has_no_marks(client):
+    """Возврат ещё лежит в ПВЗ — решать по нему нечего, его в руках не держали."""
+    login(client)
+    page = client.get("/returns")
+    assert page.status_code == 200
+    assert "data-mark-open" not in page.text, "на «К выдаче» осталась отметка"
+    assert "Отметить" not in page.text
+    # Список при этом на месте: убрали столбец, а не раздел.
+    assert "Где лежит" in page.text
+
+
+def test_marks_live_in_the_act(client):
+    """Отмечают привезённое — во вкладке «Ждёт подтверждения», внутри акта."""
+    from app import accounts, ozon, return_acts, store, sync
+
+    csrf = login(client)
+    account = accounts.default_account()
+    ozon.get_client(account).receive()
+    sync.sync_returns(account)
+    assert return_acts.from_received(
+        account["id"], store.local_day(), user={"login": "admin"}
+    )["status"] == "ok"
+
+    page = client.get("/returns?tab=acts", headers={"X-CSRF-Token": csrf})
+    assert page.text.count("data-mark-open") >= 1, "в акте нет чем отметить"
 
 
 # ---------------------------------------------------------------- отметка у Avito
