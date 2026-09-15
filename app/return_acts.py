@@ -385,6 +385,37 @@ def detail(act_id: str) -> dict | None:
     return _summary(act, ozon, avito)
 
 
+def progress(act_id: str) -> dict | None:
+    """Счётчики акта без его строк — чтобы шапка обновилась после отметки.
+
+    Строки уже лежат на странице, заново их отдавать незачем: нужно только
+    сказать, сколько осталось без отметки и можно ли подтверждать.
+    """
+    act = get(act_id)
+    if not act:
+        return None
+    total = ok = bad = 0
+    for table in ("returns", "avito_orders"):
+        row = db.query_one(
+            f"SELECT COUNT(*) AS total, SUM(mark = 'ok') AS ok, SUM(mark = 'bad') AS bad "
+            f"FROM {table} WHERE act_id = ?",
+            (act_id,),
+        )
+        total += row["total"] or 0
+        ok += row["ok"] or 0
+        bad += row["bad"] or 0
+    unmarked = total - ok - bad
+    return {
+        "id": act_id,
+        "total": total,
+        "marked_ok": ok,
+        "marked_bad": bad,
+        "unmarked": unmarked,
+        "percent": round((total - unmarked) / total * 100) if total else 0,
+        "can_confirm": total > 0 and unmarked == 0 and not act.get("confirmed_at"),
+    }
+
+
 def confirm(act_id: str, user: dict) -> dict:
     """Подтвердить акт. Возвращает {'status', 'message'}.
 

@@ -364,9 +364,26 @@ def login_as_packer(client) -> str:
     return re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
 
 
-def test_day_endpoint_is_admin_only(client):
-    """Акт нельзя удалить — заводить его может только администратор."""
+def test_packer_makes_an_act(client):
+    """За возвратами ездит сборщик — он же составляет акт, без администратора."""
     csrf = login_as_packer(client)
+    db.execute("DELETE FROM return_acts")
+    db.execute("UPDATE returns SET act_id = NULL")
+
+    response = client.post("/api/returns/acts/by-day", json={"day": store.local_day()},
+                           headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 200, response.text
+    assert response.json()["act_id"]
+    assert len(return_acts.pending()) == 1
+
+    # Акт подписан тем, кто его завёл: по журналу видно, кто ездил.
+    assert return_acts.pending()[0]["created_by"] == "packer9"
+
+
+def test_returns_section_closed_means_no_act(client):
+    """Раздел возвратов закрыт — закрыто и составление акта, не только кнопка."""
+    csrf = login_as_packer(client)
+    db.execute("UPDATE users SET sections = ? WHERE login = ?", ('["pack"]', "packer9"))
     response = client.post("/api/returns/acts/by-day", json={"day": store.local_day()},
                            headers={"X-CSRF-Token": csrf})
     assert response.status_code == 403
@@ -487,6 +504,68 @@ def test_empty_received_list_turns_the_acts_off(sample_data):
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
     take_everything()
     assert db.query_one("SELECT COUNT(*) AS c FROM returns WHERE received_at IS NOT NULL")["c"] == 0
+
+
+# ---------------------------------------------------------------- шапка акта
+def test_mark_answers_with_the_act_progress(client):
+    """Отметив последний возврат, сборщик должен сразу увидеть, что акт готов.
+
+    Кнопка «Подтвердить акт» живёт в шапке акта, а не в строке возврата.
+    Поэтому ответ отметки несёт счётчики всего акта — по ним страница
+    перерисовывает шапку, не перезагружаясь.
+    """
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    rows = act["ozon"]
+    assert len(rows) > 1, "для проверки нужен акт хотя бы из двух возвратов"
+
+    first = client.post(
+        "/api/returns/mark",
+        json={"marketplace": "ozon", "id": rows[0]["id"], "mark": "ok", "note": ""},
+        headers={"X-CSRF-Token": csrf},
+    ).json()["act"]
+    assert first["id"] == act["id"]
+    assert first["marked_ok"] == 1 and first["unmarked"] == act["total"] - 1
+    assert first["can_confirm"] is False
+
+    for row in rows[1:-1]:
+        mark(client, csrf, row["id"], "ok")
+    last = client.post(
+        "/api/returns/mark",
+        json={"marketplace": "ozon", "id": rows[-1]["id"], "mark": "bad", "note": "вскрыт"},
+        headers={"X-CSRF-Token": csrf},
+    ).json()["act"]
+    assert last["unmarked"] == 0 and last["marked_bad"] == 1
+    assert last["percent"] == 100
+    assert last["can_confirm"] is True, "кнопка «Подтвердить акт» так и не появится"
+
+
+def test_mark_taken_back_closes_the_act_button_again(client):
+    """Снятая отметка снова запирает подтверждение — тоже без перезагрузки."""
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok")
+
+    body = client.post(
+        "/api/returns/mark",
+        json={"marketplace": "ozon", "id": act["ozon"][0]["id"], "mark": "", "note": ""},
+        headers={"X-CSRF-Token": csrf},
+    ).json()["act"]
+    assert body["unmarked"] == 1 and body["can_confirm"] is False
+
+
+def test_mark_outside_an_act_has_no_act_block(client):
+    """Возврат из «К выдаче» ни в каком акте не состоит — перерисовывать нечего."""
+    csrf = login(client)
+    free = db.query_one("SELECT id FROM returns WHERE act_id IS NULL LIMIT 1")
+    assert free, "в демо-данных не осталось возвратов вне актов"
+    body = client.post(
+        "/api/returns/mark",
+        json={"marketplace": "ozon", "id": free["id"], "mark": "ok", "note": ""},
+        headers={"X-CSRF-Token": csrf},
+    ).json()
+    assert body["act"] is None
 
 
 # ---------------------------------------------------------------- подтверждение

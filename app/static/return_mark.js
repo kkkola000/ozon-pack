@@ -59,6 +59,37 @@ if (markModal) {
     }
   }
 
+  /* Шапка акта считает отмеченные возвраты и держит кнопку «Подтвердить акт».
+     Отметка меняет и то и другое, поэтому шапку перерисовываем сразу: иначе
+     кнопка появляется только после обновления страницы, и сборщик, отметив
+     последний возврат, не понимает, что акт готов. */
+  function paintAct(act) {
+    if (!act) return;
+    const root = document.querySelector(`.act[data-act="${CSS.escape(act.id)}"]`);
+    if (!root) return;
+
+    const badges = root.querySelector('[data-act-badges]');
+    if (badges) {
+      const marks = [];
+      if (act.marked_ok) marks.push(`<span class="badge ok">${act.marked_ok} принято</span>`);
+      if (act.marked_bad) marks.push(`<span class="badge err">${act.marked_bad} не принят</span>`);
+      if (act.unmarked) marks.push(`<span class="badge warn">${act.unmarked} без отметки</span>`);
+      badges.innerHTML = marks.join('');
+    }
+
+    const bar = root.querySelector('[data-act-progress] > div');
+    if (bar) bar.style.width = `${act.percent}%`;
+
+    const confirmButton = root.querySelector('[data-confirm-act]');
+    if (confirmButton) {
+      confirmButton.disabled = !act.can_confirm;
+      confirmButton.classList.toggle('primary', act.can_confirm);
+      confirmButton.title = act.can_confirm
+        ? 'Подтвердить: решение принято по всем возвратам акта'
+        : 'Сначала отметьте все возвраты акта';
+    }
+  }
+
   async function saveMark(mark) {
     if (!current) return;
     const { button, marketplace, id } = current;
@@ -67,6 +98,7 @@ if (markModal) {
     try {
       const result = await api('/api/returns/mark', { marketplace, id, mark, note });
       paintRow(button, result);
+      paintAct(result.act);
       toast(result.message, mark === 'bad' ? 'warning' : 'ok');
       closeMark();
     } catch (error) {

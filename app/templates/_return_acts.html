@@ -1,9 +1,8 @@
 {# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по одной
    поездке в пункт выдачи. Акт составляет человек за выбранное число. #}
-{% if is_manager(user) %}
 {# Главное действие вкладки: выбрали число — нажали «Составить акт». Сколько
    попадёт, считается при выборе числа, отдельной кнопки для этого нет.
-   Только администратору — акт нельзя удалить. #}
+   Составляет тот, кто вернулся из пункта выдачи, — обычно сборщик. #}
 <div class="act has-popover no-print" id="act-byday" style="margin-bottom:18px">
   <div class="act-head">
     <div class="grow">
@@ -38,30 +37,30 @@
     </div>
   </div>
 </div>
-{% endif %}
 
 {% if not acts %}
   <div class="empty">
     Неподтверждённых актов нет. Акт составляют после поездки в пункт выдачи,
-    когда возвраты перейдут в статус «Получен»:
-    {% if is_manager(user) %}выберите дату и нажмите «Составить акт».
-    {% else %}это делает администратор.{% endif %}
+    когда возвраты перейдут в статус «Получен»: выберите дату и нажмите
+    «Составить акт».
   </div>
 {% endif %}
 
 {% for act in acts %}
-<details class="act" {{ 'open' if loop.first }}>
+{# data-act и метки внутри: отметка возврата перерисовывает шапку на месте —
+   счётчики, полосу и кнопку «Подтвердить акт». #}
+<details class="act" data-act="{{ act.id }}" {{ 'open' if loop.first }}>
   <summary class="act-head">
     <div class="grow">
       <div class="act-title">{{ act.title }}</div>
       <div class="act-sub">{{ act.total }} поз.{% if act.source_label %} · {{ act.source_label }}{% endif %}</div>
     </div>
-    <div class="row" style="gap:8px">
+    <div class="row" style="gap:8px" data-act-badges>
       {% if act.marked_ok %}<span class="badge ok">{{ act.marked_ok }} принято</span>{% endif %}
       {% if act.marked_bad %}<span class="badge err">{{ act.marked_bad }} не принят</span>{% endif %}
       {% if act.unmarked %}<span class="badge warn">{{ act.unmarked }} без отметки</span>{% endif %}
     </div>
-    <div class="progress mini"><div style="width:{{ act.percent }}%"></div></div>
+    <div class="progress mini" data-act-progress><div style="width:{{ act.percent }}%"></div></div>
     <button class="btn {{ 'primary' if act.can_confirm }}" data-confirm-act="{{ act.id }}"
             {{ 'disabled' if not act.can_confirm }}
             title="{{ 'Подтвердить: решение принято по всем возвратам акта'

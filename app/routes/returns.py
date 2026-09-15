@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
-from ..deps import (check_csrf, require_section, require_manager, require_avito_account,
+from ..deps import (check_csrf, require_section, require_avito_account,
                     require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonError
@@ -182,13 +182,14 @@ def returns_page(
 
 @router.post("/api/returns/acts/by-day")
 def api_act_by_day(request: Request, payload: dict = Body(...),
-                   admin: dict = Depends(require_manager),
+                   user: dict = Depends(require_section("returns")),
                    account: dict = Depends(require_ozon_account)):
-    """Составить акт из возвратов за указанное число. Владелец и администратор.
+    """Составить акт из возвратов за указанное число. Кто работает с возвратами.
 
-    Акт составляет человек: когда поездка закончилась, знает только он. Панель
-    копит полученные возвраты, а кнопка сводит в акт те из них, что ещё ни в
-    один акт не вошли.
+    Акт составляет человек: когда поездка закончилась, знает только он. За
+    возвратами ездит сборщик, он же их и отмечает, — значит и акт заводит он,
+    не дожидаясь администратора. Панель копит полученные возвраты, а кнопка
+    сводит в акт те из них, что ещё ни в один акт не вошли.
 
     За возвратами ездят несколько раз в день, поэтому актов за одно число
     бывает несколько — каждое нажатие делает новый. Задвоения при этом нет: в
@@ -208,7 +209,7 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
             "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
                         "За это число полученных возвратов без акта нет"),
         }
-    return return_acts.from_received(account["id"], day, user=admin)
+    return return_acts.from_received(account["id"], day, user=user)
 
 
 def _valid_day(day: str) -> str:
@@ -413,7 +414,7 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
 
     account = require_ozon_account(request) if table == "returns" else require_avito_account(request)
     row = db.query_one(
-        f"SELECT id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
+        f"SELECT id, act_id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
     )
     if not row:
         raise HTTPException(status_code=404, detail=f"Возврат {return_id} не найден в этом кабинете")
@@ -441,6 +442,9 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         "mark_by": user["login"] if keeps else "",
         "mark_at_local": store.local_time(now) if keeps else "",
         "message": f"Отметка сохранена: {store.mark_label(mark) or 'снята'}",
+        # Возврат из акта: отметка меняет и счётчики шапки, и право подтвердить.
+        # Отдаём их сразу — иначе кнопка появляется только после перезагрузки.
+        "act": return_acts.progress(row["act_id"]) if row["act_id"] else None,
     }
 
 
