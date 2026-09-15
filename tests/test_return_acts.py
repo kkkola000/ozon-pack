@@ -692,6 +692,18 @@ def test_page_shows_the_acts(client):
             assert str(row["id"]) in page.text, f"возврата {row['id']} нет во вкладке"
 
 
+def test_acts_are_collapsed(client):
+    """Акты свёрнуты: их за день несколько, и список на сотню строк съедает экран.
+
+    Итоги и «Подтвердить акт» живут в заголовке — он виден и у свёрнутого акта,
+    поэтому раскрывать заранее нечего.
+    """
+    login(client)
+    page = client.get("/returns?tab=acts")
+    for match in re.findall(r"<details class=\"act\"[^>]*>", page.text):
+        assert " open" not in match, f"акт раскрыт по умолчанию: {match}"
+
+
 def test_main_tab_is_unchanged(client):
     """Главная страница возвратов показывает только то, что лежит в ПВЗ."""
     login(client)
