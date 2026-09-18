@@ -1060,3 +1060,97 @@ def test_status_link_stays_reachable(client):
     login(client)
     page = client.get("/returns").text
     assert "Изменить статусы" in page and '/settings' in page
+
+
+# ------------------------------------------------- окно загрузки полученных
+def test_received_are_asked_by_status_and_window_at_once(sample_data):
+    """Статус и период уходят одним запросом — поля фильтра складываются.
+
+    Иначе пришлось бы тянуть всё, что изменилось за период, и отсеивать статус
+    у себя: лишний трафик и лишние страницы на ровном месте.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    asked: list[dict] = []
+    original = client.returns_list
+
+    def spy(**kwargs):
+        asked.append(kwargs.get("filter_") or {})
+        return original(**kwargs)
+
+    client.returns_list = spy
+    try:
+        sync.sync_returns(account)
+    finally:
+        client.returns_list = original
+
+    both = [f for f in asked if "visual_status_name" in f and "visual_status_change_moment" in f]
+    assert both, f"полученные запрошены не одним запросом: {asked}"
+    assert any(f["visual_status_name"] == "ReceivedBySeller" for f in both)
+    # «К выдаче» окном не ограничиваем: возврат лежит в пункте неделями.
+    pickup = [f for f in asked if f.get("visual_status_name") == "ArrivedAtReturnPlace"]
+    assert pickup and all("visual_status_change_moment" not in f for f in pickup)
+
+
+def test_received_older_than_the_window_are_not_loaded(sample_data):
+    """За окном возвраты не тянутся: по «Получен» площадка отдаёт весь архив."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    long_ago = days_ago(options.get_received_days() + 30)
+    ids = client.receive(final_moment=long_ago.isoformat(), change_moment=long_ago.isoformat())
+    assert ids
+    sync.sync_returns(account)
+
+    # Строки в базе остаются — они загружались, пока лежали в пункте выдачи.
+    # Проверяем другое: полученными они не записались, значит и в акт за число
+    # не встанут. Такие подберёт запасной путь «пропал из выдачи».
+    received = db.query(
+        f"SELECT id FROM returns WHERE received_at IS NOT NULL "
+        f"AND id IN ({','.join('?' for _ in ids)})", ids
+    )
+    assert not received, "архив за пределами окна записался полученным"
+
+
+def test_window_depth_is_a_setting(sample_data):
+    """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
+    from app import ozon
+
+    assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
+    options.set_received_days(40)
+    assert options.get_received_days() == 40
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    moment = days_ago(30)
+    ids = client.receive(final_moment=moment.isoformat(), change_moment=moment.isoformat())
+    sync.sync_returns(account)
+    assert len(db.query(
+        f"SELECT id FROM returns WHERE received_at IS NOT NULL "
+        f"AND id IN ({','.join('?' for _ in ids)})", ids
+    )) == len(ids), "возврат внутри расширенного окна не записался полученным"
+
+    # Бессмысленные значения обрезаются, а не роняют загрузку.
+    assert options.set_received_days(0) == 1
+    assert options.set_received_days(10 ** 6) == options.MAX_RECEIVED_DAYS
+
+
+def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
+    """Оборванный список не считается полным — иначе он «потеряет» возвраты.
+
+    По полному обходу панель решает, какие возвраты пропали из выдачи. Если
+    принять за полный тот, что упёрся в потолок страниц, пропавшим объявится
+    всё, до чего не дочитали.
+    """
+    account = accounts.default_account()
+    sync.sync_returns(account)
+    ready_before = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
+    assert ready_before, "в демо-данных нет возвратов к выдаче"
+
+    monkeypatch.setattr(sync, "RETURNS_MAX_PAGES", 0)
+    sync.sync_returns(account)
+    after = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
+    assert after == ready_before, "обрыв обхода вычистил список выдачи"

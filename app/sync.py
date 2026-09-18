@@ -214,11 +214,12 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
         def walk(filter_: dict, what: str) -> bool:
             """Пролистать выдачу под фильтром. False — обход вышел неполным.
 
-            Неполный обход нельзя принимать за полный: по нему панель решает,
-            какие возвраты пропали из выдачи, и оборванный список объявил бы
-            пропавшим всё, до чего не дочитали.
+            Флаг полноты не трогаем: решает вызывающий. Неполный обход нельзя
+            принимать за полный — по нему панель решает, какие возвраты пропали
+            из выдачи, и оборванный список объявил бы пропавшим всё, до чего не
+            дочитали. Но у выборки полученных есть запасной путь, и там одна
+            неудача ещё не делает весь обход неполным.
             """
-            nonlocal complete
             last_id = 0
             for _page in range(RETURNS_MAX_PAGES):
                 try:
@@ -229,7 +230,6 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
                     )
                 except OzonError as exc:
                     log.warning("Возвраты (%s) недоступны: %s", what, exc)
-                    complete = False
                     return False
                 if not returns:
                     return True
@@ -241,24 +241,35 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
                 "Возвраты (%s): упёрлись в потолок %d страниц, список прочитан не до конца",
                 what, RETURNS_MAX_PAGES,
             )
-            complete = False
             return False
 
         for status in pickup:
-            walk({"visual_status_name": status}, status)
+            complete = walk({"visual_status_name": status}, status) and complete
 
-        # Полученные — за окно по смене статуса. Фильтра по самому моменту
-        # получения (final_moment) в API нет, поэтому окно берём по смене
-        # статуса: она бывает позже получения, значит окно должно быть с
-        # запасом. Статус отбираем уже у себя — store_page оставит только нужные.
+        # Полученные — статус вместе с окном, одним запросом. Фильтра по самому
+        # моменту получения (final_moment) в API нет, поэтому окно задаём по
+        # смене статуса: она бывает позже получения, значит окно с запасом.
+        #
+        # Если площадка откажется принимать два поля разом, повторяем с одним
+        # окном: лишние статусы отсеет store_page. Терять из-за этого весь обход
+        # нельзя — без полученных возвратов не составить ни одного акта.
         if received:
-            since, until = _iso_window(received_days, 0)
-            walk(
-                {"visual_status_change_moment": {
-                    "time_from": iso_moment(since), "time_to": iso_moment(until),
-                }},
-                f"получены за {received_days} дн.",
+            # Сутки вперёд — запас на расхождение часов: момент, пришедший от
+            # площадки на минуту «в будущем», иначе выпал бы из окна.
+            since, until = _iso_window(received_days, 1)
+            window = {"time_from": iso_moment(since), "time_to": iso_moment(until)}
+            what = f"получены за {received_days} дн."
+            # all() с генератором: отказало на первом статусе — остальные
+            # откажут так же, и добивать их запросами незачем.
+            by_status = all(
+                walk({"visual_status_name": status, "visual_status_change_moment": window},
+                     f"{status}, {what}")
+                for status in received
             )
+            if not by_status:
+                log.info("Повторяем выборку полученных одним окном, без статуса")
+                by_status = walk({"visual_status_change_moment": window}, what)
+            complete = by_status and complete
 
     gone = 0
     removed = 0

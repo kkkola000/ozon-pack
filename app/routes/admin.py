@@ -174,6 +174,7 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "returns_choices": options.RETURN_STATUS_CHOICES,
             "returns_source": options.returns_source(),
             "received_statuses": options.get_received_statuses(),
+            "received_days": options.get_received_days(),
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
@@ -515,6 +516,16 @@ def api_received_statuses(request: Request, payload: dict = Body(...), admin: di
     if unknown:
         raise HTTPException(status_code=400, detail=f"Неизвестный статус: {', '.join(unknown)}")
     statuses = [str(s).strip() for s in raw if str(s).strip()]
+
+    # Глубина окна сохраняется вместе со статусами: обе настройки про одно и то
+    # же — что панель считает полученным и за какой срок это забирает.
+    days = payload.get("days")
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Срок указывается числом дней") from None
+        options.set_received_days(days, user=admin)
 
     options.set_received_statuses(statuses, user=admin)
     try:

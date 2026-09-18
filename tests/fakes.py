@@ -311,9 +311,9 @@ class FakeOzonClient(OzonClient):
     def returns_list(self, *, limit=500, last_id=0, filter_=None):  # type: ignore[override]
         items = [json.loads(json.dumps(r)) for r in self._returns]
         filter_ = filter_ or {}
-        # В /v1/returns/list допускается только один фильтр за запрос — панель
-        # на это рассчитывает, поэтому подделка за этим и следит.
-        assert len(filter_) <= 1, f"в фильтре больше одного поля: {sorted(filter_)}"
+        # Поля фильтра складываются: пример запроса в документации показывает
+        # статус, период и точечный поиск разом. Панель на это и рассчитывает —
+        # полученные она просит статусом вместе с окном, одним запросом.
         wanted = filter_.get("visual_status_name")
         if wanted:
             items = [r for r in items if (r["visual"]["status"]["sys_name"] == wanted)]
