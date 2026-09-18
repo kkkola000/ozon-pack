@@ -90,30 +90,6 @@ def received_returns(account_id: int, day: str) -> list[str]:
     ]
 
 
-def free_days(account_id: int) -> list[dict]:
-    """Числа, за которые есть полученные возвраты без акта, — свежие сверху.
-
-    Без этого списка возврат теряется. Число берётся у площадки — это момент,
-    когда она сменила статус на «Получен», — и совпадать с днём поездки оно не
-    обязано: статус мог смениться под полночь или задним числом. Такой возврат
-    ушёл из «К выдаче», ни в один акт не попал, а календарь наугад не
-    перебирают: получен — и нигде.
-    """
-    return [
-        {
-            "day": row["received_day"],
-            "count": row["c"],
-            "label": _day_label(row["received_day"]),
-            "word": _returns_word(row["c"]),
-        }
-        for row in db.query(
-            f"SELECT received_day, COUNT(*) AS c FROM returns WHERE {_FREE_RECEIVED} "
-            f"AND received_day IS NOT NULL GROUP BY received_day ORDER BY received_day DESC",
-            (account_id, NO_SHEET),
-        )
-    ]
-
-
 def from_received(account_id: int, day: str, *, user: dict | None = None) -> dict:
     """Свести в акт полученные возвраты за указанное число.
 

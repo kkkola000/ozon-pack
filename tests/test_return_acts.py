@@ -230,8 +230,8 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
     assert len(return_acts.received_returns(account["id"], store.local_day())) == len(ids)
 
 
-def test_free_days_show_where_the_returns_wait(sample_data):
-    """Возврат за другое число должен быть виден — иначе его не найти."""
+def test_returns_of_one_trip_land_on_one_day(sample_data):
+    """Одна поездка — одно число, даже если статусы площадка меняла вразнобой."""
     from app import ozon
 
     account = accounts.default_account()
@@ -239,19 +239,18 @@ def test_free_days_show_where_the_returns_wait(sample_data):
     ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
     assert len(ready) > 1, "для проверки нужно хотя бы два возврата в ПВЗ"
 
-    client.receive(str(ready[0]["id"]), final_moment="2026-05-10T09:00:00+00:00")
-    client.receive(*[str(r["id"]) for r in ready[1:]], final_moment="2026-05-12T09:00:00+00:00")
+    # Выдали всё в один вечер, а статусы площадка перещёлкнула в разное время.
+    client.receive(str(ready[0]["id"]),
+                   final_moment="2026-05-12T20:40:00+00:00",
+                   change_moment="2026-05-12T20:45:00+00:00")
+    client.receive(*[str(r["id"]) for r in ready[1:]],
+                   final_moment="2026-05-12T20:58:00+00:00",
+                   change_moment="2026-05-13T04:30:00+00:00")
     sync.sync_returns(account)
 
-    days = {item["day"]: item["count"] for item in return_acts.free_days(account["id"])}
-    assert days.get(store.local_day("2026-05-10T09:00:00+00:00")) == 1
-    assert days.get(store.local_day("2026-05-12T09:00:00+00:00")) == len(ready) - 1
-
-    # Составили акт за одно число — оно уходит из списка, второе остаётся.
-    make_act(day=store.local_day("2026-05-12T09:00:00+00:00"))
-    left = {item["day"] for item in return_acts.free_days(account["id"])}
-    assert store.local_day("2026-05-12T09:00:00+00:00") not in left
-    assert store.local_day("2026-05-10T09:00:00+00:00") in left
+    day = store.local_day("2026-05-12T20:40:00+00:00")
+    assert len(return_acts.received_returns(account["id"], day)) == len(ready)
+    assert make_act(day=day)["added"] == len(ready), "в акт попали не все возвраты поездки"
 
 
 def test_archive_does_not_get_into_todays_act(sample_data):

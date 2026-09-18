@@ -9,26 +9,9 @@ if (byDay) {
   const dayField = document.getElementById('act-day');
   const createButton = document.getElementById('act-create');
   const result = document.getElementById('act-byday-result');
-  const elsewhere = document.getElementById('act-byday-elsewhere');
 
   function send(dryRun) {
     return api('/api/returns/acts/by-day', { day: dayField.value, dry_run: dryRun });
-  }
-
-  /* Полученные возвраты за другие числа. Число получения приходит от площадки:
-     статус мог смениться под полночь или задним числом, и тогда возврат ждёт
-     не за тот день, когда за ним ездили. Из «К выдаче» он ушёл, в акт не
-     попал — без этой строки его не найти, календарь наугад не перебирают.
-     Когда всё за выбранное число, строки нет: подсказывать нечего. */
-  function paintElsewhere(days) {
-    const others = (days || []).filter((item) => item.day !== dayField.value);
-    if (!others.length) { elsewhere.hidden = true; elsewhere.innerHTML = ''; return; }
-    elsewhere.hidden = false;
-    elsewhere.innerHTML = 'Ждут акта за другие числа: '
-      + others.map((item) =>
-          `<a href="#" data-day="${escapeHtml(item.day)}">${escapeHtml(item.label)}</a>`
-          + ` — ${escapeHtml(item.word)}`).join(', ')
-      + '. Выберите число — акт составится за него.';
   }
 
   /* Сколько попадёт в акт за выбранную дату. Кнопка заперта, пока это
@@ -43,20 +26,12 @@ if (byDay) {
       result.textContent = data.found ? '' : data.message;
       createButton.disabled = !data.found;
       if (data.found) createButton.textContent = `Составить акт на ${data.found}`;
-      paintElsewhere(data.days);
     } catch (error) {
       result.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
     }
   }
 
   dayField.addEventListener('change', count);
-  elsewhere.addEventListener('click', (event) => {
-    const link = event.target.closest('[data-day]');
-    if (!link) return;
-    event.preventDefault();
-    dayField.value = link.dataset.day;
-    count();
-  });
   count();
 
   createButton.onclick = async () => {
