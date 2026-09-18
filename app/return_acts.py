@@ -207,8 +207,25 @@ def collect_orphans(account_id: int, ids: list[str], *, table: str = "returns") 
             f"AND id IN ({placeholders})",
             [act_id, account_id] + ids,
         )
+        _stamp_day(conn, act_id)
         _drop_empty_spares(conn)
     return act_id
+
+
+def _stamp_day(conn, act_id: str) -> None:
+    """Проставить акту «без статуса» число по смене статуса у его возвратов.
+
+    Числа получения у такого акта нет — он и заводится потому, что «Получен»
+    не пришёл. Единственное известное число — когда площадка последний раз
+    меняла статус: тогда возврат и ушёл из выдачи. Берём самое позднее из
+    возвратов акта: акт собирают за день, и заголовок должен называть его.
+    """
+    row = conn.execute(
+        "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act_id,)
+    ).fetchone()
+    day = store.local_day(row["moment"]) if row and row["moment"] else ""
+    if len(day) == 10:
+        conn.execute("UPDATE return_acts SET received_day = ? WHERE id = ?", (day, act_id))
 
 
 # ------------------------------------------------------------------- чтение
@@ -271,10 +288,16 @@ def _title(act: dict) -> str:
     партию. Времени мало, две поездки подряд укладываются в одну минуту, и
     тогда два акта в списке не различить, а подписывают их отдельно.
     """
-    if act.get("kind") == BY_DAY and act.get("received_day"):
+    day = act.get("received_day")
+    if act.get("kind") == BY_DAY and day:
         seq = f" №{act['day_seq']}" if act.get("day_seq") else ""
-        return (f"Возвраты за {_day_label(act['received_day'])}, акт{seq}"
+        return (f"Возвраты за {_day_label(day)}, акт{seq}"
                 f" от {store.local_time(act.get('created_at'), '%H:%M')}")
+    # У акта «без статуса» число берётся из смены статуса и пишется без
+    # времени: «Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42»,
+    # хотя 11:42 — это лишь когда панель завела акт.
+    if day:
+        return f"Возвраты за {_day_label(day)}"
     return f"Возвраты за {store.local_time(act.get('created_at'))}"
 
 
@@ -308,7 +331,11 @@ def pending(account_ids: list[int] | None = None) -> list[dict]:
     и подтверждать его логично там же, где на него смотрят.
     """
     acts = db.query(
-        "SELECT * FROM return_acts WHERE confirmed_at IS NULL ORDER BY created_at DESC"
+        # По числу получения, а не составления: акт называют днём поездки, по
+        # нему его и ищут. Время составления — только чтобы различить акты
+        # одного числа и удержать в порядке те, у кого числа ещё нет.
+        "SELECT * FROM return_acts WHERE confirmed_at IS NULL "
+        "ORDER BY COALESCE(received_day, substr(created_at, 1, 10)) DESC, created_at DESC"
     )
     result = []
     for act in acts:
@@ -341,7 +368,8 @@ def confirmed(account_id: int | None = None, limit: int = 200) -> list[dict]:
         where += " AND (account_id = ? OR kind = 'all')"
         params.append(account_id)
     acts = db.query(
-        f"SELECT * FROM return_acts {where} ORDER BY confirmed_at DESC LIMIT ?",
+        f"SELECT * FROM return_acts {where} "
+        f"ORDER BY COALESCE(received_day, substr(created_at, 1, 10)) DESC, confirmed_at DESC LIMIT ?",
         params + [limit],
     )
     if not acts:
@@ -498,7 +526,7 @@ def remove(act_id: str, user: dict) -> dict:
     # Куда возвраты денутся дальше, зависит от того, откуда акт взялся: у акта
     # за число есть само число, а «без статуса» собирается заново обновлением.
     again = (f"составьте акт за {_day_label(act['received_day'])} заново"
-             if act.get("received_day") else
+             if act.get("kind") == BY_DAY and act.get("received_day") else
              "они вернутся в список при ближайшем обновлении")
     db.log_event(
         "return_act_delete", account_id=act.get("account_id"), user=user,

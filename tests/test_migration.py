@@ -396,3 +396,52 @@ def test_received_days_repair_does_not_touch_acts_and_runs_once():
     )
     db.init_db()
     assert db.query_one("SELECT received_day FROM returns WHERE id = 'R-later'")["received_day"] == "2026-05-11"
+
+
+def test_status_change_is_filled_from_the_saved_answer():
+    """Момент смены статуса достаётся из raw, а акт «без статуса» получает число.
+
+    Колонка появилась позже, а данные для неё уже лежали в сохранённом ответе
+    площадки. Без числа заголовок такого акта показывал время составления:
+    «Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42».
+    """
+    import json
+
+    from app import accounts, return_acts, store
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("spare1", "2026-09-16T08:42:00+00:00", "nosheet", account_id),
+    )
+    raw = {"visual": {"status": {"sys_name": "ArrivedAtReturnPlace"},
+                      "change_moment": "2026-09-14T06:00:00.123456Z"}}
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, act_id, raw) VALUES(?,?,?,?,?,?)",
+        (account_id, "R-old", 0, "ArrivedAtReturnPlace", "spare1", json.dumps(raw)),
+    )
+
+    db.init_db()
+
+    row = db.query_one("SELECT status_changed_at FROM returns WHERE id = 'R-old'")
+    assert row["status_changed_at"], "момент смены статуса не достали из raw"
+    act = return_acts.get("spare1")
+    assert act["received_day"] == store.local_day("2026-09-14T06:00:00+00:00")
+    # Заголовок теперь без времени — 11:42 составления в нём больше нет.
+    assert ":" not in return_acts.detail("spare1")["title"]
+
+
+def test_status_change_backfill_runs_once():
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
+    db.init_db()
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, raw) VALUES(?,?,?,?)",
+        (account_id, "R-later", 0,
+         '{"visual": {"change_moment": "2026-09-14T06:00:00Z"}}'),
+    )
+    db.init_db()
+    assert db.query_one("SELECT status_changed_at FROM returns WHERE id = 'R-later'")["status_changed_at"] is None

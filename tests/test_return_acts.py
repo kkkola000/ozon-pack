@@ -198,24 +198,24 @@ def test_receipt_date_comes_from_the_platform(sample_data):
     assert str(old["id"]) not in return_acts.received_returns(account["id"], store.local_day())
 
 
-def test_receipt_date_comes_from_the_handover_not_the_status_change(sample_data):
-    """Число берётся из final_moment — «выдан продавцу», а не из смены статуса.
+def test_receipt_date_comes_from_the_status_change(sample_data):
+    """Число берётся из change_moment — момента перехода в «Получен».
 
-    Выдали продавцу под полночь, а статус площадка перещёлкнула уже после неё.
-    По смене статуса возврат уезжал в следующие сутки: шесть возвратов поездки
-    вставали на одно число, седьмой — на другое, и в акт он не попадал.
+    Это то, что площадка сообщает о получении; тем же полем задаётся окно
+    загрузки, и то же число берёт акт «без статуса». Одно правило на оба вида
+    актов — за этим и правилось.
+
+    Плата за это записана отдельным тестом ниже: если площадка перещёлкнула
+    статусы через полночь, возвраты одной поездки встанут на разные числа.
     """
     from app import ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    handover = before_local_midnight(2)       # выдали продавцу под полночь
-    flipped = handover + timedelta(hours=5)   # статус сменился позже, уже в другие сутки
+    handover = days_ago(3, hour=9)            # выдали продавцу
+    flipped = handover + timedelta(hours=2)   # статус сменился позже, но в тех же сутках
     ids = client.receive(final_moment=handover.isoformat(), change_moment=flipped.isoformat())
     assert ids, "подделка не отдала ни одного возврата"
-    assert store.local_day(handover.isoformat()) != store.local_day(flipped.isoformat()), (
-        "проверка бессмысленна: моменты в одних сутках"
-    )
     sync.sync_returns(account)
 
     days = {
@@ -223,12 +223,29 @@ def test_receipt_date_comes_from_the_handover_not_the_status_change(sample_data)
             f"SELECT received_day FROM returns WHERE id IN ({','.join('?' for _ in ids)})", ids
         )
     }
-    assert days == {store.local_day(handover.isoformat())}, (
-        "возвраты одной поездки разъехались по числам"
-    )
+    assert days == {store.local_day(flipped.isoformat())}
     assert len(return_acts.received_returns(
-        account["id"], store.local_day(handover.isoformat())
+        account["id"], store.local_day(flipped.isoformat())
     )) == len(ids), "в акт попали не все возвраты поездки"
+
+
+def test_final_moment_is_the_fallback(sample_data):
+    """Нет change_moment — берём final_moment: площадка присылает не всё."""
+    account = accounts.default_account()
+    handover = days_ago(4, hour=9)
+    raw = {
+        "id": 777000111,
+        "posting_number": "77700-0111-1",
+        "visual": {"status": {"sys_name": "ReceivedBySeller", "display_name": "Получен"}},
+        "logistic": {"final_moment": handover.isoformat()},
+        "product": {"sku": 1, "offer_id": "X", "name": "Коляска", "quantity": 1},
+    }
+    with db.write() as conn:
+        store.upsert_return(conn, account["id"], raw)
+
+    row = db.query_one("SELECT received_at, received_day FROM returns WHERE id = ?", ("777000111",))
+    assert row["received_day"] == store.local_day(handover.isoformat())
+    assert row["received_at"].startswith(handover.date().isoformat())
 
 
 def test_unreadable_moment_does_not_lose_the_return(sample_data):
@@ -255,7 +272,7 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
 
 
 def test_returns_of_one_trip_land_on_one_day(sample_data):
-    """Одна поездка — одно число, даже если статусы площадка меняла вразнобой."""
+    """Одна поездка — одно число, пока площадка меняет статусы в тех же сутках."""
     from app import ozon
 
     account = accounts.default_account()
@@ -263,19 +280,43 @@ def test_returns_of_one_trip_land_on_one_day(sample_data):
     ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
     assert len(ready) > 1, "для проверки нужно хотя бы два возврата в ПВЗ"
 
-    # Выдали всё в один вечер, а статусы площадка перещёлкнула в разное время.
-    evening = before_local_midnight(2)
+    morning = days_ago(2, hour=8)
     client.receive(str(ready[0]["id"]),
-                   final_moment=evening.isoformat(),
-                   change_moment=(evening + timedelta(minutes=5)).isoformat())
+                   change_moment=(morning + timedelta(minutes=5)).isoformat())
     client.receive(*[str(r["id"]) for r in ready[1:]],
-                   final_moment=(evening + timedelta(minutes=18)).isoformat(),
-                   change_moment=(evening + timedelta(hours=8)).isoformat())
+                   change_moment=(morning + timedelta(hours=6)).isoformat())
     sync.sync_returns(account)
 
-    day = store.local_day(evening.isoformat())
+    day = store.local_day(morning.isoformat())
     assert len(return_acts.received_returns(account["id"], day)) == len(ready)
     assert make_act(day=day)["added"] == len(ready), "в акт попали не все возвраты поездки"
+
+
+def test_status_change_after_midnight_moves_the_day(sample_data):
+    """Статус перещёлкнулся после полуночи — возврат встаёт на следующее число.
+
+    Это осознанная плата за одно правило: число везде берётся из change_moment.
+    Поездка, растянувшаяся через полночь, разложится на два акта — и это не
+    ошибка, а то, что сообщила площадка. Тест стоит здесь, чтобы поведение не
+    «починили» обратно по недоразумению.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    evening = before_local_midnight(2)
+    late = evening + timedelta(hours=5)
+    assert store.local_day(evening.isoformat()) != store.local_day(late.isoformat())
+
+    ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
+    assert len(ready) > 1
+    client.receive(str(ready[0]["id"]), change_moment=evening.isoformat())
+    client.receive(*[str(r["id"]) for r in ready[1:]], change_moment=late.isoformat())
+    sync.sync_returns(account)
+
+    before = return_acts.received_returns(account["id"], store.local_day(evening.isoformat()))
+    after = return_acts.received_returns(account["id"], store.local_day(late.isoformat()))
+    assert len(before) == 1 and len(after) == len(ready) - 1
 
 
 def test_archive_does_not_get_into_todays_act(sample_data):
@@ -1206,21 +1247,30 @@ def test_loading_by_day_reaches_past_the_window(sample_data):
     assert make_act(day=day)["added"] == len(ids)
 
 
-def test_loading_by_day_covers_the_midnight_flip(sample_data):
-    """Выдали под полночь, статус сменился после неё — число всё равно ловит."""
+def test_loading_by_day_has_slack_on_both_sides(sample_data):
+    """Загрузка за число захватывает и соседние сутки — границы с запасом.
+
+    Выбрали 16-е, а статус перещёлкнулся в ночь на 17-е: строгие сутки такой
+    возврат не подтянули бы вовсе, и до него было бы не добраться. Запас его
+    привозит, а встанет он на своё число — 17-е.
+    """
     from app import ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    handover = before_local_midnight(options.get_received_days() + 15)
-    flipped = handover + timedelta(hours=5)
-    ids = client.receive(final_moment=handover.isoformat(), change_moment=flipped.isoformat())
+    evening = before_local_midnight(options.get_received_days() + 15)
+    late = evening + timedelta(hours=5)
+    ids = client.receive(change_moment=late.isoformat())
     assert ids
 
-    day = store.local_day(handover.isoformat())
-    assert day != store.local_day(flipped.isoformat()), "моменты в одних сутках"
-    sync.sync_returns(account, day=day)
-    assert len(return_acts.received_returns(account["id"], day)) == len(ids)
+    asked = store.local_day(evening.isoformat())
+    landed = store.local_day(late.isoformat())
+    assert asked != landed, "моменты в одних сутках"
+
+    sync.sync_returns(account, day=asked)
+    assert len(return_acts.received_returns(account["id"], landed)) == len(ids), (
+        "запас по краям окна не сработал — возврат не подтянулся"
+    )
 
 
 def test_sync_endpoint_takes_a_day(client):
@@ -1277,3 +1327,72 @@ def test_nothing_stays_invisible_after_a_sync(sample_data):
         (account["id"],),
     )
     assert not invisible, f"возвраты не видны ни в выдаче, ни в актах: {[r['id'] for r in invisible]}"
+
+
+# --------------------------------------------- заголовок акта «без статуса»
+def test_nosheet_act_is_named_by_the_status_change_without_time(sample_data):
+    """«Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42».
+
+    А 11:42 — это лишь когда панель завела акт. Числа получения у такого акта
+    нет вовсе: он и заводится потому, что «Получен» не приходил. Берём число
+    смены статуса — единственное известное — и пишем без времени.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    moment = days_ago(2, hour=9)
+    ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
+    assert ready
+    for item in ready:
+        item["visual"]["change_moment"] = moment.isoformat()
+    sync.sync_returns(account)
+
+    # Возврат уходит из выдачи в статус, который панель не грузит, — пропал.
+    for item in ready:
+        item["visual"]["status"]["sys_name"] = "MovingToSeller"
+        item["visual"]["status"]["display_name"] = "Едет к вам"
+    sync.sync_returns(account)
+
+    spare = [a for a in return_acts.pending([account["id"]]) if a["kind"] == return_acts.NO_SHEET]
+    assert spare, "акт «без статуса» не завёлся"
+    act = spare[0]
+    day = store.local_day(moment.isoformat())
+    assert act["received_day"] == day
+    assert act["title"] == f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}"
+    assert ":" not in act["title"], f"в заголовке осталось время: {act['title']}"
+
+
+def test_by_day_act_keeps_its_number_and_time(sample_data):
+    """Акт за число не меняется: у него есть и номер за день, и время."""
+    take_everything()
+    make_act()
+    act = [a for a in return_acts.pending() if a["kind"] == return_acts.BY_DAY][0]
+    assert "№1" in act["title"] and ":" in act["title"]
+
+
+def test_acts_are_sorted_by_the_receipt_day(sample_data):
+    """Акты идут по числу получения, а не по времени составления.
+
+    Акт называют днём поездки — по нему его и ищут. Составить акт за вчера
+    можно сегодня, и тогда порядок по времени создания врёт.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
+    assert len(ready) > 1
+
+    older, newer = days_ago(5, hour=9), days_ago(2, hour=9)
+    client.receive(str(ready[0]["id"]), change_moment=newer.isoformat())
+    sync.sync_returns(account)
+    make_act(day=store.local_day(newer.isoformat()))          # свежее число, составлен первым
+
+    client.receive(*[str(r["id"]) for r in ready[1:]], change_moment=older.isoformat())
+    sync.sync_returns(account, day=store.local_day(older.isoformat()))
+    make_act(day=store.local_day(older.isoformat()))          # старое число, составлен вторым
+
+    days = [a["received_day"] for a in return_acts.pending([account["id"]])]
+    assert days == sorted(days, reverse=True), f"акты не по числу получения: {days}"
+    assert days[0] == store.local_day(newer.isoformat())

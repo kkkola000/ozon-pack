@@ -221,6 +221,10 @@ CREATE TABLE IF NOT EXISTS returns (
     return_reason     TEXT,
     return_date       TEXT,
     final_moment      TEXT,
+    -- visual.change_moment: когда площадка в последний раз меняла статус. По
+    -- нему же строится окно загрузки, а для акта «без статуса» это
+    -- единственное известное число — получения у такого акта ещё нет.
+    status_changed_at TEXT,
     storage_until     TEXT,
     storage_sum       TEXT,
     barcode           TEXT,
@@ -684,6 +688,7 @@ KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
 KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
 KV_OWNER_SET = "owner_role_assigned"
 KV_DAYS_FIXED = "received_days_repaired"
+KV_CHANGED_FILLED = "status_changed_backfilled"
 # Число, каким его выбирают в календаре. Всё, что на это не похоже, в акт не
 # попадёт ни при каком выборе даты.
 _DAY_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -838,6 +843,61 @@ def _repair_received_days(conn: sqlite3.Connection) -> None:
     )
 
 
+def _fill_status_changed(conn: sqlite3.Connection) -> None:
+    """Заполнить момент смены статуса у строк, записанных до этой колонки.
+
+    Он лежит в сохранённом ответе площадки (`raw`), просто раньше не выносился
+    отдельным полем. Достаём оттуда, а заодно проставляем число актам «без
+    статуса»: их заголовок берёт его вместо времени составления, иначе
+    «Возвраты за 16.09 11:42» читается как «получены 16.09 в 11:42», хотя
+    11:42 — это лишь когда панель завела акт.
+    """
+    if not _table_exists(conn, "returns"):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_CHANGED_FILLED,)).fetchone()
+    if done:
+        return
+    from .store import local_day
+
+    filled = 0
+    for row in conn.execute(
+        "SELECT account_id, id, raw FROM returns WHERE status_changed_at IS NULL AND raw IS NOT NULL"
+    ).fetchall():
+        try:
+            visual = (json.loads(row["raw"]) or {}).get("visual") or {}
+        except (TypeError, ValueError):
+            continue
+        moment = _parsed_moment(visual.get("change_moment"))
+        if not moment:
+            continue
+        conn.execute(
+            "UPDATE returns SET status_changed_at = ? WHERE account_id = ? AND id = ?",
+            (moment, row["account_id"], row["id"]),
+        )
+        filled += 1
+
+    stamped = 0
+    if _table_exists(conn, "return_acts"):
+        for act in conn.execute(
+            "SELECT id FROM return_acts WHERE kind = 'nosheet' AND received_day IS NULL"
+        ).fetchall():
+            moment = conn.execute(
+                "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act["id"],)
+            ).fetchone()["moment"]
+            day = local_day(moment) if moment else ""
+            if len(day) == 10:
+                conn.execute(
+                    "UPDATE return_acts SET received_day = ? WHERE id = ?", (day, act["id"])
+                )
+                stamped += 1
+    if filled or stamped:
+        log.info("Момент смены статуса заполнен у %d возвратов, дат у актов: %d", filled, stamped)
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_CHANGED_FILLED, now_iso()),
+    )
+
+
 def _drop_generated_data(conn: sqlite3.Connection) -> None:
     """Убрать данные, оставшиеся от демо-режима.
 
@@ -958,6 +1018,7 @@ def init_db() -> None:
             _drop_buyer_contacts(conn)
             _drop_auto_return_acts(conn)
             _repair_received_days(conn)
+            _fill_status_changed(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

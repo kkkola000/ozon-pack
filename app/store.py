@@ -328,13 +328,12 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     # обновление объявило бы полученными сегодня тысячи старых возвратов —
     # ровно один такой акт на 2446 позиций и получился в версии 1.17.
     #
-    # Спрашиваем сначала final_moment — «возврат прибыл на фулфилмент или выдан
-    # продавцу», то есть само получение. change_moment запасной: это последняя
-    # смена статуса, а она бывает и позже, и уже в другие сутки. Из-за него
-    # возвраты одной поездки расходились по разным числам, и седьмой из семи в
-    # акт за нужное число не попадал.
+    # Число — по change_moment, моменту перехода в «Получен». Это то самое,
+    # что площадка сообщает о получении, тем же полем задаётся окно загрузки,
+    # и то же число берёт акт «без статуса»: одно правило на оба вида актов.
+    # final_moment запасной — его площадка присылает не всегда.
     received_at = (
-        _moment(logistic.get("final_moment")) or _moment(visual.get("change_moment"))
+        _moment(visual.get("change_moment")) or _moment(logistic.get("final_moment"))
     ) if received else None
     if received_at and received_at > now:
         received_at = now
@@ -354,9 +353,9 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
         INSERT INTO returns (
             account_id, id, type, scheme, status_sys, status_name, order_id, order_number, posting_number, sku, offer_id,
             product_name, quantity, price, currency, place_name, place_address, target_place_name, return_reason,
-            return_date, final_moment, storage_until, storage_sum, barcode, is_ready, raw, first_seen_at, updated_at,
-            received_at, received_day
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            return_date, final_moment, status_changed_at, storage_until, storage_sum, barcode, is_ready, raw,
+            first_seen_at, updated_at, received_at, received_day
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             type = excluded.type, scheme = excluded.scheme, status_sys = excluded.status_sys,
             status_name = excluded.status_name, order_id = excluded.order_id, order_number = excluded.order_number,
@@ -365,6 +364,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             currency = excluded.currency, place_name = excluded.place_name, place_address = excluded.place_address,
             target_place_name = excluded.target_place_name, return_reason = excluded.return_reason,
             return_date = excluded.return_date, final_moment = excluded.final_moment,
+            status_changed_at = excluded.status_changed_at,
             storage_until = excluded.storage_until, storage_sum = excluded.storage_sum, barcode = excluded.barcode,
             is_ready = excluded.is_ready, raw = excluded.raw, updated_at = excluded.updated_at,
             -- Момент получения пишется только в первый раз. Ozon отдаёт статус
@@ -395,6 +395,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _text(raw.get("return_reason_name")),
             _dt(logistic.get("return_date")),
             _dt(logistic.get("final_moment")),
+            _moment(visual.get("change_moment")),
             _dt(storage.get("utilization_forecast_date")),
             _text((storage.get("sum") or {}).get("price")),
             _text(logistic.get("barcode")),
