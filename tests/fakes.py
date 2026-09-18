@@ -29,7 +29,21 @@ from app.avito import (
     AvitoClient,
     AvitoError,
 )
-from app.ozon import OzonClient, OzonError, _iso
+from app.ozon import OzonClient, OzonError, iso_moment as _iso
+
+
+def _norm(moment: str) -> str:
+    """Момент к одному виду: подделка сравнивает окно фильтра строками.
+
+    В проверках моменты пишут и с «Z», и со смещением «+00:00» — без
+    приведения строковое сравнение развалилось бы на первом же таком.
+    """
+    from datetime import datetime
+
+    try:
+        return _iso(datetime.fromisoformat(str(moment).replace("Z", "+00:00")))
+    except ValueError:
+        return str(moment)
 
 
 # Каталог кабинета шире того, что встречается в заказах: набор собирают из
@@ -296,9 +310,30 @@ class FakeOzonClient(OzonClient):
 
     def returns_list(self, *, limit=500, last_id=0, filter_=None):  # type: ignore[override]
         items = [json.loads(json.dumps(r)) for r in self._returns]
-        wanted = (filter_ or {}).get("visual_status_name")
+        filter_ = filter_ or {}
+        # В /v1/returns/list допускается только один фильтр за запрос — панель
+        # на это рассчитывает, поэтому подделка за этим и следит.
+        assert len(filter_) <= 1, f"в фильтре больше одного поля: {sorted(filter_)}"
+        wanted = filter_.get("visual_status_name")
         if wanted:
             items = [r for r in items if (r["visual"]["status"]["sys_name"] == wanted)]
+        numbers = filter_.get("posting_numbers")
+        if numbers:
+            items = [r for r in items if r.get("posting_number") in set(numbers)]
+        window = filter_.get("visual_status_change_moment")
+        if window:
+            since, until = window["time_from"], window["time_to"]
+
+            def inside(raw: dict) -> bool:
+                moment = raw["visual"].get("change_moment")
+                if not moment:
+                    return False
+                normalised = _norm(moment)
+                # Момент, который не разобрать, площадка всё равно отдаёт —
+                # отсеять его значило бы проверять панель на том, чего не бывает.
+                return normalised == str(moment) or since <= normalised <= until
+
+            items = [r for r in items if inside(r)]
         start = 0
         if last_id:
             ids = [r["id"] for r in items]

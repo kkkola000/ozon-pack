@@ -19,7 +19,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app import accounts, db, options, return_acts, store, sync
 from app.main import app
@@ -153,27 +153,48 @@ def test_received_returns_leave_the_pickup_list(sample_data):
     assert rows and all(row["is_ready"] == 0 for row in rows)
 
 
+def days_ago(days: int, hour: int = 12) -> datetime:
+    """Момент столько-то суток назад — окно загрузки считается от сегодня."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).replace(
+        hour=hour, minute=0, second=0, microsecond=0
+    )
+
+
+def before_local_midnight(days: int) -> datetime:
+    """За час до полуночи по часам склада, столько-то суток назад.
+
+    Нужен там, где проверяется переход через сутки: смена статуса через
+    несколько часов после такого момента попадает уже в следующее число —
+    ровно на этом возвраты одной поездки и разъезжались.
+    """
+    from app.config import settings
+
+    day = (datetime.now(timezone.utc) - timedelta(days=days)).date() + timedelta(days=1)
+    local_midnight = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+    return local_midnight - timedelta(hours=settings.timezone_offset + 1)
+
+
 def test_receipt_date_comes_from_the_platform(sample_data):
     """Дата получения — площадки, а не «сейчас».
 
-    По статусу «Получен» Ozon отдаёт весь архив: возвраты, полученные месяцы
-    назад, приходят в том же ответе. Со временем «сейчас» первое же обновление
-    объявило бы их полученными сегодня — так и вышел акт на 2446 позиций.
+    Возврат мог быть выдан продавцу пару дней назад, а до панели дойти только
+    сегодня. Со временем «сейчас» обновление объявило бы полученным сегодня
+    всё, что увидело впервые, — так и вышел акт на 2446 позиций.
     """
     from app import ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    # Архив: возврат выдан продавцу давно, площадка помнит этот момент.
+    handover = days_ago(3)
     old = client._returns[0]
     old["visual"]["status"]["sys_name"] = "ReceivedBySeller"
     old["visual"]["status"]["display_name"] = "Получен продавцом"
-    old["logistic"]["final_moment"] = "2026-03-02T10:00:00+00:00"
-    old["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
+    old["logistic"]["final_moment"] = handover.isoformat()
+    old["visual"]["change_moment"] = handover.isoformat()
     sync.sync_returns(account)
 
     row = db.query_one("SELECT received_day FROM returns WHERE id = ?", (str(old["id"]),))
-    assert row["received_day"] == "2026-03-02", "архив записан сегодняшним числом"
+    assert row["received_day"] == store.local_day(handover.isoformat()), "записан сегодняшним числом"
     assert str(old["id"]) not in return_acts.received_returns(account["id"], store.local_day())
 
 
@@ -188,11 +209,13 @@ def test_receipt_date_comes_from_the_handover_not_the_status_change(sample_data)
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    ids = client.receive(
-        final_moment="2026-05-10T18:50:00+00:00",   # выдали продавцу
-        change_moment="2026-05-11T02:10:00+00:00",  # статус сменился позже
-    )
+    handover = before_local_midnight(2)       # выдали продавцу под полночь
+    flipped = handover + timedelta(hours=5)   # статус сменился позже, уже в другие сутки
+    ids = client.receive(final_moment=handover.isoformat(), change_moment=flipped.isoformat())
     assert ids, "подделка не отдала ни одного возврата"
+    assert store.local_day(handover.isoformat()) != store.local_day(flipped.isoformat()), (
+        "проверка бессмысленна: моменты в одних сутках"
+    )
     sync.sync_returns(account)
 
     days = {
@@ -200,11 +223,11 @@ def test_receipt_date_comes_from_the_handover_not_the_status_change(sample_data)
             f"SELECT received_day FROM returns WHERE id IN ({','.join('?' for _ in ids)})", ids
         )
     }
-    assert days == {store.local_day("2026-05-10T18:50:00+00:00")}, (
+    assert days == {store.local_day(handover.isoformat())}, (
         "возвраты одной поездки разъехались по числам"
     )
     assert len(return_acts.received_returns(
-        account["id"], store.local_day("2026-05-10T18:50:00+00:00")
+        account["id"], store.local_day(handover.isoformat())
     )) == len(ids), "в акт попали не все возвраты поездки"
 
 
@@ -220,6 +243,7 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
     client = ozon.get_client(account)
     ids = client.receive(final_moment="10.05.2026 18:50", change_moment="позавчера")
     assert ids
+    # Нечитаемый момент площадка всё равно отдаёт — окно загрузки его не режет.
     sync.sync_returns(account)
 
     rows = db.query(
@@ -240,15 +264,16 @@ def test_returns_of_one_trip_land_on_one_day(sample_data):
     assert len(ready) > 1, "для проверки нужно хотя бы два возврата в ПВЗ"
 
     # Выдали всё в один вечер, а статусы площадка перещёлкнула в разное время.
+    evening = before_local_midnight(2)
     client.receive(str(ready[0]["id"]),
-                   final_moment="2026-05-12T20:40:00+00:00",
-                   change_moment="2026-05-12T20:45:00+00:00")
+                   final_moment=evening.isoformat(),
+                   change_moment=(evening + timedelta(minutes=5)).isoformat())
     client.receive(*[str(r["id"]) for r in ready[1:]],
-                   final_moment="2026-05-12T20:58:00+00:00",
-                   change_moment="2026-05-13T04:30:00+00:00")
+                   final_moment=(evening + timedelta(minutes=18)).isoformat(),
+                   change_moment=(evening + timedelta(hours=8)).isoformat())
     sync.sync_returns(account)
 
-    day = store.local_day("2026-05-12T20:40:00+00:00")
+    day = store.local_day(evening.isoformat())
     assert len(return_acts.received_returns(account["id"], day)) == len(ready)
     assert make_act(day=day)["added"] == len(ready), "в акт попали не все возвраты поездки"
 
@@ -259,11 +284,12 @@ def test_archive_does_not_get_into_todays_act(sample_data):
 
     account = accounts.default_account()
     client = ozon.get_client(account)
+    earlier = days_ago(5)
     for item in client._returns[:5]:
         item["visual"]["status"]["sys_name"] = "ReceivedBySeller"
         item["visual"]["status"]["display_name"] = "Получен продавцом"
-        item["logistic"]["final_moment"] = "2026-03-02T10:00:00+00:00"
-        item["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
+        item["logistic"]["final_moment"] = earlier.isoformat()
+        item["visual"]["change_moment"] = earlier.isoformat()
     sync.sync_returns(account)
 
     today = [r["id"] for r in db.query("SELECT id FROM returns WHERE is_ready = 1")]
@@ -636,8 +662,13 @@ def test_mark_taken_back_closes_the_act_button_again(client):
 def test_mark_outside_an_act_has_no_act_block(client):
     """Возврат из «К выдаче» ни в каком акте не состоит — перерисовывать нечего."""
     csrf = login(client)
-    free = db.query_one("SELECT id FROM returns WHERE act_id IS NULL LIMIT 1")
-    assert free, "в демо-данных не осталось возвратов вне актов"
+    # Фикстура сводит в акт всё, что забрали, — оставляем один возврат снаружи.
+    outside = return_acts.pending()[0]["ozon"][0]["id"]
+    db.execute("UPDATE returns SET act_id = NULL WHERE id = ?", (outside,))
+    free = db.query_one("SELECT id FROM returns WHERE id = ?", (outside,))
+    assert free and db.query_one(
+        "SELECT act_id FROM returns WHERE id = ?", (outside,)
+    )["act_id"] is None
     body = client.post(
         "/api/returns/mark",
         json={"marketplace": "ozon", "id": free["id"], "mark": "ok", "note": ""},

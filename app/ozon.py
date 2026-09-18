@@ -53,7 +53,8 @@ class OzonError(RuntimeError):
         return " | ".join(parts)
 
 
-def _iso(dt: datetime) -> str:
+def iso_moment(dt: datetime) -> str:
+    """Момент в том виде, в каком его ждёт Ozon: до миллисекунд и с Z."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
@@ -136,7 +137,7 @@ class OzonClient:
     ) -> tuple[list[dict], bool]:
         payload = {
             "dir": "ASC",
-            "filter": {"since": _iso(since), "to": _iso(to)},
+            "filter": {"since": iso_moment(since), "to": iso_moment(to)},
             "limit": limit,
             "offset": offset,
             "with": {"analytics_data": True, "barcodes": True, "financial_data": False, "translit": False},

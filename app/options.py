@@ -14,6 +14,14 @@ KV_RETURNS_STATUSES = "returns_ready_statuses"
 # один список решал бы сразу две задачи — что показывать сборщику к поездке и
 # что закрывать актом, — и включить второе без первого было бы нельзя.
 KV_RETURNS_RECEIVED = "returns_received_statuses"
+# За сколько дней назад забирать полученные возвраты. По статусу «Получен» Ozon
+# отдаёт весь архив, от старых к новым, — а читать его можно только страницами.
+# У склада с историей архив перерастает любой потолок страниц, и обрезаются как
+# раз самые свежие: возврат получен вчера, а панель о нём не знает. Поэтому
+# полученные берём окном, а не целиком.
+KV_RECEIVED_DAYS = "returns_received_days"
+DEFAULT_RECEIVED_DAYS = 7
+MAX_RECEIVED_DAYS = 365
 
 RETURN_STATUS_CHOICES = [
     ("ArrivedAtReturnPlace", "В пункте выдачи", "возврат лежит в пункте — его можно забрать"),
@@ -76,6 +84,24 @@ def set_received_statuses(statuses: list[str], user: dict | None = None) -> list
     db.kv_set(KV_RETURNS_RECEIVED, ",".join(cleaned))
     db.log_event("returns_received_set", user=user, message=", ".join(cleaned) or "выключено")
     return cleaned
+
+
+def get_received_days() -> int:
+    """За сколько дней назад забирать полученные возвраты."""
+    raw = (db.kv_get(KV_RECEIVED_DAYS) or "").strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        return DEFAULT_RECEIVED_DAYS
+    return min(max(days, 1), MAX_RECEIVED_DAYS)
+
+
+def set_received_days(days: int, user: dict | None = None) -> int:
+    """Окно меньше суток и больше года бессмысленно — поэтому и обрезаем."""
+    value = min(max(int(days), 1), MAX_RECEIVED_DAYS)
+    db.kv_set(KV_RECEIVED_DAYS, str(value))
+    db.log_event("returns_received_days_set", user=user, message=f"{value} дн.")
+    return value
 
 
 def wanted_statuses() -> list[str]:

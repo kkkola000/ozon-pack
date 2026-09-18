@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from . import accounts, avito, db, ozon, return_acts, store
 from .avito import AvitoError
 from .config import settings
-from .ozon import OzonError
+from .ozon import OzonError, iso_moment
 
 log = logging.getLogger("sync")
 
@@ -150,7 +150,7 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
     статусом, отбрасывается на нашей стороне. Иначе достаточно одной перемены
     в API, чтобы сборщик снова увидел лишнее.
     """
-    from .options import wanted_statuses
+    from .options import get_received_days, get_returns_statuses, wanted_statuses
 
     account = _account(account)
     if account is None:
@@ -159,6 +159,12 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
     client = ozon.get_client(account)
     wanted = list(statuses or wanted_statuses())
     wanted_set = set(wanted)
+    # «К выдаче» забираем по статусу и целиком: возврат лежит в пункте неделями,
+    # и окно вымело бы из списка всё, за чем ещё не съездили. Полученные — окном
+    # за последние дни: по их статусу Ozon отдаёт весь архив.
+    pickup = [status for status in wanted if status in set(get_returns_statuses())]
+    received = [status for status in wanted if status not in set(pickup)]
+    received_days = get_received_days()
     saved = 0
     skipped = 0
     seen: set[str] = set()
@@ -205,27 +211,54 @@ def sync_returns(account: dict | None = None, *, full: bool = False, statuses: l
             if not has_next or not last_id:
                 break
     else:
-        for status in wanted:
+        def walk(filter_: dict, what: str) -> bool:
+            """Пролистать выдачу под фильтром. False — обход вышел неполным.
+
+            Неполный обход нельзя принимать за полный: по нему панель решает,
+            какие возвраты пропали из выдачи, и оборванный список объявил бы
+            пропавшим всё, до чего не дочитали.
+            """
+            nonlocal complete
             last_id = 0
             for _page in range(RETURNS_MAX_PAGES):
                 try:
                     # В фильтре /v1/returns/list допускается только одно поле,
-                    # поэтому статусы запрашиваем по очереди.
+                    # поэтому и статусы, и окно запрашиваем по очереди.
                     returns, has_next = client.returns_list(
-                        limit=RETURNS_PAGE_LIMIT,
-                        last_id=last_id,
-                        filter_={"visual_status_name": status},
+                        limit=RETURNS_PAGE_LIMIT, last_id=last_id, filter_=filter_
                     )
                 except OzonError as exc:
-                    log.warning("Возвраты в статусе %s недоступны: %s", status, exc)
+                    log.warning("Возвраты (%s) недоступны: %s", what, exc)
                     complete = False
-                    break
+                    return False
                 if not returns:
-                    break
+                    return True
                 store_page(returns)
                 last_id = returns[-1].get("id") or 0
                 if not has_next or not last_id:
-                    break
+                    return True
+            log.warning(
+                "Возвраты (%s): упёрлись в потолок %d страниц, список прочитан не до конца",
+                what, RETURNS_MAX_PAGES,
+            )
+            complete = False
+            return False
+
+        for status in pickup:
+            walk({"visual_status_name": status}, status)
+
+        # Полученные — за окно по смене статуса. Фильтра по самому моменту
+        # получения (final_moment) в API нет, поэтому окно берём по смене
+        # статуса: она бывает позже получения, значит окно должно быть с
+        # запасом. Статус отбираем уже у себя — store_page оставит только нужные.
+        if received:
+            since, until = _iso_window(received_days, 0)
+            walk(
+                {"visual_status_change_moment": {
+                    "time_from": iso_moment(since), "time_to": iso_moment(until),
+                }},
+                f"получены за {received_days} дн.",
+            )
 
     gone = 0
     removed = 0
