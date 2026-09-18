@@ -1234,3 +1234,46 @@ def test_sync_endpoint_takes_a_day(client):
     bad = client.post("/api/returns/sync", json={"day": "вчера"},
                       headers={"X-CSRF-Token": csrf})
     assert bad.status_code == 400 and "ГГГГ-ММ-ДД" in bad.json()["detail"]
+
+
+# ------------------------------------------- возврат не должен стать невидимым
+def test_return_without_an_act_is_swept_even_from_an_earlier_pass(sample_data):
+    """Возврат без акта подбирается и позже, а не только в свой проход.
+
+    «К выдаче» показывает только is_ready, вкладка актов — только то, что уже в
+    акте. Строка без того и другого не видна нигде: на листе было семь, в акт
+    попало шесть, седьмой «куда-то потерялся». Раньше сбор пропавших работал
+    лишь по тем, кто пропал в этом же обходе.
+    """
+    account = accounts.default_account()
+    take_everything()
+
+    # Строка в том самом невидимом состоянии: из выдачи ушла, акта нет,
+    # момента получения нет. Так бывает после оборванного обхода.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, product_name) VALUES(?,?,?,?,?)",
+        (account["id"], "STRAY-1", 0, "ArrivedAtReturnPlace", "Коляска"),
+    )
+    assert not db.query_one("SELECT act_id FROM returns WHERE id = 'STRAY-1'")["act_id"]
+
+    sync.sync_returns(account)
+
+    act_id = db.query_one("SELECT act_id FROM returns WHERE id = 'STRAY-1'")["act_id"]
+    assert act_id, "потерянный возврат так и не попал ни в один акт"
+    assert return_acts.get(act_id)["kind"] == return_acts.NO_SHEET
+    # И он виден на вкладке: акт в списке неподтверждённых.
+    assert any(a["id"] == act_id for a in return_acts.pending([account["id"]]))
+
+
+def test_nothing_stays_invisible_after_a_sync(sample_data):
+    """После обхода не остаётся строк, которых нет ни на одном экране."""
+    account = accounts.default_account()
+    take_everything()
+    sync.sync_returns(account)
+
+    invisible = db.query(
+        "SELECT id FROM returns WHERE account_id = ? AND is_ready = 0 "
+        "AND act_id IS NULL AND received_at IS NULL",
+        (account["id"],),
+    )
+    assert not invisible, f"возвраты не видны ни в выдаче, ни в актах: {[r['id'] for r in invisible]}"

@@ -331,18 +331,22 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
             [account_id] + wanted,
         ).rowcount or 0
 
-        if stale:
-            # Возврат пропал из выдачи, а «Получен» по нему не приходил: акта у
-            # строки нет, и она исчезла бы с экрана молча. Собираем такие в акт
-            # за день — отметку по ним всё равно надо поставить.
-            orphans = [
-                row["id"] for row in db.query(
-                    f"SELECT id FROM returns WHERE account_id = ? AND act_id IS NULL "
-                    f"AND received_at IS NULL AND id IN ({placeholders})",
-                    [account_id] + stale,
-                )
-            ]
-            return_acts.collect_orphans(account_id, orphans)
+        # Возврат ушёл из выдачи, а «Получен» по нему не приходил: акта у строки
+        # нет, и на экранах её тоже нет — «К выдаче» показывает только is_ready,
+        # вкладка актов только то, что уже в акте. Такой возврат исчезает молча.
+        #
+        # Смотрим не только пропавших в этом проходе: строка могла остаться без
+        # акта и раньше — из-за оборванного обхода или потому, что тогда у неё
+        # уже стоял момент получения. Один разбор в проходе стоит дёшево, а
+        # оставить возврат невидимым нельзя: отметку по нему всё равно ставить.
+        orphans = [
+            row["id"] for row in db.query(
+                "SELECT id FROM returns WHERE account_id = ? AND is_ready = 0 "
+                "AND act_id IS NULL AND received_at IS NULL",
+                (account_id,),
+            )
+        ]
+        return_acts.collect_orphans(account_id, orphans)
 
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
