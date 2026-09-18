@@ -427,9 +427,12 @@ def test_status_change_is_filled_from_the_saved_answer():
     row = db.query_one("SELECT status_changed_at FROM returns WHERE id = 'R-old'")
     assert row["status_changed_at"], "момент смены статуса не достали из raw"
     act = return_acts.get("spare1")
-    assert act["received_day"] == store.local_day("2026-09-14T06:00:00+00:00")
-    # Заголовок теперь без времени — 11:42 составления в нём больше нет.
-    assert ":" not in return_acts.detail("spare1")["title"]
+    day = store.local_day("2026-09-14T06:00:00+00:00")
+    assert act["received_day"] == day
+    # В заголовке теперь число получения, а не дата составления акта.
+    assert return_acts.detail("spare1")["title"].startswith(
+        f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}, акт №"
+    )
 
 
 def test_status_change_backfill_runs_once():

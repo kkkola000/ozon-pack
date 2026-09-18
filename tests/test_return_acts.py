@@ -1197,95 +1197,6 @@ def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
     assert after == ready_before, "обрыв обхода вычистил список выдачи"
 
 
-# --------------------------------------------- загрузка полученных за число
-def test_loading_by_day_asks_that_day(sample_data):
-    """Выбрали число — у Ozon просим полученные за него, а не обычное окно."""
-    from app import ozon
-
-    account = accounts.default_account()
-    client = ozon.get_client(account)
-    asked: list[dict] = []
-    original = client.returns_list
-
-    def spy(**kwargs):
-        asked.append(kwargs.get("filter_") or {})
-        return original(**kwargs)
-
-    client.returns_list = spy
-    try:
-        sync.sync_returns(account, day="2026-05-12")
-    finally:
-        client.returns_list = original
-
-    received = [f for f in asked if f.get("visual_status_name") == "ReceivedBySeller"]
-    assert received, f"полученные за число не запрошены: {asked}"
-    window = received[0]["visual_status_change_moment"]
-    assert window["time_from"] < "2026-05-12" <= window["time_to"], window
-    # «К выдаче» числом не ограничиваем ни при каком дне.
-    pickup = [f for f in asked if f.get("visual_status_name") == "ArrivedAtReturnPlace"]
-    assert pickup and all("visual_status_change_moment" not in f for f in pickup)
-
-
-def test_loading_by_day_reaches_past_the_window(sample_data):
-    """Возврат старше окна подтягивается по числу — ради него это и сделано."""
-    from app import ozon
-
-    account = accounts.default_account()
-    client = ozon.get_client(account)
-    long_ago = days_ago(options.get_received_days() + 20)
-    ids = client.receive(final_moment=long_ago.isoformat(), change_moment=long_ago.isoformat())
-    assert ids
-
-    sync.sync_returns(account)
-    marker = f"SELECT id FROM returns WHERE received_at IS NOT NULL AND id IN ({','.join('?' for _ in ids)})"
-    assert not db.query(marker, ids), "обычное окно и так дотянулось — проверка бессмысленна"
-
-    day = store.local_day(long_ago.isoformat())
-    sync.sync_returns(account, day=day)
-    assert len(db.query(marker, ids)) == len(ids), "по числу возвраты не подтянулись"
-    # И акт за это число из них собирается.
-    assert make_act(day=day)["added"] == len(ids)
-
-
-def test_loading_by_day_has_slack_on_both_sides(sample_data):
-    """Загрузка за число захватывает и соседние сутки — границы с запасом.
-
-    Выбрали 16-е, а статус перещёлкнулся в ночь на 17-е: строгие сутки такой
-    возврат не подтянули бы вовсе, и до него было бы не добраться. Запас его
-    привозит, а встанет он на своё число — 17-е.
-    """
-    from app import ozon
-
-    account = accounts.default_account()
-    client = ozon.get_client(account)
-    evening = before_local_midnight(options.get_received_days() + 15)
-    late = evening + timedelta(hours=5)
-    ids = client.receive(change_moment=late.isoformat())
-    assert ids
-
-    asked = store.local_day(evening.isoformat())
-    landed = store.local_day(late.isoformat())
-    assert asked != landed, "моменты в одних сутках"
-
-    sync.sync_returns(account, day=asked)
-    assert len(return_acts.received_returns(account["id"], landed)) == len(ids), (
-        "запас по краям окна не сработал — возврат не подтянулся"
-    )
-
-
-def test_sync_endpoint_takes_a_day(client):
-    """Кнопка «Загрузить за число» ходит тем же путём, что и обновление."""
-    csrf = login(client)
-    response = client.post("/api/returns/sync", json={"day": store.local_day()},
-                           headers={"X-CSRF-Token": csrf})
-    assert response.status_code == 200, response.text
-    assert "Подтянуто за" in response.json()["message"]
-
-    bad = client.post("/api/returns/sync", json={"day": "вчера"},
-                      headers={"X-CSRF-Token": csrf})
-    assert bad.status_code == 400 and "ГГГГ-ММ-ДД" in bad.json()["detail"]
-
-
 # ------------------------------------------- возврат не должен стать невидимым
 def test_return_without_an_act_is_swept_even_from_an_earlier_pass(sample_data):
     """Возврат без акта подбирается и позже, а не только в свой проход.
@@ -1330,12 +1241,14 @@ def test_nothing_stays_invisible_after_a_sync(sample_data):
 
 
 # --------------------------------------------- заголовок акта «без статуса»
-def test_nosheet_act_is_named_by_the_status_change_without_time(sample_data):
-    """«Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42».
+def test_nosheet_act_is_named_by_the_status_change(sample_data):
+    """Заголовок один на все акты: «Возвраты за ЧИСЛО, акт №N от ВРЕМЯ».
 
-    А 11:42 — это лишь когда панель завела акт. Числа получения у такого акта
-    нет вовсе: он и заводится потому, что «Получен» не приходил. Берём число
-    смены статуса — единственное известное — и пишем без времени.
+    Число получения у акта «без статуса» неоткуда взять — он и заводится
+    потому, что «Получен» не приходил. Берём число смены статуса: тогда
+    возврат и ушёл из выдачи. Раньше вместо числа подставлялось время
+    составления, и «Возвраты за 16.09 11:42» читалось как «получены 16.09
+    в 11:42».
     """
     from app import ozon
 
@@ -1359,8 +1272,8 @@ def test_nosheet_act_is_named_by_the_status_change_without_time(sample_data):
     act = spare[0]
     day = store.local_day(moment.isoformat())
     assert act["received_day"] == day
-    assert act["title"] == f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}"
-    assert ":" not in act["title"], f"в заголовке осталось время: {act['title']}"
+    assert act["title"].startswith(f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}, акт №")
+    assert store.local_time(act["created_at"], "%H:%M") in act["title"]
 
 
 def test_by_day_act_keeps_its_number_and_time(sample_data):
@@ -1390,7 +1303,7 @@ def test_acts_are_sorted_by_the_receipt_day(sample_data):
     make_act(day=store.local_day(newer.isoformat()))          # свежее число, составлен первым
 
     client.receive(*[str(r["id"]) for r in ready[1:]], change_moment=older.isoformat())
-    sync.sync_returns(account, day=store.local_day(older.isoformat()))
+    sync.sync_returns(account)
     make_act(day=store.local_day(older.isoformat()))          # старое число, составлен вторым
 
     days = [a["received_day"] for a in return_acts.pending([account["id"]])]

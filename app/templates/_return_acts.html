@@ -32,10 +32,6 @@
       <label class="muted small row" style="gap:8px">Дата получения
         <input type="date" id="act-day" value="{{ today }}" max="{{ today }}">
       </label>
-      {# Подтянуть полученные именно за это число. Обычное обновление берёт
-         последние дни, и возврат, выданный раньше, в него не попадает. #}
-      <button class="btn" id="act-load"
-              title="Запросить у Ozon возвраты, полученные в этот день">Загрузить за число</button>
       <button class="btn primary" id="act-create" disabled>Составить акт</button>
       <span id="act-byday-result" class="small muted"></span>
     </div>

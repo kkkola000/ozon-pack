@@ -879,17 +879,24 @@ def _fill_status_changed(conn: sqlite3.Connection) -> None:
     stamped = 0
     if _table_exists(conn, "return_acts"):
         for act in conn.execute(
-            "SELECT id FROM return_acts WHERE kind = 'nosheet' AND received_day IS NULL"
+            "SELECT id, account_id FROM return_acts WHERE kind = 'nosheet' AND received_day IS NULL"
         ).fetchall():
             moment = conn.execute(
                 "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act["id"],)
             ).fetchone()["moment"]
             day = local_day(moment) if moment else ""
-            if len(day) == 10:
-                conn.execute(
-                    "UPDATE return_acts SET received_day = ? WHERE id = ?", (day, act["id"])
-                )
-                stamped += 1
+            if len(day) != 10:
+                continue
+            # Номер за число идёт вместе с числом: без него заголовок теряет «№N».
+            seq = conn.execute(
+                "SELECT COUNT(*) AS c FROM return_acts WHERE account_id = ? AND received_day = ?",
+                (act["account_id"], day),
+            ).fetchone()["c"] + 1
+            conn.execute(
+                "UPDATE return_acts SET received_day = ?, day_seq = ? WHERE id = ?",
+                (day, seq, act["id"]),
+            )
+            stamped += 1
     if filled or stamped:
         log.info("Момент смены статуса заполнен у %d возвратов, дат у актов: %d", filled, stamped)
     conn.execute(

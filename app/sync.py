@@ -28,24 +28,6 @@ def _iso_window(days_back: int, days_forward: int) -> tuple[datetime, datetime]:
     return now - timedelta(days=days_back), now + timedelta(days=days_forward)
 
 
-def _day_window(day: str) -> tuple[datetime, datetime]:
-    """Сутки по часам склада — в UTC, как их ждёт фильтр Ozon.
-
-    Число человек называет по своим часам, а площадка живёт в UTC: вечерняя
-    поездка в UTC+3 иначе попала бы во вчерашний день.
-
-    Границы с запасом в сутки в обе стороны. Окно строится по смене статуса, а
-    она с выдачей продавцу не совпадает: выдали в 23:58, статус перещёлкнулся в
-    00:30 — по строгим суткам такой возврат не загрузился бы. Лишнее, что
-    приедет, встанет на своё число само: его считает final_moment.
-    """
-    from .config import settings
-
-    start = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
-    start -= timedelta(hours=settings.timezone_offset)
-    return start - timedelta(days=1), start + timedelta(days=2)
-
-
 def _account(account: dict | None) -> dict | None:
     return account if account is not None else accounts.default_account()
 
@@ -157,18 +139,13 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
 
 
 def sync_returns(account: dict | None = None, *, full: bool = False,
-                 statuses: list[str] | None = None, day: str | None = None) -> dict:
+                 statuses: list[str] | None = None) -> dict:
     """Возвраты FBO и FBS: /v1/returns/list.
 
     Забираем два набора статусов. Первый — в которых возврат можно получить
     (по умолчанию ArrivedAtReturnPlace — «В пункте выдачи»): это список к
     поездке. Второй — в которых он уже получен (ReceivedBySeller): по такому
     нужна отметка, и панель сводит такие возвраты в акт на подтверждение.
-
-    `day` — забрать полученные за конкретное число вместо обычного окна. Это
-    для акта: выбрали дату, подтянули за неё полученные, составили акт. Список
-    «к выдаче» числом не ограничивается ни при каком `day` — возврат лежит в
-    пункте неделями, и за ним ещё едут.
 
     Фильтр уходит в запрос, но на него не полагаемся: всё, что пришло с другим
     статусом, отбрасывается на нашей стороне. Иначе достаточно одной перемены
@@ -278,14 +255,10 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
         # окном: лишние статусы отсеет store_page. Терять из-за этого весь обход
         # нельзя — без полученных возвратов не составить ни одного акта.
         if received:
-            if day:
-                since, until = _day_window(day)
-                what = f"получены за {day}"
-            else:
-                # Сутки вперёд — запас на расхождение часов: момент, пришедший
-                # от площадки на минуту «в будущем», иначе выпал бы из окна.
-                since, until = _iso_window(received_days, 1)
-                what = f"получены за {received_days} дн."
+            # Сутки вперёд — запас на расхождение часов: момент, пришедший от
+            # площадки на минуту «в будущем», иначе выпал бы из окна.
+            since, until = _iso_window(received_days, 1)
+            what = f"получены за {received_days} дн."
             window = {"time_from": iso_moment(since), "time_to": iso_moment(until)}
             # all() с генератором: отказало на первом статусе — остальные
             # откажут так же, и добивать их запросами незачем.

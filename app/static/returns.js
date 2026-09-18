@@ -34,26 +34,6 @@ if (byDay) {
   dayField.addEventListener('change', count);
   count();
 
-  /* Подтянуть полученные за выбранное число. Обычное обновление берёт
-     последние дни: возврат, выданный продавцу раньше, в него не попадёт, и
-     акт за то число собрать не из чего. */
-  const loadButton = document.getElementById('act-load');
-  loadButton.onclick = async () => {
-    if (!dayField.value) { toast('Сначала выберите дату', 'warning'); return; }
-    loadButton.disabled = true;
-    loadButton.textContent = 'Загружаем…';
-    try {
-      const data = await api('/api/returns/sync', { day: dayField.value });
-      toast(data.message, 'ok', 9000);
-      await count();
-    } catch (error) {
-      toast(error.message, 'error', 12000);
-    } finally {
-      loadButton.disabled = false;
-      loadButton.textContent = 'Загрузить за число';
-    }
-  };
-
   createButton.onclick = async () => {
     createButton.disabled = true;
     createButton.textContent = 'Составляем…';

@@ -68,7 +68,7 @@ _FREE_RECEIVED = (
 
 
 def received_returns(account_id: int, day: str) -> list[str]:
-    """Полученные возвраты кабинета, которые ещё ни в один акт не попали.
+    """Полученные возвраты кабинета за число, которые ещё ни в один акт не попали.
 
     Это и есть защита от задвоения: возврат с act_id сюда не попадает ни при
     каком повторе — ни когда Ozon снова отдаёт его «полученным», ни когда то же
@@ -78,8 +78,7 @@ def received_returns(account_id: int, day: str) -> list[str]:
     пришедший «Получен» эту догадку заменяет. Иначе на один возврат оказалось
     бы два акта, то есть две отметки на одну работу.
 
-    Число обязательно: акт — это поездка за конкретный день, и всё, что панель
-    умеет, — отдать состав по названному числу.
+    Число — день перехода в «Получен»: акт это поездка за конкретный день.
     """
     return [
         row["id"] for row in db.query(
@@ -113,12 +112,7 @@ def from_received(account_id: int, day: str, *, user: dict | None = None) -> dic
     act_id = _new_id()
     now = db.now_iso()
     with db.write() as conn:
-        # Номер акта за это число. Две поездки подряд могут уложиться в одну
-        # минуту, и по времени такие акты в списке не различить.
-        seq = conn.execute(
-            "SELECT COUNT(*) AS c FROM return_acts WHERE kind = ? AND account_id = ? AND received_day = ?",
-            (BY_DAY, account_id, day),
-        ).fetchone()["c"] + 1
+        seq = _next_seq(conn, account_id, day)
         conn.execute(
             "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day, day_seq) "
             "VALUES(?,?,?,?,?,?,?)",
@@ -145,6 +139,19 @@ def from_received(account_id: int, day: str, *, user: dict | None = None) -> dic
         "added": added,
         "message": f"{act['title']}: {_returns_word(added)}",
     }
+
+
+def _next_seq(conn, account_id: int, day: str) -> int:
+    """Номер акта за это число, по всем актам кабинета за него.
+
+    Две поездки подряд укладываются в одну минуту, и по времени такие акты в
+    списке не различить. Номер сквозной для числа, а не отдельный у каждого
+    вида актов: иначе за одно число оказались бы два «акта №1».
+    """
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM return_acts WHERE account_id = ? AND received_day = ?",
+        (account_id, day),
+    ).fetchone()["c"] + 1
 
 
 def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
@@ -224,8 +231,18 @@ def _stamp_day(conn, act_id: str) -> None:
         "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act_id,)
     ).fetchone()
     day = store.local_day(row["moment"]) if row and row["moment"] else ""
-    if len(day) == 10:
-        conn.execute("UPDATE return_acts SET received_day = ? WHERE id = ?", (day, act_id))
+    if len(day) != 10:
+        return
+    current = conn.execute(
+        "SELECT account_id, received_day, day_seq FROM return_acts WHERE id = ?", (act_id,)
+    ).fetchone()
+    if not current or current["received_day"] == day:
+        return
+    # Номер за число присваивается один раз — вместе с самим числом.
+    seq = current["day_seq"] or _next_seq(conn, current["account_id"], day)
+    conn.execute(
+        "UPDATE return_acts SET received_day = ?, day_seq = ? WHERE id = ?", (day, seq, act_id)
+    )
 
 
 # ------------------------------------------------------------------- чтение
@@ -289,15 +306,10 @@ def _title(act: dict) -> str:
     тогда два акта в списке не различить, а подписывают их отдельно.
     """
     day = act.get("received_day")
-    if act.get("kind") == BY_DAY and day:
+    if day:
         seq = f" №{act['day_seq']}" if act.get("day_seq") else ""
         return (f"Возвраты за {_day_label(day)}, акт{seq}"
                 f" от {store.local_time(act.get('created_at'), '%H:%M')}")
-    # У акта «без статуса» число берётся из смены статуса и пишется без
-    # времени: «Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42»,
-    # хотя 11:42 — это лишь когда панель завела акт.
-    if day:
-        return f"Возвраты за {_day_label(day)}"
     return f"Возвраты за {store.local_time(act.get('created_at'))}"
 
 

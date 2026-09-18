@@ -500,23 +500,16 @@ def api_returns_sync(request: Request, payload: dict = Body(default={}), user: d
                      account: dict = Depends(require_ozon_account)):
     check_csrf(request)
     full = bool(payload.get("full"))
-    # Число — это «подтяни полученные за него»: акт собирают за конкретный день,
-    # и брать для него обычное окно значило бы обещать состав, которого нет.
-    raw_day = str(payload.get("day") or "").strip()
-    day = _valid_day(raw_day) if raw_day else None
     try:
-        result = sync.sync_returns(account, full=full, day=day)
+        result = sync.sync_returns(account, full=full)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {"status": "ok", "message": _sync_message(result, day), "result": result}
+    return {"status": "ok", "message": _sync_message(result), "result": result}
 
 
-def _sync_message(result: dict, day: str | None = None) -> str:
+def _sync_message(result: dict) -> str:
     """Что сделало обновление. Акт панель не составляет — это решение сборщика."""
-    head = "Обновлено возвратов"
-    if day:
-        head = f"Подтянуто за {date.fromisoformat(day).strftime('%d.%m.%Y')}"
-    parts = [f"{head}: {result.get('returns', 0)}"]
+    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
     if result.get("returns_gone"):
         parts.append(f"ушло из выдачи: {result['returns_gone']}")
     return ". ".join(parts)
