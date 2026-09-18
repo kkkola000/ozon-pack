@@ -206,6 +206,10 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
             "status": "ok" if ids else "warning",
             "found": len(ids),
             "day": day,
+            # Полученные возвраты за другие числа. Число получения приходит от
+            # площадки и с днём поездки совпадает не всегда: без этого списка
+            # такой возврат не найти — календарь наугад не перебирают.
+            "days": return_acts.free_days(account["id"]),
             "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
                         "За это число полученных возвратов без акта нет"),
         }

@@ -35,6 +35,10 @@
       <button class="btn primary" id="act-create" disabled>Составить акт</button>
       <span id="act-byday-result" class="small muted"></span>
     </div>
+    {# Молчит, пока всё получено за выбранное число. Появляется, когда возврат
+       ждёт за другим днём: иначе его не найти — из «К выдаче» он ушёл, в акт
+       не попал. #}
+    <div id="act-byday-elsewhere" class="small" style="margin-top:10px" hidden></div>
   </div>
 </div>
 

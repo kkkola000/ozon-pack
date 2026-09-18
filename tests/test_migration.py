@@ -327,3 +327,72 @@ def test_cleanup_keeps_marked_returns_and_runs_once():
     )
     db.init_db()
     assert db.query_one("SELECT id FROM return_acts WHERE id = 'auto3'"), "чистка сработала второй раз"
+
+
+def test_received_days_are_recomputed_from_the_handover():
+    """Застрявший возврат встаёт на число выдачи продавцу, а не смены статуса.
+
+    Число считалось из `visual.change_moment` — это последняя смена статуса,
+    и она бывает уже в других сутках. Возвраты одной поездки расходились по
+    числам: шесть в акт попадали, седьмой нет. Обновление пересчитывает число
+    по `final_moment` у всего, что ещё ждёт акта.
+    """
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, final_moment, received_at, received_day) "
+        "VALUES(?,?,?,?,?,?)",
+        (account_id, "R-late", 0, "2026-05-10T18:50:00+00:00",
+         "2026-05-11T02:10:00+00:00", "2026-05-11"),
+    )
+    # Нечитаемый момент: такого числа нет ни в одном календаре.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, final_moment, received_at, received_day) "
+        "VALUES(?,?,?,?,?,?)",
+        (account_id, "R-junk", 0, "позавчера", "позавчера", "позавчера"),
+    )
+
+    db.init_db()
+
+    from app import store
+
+    late = db.query_one("SELECT received_at, received_day FROM returns WHERE id = 'R-late'")
+    assert late["received_day"] == store.local_day("2026-05-10T18:50:00+00:00")
+    assert late["received_at"] == "2026-05-10T18:50:00+00:00"
+
+    # Разобрать нечего — снимаем обе отметки, следующее обновление проставит их.
+    junk = db.query_one("SELECT received_at, received_day FROM returns WHERE id = 'R-junk'")
+    assert junk["received_at"] is None and junk["received_day"] is None
+
+
+def test_received_days_repair_does_not_touch_acts_and_runs_once():
+    """Строку из акта не переносим: там работа идёт, и число менять нельзя."""
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("act-keep", db.now_iso(), "byday", account_id),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, act_id, final_moment, received_at, received_day) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (account_id, "R-in-act", 0, "act-keep", "2026-05-10T18:50:00+00:00",
+         "2026-05-11T02:10:00+00:00", "2026-05-11"),
+    )
+    db.init_db()
+    row = db.query_one("SELECT received_day, act_id FROM returns WHERE id = 'R-in-act'")
+    assert row["received_day"] == "2026-05-11" and row["act_id"] == "act-keep"
+
+    # Второй запуск ничего не пересчитывает: отметка о починке уже стоит.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, final_moment, received_at, received_day) "
+        "VALUES(?,?,?,?,?,?)",
+        (account_id, "R-later", 0, "2026-05-10T18:50:00+00:00",
+         "2026-05-11T02:10:00+00:00", "2026-05-11"),
+    )
+    db.init_db()
+    assert db.query_one("SELECT received_day FROM returns WHERE id = 'R-later'")["received_day"] == "2026-05-11"

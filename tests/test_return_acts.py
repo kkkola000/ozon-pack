@@ -164,16 +164,94 @@ def test_receipt_date_comes_from_the_platform(sample_data):
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    # Архив: возврат получен давно, площадка помнит момент смены статуса.
+    # Архив: возврат выдан продавцу давно, площадка помнит этот момент.
     old = client._returns[0]
     old["visual"]["status"]["sys_name"] = "ReceivedBySeller"
     old["visual"]["status"]["display_name"] = "Получен продавцом"
+    old["logistic"]["final_moment"] = "2026-03-02T10:00:00+00:00"
     old["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
     sync.sync_returns(account)
 
     row = db.query_one("SELECT received_day FROM returns WHERE id = ?", (str(old["id"]),))
     assert row["received_day"] == "2026-03-02", "архив записан сегодняшним числом"
     assert str(old["id"]) not in return_acts.received_returns(account["id"], store.local_day())
+
+
+def test_receipt_date_comes_from_the_handover_not_the_status_change(sample_data):
+    """Число берётся из final_moment — «выдан продавцу», а не из смены статуса.
+
+    Выдали продавцу под полночь, а статус площадка перещёлкнула уже после неё.
+    По смене статуса возврат уезжал в следующие сутки: шесть возвратов поездки
+    вставали на одно число, седьмой — на другое, и в акт он не попадал.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ids = client.receive(
+        final_moment="2026-05-10T18:50:00+00:00",   # выдали продавцу
+        change_moment="2026-05-11T02:10:00+00:00",  # статус сменился позже
+    )
+    assert ids, "подделка не отдала ни одного возврата"
+    sync.sync_returns(account)
+
+    days = {
+        row["received_day"] for row in db.query(
+            f"SELECT received_day FROM returns WHERE id IN ({','.join('?' for _ in ids)})", ids
+        )
+    }
+    assert days == {store.local_day("2026-05-10T18:50:00+00:00")}, (
+        "возвраты одной поездки разъехались по числам"
+    )
+    assert len(return_acts.received_returns(
+        account["id"], store.local_day("2026-05-10T18:50:00+00:00")
+    )) == len(ids), "в акт попали не все возвраты поездки"
+
+
+def test_unreadable_moment_does_not_lose_the_return(sample_data):
+    """Момент не разобрать — число всё равно настоящее, а не строка от Ozon.
+
+    Иначе в received_day оседает сама строка, такого числа нет ни в одном
+    календаре, и возврат не найти: из «К выдаче» он ушёл, в акт не попадает.
+    """
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ids = client.receive(final_moment="10.05.2026 18:50", change_moment="позавчера")
+    assert ids
+    sync.sync_returns(account)
+
+    rows = db.query(
+        f"SELECT received_day FROM returns WHERE id IN ({','.join('?' for _ in ids)})", ids
+    )
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["received_day"]) for row in rows)
+    # И находятся: за сегодня, раз у площадки внятного числа не нашлось.
+    assert len(return_acts.received_returns(account["id"], store.local_day())) == len(ids)
+
+
+def test_free_days_show_where_the_returns_wait(sample_data):
+    """Возврат за другое число должен быть виден — иначе его не найти."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
+    assert len(ready) > 1, "для проверки нужно хотя бы два возврата в ПВЗ"
+
+    client.receive(str(ready[0]["id"]), final_moment="2026-05-10T09:00:00+00:00")
+    client.receive(*[str(r["id"]) for r in ready[1:]], final_moment="2026-05-12T09:00:00+00:00")
+    sync.sync_returns(account)
+
+    days = {item["day"]: item["count"] for item in return_acts.free_days(account["id"])}
+    assert days.get(store.local_day("2026-05-10T09:00:00+00:00")) == 1
+    assert days.get(store.local_day("2026-05-12T09:00:00+00:00")) == len(ready) - 1
+
+    # Составили акт за одно число — оно уходит из списка, второе остаётся.
+    make_act(day=store.local_day("2026-05-12T09:00:00+00:00"))
+    left = {item["day"] for item in return_acts.free_days(account["id"])}
+    assert store.local_day("2026-05-12T09:00:00+00:00") not in left
+    assert store.local_day("2026-05-10T09:00:00+00:00") in left
 
 
 def test_archive_does_not_get_into_todays_act(sample_data):
@@ -185,6 +263,7 @@ def test_archive_does_not_get_into_todays_act(sample_data):
     for item in client._returns[:5]:
         item["visual"]["status"]["sys_name"] = "ReceivedBySeller"
         item["visual"]["status"]["display_name"] = "Получен продавцом"
+        item["logistic"]["final_moment"] = "2026-03-02T10:00:00+00:00"
         item["visual"]["change_moment"] = "2026-03-02T10:00:00+00:00"
     sync.sync_returns(account)
 

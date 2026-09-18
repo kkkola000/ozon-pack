@@ -683,6 +683,21 @@ KV_GENERATED_CLEANED = "generated_data_cleaned"
 KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
 KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
 KV_OWNER_SET = "owner_role_assigned"
+KV_DAYS_FIXED = "received_days_repaired"
+# Число, каким его выбирают в календаре. Всё, что на это не похоже, в акт не
+# попадёт ни при каком выборе даты.
+_DAY_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _parsed_moment(value: Any) -> str | None:
+    """Момент времени или None — строку «как пришла» здесь принимать нельзя."""
+    if not value:
+        return None
+    try:
+        datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return str(value)
 # Таблицы, у которых есть колонка raw с ответом площадки целиком.
 RAW_TABLES = ("postings", "returns", "avito_orders")
 
@@ -764,6 +779,62 @@ def _drop_auto_return_acts(conn: sqlite3.Connection) -> None:
     conn.execute(
         "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (KV_AUTO_ACTS_CLEANED, now_iso()),
+    )
+
+
+def _repair_received_days(conn: sqlite3.Connection) -> None:
+    """Пересчитать число получения у возвратов, которые ещё ждут акта.
+
+    Число считалось из `visual.change_moment` — это последняя смена статуса.
+    Она бывает позже самого получения и уже в других сутках, а бывает и в
+    виде, который не разобрать: тогда в `received_day` оседала сама строка, а
+    такого «числа» нет ни в одном календаре. Возврат при этом уже ушёл из
+    «К выдаче»: получен — и в акт не попадает ни при каком выборе даты. Ровно
+    так один возврат из семи и пропал.
+
+    Теперь момент берётся из `final_moment` — «прибыл на фулфилмент или выдан
+    продавцу». Пересчитываем по нему всё, что ещё не в акте, — возвраты одной
+    поездки снова сходятся на одном числе. Если момент не разобрать совсем,
+    снимаем и его, и число: следующее обновление проставит их заново.
+
+    Строки с актом не трогаем: там работа уже идёт, и переносить её в другой
+    акт нельзя — это была бы вторая отметка на ту же работу.
+    """
+    if not _table_exists(conn, "returns"):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_DAYS_FIXED,)).fetchone()
+    if done:
+        return
+    from .store import local_day
+
+    fixed = 0
+    rows = conn.execute(
+        "SELECT id, account_id, received_at, received_day, final_moment FROM returns "
+        "WHERE received_at IS NOT NULL AND act_id IS NULL"
+    ).fetchall()
+    for row in rows:
+        moment = _parsed_moment(row["final_moment"]) or _parsed_moment(row["received_at"])
+        day = local_day(moment) if moment else ""
+        if not _DAY_SHAPE.fullmatch(day):
+            conn.execute(
+                "UPDATE returns SET received_at = NULL, received_day = NULL "
+                "WHERE account_id = ? AND id = ?",
+                (row["account_id"], row["id"]),
+            )
+            fixed += 1
+            continue
+        if moment == row["received_at"] and day == row["received_day"]:
+            continue
+        conn.execute(
+            "UPDATE returns SET received_at = ?, received_day = ? WHERE account_id = ? AND id = ?",
+            (moment, day, row["account_id"], row["id"]),
+        )
+        fixed += 1
+    if fixed:
+        log.info("Пересчитано чисел получения у возвратов: %d", fixed)
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_DAYS_FIXED, now_iso()),
     )
 
 
@@ -886,6 +957,7 @@ def init_db() -> None:
             _drop_generated_data(conn)
             _drop_buyer_contacts(conn)
             _drop_auto_return_acts(conn)
+            _repair_received_days(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

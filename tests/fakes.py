@@ -314,11 +314,15 @@ class FakeOzonClient(OzonClient):
         return make_giveout_pdf(f"FAKE-GIVEOUT-{self._seed:04d}", barcodes)
 
     # -- управление подделкой из проверок ---------------------------------
-    def receive(self, *return_ids) -> list[str]:
+    def receive(self, *return_ids, change_moment=None, final_moment=None) -> list[str]:
         """Перевести возвраты в «Получен»: так это выглядит после поездки в ПВЗ.
 
         Ozon меняет статус сам, когда возврат отдали продавцу. Без аргументов
         получает всё, что лежит в пункте выдачи, — «съездили за всем разом».
+
+        Два момента задаются отдельно: на живом складе они расходятся. Выдали
+        продавцу в 23:50 (`final_moment`), а статус площадка перещёлкнула в
+        00:10 (`change_moment`) — и по второму возврат уезжает в другие сутки.
         """
         wanted = {str(rid) for rid in return_ids}
         now = _iso(datetime.now(timezone.utc))
@@ -331,9 +335,10 @@ class FakeOzonClient(OzonClient):
                 continue
             status["sys_name"] = "ReceivedBySeller"
             status["display_name"] = "Получен продавцом"
-            # Момент смены статуса площадка обновляет — по нему панель и узнаёт,
-            # когда возврат получен. Без этого он остался бы датой прибытия в ПВЗ.
-            item["visual"]["change_moment"] = now
+            # Момент выдачи продавцу — по нему панель и узнаёт, когда возврат
+            # получен. Смену статуса площадка обновляет своим чередом.
+            item["logistic"]["final_moment"] = final_moment or now
+            item["visual"]["change_moment"] = change_moment or now
             changed.append(str(item["id"]))
         return changed
 

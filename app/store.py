@@ -16,6 +16,9 @@ from .config import settings
 # персональные данные без цели нельзя, а база лежит на складском сервере.
 _CONTACT_KEY = re.compile(r"phone|email|passport|телефон|почта|паспорт", re.IGNORECASE)
 _MAX_CLEAN_DEPTH = 8
+# Число получения, каким его выбирают в календаре. Всё, что на это не похоже,
+# в акт не попадёт ни при каком выборе даты — поэтому и проверяем.
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def without_contacts(value: Any, depth: int = 0) -> Any:
@@ -100,6 +103,24 @@ def _dt(value: Any) -> str | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _moment(value: Any) -> str | None:
+    """То же, что _dt, но нераспознанное — это None, а не исходная строка.
+
+    _dt на всякий случай отдаёт строку как есть: дату показывают, и потерять её
+    хуже, чем показать в чужом виде. Для момента получения так нельзя: из него
+    считается число акта, и строка вроде «15.09.2026 12:30» дала бы «число»,
+    которого нет ни в одном календаре. Возврат получен — и не находится нигде.
+    """
+    moment = _dt(value)
+    if not moment:
+        return None
+    try:
+        datetime.fromisoformat(moment.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment
 
 
 def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
@@ -306,10 +327,24 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     # отдаёт по статусу «Получен» весь архив, и с временем «сейчас» первое же
     # обновление объявило бы полученными сегодня тысячи старых возвратов —
     # ровно один такой акт на 2446 позиций и получился в версии 1.17.
-    received_at = _dt(visual.get("change_moment")) if received else None
+    #
+    # Спрашиваем сначала final_moment — «возврат прибыл на фулфилмент или выдан
+    # продавцу», то есть само получение. change_moment запасной: это последняя
+    # смена статуса, а она бывает и позже, и уже в другие сутки. Из-за него
+    # возвраты одной поездки расходились по разным числам, и седьмой из семи в
+    # акт за нужное число не попадал.
+    received_at = (
+        _moment(logistic.get("final_moment")) or _moment(visual.get("change_moment"))
+    ) if received else None
     if received_at and received_at > now:
         received_at = now
     received_at = received_at or (now if received else None)
+    # Число обязано быть числом: по нему и только по нему возврат попадает в
+    # акт. Если из момента его не вышло, ставим сегодняшнее — возврат лучше
+    # положить в акт не за тот день, чем потерять с экрана совсем.
+    received_day = local_day(received_at) if received_at else None
+    if received_at and not _DAY.fullmatch(received_day or ""):
+        received_day = local_day(now)
 
     existing = conn.execute(
         "SELECT first_seen_at FROM returns WHERE account_id = ? AND id = ?", (account_id, return_id)
@@ -368,7 +403,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             (existing["first_seen_at"] if existing else now) or now,
             now,
             received_at,
-            local_day(received_at) if received_at else None,
+            received_day,
         ),
     )
     return return_id
