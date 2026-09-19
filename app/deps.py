@@ -149,7 +149,7 @@ def _open_acts(account_id: int) -> int:
 
 def nav_counters(request: Request) -> dict:
     """Счётчики для шапки текущего кабинета — запросы дешёвые."""
-    from . import db
+    from . import db, options
 
     account = current_account(request)
     if not account:
@@ -160,6 +160,9 @@ def nav_counters(request: Request) -> dict:
     def count(sql: str, params: tuple = ()) -> int:
         row = db.query_one(sql, params)
         return row["c"] if row else 0
+
+    # «К выдаче» считаем прямо по отмеченным статусам — см. options.pickup_sql.
+    _ready_sql, _ready_params = options.pickup_sql()
 
     if account["marketplace"] == "avito":
         return {
@@ -193,8 +196,8 @@ def nav_counters(request: Request) -> dict:
             (account_id,),
         ),
         "returns": count(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1",
-            (account_id,),
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {_ready_sql}",
+            (account_id, *_ready_params),
         ),
         "return_acts": _open_acts(account_id),
         "avito_confirm": 0,

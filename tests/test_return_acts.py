@@ -1848,3 +1848,69 @@ def test_stale_pickup_flag_is_cleared_by_the_status(sample_data):
     assert db.query_one("SELECT is_ready FROM returns WHERE id = 'STALE-1'")["is_ready"] == 0, (
         "возврат остался в списке к выдаче"
     )
+
+
+# --------------------------- разделы отвечают галочкам в «Настройках», и только
+def test_pickup_list_is_exactly_the_ticked_statuses(sample_data):
+    """«К выдаче» и лист — ровно те статусы, что отмечены в «Какие загружать».
+
+    Отмечен «В пункте выдачи» — значит в разделе и на листе только он. Никаких
+    строк с другим статусом, даже если признак «к выдаче» остался от прошлых
+    обновлений.
+    """
+    from app.routes import returns as returns_routes
+
+    account = accounts.default_account()
+    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+    take_everything(account)
+
+    # Строка с чужим статусом и взведённым признаком — так бывает после
+    # прежних версий. В разделе её быть не должно.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, product_name, note) "
+        "VALUES(?,?,?,?,?,?)",
+        (account["id"], "WRONG-1", 1, "MovingToSeller", "Коляска в пути", "ещё едет"),
+    )
+
+    shown = returns_routes._filter_returns([account["id"]])
+    assert "WRONG-1" not in {r["id"] for r in shown}
+    assert all(r["status_sys"] == "ArrivedAtReturnPlace" for r in shown), (
+        f"в разделе статусы: {sorted({r['status_sys'] for r in shown})}"
+    )
+
+
+def test_act_is_exactly_the_ticked_received_statuses(sample_data):
+    """Акт за дату — ровно те статусы, что отмечены в «Какие считать полученными».
+
+    Отмечен «Получен продавцом» — значит в акт идёт только он.
+    """
+    account = accounts.default_account()
+    assert options.get_received_statuses() == ["ReceivedBySeller"]
+    take_everything(account)
+    result = make_act(account)
+    assert result["act_id"], result["message"]
+
+    statuses = {
+        row["status_sys"]
+        for row in db.query("SELECT status_sys FROM returns WHERE act_id = ?", (result["act_id"],))
+    }
+    assert statuses == {"ReceivedBySeller"}, f"в акте статусы: {sorted(statuses)}"
+
+
+def test_changing_the_ticks_changes_both_sections(sample_data):
+    """Сняли галочку — раздел и акт сразу отвечают новой настройке."""
+    from app.routes import returns as returns_routes
+
+    account = accounts.default_account()
+    take_everything(account)
+    assert make_act(account)["act_id"]
+
+    # «Получен продавцом» переносим в список загружаемых: теперь это «к выдаче».
+    options.set_returns_statuses(["ReceivedBySeller"])
+    options.set_received_statuses([])
+
+    shown = returns_routes._filter_returns([account["id"]])
+    assert shown and all(r["status_sys"] == "ReceivedBySeller" for r in shown)
+    assert return_acts.received_returns(account["id"], store.local_day()) == [], (
+        "акт собирается по снятой галочке"
+    )

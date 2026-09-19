@@ -118,6 +118,18 @@ def wanted_statuses() -> list[str]:
     return seen
 
 
+def pickup_sql(column: str = "status_sys") -> tuple[str, list[str]]:
+    """Условие «этот возврат к выдаче» — прямо по отмеченным статусам.
+
+    Без промежуточного признака: он ставится при загрузке и успевает
+    устареть, а раздел «К выдаче» и лист на печать должны отвечать настройке
+    здесь и сейчас. Отмечено «В пункте выдачи» — значит только он и есть.
+    """
+    statuses = list(get_returns_statuses())
+    marks = ",".join("?" for _ in statuses) or "''"
+    return f"{column} IN ({marks})", statuses
+
+
 def status_label(sys_name: str) -> str:
     for code, label, _hint in RETURN_STATUS_CHOICES:
         if code == sys_name:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import access, db, packing, store
+from .. import access, db, options, packing, store
 from ..config import settings
 from ..deps import check_csrf, require_section, require_ozon_account, safe_filename, templates
 from ..ozon import OzonError
@@ -37,6 +37,8 @@ def pack_page(request: Request, user: dict = Depends(require_section("pack")),
 
 def _counters(account: dict) -> dict:
     account_id = account["id"]
+    # «Возвраты к выдаче» — прямо по отмеченным статусам, см. options.pickup_sql.
+    ready_sql, ready_params = options.pickup_sql()
     return {
         "awaiting_packaging": db.query_one(
             "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = ?",
@@ -52,8 +54,8 @@ def _counters(account: dict) -> dict:
             (account_id,),
         )["c"],
         "returns_ready": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1",
-            (account_id,),
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}",
+            [account_id] + list(ready_params),
         )["c"],
     }
 

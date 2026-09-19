@@ -37,8 +37,9 @@ def _filter_returns(
     if not account_ids:
         return []
     placeholders = ",".join("?" for _ in account_ids)
-    conditions = [f"r.account_id IN ({placeholders})", "r.is_ready = 1"]
-    params: list = list(account_ids)
+    ready_sql, ready_params = options.pickup_sql("r.status_sys")
+    conditions = [f"r.account_id IN ({placeholders})", ready_sql]
+    params: list = list(account_ids) + list(ready_params)
     if scheme in ("FBO", "FBS"):
         conditions.append("(r.type = ? OR r.scheme = ?)")
         params += [scheme, scheme]
@@ -98,9 +99,10 @@ def ready_everywhere() -> int:
     total = 0
     if ozon_ids:
         placeholders = ",".join("?" for _ in ozon_ids)
+        ready_sql, ready_params = options.pickup_sql()
         total += db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1 AND account_id IN ({placeholders})",
-            ozon_ids,
+            f"SELECT COUNT(*) AS c FROM returns WHERE {ready_sql} AND account_id IN ({placeholders})",
+            list(ready_params) + list(ozon_ids),
         )["c"]
     if avito_ids:
         placeholders = ",".join("?" for _ in avito_ids)
@@ -112,10 +114,11 @@ def ready_everywhere() -> int:
 
 
 def _places(account: dict) -> list[str]:
+    ready_sql, ready_params = options.pickup_sql()
     rows = db.query(
-        "SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND is_ready = 1 "
+        f"SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND {ready_sql} "
         "AND place_name IS NOT NULL ORDER BY place_name",
-        (account["id"],),
+        [account["id"]] + list(ready_params),
     )
     return [row["place_name"] for row in rows]
 
@@ -132,17 +135,19 @@ def returns_page(
 ):
     items = _filter_returns([account["id"]], scheme, place, q)
     aid = (account["id"],)
+    ready_sql, ready_params = options.pickup_sql()
+    ready_args = list(aid) + list(ready_params)
     totals = {
         "ready": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1", aid
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}", ready_args
         )["c"],
         "fbo": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 "
-            "AND (type = 'FBO' OR scheme = 'FBO')", aid
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
+            "AND (type = 'FBO' OR scheme = 'FBO')", ready_args
         )["c"],
         "fbs": db.query_one(
-            "SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND is_ready = 1 "
-            "AND (type = 'FBS' OR scheme = 'FBS')", aid
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
+            "AND (type = 'FBS' OR scheme = 'FBS')", ready_args
         )["c"],
     }
     import json as _json
