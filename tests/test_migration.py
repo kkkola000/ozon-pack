@@ -448,3 +448,59 @@ def test_status_change_backfill_runs_once():
     )
     db.init_db()
     assert db.query_one("SELECT status_changed_at FROM returns WHERE id = 'R-later'")["status_changed_at"] is None
+
+
+def test_unreceived_returns_are_released_from_spare_acts():
+    """Обновление освобождает из актов то, что ещё не получено.
+
+    Версия 1.26.1 сметала в акт «без статуса» любой возврат, ушедший из выдачи
+    без «Получен», — в акте приёмки оказывался и тот, что едет к продавцу.
+    Удалишь акт, а обновление кладёт его обратно.
+    """
+    from app import accounts, return_acts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("spare-live", db.now_iso(), "nosheet", account_id),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, act_id) VALUES(?,?,?,?,?)",
+        (account_id, "R-transit", 0, "MovingToSeller", "spare-live"),
+    )
+
+    db.init_db()
+
+    assert db.query_one("SELECT act_id FROM returns WHERE id = 'R-transit'")["act_id"] is None
+    assert return_acts.get("spare-live") is None, "опустевший акт не убран"
+
+
+def test_release_keeps_marked_rows_and_confirmed_acts():
+    """Работу сборщика и закрытые акты не трогаем."""
+    from app import accounts, return_acts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        ("spare-marked", db.now_iso(), "nosheet", account_id),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, act_id, mark, note) VALUES(?,?,?,?,?,?)",
+        (account_id, "R-marked2", 0, "spare-marked", "bad", "вскрыта упаковка"),
+    )
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id, confirmed_at) VALUES(?,?,?,?,?)",
+        ("spare-done", db.now_iso(), "nosheet", account_id, db.now_iso()),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, act_id) VALUES(?,?,?,?)",
+        (account_id, "R-closed", 0, "spare-done"),
+    )
+
+    db.init_db()
+
+    assert db.query_one("SELECT act_id FROM returns WHERE id = 'R-marked2'")["act_id"] == "spare-marked"
+    assert db.query_one("SELECT act_id FROM returns WHERE id = 'R-closed'")["act_id"] == "spare-done"
+    assert return_acts.get("spare-done"), "подтверждённый акт удалён"

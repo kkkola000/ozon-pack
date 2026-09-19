@@ -185,66 +185,6 @@ def _drop_empty_spares(conn) -> None:
     )
 
 
-def collect_orphans(account_id: int, ids: list[str], *, table: str = "returns") -> str | None:
-    """Возврат пропал из выдачи, а «Получен» по нему не приходил.
-
-    Такое бывает, когда площадка проводит возврат мимо этого статуса или он
-    приходит с задержкой. Собираем такие в акт за день: без него строка
-    исчезла бы с экрана незаметно, вместе с непоставленной отметкой. Придёт
-    «Получен» — возврат переедет в акт получения.
-    """
-    if not ids:
-        return None
-    today = db.now_iso()[:10]
-    with db.write() as conn:
-        row = conn.execute(
-            "SELECT id FROM return_acts WHERE kind = ? AND account_id = ? "
-            "AND confirmed_at IS NULL AND substr(created_at, 1, 10) = ?",
-            (NO_SHEET, account_id, today),
-        ).fetchone()
-        act_id = row["id"] if row else _new_id()
-        if not row:
-            conn.execute(
-                "INSERT INTO return_acts(id, created_at, created_by, kind, account_id) VALUES(?,?,?,?,?)",
-                (act_id, db.now_iso(), None, NO_SHEET, account_id),
-            )
-        placeholders = ",".join("?" for _ in ids)
-        conn.execute(
-            f"UPDATE {table} SET act_id = ? WHERE act_id IS NULL AND account_id = ? "
-            f"AND id IN ({placeholders})",
-            [act_id, account_id] + ids,
-        )
-        _stamp_day(conn, act_id)
-        _drop_empty_spares(conn)
-    return act_id
-
-
-def _stamp_day(conn, act_id: str) -> None:
-    """Проставить акту «без статуса» число по смене статуса у его возвратов.
-
-    Числа получения у такого акта нет — он и заводится потому, что «Получен»
-    не пришёл. Единственное известное число — когда площадка последний раз
-    меняла статус: тогда возврат и ушёл из выдачи. Берём самое позднее из
-    возвратов акта: акт собирают за день, и заголовок должен называть его.
-    """
-    row = conn.execute(
-        "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act_id,)
-    ).fetchone()
-    day = store.local_day(row["moment"]) if row and row["moment"] else ""
-    if len(day) != 10:
-        return
-    current = conn.execute(
-        "SELECT account_id, received_day, day_seq FROM return_acts WHERE id = ?", (act_id,)
-    ).fetchone()
-    if not current or current["received_day"] == day:
-        return
-    # Номер за число присваивается один раз — вместе с самим числом.
-    seq = current["day_seq"] or _next_seq(conn, current["account_id"], day)
-    conn.execute(
-        "UPDATE return_acts SET received_day = ?, day_seq = ? WHERE id = ?", (day, seq, act_id)
-    )
-
-
 # ------------------------------------------------------------------- чтение
 def get(act_id: str) -> dict | None:
     row = db.query_one("SELECT * FROM return_acts WHERE id = ?", (act_id,))

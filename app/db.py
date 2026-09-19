@@ -689,6 +689,7 @@ KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
 KV_OWNER_SET = "owner_role_assigned"
 KV_DAYS_FIXED = "received_days_repaired"
 KV_CHANGED_FILLED = "status_changed_backfilled"
+KV_SPARES_RELEASED = "unreceived_released_from_acts"
 # Число, каким его выбирают в календаре. Всё, что на это не похоже, в акт не
 # попадёт ни при каком выборе даты.
 _DAY_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -905,6 +906,41 @@ def _fill_status_changed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _release_unreceived(conn: sqlite3.Connection) -> None:
+    """Убрать из неподтверждённых актов то, что ещё не получено.
+
+    Версия 1.26.1 сметала в акт «без статуса» любой возврат, ушедший из выдачи
+    без статуса «Получен», — чтобы строка не исчезла с экрана молча. Но так в
+    акт приёмки попадал и возврат, который ещё едет к продавцу: удалишь акт, а
+    обновление кладёт его обратно. Принимать то, чего нет на складе, нельзя.
+
+    Освобождаем только строки без момента получения и без отметки сборщика:
+    по отмеченным работа уже шла, их судьбу решает человек. Подтверждённые
+    акты не трогаем вовсе — там работа закрыта.
+    """
+    if not (_table_exists(conn, "returns") and _table_exists(conn, "return_acts")):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_SPARES_RELEASED,)).fetchone()
+    if done:
+        return
+    freed = conn.execute(
+        "UPDATE returns SET act_id = NULL WHERE received_at IS NULL "
+        "AND mark IS NULL AND note IS NULL AND act_id IN "
+        "(SELECT id FROM return_acts WHERE kind = 'nosheet' AND confirmed_at IS NULL)"
+    ).rowcount or 0
+    dropped = conn.execute(
+        "DELETE FROM return_acts WHERE kind = 'nosheet' AND confirmed_at IS NULL "
+        "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)"
+    ).rowcount or 0
+    if freed or dropped:
+        log.info("Из актов «без статуса» освобождено возвратов: %d, убрано пустых актов: %d",
+                 freed, dropped)
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_SPARES_RELEASED, now_iso()),
+    )
+
+
 def _drop_generated_data(conn: sqlite3.Connection) -> None:
     """Убрать данные, оставшиеся от демо-режима.
 
@@ -1026,6 +1062,7 @@ def init_db() -> None:
             _drop_auto_return_acts(conn)
             _repair_received_days(conn)
             _fill_status_changed(conn)
+            _release_unreceived(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

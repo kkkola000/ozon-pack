@@ -574,8 +574,14 @@ def test_day_endpoint_requires_csrf(client):
 
 
 # ---------------------------------------------------------------- запасной путь
-def test_return_gone_without_the_received_status_is_not_lost(sample_data):
-    """Возврат пропал из выдачи, «Получен» по нему не приходил."""
+def test_sync_puts_nothing_into_acts(sample_data):
+    """Обновление в акт ничего не кладёт — акт заводит только человек кнопкой.
+
+    Версия 1.26.1 сметала в акт «без статуса» любой возврат, ушедший из выдачи
+    без «Получен». Так в акт приёмки попадал и тот, что ещё едет к продавцу:
+    удалишь акт — обновление положит обратно. Принимать то, чего нет на складе,
+    нельзя.
+    """
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
     account = accounts.default_account()
@@ -584,6 +590,7 @@ def test_return_gone_without_the_received_status_is_not_lost(sample_data):
     client = ozon.get_client(account)
     target = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
     original = client.returns_list
+    # Возврат пропал из выдачи, а «Получен» по нему не пришёл — он в пути.
     client.returns_list = lambda *a, **kw: (
         [r for r in original(*a, **kw)[0] if str(r.get("id")) != str(target)],
         original(*a, **kw)[1],
@@ -591,33 +598,52 @@ def test_return_gone_without_the_received_status_is_not_lost(sample_data):
     sync.sync_returns(account)
     client.returns_list = original
 
-    acts = return_acts.pending()
-    assert acts, "возврат пропал молча"
-    spare = next(a for a in acts if a["no_sheet"])
-    assert [r["id"] for r in spare["ozon"]] == [target]
+    assert return_acts.pending() == [], "обновление само завело акт"
+    assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] is None
 
 
-def test_received_status_takes_the_return_over(sample_data):
-    """Пришёл «Получен» — возврат переезжает из запасного акта в акт за число.
+def test_act_takes_only_received_returns(sample_data):
+    """В акт попадает только то, что площадка объявила полученным."""
+    account = accounts.default_account()
+    take_everything(account)
+    # Одному возврату снимаем признак получения — он «ещё едет».
+    in_transit = db.query_one("SELECT id FROM returns WHERE received_at IS NOT NULL LIMIT 1")["id"]
+    db.execute(
+        "UPDATE returns SET received_at = NULL, received_day = NULL WHERE id = ?", (in_transit,)
+    )
 
-    Догадка о пропаже слабее факта получения, а два акта на один возврат — это
-    две отметки на одну работу.
+    make_act(account)
+    rows = {r["id"]: r["act_id"] for r in db.query("SELECT id, act_id FROM returns")}
+    assert rows[in_transit] is None, "в акт попал возврат без статуса «Получен»"
+    assert any(act_id for rid, act_id in rows.items() if rid != in_transit)
+
+
+def test_received_status_moves_a_legacy_spare_return(sample_data):
+    """Пришёл «Получен» — возврат переезжает из старого акта «без статуса».
+
+    Новые такие акты не заводятся, но прежние ещё лежат в базе: догадка о
+    пропаже слабее факта получения, а два акта на один возврат — это две
+    отметки на одну работу.
     """
     account = accounts.default_account()
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
 
     target = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
-    spare = return_acts.collect_orphans(account["id"], [target])
-    assert return_acts.detail(spare)["no_sheet"] is True
+    spare = "legacy-spare"
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
+        (spare, db.now_iso(), return_acts.NO_SHEET, account["id"]),
+    )
+    db.execute("UPDATE returns SET act_id = ? WHERE id = ?", (spare, target))
 
     take_everything(account)
     make_act(account)
 
     moved = db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"]
-    assert moved != spare, "возврат остался в запасном акте"
+    assert moved != spare, "возврат остался в старом акте"
     assert return_acts.get(moved)["kind"] == return_acts.BY_DAY
-    assert return_acts.get(spare) is None, "опустевший запасной акт не убран"
+    assert return_acts.get(spare) is None, "опустевший старый акт не убран"
 
 
 # ------------------------------------------------------------------ настройка
@@ -1197,82 +1223,537 @@ def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
     assert after == ready_before, "обрыв обхода вычистил список выдачи"
 
 
-# ------------------------------------------- возврат не должен стать невидимым
-def test_return_without_an_act_is_swept_even_from_an_earlier_pass(sample_data):
-    """Возврат без акта подбирается и позже, а не только в свой проход.
+# ---------------------------------------------------------------- подтверждение
+def test_act_cannot_be_confirmed_while_something_is_unmarked(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
 
-    «К выдаче» показывает только is_ready, вкладка актов — только то, что уже в
-    акте. Строка без того и другого не видна нигде: на листе было семь, в акт
-    попало шесть, седьмой «куда-то потерялся». Раньше сбор пропавших работал
-    лишь по тем, кто пропал в этом же обходе.
-    """
-    account = accounts.default_account()
-    take_everything()
+    response = confirm(client, csrf, act["id"])
+    assert response.status_code == 409
+    assert "отметьте" in response.json()["detail"]
+    assert any(a["id"] == act["id"] for a in return_acts.pending()), "акт закрылся без отметок"
 
-    # Строка в том самом невидимом состоянии: из выдачи ушла, акта нет,
-    # момента получения нет. Так бывает после оборванного обхода.
+
+def test_fully_marked_act_is_confirmed(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok", "цел")
+
+    assert return_acts.detail(act["id"])["can_confirm"] is True
+    assert confirm(client, csrf, act["id"]).status_code == 200
+    assert not any(a["id"] == act["id"] for a in return_acts.pending())
+
+    stored = return_acts.get(act["id"])
+    assert stored["confirmed_by"] == "admin" and stored["confirmed_at"]
+
+
+def test_confirmation_is_written_to_the_log(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok")
+    confirm(client, csrf, act["id"])
+
+    row = db.query_one("SELECT message FROM events WHERE kind = 'return_act_confirm'")
+    assert row is not None, "подтверждение акта не попало в журнал"
+    assert "принято" in row["message"]
+
+
+def test_act_confirmed_twice_says_so(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok")
+    confirm(client, csrf, act["id"])
+
+    again = confirm(client, csrf, act["id"])
+    assert again.status_code == 200
+    assert again.json()["status"] == "warning"
+    assert "уже подтвердил" in again.json()["message"]
+
+
+def test_confirm_requires_csrf(client):
+    login(client)
+    act = return_acts.pending()[0]
+    assert client.post(f"/api/returns/acts/{act['id']}/confirm", json={}).status_code == 403
+
+
+def test_unknown_act_is_404(client):
+    csrf = login(client)
+    assert confirm(client, csrf, "нет-такого").status_code == 404
+
+
+# ------------------------------------------------------------------ переделать
+def login_as_admin(client) -> str:
+    """Администратор — не владелец: принятое переделывать ему не дают."""
+    from app.security import hash_password
+
     db.execute(
-        "INSERT INTO returns(account_id, id, is_ready, status_sys, product_name) VALUES(?,?,?,?,?)",
-        (account["id"], "STRAY-1", 0, "ArrivedAtReturnPlace", "Коляска"),
+        "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
+        ("admin9", hash_password("admin9123456"), "admin", db.now_iso()),
     )
-    assert not db.query_one("SELECT act_id FROM returns WHERE id = 'STRAY-1'")["act_id"]
-
-    sync.sync_returns(account)
-
-    act_id = db.query_one("SELECT act_id FROM returns WHERE id = 'STRAY-1'")["act_id"]
-    assert act_id, "потерянный возврат так и не попал ни в один акт"
-    assert return_acts.get(act_id)["kind"] == return_acts.NO_SHEET
-    # И он виден на вкладке: акт в списке неподтверждённых.
-    assert any(a["id"] == act_id for a in return_acts.pending([account["id"]]))
+    client.post("/login", data={"login": "admin9", "password": "admin9123456", "next": "/returns"})
+    page = client.get("/returns")
+    return re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
 
 
-def test_nothing_stays_invisible_after_a_sync(sample_data):
-    """После обхода не остаётся строк, которых нет ни на одном экране."""
+def confirmed_act(client, csrf) -> dict:
+    """Акт, отмеченный и подтверждённый, — то, что лежит в «Отчётах»."""
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok", "цел")
+    assert confirm(client, csrf, act["id"]).status_code == 200
+    return act
+
+
+def unconfirm(client, csrf, act_id):
+    return client.post(f"/api/returns/acts/{act_id}/unconfirm", json={},
+                       headers={"X-CSRF-Token": csrf})
+
+
+def delete_act(client, csrf, act_id):
+    return client.post(f"/api/returns/acts/{act_id}/delete", json={},
+                       headers={"X-CSRF-Token": csrf})
+
+
+def test_owner_returns_a_confirmed_act_to_work(client):
+    """Подтвердили рано — акт возвращается в работу вместе с отметками."""
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+
+    response = unconfirm(client, csrf, act["id"])
+    assert response.status_code == 200, response.text
+    assert any(a["id"] == act["id"] for a in return_acts.pending()), "акт не вернулся во вкладку"
+
+    back = return_acts.detail(act["id"])
+    assert back["confirmed_at"] is None and back["confirmed_by"] is None
+    # Отметки на местах: править нужно строку, а не всю поездку.
+    assert back["unmarked"] == 0 and back["can_confirm"] is True
+    assert all(row["note"] == "цел" for row in back["ozon"])
+
+    # И подтвердить его можно снова.
+    assert confirm(client, csrf, act["id"]).status_code == 200
+
+
+def test_unconfirming_an_open_act_says_so(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    response = unconfirm(client, csrf, act["id"])
+    assert response.status_code == 200
+    assert response.json()["status"] == "warning"
+    assert "не подтверждён" in response.json()["message"]
+
+
+def test_owner_deletes_an_act_and_the_day_can_be_taken_again(client):
+    """Удалённый акт освобождает возвраты — поездку принимают с нуля."""
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+    ids = [row["id"] for row in act["ozon"]]
     account = accounts.default_account()
-    take_everything()
-    sync.sync_returns(account)
 
-    invisible = db.query(
-        "SELECT id FROM returns WHERE account_id = ? AND is_ready = 0 "
-        "AND act_id IS NULL AND received_at IS NULL",
-        (account["id"],),
-    )
-    assert not invisible, f"возвраты не видны ни в выдаче, ни в актах: {[r['id'] for r in invisible]}"
+    response = delete_act(client, csrf, act["id"])
+    assert response.status_code == 200, response.text
+    assert response.json()["freed"] == act["total"]
+    assert return_acts.get(act["id"]) is None
+    assert not any(a["id"] == act["id"] for a in return_acts.pending())
+
+    # Возвраты свободны и без отметок: иначе новый акт подтвердился бы сразу.
+    for row in db.query(f"SELECT act_id, mark, note, mark_by FROM returns "
+                        f"WHERE id IN ({','.join('?' for _ in ids)})", ids):
+        assert row["act_id"] is None and row["mark"] is None
+        assert row["note"] is None and row["mark_by"] is None
+
+    # Момент получения — факт площадки, его не трогали: акт собирается за то же число.
+    assert set(return_acts.received_returns(account["id"], store.local_day())) == set(ids)
+    again = make_act()
+    assert again["status"] == "ok" and again["added"] == len(ids)
+    assert return_acts.detail(again["act_id"])["unmarked"] == len(ids)
 
 
-# --------------------------------------------- заголовок акта «без статуса»
-def test_nosheet_act_is_named_by_the_status_change(sample_data):
-    """Заголовок один на все акты: «Возвраты за ЧИСЛО, акт №N от ВРЕМЯ».
+def test_unconfirmed_act_can_be_deleted_too(client):
+    """Собрали акт не за то число — его тоже надо уметь убрать."""
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    assert delete_act(client, csrf, act["id"]).status_code == 200
+    assert return_acts.pending() == []
 
-    Число получения у акта «без статуса» неоткуда взять — он и заводится
-    потому, что «Получен» не приходил. Берём число смены статуса: тогда
-    возврат и ушёл из выдачи. Раньше вместо числа подставлялось время
-    составления, и «Возвраты за 16.09 11:42» читалось как «получены 16.09
-    в 11:42».
+
+def test_deleting_says_when_to_make_the_act_again(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    message = delete_act(client, csrf, act["id"]).json()["message"]
+    assert store.local_time(db.now_iso(), "%d.%m.%Y") in message
+    assert "заново" in message
+
+
+def test_remaking_is_written_to_the_log(client):
+    csrf = login(client)
+    act = confirmed_act(client, csrf)
+    unconfirm(client, csrf, act["id"])
+    delete_act(client, csrf, act["id"])
+
+    kinds = {row["kind"] for row in db.query("SELECT kind FROM events")}
+    assert {"return_act_unconfirm", "return_act_delete"} <= kinds
+
+
+def test_admin_cannot_remake_an_act(client):
+    """Подпись под принятой работой снимает только тот, кто за склад отвечает."""
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    client.get("/logout")
+
+    csrf = login_as_admin(client)
+    # Администратор вошёл и работает — 403 именно про владельца, а не про вход.
+    assert client.get("/returns?tab=acts").status_code == 200
+    assert unconfirm(client, csrf, act["id"]).status_code == 403
+    assert delete_act(client, csrf, act["id"]).status_code == 403
+    assert return_acts.get(act["id"])["confirmed_at"], "администратор снял подтверждение"
+
+
+def test_packer_cannot_remake_an_act(client):
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    client.get("/logout")
+
+    csrf = login_as_packer(client)
+    assert unconfirm(client, csrf, act["id"]).status_code == 403
+    assert delete_act(client, csrf, act["id"]).status_code == 403
+
+
+def test_remaking_requires_csrf(client):
+    login(client)
+    act = return_acts.pending()[0]
+    assert client.post(f"/api/returns/acts/{act['id']}/unconfirm", json={}).status_code == 403
+    assert client.post(f"/api/returns/acts/{act['id']}/delete", json={}).status_code == 403
+    assert return_acts.get(act["id"]) is not None
+
+
+def test_remaking_an_unknown_act_is_404(client):
+    csrf = login(client)
+    assert unconfirm(client, csrf, "нет-такого").status_code == 404
+    assert delete_act(client, csrf, "нет-такого").status_code == 404
+
+
+def test_buttons_are_owner_only(client):
+    """Кнопок у администратора нет — не только запрет на сервере."""
+    owner_csrf = login(client)
+    act = confirmed_act(client, owner_csrf)
+    page = client.get(f"/reports/returns/{act['id']}")
+    assert "data-unconfirm-act" in page.text and "data-delete-act" in page.text
+    client.get("/logout")
+
+    login_as_admin(client)
+    page = client.get(f"/reports/returns/{act['id']}")
+    assert page.status_code == 200
+    assert "data-unconfirm-act" not in page.text
+    assert "data-delete-act" not in page.text
+
+
+# ------------------------------------------------------- подтверждённое в отчёты
+def test_confirmed_act_moves_to_reports(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok", "цел")
+    assert confirm(client, csrf, act["id"]).status_code == 200
+
+    page = client.get("/reports/returns")
+    assert page.status_code == 200
+    assert act["title"] in page.text
+    assert "admin" in page.text
+
+
+def test_report_act_page_shows_marks_and_notes(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    for row in act["ozon"]:
+        mark(client, csrf, row["id"], "ok", "цел")
+    mark(client, csrf, act["ozon"][0]["id"], "bad", "вскрыта упаковка")
+    confirm(client, csrf, act["id"])
+
+    page = client.get(f"/reports/returns/{act['id']}")
+    assert page.status_code == 200
+    assert "вскрыта упаковка" in page.text
+    assert "Не принят" in page.text
+    for row in act["ozon"]:
+        assert str(row["id"]) in page.text
+
+
+def test_reports_returns_is_admin_only(client):
+    """В актах видны отметки и комментарии всех сборщиков — это для админа."""
+    login_as_packer(client)
+    assert client.get("/reports/returns").status_code == 403
+    assert client.get("/reports/returns/что-нибудь").status_code == 403
+
+
+def test_unconfirmed_act_is_not_in_reports(client):
+    login(client)
+    act = return_acts.pending()[0]
+    page = client.get("/reports/returns")
+    assert page.status_code == 200
+    assert act["id"] not in page.text
+
+
+def test_reports_day_route_still_works(client):
+    """«returns» не должно уезжать в разбор даты — иначе раздел даёт 404."""
+    login(client)
+    assert client.get("/reports/2026-01-05").status_code == 200
+    assert client.get("/reports/не-дата").status_code == 404
+
+
+# ---------------------------------------------------------------- на экране
+def test_page_shows_the_acts(client):
+    login(client)
+    page = client.get("/returns?tab=acts")
+    assert page.status_code == 200
+    assert "Ждёт подтверждения" in page.text
+    for act in return_acts.pending():
+        for row in act["ozon"]:
+            assert str(row["id"]) in page.text, f"возврата {row['id']} нет во вкладке"
+
+
+def test_acts_are_collapsed(client):
+    """Акты свёрнуты: их за день несколько, и список на сотню строк съедает экран.
+
+    Итоги и «Подтвердить акт» живут в заголовке — он виден и у свёрнутого акта,
+    поэтому раскрывать заранее нечего.
+    """
+    login(client)
+    page = client.get("/returns?tab=acts")
+    for match in re.findall(r"<details class=\"act\"[^>]*>", page.text):
+        assert " open" not in match, f"акт раскрыт по умолчанию: {match}"
+
+
+def test_main_tab_is_unchanged(client):
+    """Главная страница возвратов показывает только то, что лежит в ПВЗ."""
+    login(client)
+    page = client.get("/returns")
+    assert page.status_code == 200
+    ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
+    for return_id in ready:
+        assert str(return_id) in page.text
+
+
+def test_header_counts_open_acts(client):
+    login(client)
+    page = client.get("/returns")
+    assert "Акты ждут подтверждения" in page.text
+
+
+def test_printing_the_sheet_does_not_create_an_act(client):
+    """Акт — это факт получения, а не намерение съездить."""
+    login(client)
+    before = {a["id"] for a in return_acts.pending()}
+    assert client.get("/returns/print").status_code == 200
+    assert {a["id"] for a in return_acts.pending()} == before
+
+
+# ---------------------------------------------------------------- печать и PDF акта
+def test_act_sheet_shows_the_marks(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    mark(client, csrf, act["ozon"][0]["id"], "bad", "вскрыта упаковка")
+
+    page = client.get(f"/returns/acts/{act['id']}/print")
+    assert page.status_code == 200
+    assert "Акт ·" in page.text
+    assert "вскрыта упаковка" in page.text
+    assert "✗ Не принят" in page.text
+
+
+def test_act_pdf_is_a_pdf(client):
+    csrf = login(client)
+    act = return_acts.pending()[0]
+    mark(client, csrf, act["ozon"][0]["id"], "ok", "всё на месте")
+
+    response = client.get(f"/returns/acts/{act['id']}.pdf")
+    assert response.status_code == 200, response.text
+    assert response.content[:5] == b"%PDF-"
+
+    from io import BytesIO
+    from pypdf import PdfReader
+
+    text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(response.content)).pages)
+    assert "всё на месте" in text and "Принят" in text
+
+
+def test_act_pdf_of_unknown_act_is_404(client):
+    login(client)
+    assert client.get("/returns/acts/нет-такого.pdf").status_code == 404
+
+
+# ------------------------------------------------- подсказки вместо стены текста
+def test_explanations_live_under_the_hint(client):
+    """Объяснение нужно один раз, а висит оно над рабочими кнопками всегда.
+
+    Текст не выброшен — он под знаком «?»: спрятать совсем значило бы оставить
+    новичка без ответа на «какие возвраты сюда попадают».
+    """
+    login(client)
+    for url, marker in (("/returns", "Загружаются возвраты в статусе"),
+                        ("/returns?tab=acts", "задвоить возврат нельзя")):
+        page = client.get(url).text
+        assert 'class="hint-body"' in page, f"{url}: подсказки нет"
+        assert marker in page, f"{url}: текст подсказки потерялся"
+        # Текст лежит внутри подсказки, а не отдельным абзацем над кнопками.
+        body = page.split('class="hint-body"', 1)[1]
+        assert marker in body.split("</span>", 1)[0] or marker in body[:2000]
+
+
+def test_status_link_stays_reachable(client):
+    """Внутри подсказки ссылка — иначе менять статусы стало бы негде."""
+    login(client)
+    page = client.get("/returns").text
+    assert "Изменить статусы" in page and '/settings' in page
+
+
+# ------------------------------------------------- окно загрузки полученных
+def test_received_are_asked_by_status_and_window_at_once(sample_data):
+    """Статус и период уходят одним запросом — поля фильтра складываются.
+
+    Иначе пришлось бы тянуть всё, что изменилось за период, и отсеивать статус
+    у себя: лишний трафик и лишние страницы на ровном месте.
     """
     from app import ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
+    asked: list[dict] = []
+    original = client.returns_list
+
+    def spy(**kwargs):
+        asked.append(kwargs.get("filter_") or {})
+        return original(**kwargs)
+
+    client.returns_list = spy
+    try:
+        sync.sync_returns(account)
+    finally:
+        client.returns_list = original
+
+    both = [f for f in asked if "visual_status_name" in f and "visual_status_change_moment" in f]
+    assert both, f"полученные запрошены не одним запросом: {asked}"
+    assert any(f["visual_status_name"] == "ReceivedBySeller" for f in both)
+    # «К выдаче» окном не ограничиваем: возврат лежит в пункте неделями.
+    pickup = [f for f in asked if f.get("visual_status_name") == "ArrivedAtReturnPlace"]
+    assert pickup and all("visual_status_change_moment" not in f for f in pickup)
+
+
+def test_received_older_than_the_window_are_not_loaded(sample_data):
+    """За окном возвраты не тянутся: по «Получен» площадка отдаёт весь архив."""
+    from app import ozon
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    long_ago = days_ago(options.get_received_days() + 30)
+    ids = client.receive(final_moment=long_ago.isoformat(), change_moment=long_ago.isoformat())
+    assert ids
+    sync.sync_returns(account)
+
+    # Строки в базе остаются — они загружались, пока лежали в пункте выдачи.
+    # Проверяем другое: полученными они не записались, значит и в акт за число
+    # не встанут. Такие подберёт запасной путь «пропал из выдачи».
+    received = db.query(
+        f"SELECT id FROM returns WHERE received_at IS NOT NULL "
+        f"AND id IN ({','.join('?' for _ in ids)})", ids
+    )
+    assert not received, "архив за пределами окна записался полученным"
+
+
+def test_window_depth_is_a_setting(sample_data):
+    """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
+    from app import ozon
+
+    assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
+    options.set_received_days(40)
+    assert options.get_received_days() == 40
+
+    account = accounts.default_account()
+    client = ozon.get_client(account)
+    moment = days_ago(30)
+    ids = client.receive(final_moment=moment.isoformat(), change_moment=moment.isoformat())
+    sync.sync_returns(account)
+    assert len(db.query(
+        f"SELECT id FROM returns WHERE received_at IS NOT NULL "
+        f"AND id IN ({','.join('?' for _ in ids)})", ids
+    )) == len(ids), "возврат внутри расширенного окна не записался полученным"
+
+    # Бессмысленные значения обрезаются, а не роняют загрузку.
+    assert options.set_received_days(0) == 1
+    assert options.set_received_days(10 ** 6) == options.MAX_RECEIVED_DAYS
+
+
+def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
+    """Оборванный список не считается полным — иначе он «потеряет» возвраты.
+
+    По полному обходу панель решает, какие возвраты пропали из выдачи. Если
+    принять за полный тот, что упёрся в потолок страниц, пропавшим объявится
+    всё, до чего не дочитали.
+    """
+    account = accounts.default_account()
+    sync.sync_returns(account)
+    ready_before = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
+    assert ready_before, "в демо-данных нет возвратов к выдаче"
+
+    monkeypatch.setattr(sync, "RETURNS_MAX_PAGES", 0)
+    sync.sync_returns(account)
+    after = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
+    assert after == ready_before, "обрыв обхода вычистил список выдачи"
+
+
+# --------------------------------- возврат в пути в акт приёмки не попадает
+def test_a_return_in_transit_never_enters_an_act(sample_data):
+    """Ушёл из выдачи без «Получен» — значит ещё едет, и в акт не идёт.
+
+    Версия 1.26.1 сметала такие строки в акт «без статуса». Возврат, который
+    едет к продавцу, оказывался в акте приёмки: удалишь акт — обновление
+    положит обратно. Принимать то, чего нет на складе, нельзя.
+    """
+    account = accounts.default_account()
+    take_everything()
+    # Строка ушла из выдачи, «Получен» по ней не приходил, отметка есть —
+    # значит чистка её не удалит, и видно, что с ней сделает обновление.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, product_name, note) "
+        "VALUES(?,?,?,?,?,?)",
+        (account["id"], "TRANSIT-1", 0, "ArrivedAtReturnPlace", "Коляска в пути", "ещё едет"),
+    )
+
+    for _ in range(2):   # повторное обновление тоже не должно её подбирать
+        sync.sync_returns(account)
+        assert db.query_one("SELECT act_id FROM returns WHERE id = 'TRANSIT-1'")["act_id"] is None
+
+    # И вообще ни в одном акте нет строки без момента получения.
+    in_acts = db.query(
+        "SELECT id FROM returns WHERE act_id IS NOT NULL AND received_at IS NULL"
+    )
+    assert not in_acts, f"в акте оказались неполученные возвраты: {[r['id'] for r in in_acts]}"
+
+
+# --------------------------------------------- заголовок акта «без статуса»
+def test_legacy_spare_act_is_named_by_the_status_change(sample_data):
+    """Заголовок один на все акты: «Возвраты за ЧИСЛО, акт №N от ВРЕМЯ».
+
+    Новые акты «без статуса» не заводятся, но прежние ещё лежат в базе. Числа
+    получения у такого акта нет, берётся число смены статуса: тогда возврат и
+    ушёл из выдачи. Раньше вместо числа подставлялось время составления, и
+    «Возвраты за 16.09 11:42» читалось как «получены 16.09 в 11:42».
+    """
+    account = accounts.default_account()
     moment = days_ago(2, hour=9)
-    ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
-    assert ready
-    for item in ready:
-        item["visual"]["change_moment"] = moment.isoformat()
-    sync.sync_returns(account)
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id, received_day, day_seq) "
+        "VALUES(?,?,?,?,?,?)",
+        ("legacy1", db.now_iso(), return_acts.NO_SHEET, account["id"],
+         store.local_day(moment.isoformat()), 1),
+    )
+    target = db.query_one("SELECT id FROM returns LIMIT 1")["id"]
+    db.execute("UPDATE returns SET act_id = 'legacy1' WHERE id = ?", (target,))
 
-    # Возврат уходит из выдачи в статус, который панель не грузит, — пропал.
-    for item in ready:
-        item["visual"]["status"]["sys_name"] = "MovingToSeller"
-        item["visual"]["status"]["display_name"] = "Едет к вам"
-    sync.sync_returns(account)
-
-    spare = [a for a in return_acts.pending([account["id"]]) if a["kind"] == return_acts.NO_SHEET]
-    assert spare, "акт «без статуса» не завёлся"
-    act = spare[0]
+    act = return_acts.detail("legacy1")
     day = store.local_day(moment.isoformat())
-    assert act["received_day"] == day
-    assert act["title"].startswith(f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}, акт №")
+    assert act["title"].startswith(f"Возвраты за {day[8:10]}.{day[5:7]}.{day[:4]}, акт №1 от ")
     assert store.local_time(act["created_at"], "%H:%M") in act["title"]
 
 
