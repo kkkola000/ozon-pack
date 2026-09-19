@@ -1790,3 +1790,61 @@ def test_acts_are_sorted_by_the_receipt_day(sample_data):
     days = [a["received_day"] for a in return_acts.pending([account["id"]])]
     assert days == sorted(days, reverse=True), f"акты не по числу получения: {days}"
     assert days[0] == store.local_day(newer.isoformat())
+
+
+# ------------------------------ статус решает всё, а не однажды взведённый флаг
+def test_returned_to_pickup_leaves_the_act_candidates(sample_data):
+    """Вернулся в пункт выдачи — в акт приёмки не идёт, хотя когда-то был получен.
+
+    Момент получения пишется один раз и не снимается: он про то, что возврат
+    когда-то получали. По одному ему в акт попадал возврат со статусом
+    «В пункте выдачи» — а на складе его нет.
+    """
+    account = accounts.default_account()
+    taken = take_everything(account)
+    assert taken
+    target = taken[0]
+    assert target in return_acts.received_returns(account["id"], store.local_day())
+
+    # Площадка снова отдаёт его как лежащий в пункте.
+    db.execute(
+        "UPDATE returns SET status_sys = 'ArrivedAtReturnPlace', is_ready = 1 WHERE id = ?",
+        (target,),
+    )
+    assert target not in return_acts.received_returns(account["id"], store.local_day())
+
+    result = make_act(account)
+    assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] is None
+    if result["act_id"]:
+        in_act = db.query(
+            "SELECT status_sys FROM returns WHERE act_id = ?", (result["act_id"],)
+        )
+        assert all(r["status_sys"] == "ReceivedBySeller" for r in in_act), (
+            "в акт попали возвраты не в статусе «Получен»"
+        )
+
+
+def test_stale_pickup_flag_is_cleared_by_the_status(sample_data):
+    """Статус сменился — строка уходит из «К выдаче», даже если обход оборвался.
+
+    Лист печатают из списка «К выдаче». Пока признак чистился только по
+    результатам полного обхода, возврат с давно сменившимся статусом оставался
+    в списке и уходил на печать: сборщик ехал за тем, чего в пункте нет.
+    """
+    account = accounts.default_account()
+    sync.sync_returns(account)
+
+    # Строка от прошлых обновлений: статус уже не «к выдаче», а признак остался.
+    # Комментарий бережёт её от чистки — видно, что с ней сделает обновление.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, product_name, note) "
+        "VALUES(?,?,?,?,?,?)",
+        (account["id"], "STALE-1", 1, "MovingToSeller", "Коляска", "ещё едет"),
+    )
+    assert db.query_one("SELECT is_ready FROM returns WHERE id = 'STALE-1'")["is_ready"] == 1
+
+    sync.sync_returns(account)
+
+    assert db.query_one("SELECT is_ready FROM returns WHERE id = 'STALE-1'")["is_ready"] == 0, (
+        "возврат остался в списке к выдаче"
+    )

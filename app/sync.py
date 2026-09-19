@@ -272,6 +272,17 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
                 by_status = walk({"visual_status_change_moment": window}, what)
             complete = by_status and complete
 
+    # Признак «к выдаче» приводим к текущему статусу строки — без оглядки на
+    # то, дочитался ли обход. Тут нет догадок: статус взят из самой строки.
+    # Иначе возврат, у которого статус давно сменился, остаётся в списке к
+    # выдаче и уходит на печать — сборщик едет за тем, чего в пункте нет.
+    pickup_places = ",".join("?" for _ in pickup) or "''"
+    db.execute(
+        "UPDATE returns SET is_ready = 0 WHERE account_id = ? AND is_ready = 1 "
+        f"AND (status_sys IS NULL OR status_sys NOT IN ({pickup_places}))",
+        [account_id] + pickup,
+    )
+
     gone = 0
     removed = 0
     if complete:

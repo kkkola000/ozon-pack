@@ -57,14 +57,28 @@ def _returns_word(count: int) -> str:
 
 
 # --------------------------------------------------------------- сбор актов
-# Полученный возврат, который ещё можно забрать в акт. Одно условие и на
-# предпросмотр, и на саму сборку: иначе кнопка обещала бы одно, а акт собирал
-# бы другое.
-_FREE_RECEIVED = (
-    "account_id = ? AND received_at IS NOT NULL "
-    "AND (act_id IS NULL OR act_id IN (SELECT id FROM return_acts "
-    "WHERE kind = ? AND confirmed_at IS NULL))"
-)
+def _free_received(account_id: int) -> tuple[str, list]:
+    """Условие «полученный возврат, который ещё можно забрать в акт».
+
+    Одно и на предпросмотр, и на саму сборку: иначе кнопка обещала бы одно, а
+    акт собирал бы другое.
+
+    Статус спрашиваем **текущий**, а не только момент получения. Момент
+    пишется один раз и не снимается — он про то, что возврат когда-то был
+    получен. Возврат, вернувшийся в пункт выдачи, по одному лишь моменту
+    попадал в акт приёмки со статусом «В пункте выдачи», хотя на складе его
+    нет.
+    """
+    from .options import get_received_statuses
+
+    statuses = list(get_received_statuses())
+    marks = ",".join("?" for _ in statuses) or "''"
+    sql = (
+        f"account_id = ? AND received_at IS NOT NULL AND status_sys IN ({marks}) "
+        "AND (act_id IS NULL OR act_id IN (SELECT id FROM return_acts "
+        "WHERE kind = ? AND confirmed_at IS NULL))"
+    )
+    return sql, [account_id] + statuses + [NO_SHEET]
 
 
 def received_returns(account_id: int, day: str) -> list[str]:
@@ -80,11 +94,11 @@ def received_returns(account_id: int, day: str) -> list[str]:
 
     Число — день перехода в «Получен»: акт это поездка за конкретный день.
     """
+    where, params = _free_received(account_id)
     return [
         row["id"] for row in db.query(
-            f"SELECT id FROM returns WHERE {_FREE_RECEIVED} AND received_day = ? "
-            f"ORDER BY received_at, id",
-            (account_id, NO_SHEET, day),
+            f"SELECT id FROM returns WHERE {where} AND received_day = ? ORDER BY received_at, id",
+            params + [day],
         )
     ]
 
