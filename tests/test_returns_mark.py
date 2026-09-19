@@ -188,6 +188,28 @@ def test_pickup_list_has_no_marks(client):
     assert "Где лежит" in page.text
 
 
+def test_mark_window_saves_by_the_decision_itself(client):
+    """В окне отметки три кнопки-решения и крестик — «Сохранить» и «Отмены» нет.
+
+    Сохранение было вторым нажатием по тому, что уже выбрали, и отметка
+    терялась, когда окно закрывали крестиком, считая работу сделанной. Теперь
+    записывает сама кнопка решения, а крестик ничего не пишет.
+    """
+    login(client)
+    page = client.get("/returns?tab=acts")
+    assert page.status_code == 200
+
+    assert 'id="mark-close"' in page.text, "крестик в углу убрали"
+    assert 'id="mark-clear"' in page.text
+    assert 'data-mark="ok"' in page.text and 'data-mark="bad"' in page.text
+    assert 'id="mark-save"' not in page.text, "кнопка «Сохранить» осталась"
+    assert 'id="mark-cancel"' not in page.text, "кнопка «Отмена» осталась"
+    assert ">Сохранить<" not in page.text and ">Отмена<" not in page.text
+
+    # Комментарий выше кнопок: после нажатия писать уже некуда.
+    assert page.text.index('id="mark-note"') < page.text.index('data-mark="bad"')
+
+
 def test_marks_live_in_the_act(client):
     """Отмечают привезённое — во вкладке «Ждёт подтверждения», внутри акта."""
     from app import accounts, ozon, return_acts, store, sync

@@ -8,12 +8,23 @@ const markModal = document.getElementById('mark-modal');
 if (markModal) {
   const noteField = document.getElementById('mark-note');
   const subject = document.getElementById('mark-subject');
+  const clearButton = document.getElementById('mark-clear');
   let current = null;   // {button, marketplace, id, mark}
 
+  /* Что стоит сейчас — видно по подсвеченной кнопке. Нажатие на неё же
+     сохраняет: выбор и есть решение, второго нажатия «Сохранить» нет. */
   function paintChoice(mark) {
     markModal.querySelectorAll('.mark-choice').forEach((button) => {
-      button.classList.toggle('primary', button.dataset.mark === mark);
+      /* Выбранное красим по смыслу, как в списке: принят — зелёным, не
+         принят — красным. Синим, «как главное действие», оба цвета читались
+         одинаково, и отличить одно от другого можно было только по тексту. */
+      const chosen = button.dataset.mark === mark;
+      button.classList.toggle('ok', chosen && mark === 'ok');
+      button.classList.toggle('danger', chosen && mark === 'bad');
     });
+    /* Снимать нечего, пока отметки нет: кнопка в этот момент повторяла бы
+       крестик, только через запрос к серверу. */
+    clearButton.disabled = !mark;
   }
 
   function openMark(button) {
@@ -93,11 +104,21 @@ if (markModal) {
     }
   }
 
+  /* Пока запрос в пути, кнопки окна заперты: нажатие сохраняет сразу, и два
+     нажатия подряд ушли бы двумя отметками по одному возврату. */
+  function lockModal(locked) {
+    markModal.querySelectorAll('.btn').forEach((button) => {
+      button.disabled = locked;
+    });
+    if (!locked) paintChoice(current ? current.mark : '');
+  }
+
   async function saveMark(mark) {
     if (!current) return;
     const { button, marketplace, id } = current;
     const note = noteField.value.trim();
     button.disabled = true;
+    lockModal(true);
     try {
       const result = await api('/api/returns/mark', { marketplace, id, mark, note });
       /* Сервер ответил — отметка записана, и окно закрываем первым делом.
@@ -111,6 +132,7 @@ if (markModal) {
       toast(error.message, 'error', 10000);
     } finally {
       button.disabled = false;
+      lockModal(false);
     }
   }
 
@@ -125,16 +147,14 @@ if (markModal) {
     if (event.target === markModal) closeMark();
   });
 
+  /* Нажали решение — оно и записано. Раньше выбор только подсвечивался, а
+     записывало его второе нажатие, «Сохранить»: закрыл окно крестиком, решив,
+     что дело сделано, — и отметки нет. */
   markModal.querySelectorAll('.mark-choice').forEach((button) => {
-    button.addEventListener('click', () => {
-      if (current) current.mark = button.dataset.mark;
-      paintChoice(button.dataset.mark);
-    });
+    button.addEventListener('click', () => saveMark(button.dataset.mark));
   });
 
-  document.getElementById('mark-save').onclick = () => saveMark(current?.mark || '');
-  document.getElementById('mark-clear').onclick = () => { noteField.value = ''; saveMark(''); };
-  document.getElementById('mark-cancel').onclick = closeMark;
+  clearButton.onclick = () => { noteField.value = ''; saveMark(''); };
   document.getElementById('mark-close').onclick = closeMark;
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !markModal.hidden) closeMark();

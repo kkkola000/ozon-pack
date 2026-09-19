@@ -9,21 +9,29 @@
 
     <div class="muted small" style="margin-top:6px" id="mark-subject">—</div>
 
-    <div class="row" style="margin-top:16px; gap:10px">
-      <button class="btn big mark-choice" data-mark="ok">✓ Принят</button>
-      <button class="btn big mark-choice" data-mark="bad">✗ Не принят</button>
-    </div>
-
+    {# Комментарий выше кнопок: кнопка теперь сразу сохраняет и закрывает окно,
+       и писать после неё уже некуда. Сначала пишут, потом решают. #}
     <label class="small muted" for="mark-note" style="display:block; margin-top:16px">Комментарий</label>
     <textarea id="mark-note" rows="4" maxlength="2000"
               placeholder="Что не так с возвратом: вскрыта упаковка, нет комплекта, не выдали…"></textarea>
 
-    <div class="row between" style="margin-top:16px">
-      <button class="btn" id="mark-clear">Снять отметку</button>
-      <div class="row">
-        <button class="btn" id="mark-cancel">Отмена</button>
-        <button class="btn primary" id="mark-save">Сохранить</button>
-      </div>
+    {# Три кнопки — три решения, и каждая сама сохраняет отметку. Отдельных
+       «Отмена» и «Сохранить» нет: сохранение было вторым нажатием по тому, что
+       уже выбрали, а «Отмена» повторяла крестик в углу. Передумали — крестик
+       или Esc, они ничего не пишут.
+
+       Решения крупные и во всю ширину: по ним попадают не глядя, это главное
+       движение в окне. «Снять отметку» ниже и обычного размера — её жмут редко
+       и не в спешке, а рядом с двумя крупными она в строку не помещалась. #}
+    <div class="row" style="margin-top:18px; gap:10px; flex-wrap:nowrap">
+      <button class="btn big mark-choice" data-mark="bad" style="flex:1">✗ Не принят</button>
+      <button class="btn big mark-choice" data-mark="ok" style="flex:1">✓ Принят</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="mark-clear"
+              title="Убрать отметку и комментарий: возврат снова без решения">
+        Снять отметку
+      </button>
     </div>
   </div>
 </div>
