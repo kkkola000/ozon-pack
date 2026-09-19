@@ -199,6 +199,23 @@ def _drop_empty_spares(conn) -> None:
     )
 
 
+def drop_empty(account_id: int) -> int:
+    """Убрать неподтверждённые акты кабинета, в которых не осталось позиций.
+
+    Возврат уходит из акта, когда площадка передвинула число получения: акт
+    составлен за 18-е, а получен возврат 19-го. Забрали так всё — от акта
+    остаётся пустая строка на экране, подтверждать в ней нечего.
+
+    Подтверждённый акт не трогаем ни при каких условиях: он уже документ.
+    """
+    with db.write() as conn:
+        return conn.execute(
+            "DELETE FROM return_acts WHERE account_id = ? AND confirmed_at IS NULL "
+            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
+            (account_id,),
+        ).rowcount or 0
+
+
 # ------------------------------------------------------------------- чтение
 def get(act_id: str) -> dict | None:
     row = db.query_one("SELECT * FROM return_acts WHERE id = ?", (act_id,))

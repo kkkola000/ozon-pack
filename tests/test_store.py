@@ -198,3 +198,59 @@ def test_ozon_print_sheet_shows_pickup_address_without_status(sample_data, accou
     assert "Москва, Ленинский пр-т, 25" in page.text
     assert "Статус" not in page.text, "колонку со статусом с листа убрали"
     assert "В пункте выдачи" not in page.text
+
+
+# ------------------------------------------- когда возврат стал готов к выдаче
+def test_arrival_date_is_kept_for_every_return(sample_data):
+    """arrived_moment сохраняется по каждому возврату, а не считается на лету."""
+    rows = db.query("SELECT id, arrived_at, raw FROM returns WHERE is_ready = 1")
+    assert rows, "нет возвратов, готовых к выдаче"
+    import json
+
+    for row in rows:
+        expected = (json.loads(row["raw"]).get("storage") or {}).get("arrived_moment")
+        assert row["arrived_at"], f"у возврата {row['id']} нет даты готовности"
+        assert row["arrived_at"][:10] == expected[:10]
+
+
+def test_arrival_date_is_shown_in_the_card(sample_data, account):
+    """Дата готовности видна в строке возврата раздела «К выдаче».
+
+    Нужна, чтобы отличить залежавшийся возврат от привезённого сегодня. Это
+    всё, для чего она здесь: список по ней не строится и не сортируется.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    row = db.query_one(
+        "SELECT id, arrived_at FROM returns WHERE account_id = ? AND is_ready = 1 "
+        "AND arrived_at IS NOT NULL LIMIT 1", (account["id"],)
+    )
+    with TestClient(app, follow_redirects=False) as client:
+        client.post("/login", data={"login": "admin", "password": "test-admin-pass", "next": "/returns"})
+        page = client.get("/returns")
+
+    assert page.status_code == 200
+    assert f"Готов к выдаче с {store.local_time(row['arrived_at'], '%d.%m.%Y')}" in page.text
+
+
+def test_arrival_date_does_not_decide_the_section(sample_data, account):
+    """По дате готовности возврат никуда не попадает и ниоткуда не выпадает.
+
+    Состав раздела решают отмеченные в настройках статусы. Дата готовности —
+    только для сведения: ставим её старее некуда и убеждаемся, что список тот же.
+    """
+    from app import options
+
+    before = [row["id"] for row in db.query(
+        "SELECT id FROM returns WHERE account_id = ? AND is_ready = 1 ORDER BY id", (account["id"],)
+    )]
+    assert before
+    db.execute("UPDATE returns SET arrived_at = ? WHERE account_id = ?", ("2019-01-01T00:00:00+00:00", account["id"]))
+
+    where, params = options.pickup_sql()
+    after = [row["id"] for row in db.query(
+        f"SELECT id FROM returns WHERE account_id = ? AND {where} ORDER BY id", [account["id"]] + params
+    )]
+    assert after == before

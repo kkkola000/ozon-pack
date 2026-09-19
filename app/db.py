@@ -225,6 +225,10 @@ CREATE TABLE IF NOT EXISTS returns (
     -- нему же строится окно загрузки, а для акта «без статуса» это
     -- единственное известное число — получения у такого акта ещё нет.
     status_changed_at TEXT,
+    -- storage.arrived_moment: когда возврат стал готов к выдаче, то есть
+    -- доехал до пункта. Видно в списке «К выдаче»: по нему понятно, что лежит
+    -- давно, а что привезли только что.
+    arrived_at        TEXT,
     storage_until     TEXT,
     storage_sum       TEXT,
     barcode           TEXT,
@@ -690,6 +694,7 @@ KV_OWNER_SET = "owner_role_assigned"
 KV_DAYS_FIXED = "received_days_repaired"
 KV_CHANGED_FILLED = "status_changed_backfilled"
 KV_SPARES_RELEASED = "unreceived_released_from_acts"
+KV_ARRIVED_FILLED = "arrived_moment_backfilled"
 # Число, каким его выбирают в календаре. Всё, что на это не похоже, в акт не
 # попадёт ни при каком выборе даты.
 _DAY_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -906,6 +911,83 @@ def _fill_status_changed(conn: sqlite3.Connection) -> None:
     )
 
 
+def _fill_arrived(conn: sqlite3.Connection) -> None:
+    """Достать из сохранённого ответа дату готовности к выдаче и число получения.
+
+    Колонка arrived_at появилась позже, а данные для неё уже лежали в `raw`.
+    Заодно правим число получения: оно писалось один раз и залипало. Статус
+    сменился 18-го, а выдали 19-го — возврат так и оставался за 18-м, сколько
+    ни обновляй. Берём final_moment: это сам момент выдачи.
+
+    Строки из подтверждённых актов не трогаем — там работа закрыта.
+    """
+    if not _table_exists(conn, "returns"):
+        return
+    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_ARRIVED_FILLED,)).fetchone()
+    if done:
+        return
+    from .store import local_day
+
+    arrived = fixed = 0
+    # Строки без сохранённого ответа тоже нужны: даты готовности у них не
+    # будет, а залипшее число получения починить надо и им.
+    for row in conn.execute(
+        "SELECT account_id, id, raw, final_moment, received_at, received_day, act_id FROM returns"
+    ).fetchall():
+        try:
+            body = json.loads(row["raw"] or "{}") or {}
+        except (TypeError, ValueError):
+            body = {}
+        moment = _parsed_moment(((body.get("storage") or {}).get("arrived_moment")))
+        if moment:
+            conn.execute(
+                "UPDATE returns SET arrived_at = ? WHERE account_id = ? AND id = ?",
+                (moment, row["account_id"], row["id"]),
+            )
+            arrived += 1
+
+        if not row["received_at"]:
+            continue
+        handover = _parsed_moment(row["final_moment"])
+        if not handover or handover == row["received_at"]:
+            continue
+        locked = conn.execute(
+            "SELECT 1 FROM return_acts WHERE id = ? AND confirmed_at IS NOT NULL", (row["act_id"],)
+        ).fetchone() if row["act_id"] else None
+        if locked:
+            continue
+        day = local_day(handover)
+        if len(day) != 10:
+            continue
+        conn.execute(
+            "UPDATE returns SET received_at = ?, received_day = ? WHERE account_id = ? AND id = ?",
+            (handover, day, row["account_id"], row["id"]),
+        )
+        fixed += 1
+        # Число переехало — из акта за прежнее возврат надо отпустить, иначе
+        # в акт за своё число он не попадёт: место уже занято. Отмеченный
+        # остаётся: отметку ставил сборщик, держа возврат в руках.
+        conn.execute(
+            "UPDATE returns SET act_id = NULL WHERE account_id = ? AND id = ? AND mark IS NULL "
+            "AND act_id IN (SELECT id FROM return_acts WHERE confirmed_at IS NULL "
+            "AND received_day IS NOT NULL AND received_day <> ?)",
+            (row["account_id"], row["id"], day),
+        )
+    if fixed:
+        # Акт, из которого так забрали всё, остаётся пустой строкой на экране.
+        conn.execute(
+            "DELETE FROM return_acts WHERE confirmed_at IS NULL "
+            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)"
+        )
+    if arrived or fixed:
+        log.info("Дата готовности к выдаче заполнена у %d возвратов, чисел получения поправлено: %d",
+                 arrived, fixed)
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_ARRIVED_FILLED, now_iso()),
+    )
+
+
 def _release_unreceived(conn: sqlite3.Connection) -> None:
     """Убрать из неподтверждённых актов то, что ещё не получено.
 
@@ -1063,6 +1145,7 @@ def init_db() -> None:
             _repair_received_days(conn)
             _fill_status_changed(conn)
             _release_unreceived(conn)
+            _fill_arrived(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

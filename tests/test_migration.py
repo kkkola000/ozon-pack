@@ -504,3 +504,70 @@ def test_release_keeps_marked_rows_and_confirmed_acts():
     assert db.query_one("SELECT act_id FROM returns WHERE id = 'R-marked2'")["act_id"] == "spare-marked"
     assert db.query_one("SELECT act_id FROM returns WHERE id = 'R-closed'")["act_id"] == "spare-done"
     assert return_acts.get("spare-done"), "подтверждённый акт удалён"
+
+
+def test_arrival_date_is_filled_from_the_saved_answer():
+    """Дата готовности к выдаче достаётся из raw, а залипшее число получения правится.
+
+    Колонка появилась позже, данные для неё лежали в сохранённом ответе.
+    Заодно правим число получения: оно писалось один раз и залипало — статус
+    сменился 18-го, выдали 19-го, а возврат так и оставался за 18-м.
+    """
+    import json
+
+    from app import accounts, store
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id, received_day) VALUES(?,?,?,?,?)",
+        ("act-18", "2026-09-18T18:00:00+00:00", "byday", account_id, "2026-09-18"),
+    )
+    raw = {"storage": {"arrived_moment": "2026-09-12T07:30:00.123456Z"}}
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, raw, final_moment, "
+        "received_at, received_day, act_id) VALUES(?,?,?,?,?,?,?,?,?)",
+        (account_id, "R-arrived", 0, "ReceivedBySeller", json.dumps(raw),
+         "2026-09-19T08:12:29.823318+00:00", "2026-09-18T17:40:00+00:00", "2026-09-18", "act-18"),
+    )
+
+    db.init_db()
+
+    row = db.query_one(
+        "SELECT arrived_at, received_at, received_day, act_id FROM returns WHERE id = 'R-arrived'")
+    assert row["arrived_at"], "дату готовности не достали из raw"
+    assert row["arrived_at"].startswith("2026-09-12")
+    assert row["received_day"] == store.local_day("2026-09-19T08:12:29+00:00"), "число получения залипло"
+    assert row["received_at"].startswith("2026-09-19")
+    # И из акта за прежнее число возврат отпущен, а пустой акт убран.
+    assert row["act_id"] is None
+    assert not db.query_one("SELECT id FROM return_acts WHERE id = 'act-18'")
+
+
+def test_arrival_backfill_keeps_confirmed_acts_and_runs_once():
+    """Подтверждённый акт не передатируется, а повтор установки ничего не делает."""
+    from app import accounts
+
+    account_id = accounts.default_account()["id"]
+    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))
+    db.execute(
+        "INSERT INTO return_acts(id, created_at, kind, account_id, confirmed_at) VALUES(?,?,?,?,?)",
+        ("act-signed", db.now_iso(), "byday", account_id, db.now_iso()),
+    )
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, status_sys, raw, final_moment, "
+        "received_at, received_day, act_id) VALUES(?,?,?,?,?,?,?,?,?)",
+        (account_id, "R-signed", 0, "ReceivedBySeller", "{}",
+         "2026-09-19T08:12:29+00:00", "2026-09-18T17:40:00+00:00", "2026-09-18", "act-signed"),
+    )
+
+    db.init_db()
+    assert db.query_one("SELECT received_day FROM returns WHERE id = 'R-signed'")["received_day"] == "2026-09-18"
+
+    # Строка, добавленная после миграции, второй раз уже не обрабатывается.
+    db.execute(
+        "INSERT INTO returns(account_id, id, is_ready, raw) VALUES(?,?,?,?)",
+        (account_id, "R-late", 0, '{"storage": {"arrived_moment": "2026-09-12T07:30:00Z"}}'),
+    )
+    db.init_db()
+    assert db.query_one("SELECT arrived_at FROM returns WHERE id = 'R-late'")["arrived_at"] is None

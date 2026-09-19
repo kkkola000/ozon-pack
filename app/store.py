@@ -328,16 +328,17 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     # обновление объявило бы полученными сегодня тысячи старых возвратов —
     # ровно один такой акт на 2446 позиций и получился в версии 1.17.
     #
-    # Число — по change_moment, моменту перехода в «Получен». Это то самое,
-    # что площадка сообщает о получении, тем же полем задаётся окно загрузки,
-    # и то же число берёт акт «без статуса»: одно правило на оба вида актов.
-    # final_moment запасной — его площадка присылает не всегда.
-    received_at = (
-        _moment(visual.get("change_moment")) or _moment(logistic.get("final_moment"))
+    # Число — по final_moment, «прибыл на фулфилмент или выдан продавцу»: это
+    # сам момент получения. change_moment запасной, это лишь последняя смена
+    # статуса: она бывает раньше выдачи — статус перещёлкнулся 18-го, а на
+    # руки возврат отдали 19-го, и в акт он вставал не тем числом.
+    platform_moment = (
+        _moment(logistic.get("final_moment")) or _moment(visual.get("change_moment"))
     ) if received else None
-    if received_at and received_at > now:
-        received_at = now
-    received_at = received_at or (now if received else None)
+    if platform_moment and platform_moment > now:
+        platform_moment = now
+    # «Сейчас» — только если у площадки внятного момента нет вовсе.
+    received_at = platform_moment or (now if received else None)
     # Число обязано быть числом: по нему и только по нему возврат попадает в
     # акт. Если из момента его не вышло, ставим сегодняшнее — возврат лучше
     # положить в акт не за тот день, чем потерять с экрана совсем.
@@ -353,9 +354,9 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
         INSERT INTO returns (
             account_id, id, type, scheme, status_sys, status_name, order_id, order_number, posting_number, sku, offer_id,
             product_name, quantity, price, currency, place_name, place_address, target_place_name, return_reason,
-            return_date, final_moment, status_changed_at, storage_until, storage_sum, barcode, is_ready, raw,
-            first_seen_at, updated_at, received_at, received_day
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            return_date, final_moment, status_changed_at, arrived_at, storage_until, storage_sum, barcode,
+            is_ready, raw, first_seen_at, updated_at, received_at, received_day
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, id) DO UPDATE SET
             type = excluded.type, scheme = excluded.scheme, status_sys = excluded.status_sys,
             status_name = excluded.status_name, order_id = excluded.order_id, order_number = excluded.order_number,
@@ -364,12 +365,13 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             currency = excluded.currency, place_name = excluded.place_name, place_address = excluded.place_address,
             target_place_name = excluded.target_place_name, return_reason = excluded.return_reason,
             return_date = excluded.return_date, final_moment = excluded.final_moment,
-            status_changed_at = excluded.status_changed_at,
+            status_changed_at = excluded.status_changed_at, arrived_at = excluded.arrived_at,
             storage_until = excluded.storage_until, storage_sum = excluded.storage_sum, barcode = excluded.barcode,
             is_ready = excluded.is_ready, raw = excluded.raw, updated_at = excluded.updated_at,
-            -- Момент получения пишется только в первый раз. Ozon отдаёт статус
-            -- «Получен» и на следующих обновлениях, а новая дата означала бы
-            -- новый акт на тот же возврат — вторую отметку на одну работу.
+            -- Здесь момент получения только дописывается, но не перебивается:
+            -- в excluded он может оказаться «сейчас», а Ozon отдаёт статус
+            -- «Получен» и на следующих обновлениях — каждое двигало бы дату
+            -- вперёд. Настоящий момент площадки ставит отдельный UPDATE ниже.
             received_at = COALESCE(returns.received_at, excluded.received_at),
             received_day = COALESCE(returns.received_day, excluded.received_day)
         """,
@@ -396,6 +398,7 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _dt(logistic.get("return_date")),
             _dt(logistic.get("final_moment")),
             _moment(visual.get("change_moment")),
+            _moment(storage.get("arrived_moment")),
             _dt(storage.get("utilization_forecast_date")),
             _text((storage.get("sum") or {}).get("price")),
             _text(logistic.get("barcode")),
@@ -407,6 +410,34 @@ def upsert_return(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             received_day,
         ),
     )
+    # Момент от площадки — величина постоянная, и если он приехал позже или
+    # изменился, число надо поправить. Без этого первая запись залипала: статус
+    # сменился 18-го, выдали 19-го, а возврат так и оставался за 18-м, сколько
+    # ни обновляй. «Сейчас» сюда не попадает — им затирать нечего.
+    #
+    # Возврат из подтверждённого акта не трогаем: там работа закрыта, и менять
+    # под ней число значило бы переписывать уже подписанный документ.
+    if platform_moment:
+        conn.execute(
+            "UPDATE returns SET received_at = ?, received_day = ? "
+            "WHERE account_id = ? AND id = ? AND (act_id IS NULL OR act_id IN "
+            "(SELECT id FROM return_acts WHERE confirmed_at IS NULL))",
+            (platform_moment, local_day(platform_moment), account_id, return_id),
+        )
+        # Число переехало, а возврат остался в акте за прежнее — и «Обновить»
+        # не помогало: в акте за 18-е так и висел возврат, полученный 19-го.
+        # Освобождаем, чтобы он попал в акт за своё число. Акт при этом не
+        # составляется: его по-прежнему заводит человек кнопкой.
+        #
+        # Отмеченный возврат остаётся на месте: отметку ставил сборщик, держа
+        # возврат в руках, и переносить её работу в другой акт нельзя.
+        conn.execute(
+            "UPDATE returns SET act_id = NULL WHERE account_id = ? AND id = ? "
+            "AND mark IS NULL AND act_id IN (SELECT id FROM return_acts "
+            "WHERE confirmed_at IS NULL AND received_day IS NOT NULL "
+            "AND received_day <> ?)",
+            (account_id, return_id, local_day(platform_moment)),
+        )
     return return_id
 
 
@@ -526,6 +557,10 @@ def return_view(row: sqlite3.Row | dict) -> dict:
     data = dict(row)
     data.pop("raw", None)
     data["status_label"] = data.get("status_name") or RETURN_STATUS_LABELS.get(data.get("status_sys") or "", "")
+    # Когда возврат стал готов к выдаче. Только показываем: по нему видно, что
+    # лежит в пункте давно, а что привезли сегодня. Список по нему не строится
+    # и не сортируется — состав раздела решают отмеченные статусы.
+    data["arrived_local"] = local_time(data.get("arrived_at"), "%d.%m.%Y") if data.get("arrived_at") else ""
     return _with_mark(data)
 
 

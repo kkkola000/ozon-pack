@@ -322,6 +322,11 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
         # удалишь акт — обновление положит его обратно. Принимать то, чего нет
         # на складе, нельзя, поэтому акты заводит только человек кнопкой.
 
+    # Возврат мог уйти из акта, если площадка передвинула число получения:
+    # акт за 18-е, а получен он 19-го. Акт, из которого так забрали всё,
+    # остаётся пустой строкой на экране — убираем.
+    return_acts.drop_empty(account_id)
+
     db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
     db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}

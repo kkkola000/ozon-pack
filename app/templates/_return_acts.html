@@ -97,6 +97,7 @@
             <div class="muted small">
               {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
               {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
+              {% if r.arrived_local %} · готов к выдаче с {{ r.arrived_local }}{% endif %}
             </div>
           </td>
           <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
