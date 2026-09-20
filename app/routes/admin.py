@@ -35,6 +35,7 @@ EVENT_LABELS = {
     "scan_unknown": "Неизвестный код",
     "scan_unknown_posting": "Отправление не найдено",
     "label_print": "Печать стикера",
+    "labels_archive": "Выгрузка стикеров",
     "ship": "Сборка в Ozon",
     "ship_error": "Ошибка сборки в Ozon",
     "returns_print": "Печать листа возвратов",
@@ -57,6 +58,7 @@ EVENT_LABELS = {
     "avito_confirm": "Заказ Avito подтверждён",
     "avito_ship": "Заказ Avito отправлен",
     "avito_label_print": "Печать этикетки Avito",
+    "avito_labels_archive": "Выгрузка этикеток Avito",
     "avito_returns_print": "Печать листа возвратов Avito",
     "avito_error": "Ошибка Avito",
 }

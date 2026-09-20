@@ -2,7 +2,22 @@
 {% block title %}Сборка · Ozon Pack{% endblock %}
 
 {% block content %}
-<div class="panel">
+{# Замок: пока стикеры не выгружены, поля сканирования нет вовсе. Ozon отдаёт
+   стикер, пока отправление ждёт отгрузки, — не забрали вовремя, и он пропал
+   навсегда. Поэтому выгрузка идёт первой, а не «когда-нибудь потом». #}
+<div class="panel" id="label-gate" hidden>
+  <div class="gate">
+    <div class="what" id="gate-title">Скачайте стикеры</div>
+    <div class="gate-why">
+      Сборка начинается после выгрузки. Стикер можно забрать, пока отправление
+      ждёт отгрузки, поэтому берём их заранее — все за кабинет
+      <b>«{{ account.title }}»</b>, одним архивом.
+    </div>
+    <button class="btn primary big" id="btn-labels">Скачать стикеры</button>
+  </div>
+</div>
+
+<div class="panel" id="scan-panel">
   <div class="scanbar">
     <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
            placeholder="Сканируйте штрихкод товара или стикер отправления…" autofocus>

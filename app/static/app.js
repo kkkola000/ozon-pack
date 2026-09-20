@@ -25,6 +25,40 @@ async function api(url, body, method = 'POST') {
   return data;
 }
 
+/* Скачать архив на компьютер. Панель стикеры у себя не хранит: файл уезжает в
+   браузер и живёт там, поэтому ответ сразу отдаём в «Загрузки», а не держим в
+   памяти вкладки. Имя берём из заголовка ответа — его составил сервер. */
+async function downloadArchive(url, button, fallbackName = 'archive.zip') {
+  const was = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Скачиваем…';
+  try {
+    const response = await fetch(url, { method: 'POST', headers: { 'X-CSRF-Token': CSRF } });
+    if (!response.ok) {
+      let detail = `Ошибка ${response.status}`;
+      try { detail = (await response.json()).detail || detail; } catch (e) { /* не JSON */ }
+      throw new Error(detail);
+    }
+    const header = response.headers.get('Content-Disposition') || '';
+    const name = decodeURIComponent((header.match(/filename="?([^"]+)"?/) || [])[1] || fallbackName);
+    const blobUrl = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    return true;
+  } catch (error) {
+    toast(error.message, 'error', 10000);
+    return false;
+  } finally {
+    button.disabled = false;
+    button.textContent = was;
+  }
+}
+
 function toast(message, kind = 'ok', timeout = 5000) {
   const box = document.getElementById('toasts');
   if (!box) return;

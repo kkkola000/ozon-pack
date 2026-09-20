@@ -163,6 +163,37 @@ function applyResult(result, code, printWindow = null) {
   }
 }
 
+/* Замок: без выгруженных стикеров сканировать нечего, поэтому поле прячется
+   целиком. Стикер площадка отдаёт, пока отправление ждёт отгрузки, — не забрали
+   вовремя, и его уже не получить.
+
+   Открытую сборку замок не трогает: товар у сборщика в руках, половина
+   отсканирована, и убрать поле сейчас значит бросить его с коробкой. Дадим
+   закрыть начатое — запрём после. */
+function applyGate(state) {
+  const gate = document.getElementById('label-gate');
+  const scanPanel = document.getElementById('scan-panel');
+  if (!gate || !scanPanel) return;
+  const pending = state?.pending || 0;
+  const locked = Boolean(state?.locked) && !hasActive;
+  gate.hidden = !locked;
+  scanPanel.hidden = locked;
+  if (!locked) {
+    if (pending && hasActive) {
+      setBanner('warning', `Подъехали новые отправления (${pending}). Закройте текущее — дальше понадобится скачать стикеры.`);
+    }
+    return;
+  }
+  document.getElementById('gate-title').textContent = `Скачайте стикеры — ${postingsWord(pending)}`;
+  document.getElementById('btn-labels').textContent = `Скачать стикеры (${pending})`;
+}
+
+function postingsWord(count) {
+  const tail = count % 100 >= 11 && count % 100 <= 14 ? 0 : count % 10;
+  const word = tail === 1 ? 'отправление' : tail >= 2 && tail <= 4 ? 'отправления' : 'отправлений';
+  return `${count} ${word}`;
+}
+
 function applyCounters(counters) {
   const map = {
     'c-packaging': counters.awaiting_packaging,
@@ -279,11 +310,19 @@ document.getElementById('btn-sync').onclick = async (event) => {
   }
 };
 
+document.getElementById('btn-labels').onclick = async (event) => {
+  if (await downloadArchive('/api/labels/archive.zip', event.target, 'stickers.zip')) {
+    toast('Стикеры скачаны — можно начинать сборку', 'ok');
+    await refreshState();
+  }
+};
+
 async function refreshState() {
   try {
     const data = await api('/api/state', undefined, 'GET');
     renderActive(data.state);
     applyCounters(data.counters);
+    applyGate(data.labels);
     document.getElementById('sync-time').textContent = new Date().toLocaleTimeString('ru-RU');
   } catch (error) { /* пересинхронизируемся на следующем цикле */ }
 }

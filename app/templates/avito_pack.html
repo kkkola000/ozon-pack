@@ -2,7 +2,21 @@
 {% block title %}Сборка Avito · {{ account.title }}{% endblock %}
 
 {% block content %}
-<div class="panel">
+{# Тот же замок, что на «Сборке» Ozon. У Avito он ложится на готовый порядок:
+   стикер тут и так вход в сборку — его печатают, потом сканируют. #}
+<div class="panel" id="label-gate" hidden>
+  <div class="gate">
+    <div class="what" id="gate-title">Скачайте этикетки</div>
+    <div class="gate-why">
+      Сборка Avito начинается со скана этикетки, поэтому сперва выгрузка: все
+      этикетки кабинета <b>«{{ account.title }}»</b> одним архивом.
+      Печатаете — и сканируете по одной.
+    </div>
+    <button class="btn primary big" id="btn-labels">Скачать этикетки</button>
+  </div>
+</div>
+
+<div class="panel" id="scan-panel">
   <div class="scanbar">
     <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
            placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…" autofocus>

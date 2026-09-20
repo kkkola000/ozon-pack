@@ -90,6 +90,10 @@ CREATE TABLE IF NOT EXISTS postings (
     claim_at         TEXT,
     printed_at       TEXT,
     print_count      INTEGER NOT NULL DEFAULT 0,
+    -- Когда стикер выгрузили на компьютер. Самого файла панель не хранит: он
+    -- уезжает в браузер и живёт там. Здесь только отметка, и по ней решается,
+    -- пускать ли к сканированию: без стикеров сборку начинать нечем.
+    label_saved_at   TEXT,
     packed_at        TEXT,
     packed_by        TEXT,
     shipped_at       TEXT,
@@ -328,6 +332,8 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     shipped_by      TEXT,
     printed_at      TEXT,
     print_count     INTEGER NOT NULL DEFAULT 0,
+    -- Отметка о выгрузке стикера на компьютер — см. такую же колонку в postings.
+    label_saved_at  TEXT,
     -- Сборка на складе: у Avito нет штрихкодов товаров, поэтому отметка
     -- «собран» ставится по факту сканирования стикера и товара, а не площадкой.
     packed_at       TEXT,

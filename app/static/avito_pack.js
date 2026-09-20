@@ -5,6 +5,7 @@ const activePanel = document.getElementById('active-panel');
 const historyBox = document.getElementById('history');
 
 let busy = false;
+let hasActive = false;   // открыта ли сборка — при открытой замок не опускаем
 const history = [];
 
 function keepFocus() {
@@ -23,8 +24,36 @@ function setBanner(kind, message) {
   setTimeout(() => banner.classList.remove('flash'), 500);
 }
 
+/* Замок: без выгруженных этикеток сканировать нечего — у Avito этикетка и есть
+   вход в сборку. Открытую сборку не трогаем: товар уже в руках, и убрать поле
+   сейчас значит бросить сборщика с коробкой. Запрём, когда закроет. */
+function applyGate(state) {
+  const gate = document.getElementById('label-gate');
+  const scanPanel = document.getElementById('scan-panel');
+  if (!gate || !scanPanel) return;
+  const pending = state?.pending || 0;
+  const locked = Boolean(state?.locked) && !hasActive;
+  gate.hidden = !locked;
+  scanPanel.hidden = locked;
+  if (!locked) {
+    if (pending && hasActive) {
+      setBanner('warning', `Подъехали новые заказы (${pending}). Закройте текущий — дальше понадобится скачать этикетки.`);
+    }
+    return;
+  }
+  document.getElementById('gate-title').textContent = `Скачайте этикетки — ${ordersWord(pending)}`;
+  document.getElementById('btn-labels').textContent = `Скачать этикетки (${pending})`;
+}
+
+function ordersWord(count) {
+  const tail = count % 100 >= 11 && count % 100 <= 14 ? 0 : count % 10;
+  const word = tail === 1 ? 'заказ' : tail >= 2 && tail <= 4 ? 'заказа' : 'заказов';
+  return `${count} ${word}`;
+}
+
 function renderActive(state) {
   const idle = document.getElementById('idle-panel');
+  hasActive = Boolean(state.active);
   if (!state.active) {
     activePanel.innerHTML = '';
     idle.style.display = '';
@@ -124,15 +153,30 @@ document.getElementById('btn-sync')?.addEventListener('click', async (event) => 
   try {
     const result = await api('/api/avito/sync', {});
     toast(result.message || 'Обновлено', 'ok');
-    const fresh = await fetch('/api/avito/pack/state').then((r) => r.json());
-    renderCounters(fresh.counters);
+    await refreshState();
   } catch (error) {
     toast(error.message, 'error');
   }
   event.target.disabled = false;
 });
 
-fetch('/api/avito/pack/state')
-  .then((r) => r.json())
-  .then((data) => { renderActive(data.state); renderCounters(data.counters); })
-  .catch(() => {});
+document.getElementById('btn-labels').onclick = async (event) => {
+  if (await downloadArchive('/api/avito/labels/archive.zip', event.target, 'avito-labels.zip')) {
+    toast('Этикетки скачаны — можно начинать сборку', 'ok');
+    await refreshState();
+  }
+};
+
+/* Опрашиваем сервер сами: новые заказы подъезжают фоновой синхронизацией, и
+   без этого замок опускался бы только после ручного обновления. */
+async function refreshState() {
+  try {
+    const data = await api('/api/avito/pack/state', undefined, 'GET');
+    renderActive(data.state);
+    renderCounters(data.counters);
+    applyGate(data.labels);
+  } catch (error) { /* пересинхронизируемся на следующем цикле */ }
+}
+
+refreshState();
+setInterval(() => { if (!busy) refreshState(); }, 30000);
