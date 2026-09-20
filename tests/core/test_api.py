@@ -455,7 +455,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.32.0"
+    assert get_version() == "1.33.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

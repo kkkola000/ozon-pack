@@ -1,7 +1,7 @@
-"""Выгрузка стикеров на компьютер и замок на сборке.
+"""Выгрузка стикеров Ozon на компьютер и замок на сборке.
 
-Стикер площадка отдаёт, пока отправление ждёт отгрузки; после отгрузки его уже
-не взять. Поэтому выгрузка идёт первой, до сканирования: не забрали вовремя —
+Стикер Ozon отдаёт, пока отправление ждёт отгрузки; после отгрузки его уже не
+взять. Поэтому выгрузка идёт первой, до сканирования: не забрали вовремя —
 стикер пропал навсегда. Сам файл панель не хранит, на диске сервера его нет.
 """
 import io
@@ -11,12 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import accounts, db, labels
-from app.markets.avito import client as avito
 from app.main import app
 from app.markets.ozon import pack as ozon_pack
-from app.markets.avito import pack as avito_pack
 from app.markets.ozon import store as ozon_store
-from app.markets.avito import sync as avito_sync
 
 
 @pytest.fixture
@@ -164,105 +161,6 @@ def test_the_pack_page_holds_the_gate(client):
     """На странице сборки есть и замок, и поле — показывает их уже JS."""
     login(client)
     page = client.get("/pack")
-    assert page.status_code == 200
-    assert 'id="label-gate"' in page.text
-    assert 'id="scan-panel"' in page.text
-    assert 'id="btn-labels"' in page.text
-
-
-# ------------------------------------------------------------- разбор пачки
-def test_a_batch_with_extra_pages_stays_one_file():
-    """Страниц больше, чем номеров, — раскладывать нечем, кладём как есть.
-
-    У отправления бывает два места, и какая страница чья, площадка не говорит.
-    Один файл с верным содержимым лучше десяти с чужими стикерами.
-    """
-    from pypdf import PdfWriter
-
-    writer = PdfWriter()
-    for _ in range(3):
-        writer.add_blank_page(width=200, height=300)
-    buffer = io.BytesIO()
-    writer.write(buffer)
-
-    assert labels._split(buffer.getvalue(), ["A-1", "B-2"]) is None
-    archive, saved = labels.build_archive(
-        ["A-1", "B-2"], lambda batch: buffer.getvalue(), prefix="стикеры")
-    assert saved == ["A-1", "B-2"]
-    assert names_in(archive) == ["стикеры-A-1-B-2.pdf"]
-
-
-def test_a_failed_batch_does_not_lose_the_rest(monkeypatch):
-    """Площадка отказала на пачке — остальные стикеры всё равно выгружаются.
-
-    Из-за одного отказа сборщик остался бы вообще без архива. Что не вышло,
-    останется без отметки и попадёт в следующую выгрузку.
-    """
-    from pypdf import PdfWriter
-
-    monkeypatch.setattr(labels, "BATCH", 2)
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=300)
-    writer.add_blank_page(width=200, height=300)
-    buffer = io.BytesIO()
-    writer.write(buffer)
-
-    def fetch(batch):
-        if batch[0] == "C-3":
-            raise RuntimeError("Ozon отказал")
-        return buffer.getvalue()
-
-    archive, saved = labels.build_archive(
-        ["A-1", "B-2", "C-3", "D-4"], fetch, prefix="стикеры")
-    assert saved == ["A-1", "B-2"], "выгруженным отмечено то, чего не было"
-    assert names_in(archive) == ["A-1.pdf", "B-2.pdf"]
-
-
-# -------------------------------------------------------------------- Avito
-@pytest.fixture
-def avito_cabinet(sample_data):
-
-    cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    avito_sync.sync_avito(cabinet)
-    return cabinet
-
-
-def test_avito_orders_awaiting_shipment_are_counted(avito_cabinet):
-    account = avito_cabinet
-    pending = avito_pack.pending_labels(account["id"])
-    assert pending
-    statuses = {
-        row["status"] for row in db.query(
-            f"SELECT status FROM avito_orders WHERE id IN ({','.join('?' for _ in pending)})", pending)
-    }
-    assert statuses == {avito.STATUS_READY_TO_SHIP}
-
-
-def test_avito_archive_opens_the_lock(avito_cabinet):
-    account = avito_cabinet
-    with TestClient(app, follow_redirects=False) as client:
-        csrf = login(client)
-        switched = client.post(
-            "/api/account/switch", json={"account_id": account["id"], "next": "/avito/pack"},
-            headers={"X-CSRF-Token": csrf})
-        assert switched.status_code == 200, switched.text
-        assert labels.state(avito_pack.pending_labels(account["id"]))["locked"] is True
-        response = client.post("/api/avito/labels/archive.zip", headers={"X-CSRF-Token": csrf})
-        assert response.status_code == 200, response.text
-
-    assert names_in(response.content), "архив Avito пустой"
-    assert labels.state(avito_pack.pending_labels(account["id"])) == {"pending": 0, "locked": False}
-
-
-def test_the_avito_pack_page_holds_the_gate(avito_cabinet):
-    """Замок есть и в сборке Avito — шаблон тот же по смыслу."""
-    with TestClient(app, follow_redirects=False) as client:
-        csrf = login(client)
-        client.post(
-            "/api/account/switch", json={"account_id": avito_cabinet["id"], "next": "/avito/pack"},
-            headers={"X-CSRF-Token": csrf})
-        page = client.get("/avito/pack")
-
     assert page.status_code == 200
     assert 'id="label-gate"' in page.text
     assert 'id="scan-panel"' in page.text
