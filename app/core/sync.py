@@ -549,17 +549,13 @@ def sync_yandex(account: dict | None = None) -> dict:
 
 
 def sync_account(account: dict, *, returns: bool = True) -> dict:
-    """Один кабинет: набор методов зависит от площадки."""
-    if account["marketplace"] == "avito":
-        return sync_avito(account)
-    if account["marketplace"] == "yandex":
-        return sync_yandex(account)
-    result: dict = {}
-    result.update(sync_postings(account))
-    result.update(sync_products(account))
-    if returns:
-        result.update(sync_returns(account))
-    return result
+    """Один кабинет: что и как грузить, знает его площадка."""
+    from ..markets import registry
+
+    market = registry.get(account["marketplace"])
+    if market is None:
+        raise RuntimeError(f"Кабинет «{account.get('title')}»: неизвестная площадка {account['marketplace']!r}")
+    return market.sync(account, returns=returns)
 
 
 def sync_all(*, returns: bool = True) -> dict:

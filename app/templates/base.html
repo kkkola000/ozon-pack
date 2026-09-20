@@ -9,7 +9,6 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📦</text></svg>">
 </head>
 <body data-page="{{ active_tab or '' }}">
-{% set c = nav_counters(request) %}
 {% set cab = account_switcher(request) %}
 <header class="topbar no-print">
   <div class="brand">📦 <span>Pack</span></div>
@@ -27,46 +26,17 @@
   {# Шапка рисуется по выданным разделам, а не по роли: сборщик с выданными
      «Отчётами» должен видеть на них ссылку, администратор без них — нет. #}
   <nav>
-    {% if cab.current and cab.current.marketplace == 'avito' %}
-      {% if can_see(user, 'pack') %}<a href="/avito/pack" class="{{ 'active' if active_tab == 'avito_pack' }}">Сборка</a>{% endif %}
-      {% if can_see(user, 'orders') %}
-      <a href="/avito?tab=confirm" class="{{ 'active' if active_tab == 'avito' }}">
-        Заказы Avito
-        {% if c.avito_confirm %}<span class="badge warn" title="Подтвердите заказ">{{ c.avito_confirm }}</span>{% endif %}
-        {% if c.avito_ship %}<span class="badge accent" title="Отправьте заказ">{{ c.avito_ship }}</span>{% endif %}
+    {# Пункты меню и счётчики на них объявляет площадка текущего кабинета. #}
+    {% for item in market_nav(request) %}
+      {% if can_see(user, item.section) %}
+      <a href="{{ item.href }}" class="{{ 'active' if active_tab == item.tab }}">
+        {{ item.label }}
+        {%- for count, css, title in item.badges %}
+          {%- if count %}<span class="badge {{ css }}" title="{{ title }}">{{ count }}</span>{% endif %}
+        {%- endfor %}
       </a>
       {% endif %}
-      {% if can_see(user, 'returns') %}
-      <a href="/avito/returns" class="{{ 'active' if active_tab == 'avito_returns' }}">
-        Возвраты{% if c.avito_returns %}<span class="badge" title="Заберите заказ">{{ c.avito_returns }}</span>{% endif %}
-        {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
-      </a>
-      {% endif %}
-    {% elif cab.current and cab.current.marketplace == 'yandex' %}
-      {% if can_see(user, 'pack') %}<a href="/yandex/pack" class="{{ 'active' if active_tab == 'yandex_pack' }}">Сборка</a>{% endif %}
-      {% if can_see(user, 'orders') %}
-      <a href="/yandex?tab=pack" class="{{ 'active' if active_tab == 'yandex' }}">
-        Заказы Маркета
-        {% if c.yandex_pack %}<span class="badge warn" title="Ожидает сборки">{{ c.yandex_pack }}</span>{% endif %}
-        {% if c.yandex_ship %}<span class="badge accent" title="Ожидает отгрузки">{{ c.yandex_ship }}</span>{% endif %}
-      </a>
-      {% endif %}
-    {% else %}
-      {% if can_see(user, 'pack') %}<a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>{% endif %}
-      {% if can_see(user, 'orders') %}
-      <a href="/orders?tab=packaging" class="{{ 'active' if active_tab == 'orders' }}">
-        Заказы FBS
-        {% if c.packaging %}<span class="badge warn" title="Ожидает сборки">{{ c.packaging }}</span>{% endif %}
-        {% if c.deliver %}<span class="badge accent" title="Ожидает отгрузки">{{ c.deliver }}</span>{% endif %}
-      </a>
-      {% endif %}
-      {% if can_see(user, 'returns') %}
-      <a href="/returns" class="{{ 'active' if active_tab == 'returns' }}">
-        Возвраты{% if c.returns %}<span class="badge">{{ c.returns }}</span>{% endif %}
-        {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
-      </a>
-      {% endif %}
-    {% endif %}
+    {% endfor %}
     {% if can_see(user, 'products') %}
       <a href="/products" class="{{ 'active' if active_tab == 'products' }}"
          title="Каталог кабинета и наборы: из чего собирается товар">Товары</a>

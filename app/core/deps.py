@@ -45,25 +45,27 @@ def require_account(request: Request) -> dict:
     return account
 
 
-def require_ozon_account(request: Request) -> dict:
-    account = require_account(request)
-    if account["marketplace"] != "ozon":
-        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Ozon")
-    return account
+def require_market(code: str):
+    """Зависимость «текущий кабинет — этой площадки».
 
+    Разделы площадки открываются только в её кабинете: заказы Avito в
+    кабинете Ozon не существуют, и молча показать пустоту хуже, чем отказать.
+    """
 
-def require_avito_account(request: Request) -> dict:
-    account = require_account(request)
-    if account["marketplace"] != "avito":
-        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Avito")
-    return account
+    def dependency(request: Request) -> dict:
+        account = require_account(request)
+        if account["marketplace"] != code:
+            from ..markets import registry
 
+            market = registry.get(code)
+            title = market.title if market else code
+            raise HTTPException(
+                status_code=409, detail=f"Этот раздел работает только с кабинетами площадки «{title}»"
+            )
+        return account
 
-def require_yandex_account(request: Request) -> dict:
-    account = require_account(request)
-    if account["marketplace"] != "yandex":
-        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Яндекс Маркета")
-    return account
+    dependency.__name__ = f"require_market_{code}"
+    return dependency
 
 
 def require_manager(request: Request) -> dict:
@@ -147,86 +149,13 @@ templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 
 
-def _open_acts(account_id: int) -> int:
-    """Неподтверждённые акты получения возвратов — работа, о которой легко забыть."""
-    from . import return_acts
-
-    return return_acts.pending_count([account_id])
-
-
-def nav_counters(request: Request) -> dict:
-    """Счётчики для шапки текущего кабинета — запросы дешёвые."""
-    from . import db, options
+def market_nav(request: Request) -> list:
+    """Пункты меню текущего кабинета — их объявляет площадка."""
+    from ..markets import registry
 
     account = current_account(request)
-    empty = {"packaging": 0, "deliver": 0, "returns": 0, "return_acts": 0,
-             "avito_confirm": 0, "avito_ship": 0, "avito_returns": 0,
-             "yandex_pack": 0, "yandex_ship": 0}
-    if not account:
-        return empty
-    account_id = account["id"]
-
-    def count(sql: str, params: tuple = ()) -> int:
-        row = db.query_one(sql, params)
-        return row["c"] if row else 0
-
-    # «К выдаче» считаем прямо по отмеченным статусам — см. options.pickup_sql.
-    _ready_sql, _ready_params = options.pickup_sql()
-
-    if account["marketplace"] == "yandex":
-        # Как у Ozon: значок — сколько работы осталось, собранное не в счёт.
-        return {
-            **empty,
-            "yandex_pack": count(
-                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
-                "AND substatus = 'STARTED' AND local_state != 'packed'",
-                (account_id,),
-            ),
-            "yandex_ship": count(
-                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
-                "AND substatus = 'READY_TO_SHIP' AND local_state != 'packed'",
-                (account_id,),
-            ),
-        }
-    if account["marketplace"] == "avito":
-        return {
-            **empty,
-            "avito_confirm": count(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'",
-                (account_id,),
-            ),
-            # Собранные не в счёт, как и у Ozon: значок в шапке — это сколько
-            # работы осталось, а не сколько заказов вообще в этом статусе.
-            "avito_ship": count(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? "
-                "AND status = 'ready_to_ship' AND local_state != 'packed'",
-                (account_id,),
-            ),
-            # В таблице лежат только возвраты, готовые к выдаче, — фильтровать
-            # ещё и по return_status незачем: написание значения у Avito плавает.
-            "avito_returns": count(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return'",
-                (account_id,),
-            ),
-            "return_acts": _open_acts(account_id),
-        }
-    return {
-        **empty,
-        "packaging": count(
-            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_packaging'",
-            (account_id,),
-        ),
-        "deliver": count(
-            "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_deliver' "
-            "AND local_state = 'new'",
-            (account_id,),
-        ),
-        "returns": count(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {_ready_sql}",
-            (account_id, *_ready_params),
-        ),
-        "return_acts": _open_acts(account_id),
-    }
+    market = registry.get(account["marketplace"]) if account else None
+    return market.nav(account) if market else []
 
 
 def static_version() -> str:
@@ -267,7 +196,7 @@ def account_switcher(request: Request) -> dict:
 
 
 templates.env.globals["build_label"] = build_label
-templates.env.globals["nav_counters"] = nav_counters
+templates.env.globals["market_nav"] = market_nav
 templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version

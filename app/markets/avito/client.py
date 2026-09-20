@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from ...core.config import settings
+from ..base import KeyCheckError, MarketError
 
 log = logging.getLogger("avito")
 
@@ -167,7 +168,7 @@ TRANSITION_CONFIRM = "confirm"
 TRANSITION_PERFORM = "perform"
 
 
-class AvitoError(RuntimeError):
+class AvitoError(MarketError):
     """Ошибка обращения к Avito API."""
 
     def __init__(self, message: str, *, status: int | None = None, code: str | None = None, payload: Any = None):
@@ -428,3 +429,26 @@ def reset_client(account_id: int | None = None) -> None:
             client = _clients.pop(key, None)
             if client is not None:
                 client.close()
+
+
+def probe(client_id: str, client_secret: str) -> None:
+    """Проверить ключи до сохранения — без повторов, с коротким таймаутом."""
+    check = AvitoClient(client_id=client_id, client_secret=client_secret, max_retries=1, timeout=20)
+    try:
+        check.ping()
+    except AvitoError as exc:
+        if exc.status in (401, 403):
+            detail = (
+                f"Avito отклонил ключи: {exc.message}. "
+                "Проверьте client_id и client_secret в личном кабинете."
+            )
+        elif exc.status is None:
+            detail = (
+                f"Не удалось связаться с Avito: {exc.message}. Проверьте доступ в интернет с сервера; "
+                "если он есть, сохраните ключи без проверки."
+            )
+        else:
+            detail = f"Avito ответил ошибкой: {exc.message}"
+        raise KeyCheckError(detail) from exc
+    finally:
+        check.close()

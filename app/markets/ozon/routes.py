@@ -8,9 +8,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, labels, options, store, sync
+from ...core import access, db, labels, options, return_acts, store, sync
 from ...core.config import settings
-from ...core.deps import check_csrf, require_section, require_ozon_account, safe_filename, templates
+from ...core.deps import check_csrf, require_market, require_section, safe_filename, templates
+from ..base import NavItem
 from . import pack as packing
 from .client import OzonError
 
@@ -22,7 +23,7 @@ MAX_LABELS = 50
 
 @router.get("/pack", response_class=HTMLResponse)
 def pack_page(request: Request, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_ozon_account)):
+              account: dict = Depends(require_market("ozon"))):
     state = packing.load_state(account, user)
     counters = _counters(account)
     return templates.TemplateResponse(
@@ -66,7 +67,7 @@ def _counters(account: dict) -> dict:
 
 
 @router.get("/api/state")
-def api_state(user: dict = Depends(require_section("pack")), account: dict = Depends(require_ozon_account)):
+def api_state(user: dict = Depends(require_section("pack")), account: dict = Depends(require_market("ozon"))):
     return {
         "state": packing.load_state(account, user),
         "counters": _counters(account),
@@ -76,7 +77,7 @@ def api_state(user: dict = Depends(require_section("pack")), account: dict = Dep
 
 @router.post("/api/scan")
 def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-             account: dict = Depends(require_ozon_account)):
+             account: dict = Depends(require_market("ozon"))):
     check_csrf(request)
     result = packing.scan(account, user, str(payload.get("code") or ""))
     result["counters"] = _counters(account)
@@ -85,7 +86,7 @@ def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(r
 
 @router.post("/api/release")
 def api_release(request: Request, user: dict = Depends(require_section("pack")),
-                account: dict = Depends(require_ozon_account)):
+                account: dict = Depends(require_market("ozon"))):
     check_csrf(request)
     result = packing.release(account, user)
     result["counters"] = _counters(account)
@@ -94,7 +95,7 @@ def api_release(request: Request, user: dict = Depends(require_section("pack")),
 
 @router.post("/api/complete")
 def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("pack")),
-                 account: dict = Depends(require_ozon_account)):
+                 account: dict = Depends(require_market("ozon"))):
     """Ручное завершение — например, если стикер не читается сканером."""
     check_csrf(request)
     state = packing.load_state(account, user)
@@ -117,7 +118,7 @@ def api_complete(request: Request, payload: dict = Body(default={}), user: dict 
 
 @router.get("/api/label/{posting_number}.pdf")
 def api_label(posting_number: str, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_ozon_account)):
+              account: dict = Depends(require_market("ozon"))):
     try:
         pdf, filename = packing.label_pdf(account, user, [posting_number])
     except OzonError as exc:
@@ -132,7 +133,7 @@ def api_label(posting_number: str, user: dict = Depends(require_section("pack"))
 
 @router.post("/api/labels/archive.zip")
 def api_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                       account: dict = Depends(require_ozon_account)):
+                       account: dict = Depends(require_market("ozon"))):
     """Стикеры всех отправлений, ждущих выгрузки, — архивом на компьютер.
 
     Панель файл у себя не оставляет: архив уходит в браузер, на диске сервера
@@ -170,7 +171,7 @@ def _archive_name(account: dict) -> str:
 
 @router.post("/api/labels.pdf")
 def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-               account: dict = Depends(require_ozon_account)):
+               account: dict = Depends(require_market("ozon"))):
     """Пачка стикеров — для печати нескольких отправлений сразу."""
     check_csrf(request)
     numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
@@ -227,7 +228,7 @@ def _list_postings(account: dict, tab: str, search: str = "", limit: int = 300) 
 
 @router.get("/orders", response_class=HTMLResponse)
 def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dict = Depends(require_section("orders")),
-                account: dict = Depends(require_ozon_account)):
+                account: dict = Depends(require_market("ozon"))):
     if tab not in TABS:
         tab = "packaging"
     postings = _list_postings(account, tab, q)
@@ -258,13 +259,13 @@ def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dic
 
 @router.get("/api/orders")
 def api_orders(tab: str = "packaging", q: str = "", user: dict = Depends(require_section("orders")),
-               account: dict = Depends(require_ozon_account)):
+               account: dict = Depends(require_market("ozon"))):
     return {"postings": _list_postings(account, tab, q)}
 
 
 @router.post("/api/ship")
 def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-             account: dict = Depends(require_ozon_account)):
+             account: dict = Depends(require_market("ozon"))):
     """Перевести отправления в «Ожидает отгрузки»."""
     check_csrf(request)
     numbers = [str(n) for n in (payload.get("posting_numbers") or []) if n]
@@ -286,7 +287,7 @@ def api_ship(request: Request, payload: dict = Body(...), user: dict = Depends(r
 
 @router.post("/api/sync")
 def api_sync(request: Request, user: dict = Depends(require_section("orders")),
-             account: dict = Depends(require_ozon_account)):
+             account: dict = Depends(require_market("ozon"))):
     """Обновить данные текущего кабинета по кнопке."""
     check_csrf(request)
     try:
@@ -294,3 +295,43 @@ def api_sync(request: Request, user: dict = Depends(require_section("orders")),
     except Exception as exc:  # noqa: BLE001 - показываем причину оператору
         raise HTTPException(status_code=502, detail=f"Синхронизация не удалась: {exc}") from exc
     return {"status": "ok", "message": "Данные обновлены", "result": result, "sync": sync.status()}
+
+
+# ------------------------------------------------------------------ для реестра площадок
+def _count(sql: str, params: tuple) -> int:
+    row = db.query_one(sql, params)
+    return row["c"] if row else 0
+
+
+def nav_items(account: dict) -> list[NavItem]:
+    """Меню кабинета Ozon. Значки — сколько работы осталось, собранное не в счёт."""
+    aid = (account["id"],)
+    ready_sql, ready_params = options.pickup_sql()
+    return [
+        NavItem("/pack", "Сборка", "pack", "pack"),
+        NavItem("/orders?tab=packaging", "Заказы FBS", "orders", "orders", (
+            (_count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_packaging'", aid),
+             "warn", "Ожидает сборки"),
+            (_count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_deliver' "
+                    "AND local_state = 'new'", aid),
+             "accent", "Ожидает отгрузки"),
+        )),
+        NavItem("/returns", "Возвраты", "returns", "returns", (
+            (_count(f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}",
+                    (account["id"], *ready_params)),
+             "", "К выдаче"),
+            (return_acts.pending_count([account["id"]]), "warn", "Акты ждут подтверждения"),
+        )),
+    ]
+
+
+def settings_stats(account_id: int) -> dict[str, int]:
+    """Плитки кабинета в «Настройках»."""
+    aid = (account_id,)
+    return {
+        "Отправлений": _count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", aid),
+        "Собрано": _count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed'", aid),
+        "Товаров": _count("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid),
+        "Штрихкодов": _count("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid),
+        "Возвратов": _count("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid),
+    }

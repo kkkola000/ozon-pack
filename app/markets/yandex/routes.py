@@ -17,8 +17,8 @@ from fastapi.responses import HTMLResponse, Response
 from ...core import access, db, labels, store, sync
 from . import client as yandex, pack as yandex_pack
 from ...core.config import settings
-from ...core.deps import (check_csrf, require_manager, require_section, require_yandex_account, safe_filename,
-                    templates)
+from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
+from ..base import NavItem
 from .client import YandexError
 
 log = logging.getLogger("yandex")
@@ -69,7 +69,7 @@ def _counts(account: dict) -> dict:
 
 @router.get("/yandex", response_class=HTMLResponse)
 def yandex_page(request: Request, tab: str = "pack", q: str = "", user: dict = Depends(require_section("orders")),
-                account: dict = Depends(require_yandex_account)):
+                account: dict = Depends(require_market("yandex"))):
     if tab not in TABS:
         tab = "pack"
     return templates.TemplateResponse(
@@ -93,7 +93,7 @@ def yandex_page(request: Request, tab: str = "pack", q: str = "", user: dict = D
 
 @router.get("/api/yandex/orders")
 def api_yandex_orders(tab: str = "pack", q: str = "", user: dict = Depends(require_section("orders")),
-                      account: dict = Depends(require_yandex_account)):
+                      account: dict = Depends(require_market("yandex"))):
     return {"orders": _list_orders(account, tab, q), "counts": _counts(account)}
 
 
@@ -108,7 +108,7 @@ def _order_row(account: dict, order_id: str) -> dict:
 
 @router.post("/api/yandex/orders/{order_id}/reset")
 def api_yandex_reset_order(order_id: str, request: Request, admin: dict = Depends(require_manager),
-                           account: dict = Depends(require_yandex_account)):
+                           account: dict = Depends(require_market("yandex"))):
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке.
 
     Только админу и владельцу: отметка — результат работы сборщика, и снимать
@@ -131,7 +131,7 @@ def api_yandex_reset_order(order_id: str, request: Request, admin: dict = Depend
 
 @router.post("/api/yandex/sync")
 def api_yandex_sync(request: Request, user: dict = Depends(require_section("orders")),
-                    account: dict = Depends(require_yandex_account)):
+                    account: dict = Depends(require_market("yandex"))):
     check_csrf(request)
     try:
         result = sync.run_once(account=account)
@@ -158,7 +158,7 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
 
 @router.get("/api/yandex/label/{order_id}.pdf")
 def api_yandex_label(order_id: str, user: dict = Depends(require_section("pack")),
-                     account: dict = Depends(require_yandex_account)):
+                     account: dict = Depends(require_market("yandex"))):
     """Ярлык одного заказа — файл Маркета как есть."""
     _order_row(account, order_id)
     try:
@@ -170,7 +170,7 @@ def api_yandex_label(order_id: str, user: dict = Depends(require_section("pack")
 
 @router.post("/api/yandex/labels.pdf")
 def api_yandex_labels(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-                      account: dict = Depends(require_yandex_account)):
+                      account: dict = Depends(require_market("yandex"))):
     """Пачка ярлыков — для печати нескольких заказов сразу."""
     check_csrf(request)
     ids = [str(i) for i in (payload.get("order_ids") or []) if i]
@@ -189,7 +189,7 @@ def api_yandex_labels(request: Request, payload: dict = Body(...), user: dict = 
 
 @router.post("/api/yandex/labels/archive.zip")
 def api_yandex_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                              account: dict = Depends(require_yandex_account)):
+                              account: dict = Depends(require_market("yandex"))):
     """Ярлыки всех заказов в работе, ждущих выгрузки, — архивом на компьютер.
 
     Файл панель у себя не оставляет: архив уходит в браузер. В базе только
@@ -241,7 +241,7 @@ def _pack_counters(account: dict) -> dict:
 
 @router.get("/yandex/pack", response_class=HTMLResponse)
 def yandex_pack_page(request: Request, user: dict = Depends(require_section("pack")),
-                     account: dict = Depends(require_yandex_account)):
+                     account: dict = Depends(require_market("yandex"))):
     return templates.TemplateResponse(
         request,
         "yandex_pack.html",
@@ -259,7 +259,7 @@ def yandex_pack_page(request: Request, user: dict = Depends(require_section("pac
 
 @router.get("/api/yandex/pack/state")
 def api_yandex_pack_state(user: dict = Depends(require_section("pack")),
-                          account: dict = Depends(require_yandex_account)):
+                          account: dict = Depends(require_market("yandex"))):
     return {
         "state": yandex_pack.load_state(account, user),
         "counters": _pack_counters(account),
@@ -269,7 +269,7 @@ def api_yandex_pack_state(user: dict = Depends(require_section("pack")),
 
 @router.post("/api/yandex/pack/scan")
 def api_yandex_pack_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                         account: dict = Depends(require_yandex_account)):
+                         account: dict = Depends(require_market("yandex"))):
     check_csrf(request)
     result = yandex_pack.scan(account, user, str(payload.get("code") or ""))
     result["counters"] = _pack_counters(account)
@@ -278,7 +278,7 @@ def api_yandex_pack_scan(request: Request, payload: dict = Body(...), user: dict
 
 @router.post("/api/yandex/pack/release")
 def api_yandex_pack_release(request: Request, user: dict = Depends(require_section("pack")),
-                            account: dict = Depends(require_yandex_account)):
+                            account: dict = Depends(require_market("yandex"))):
     check_csrf(request)
     result = yandex_pack.release(account, user)
     result["counters"] = _pack_counters(account)
@@ -288,7 +288,7 @@ def api_yandex_pack_release(request: Request, user: dict = Depends(require_secti
 @router.post("/api/yandex/pack/complete")
 def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
                              user: dict = Depends(require_section("pack")),
-                             account: dict = Depends(require_yandex_account)):
+                             account: dict = Depends(require_market("yandex"))):
     """Ручное завершение — например, если ярлык не читается сканером."""
     check_csrf(request)
     state = yandex_pack.load_state(account, user)
@@ -304,3 +304,38 @@ def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
     )
     result["counters"] = _pack_counters(account)
     return result
+
+
+# ------------------------------------------------------------------ для реестра площадок
+def _count(sql: str, params: tuple) -> int:
+    row = db.query_one(sql, params)
+    return row["c"] if row else 0
+
+
+def nav_items(account: dict) -> list[NavItem]:
+    """Меню кабинета Маркета. Как у Ozon: значок — сколько работы осталось."""
+    aid = (account["id"],)
+    return [
+        NavItem("/yandex/pack", "Сборка", "yandex_pack", "pack"),
+        NavItem("/yandex?tab=pack", "Заказы Маркета", "yandex", "orders", (
+            (_count("SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
+                    "AND substatus = 'STARTED' AND local_state != 'packed'", aid),
+             "warn", "Ожидает сборки"),
+            (_count("SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
+                    "AND substatus = 'READY_TO_SHIP' AND local_state != 'packed'", aid),
+             "accent", "Ожидает отгрузки"),
+        )),
+    ]
+
+
+def settings_stats(account_id: int) -> dict[str, int]:
+    aid = (account_id,)
+    return {
+        "Ждут сборки": _count(
+            "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'STARTED'", aid),
+        "Ждут отгрузки": _count(
+            "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'READY_TO_SHIP'", aid),
+        "Собрано": _count(
+            "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND local_state = 'packed'", aid),
+        "Позиций в заказах": _count("SELECT COUNT(*) AS c FROM yandex_order_items WHERE account_id = ?", aid),
+    }

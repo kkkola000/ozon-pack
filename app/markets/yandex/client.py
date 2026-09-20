@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from ...core.config import settings
+from ..base import KeyCheckError, MarketError
 
 log = logging.getLogger("yandex")
 
@@ -60,7 +61,7 @@ DELIVERY_LABELS = {
 }
 
 
-class YandexError(RuntimeError):
+class YandexError(MarketError):
     """Ошибка обращения к Partner API Яндекс Маркета."""
 
     def __init__(self, message: str, *, status: int | None = None, code: str | None = None, payload: Any = None):
@@ -263,6 +264,9 @@ class YandexClient:
         orders, _token = self.orders(limit=1)
         return {"orders": len(orders), "business_id": self.business_id}
 
+    def close(self) -> None:
+        self._client.close()
+
 
 _clients: dict[int, YandexClient] = {}
 _client_lock = threading.Lock()
@@ -295,3 +299,26 @@ def reset_client(account_id: int | None = None) -> None:
             _clients.clear()
         else:
             _clients.pop(int(account_id), None)
+
+
+def probe(business_id: str, api_key: str) -> None:
+    """Проверить ключи до сохранения — без повторов, с коротким таймаутом."""
+    check = YandexClient(business_id=business_id, api_key=api_key, max_retries=1, timeout=20)
+    try:
+        check.ping()
+    except YandexError as exc:
+        if exc.status in (401, 403):
+            detail = (
+                f"Маркет отклонил ключи: {exc.message}. Проверьте businessId и токен "
+                "(нужен доступ «Обработка заказов и учёт товаров»)."
+            )
+        elif exc.status is None:
+            detail = (
+                f"Не удалось связаться с Маркетом: {exc.message}. Проверьте доступ в интернет с сервера; "
+                "если он есть, сохраните ключи без проверки."
+            )
+        else:
+            detail = f"Маркет ответил ошибкой: {exc.message}"
+        raise KeyCheckError(detail) from exc
+    finally:
+        check.close()

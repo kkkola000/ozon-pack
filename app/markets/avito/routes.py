@@ -16,10 +16,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
-from ...core import db, labels, store, sync
+from ...core import db, labels, return_acts, store, sync
 from .client import AvitoError
-from ...core.deps import (check_csrf, require_section, require_manager, require_avito_account, safe_filename,
-                    templates)
+from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
+from ..base import NavItem
 from ...routes import returns as returns_routes
 
 log = logging.getLogger("avito")
@@ -74,7 +74,7 @@ def _counts(account: dict) -> dict:
 
 @router.get("/avito", response_class=HTMLResponse)
 def avito_page(request: Request, tab: str = "confirm", q: str = "", user: dict = Depends(require_section("orders")),
-               account: dict = Depends(require_avito_account)):
+               account: dict = Depends(require_market("avito"))):
     if tab not in TABS:
         tab = "confirm"
     return templates.TemplateResponse(
@@ -119,7 +119,7 @@ def _pack_counters(account: dict) -> dict:
 
 @router.get("/avito/pack", response_class=HTMLResponse)
 def avito_pack_page(request: Request, user: dict = Depends(require_section("pack")),
-                    account: dict = Depends(require_avito_account)):
+                    account: dict = Depends(require_market("avito"))):
     return templates.TemplateResponse(
         request,
         "avito_pack.html",
@@ -137,7 +137,7 @@ def avito_pack_page(request: Request, user: dict = Depends(require_section("pack
 
 @router.get("/api/avito/pack/state")
 def api_avito_pack_state(user: dict = Depends(require_section("pack")),
-                         account: dict = Depends(require_avito_account)):
+                         account: dict = Depends(require_market("avito"))):
     return {
         "state": avito_pack.load_state(account, user),
         "counters": _pack_counters(account),
@@ -147,7 +147,7 @@ def api_avito_pack_state(user: dict = Depends(require_section("pack")),
 
 @router.post("/api/avito/pack/scan")
 def api_avito_pack_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                        account: dict = Depends(require_avito_account)):
+                        account: dict = Depends(require_market("avito"))):
     check_csrf(request)
     result = avito_pack.scan(account, user, str(payload.get("code") or ""))
     result["counters"] = _pack_counters(account)
@@ -156,7 +156,7 @@ def api_avito_pack_scan(request: Request, payload: dict = Body(...), user: dict 
 
 @router.post("/api/avito/pack/release")
 def api_avito_pack_release(request: Request, user: dict = Depends(require_section("pack")),
-                           account: dict = Depends(require_avito_account)):
+                           account: dict = Depends(require_market("avito"))):
     check_csrf(request)
     result = avito_pack.release(account, user)
     result["counters"] = _pack_counters(account)
@@ -165,7 +165,7 @@ def api_avito_pack_release(request: Request, user: dict = Depends(require_sectio
 
 @router.post("/api/avito/pack/open")
 def api_avito_pack_open(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                        account: dict = Depends(require_avito_account)):
+                        account: dict = Depends(require_market("avito"))):
     """Открыть сборку без сканера — если стикер не читается."""
     check_csrf(request)
     order = avito_pack.find_order(account["id"], str(payload.get("order_id") or ""))
@@ -178,7 +178,7 @@ def api_avito_pack_open(request: Request, payload: dict = Body(...), user: dict 
 
 @router.get("/api/avito/orders")
 def api_avito_orders(tab: str = "confirm", q: str = "", user: dict = Depends(require_section("orders")),
-                     account: dict = Depends(require_avito_account)):
+                     account: dict = Depends(require_market("avito"))):
     return {"orders": _list_orders(account, tab, q), "counts": _counts(account)}
 
 
@@ -260,7 +260,7 @@ def _apply(account: dict, user: dict, order_id: str, transition: str) -> dict:
 
 @router.post("/api/avito/confirm")
 def api_avito_confirm(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-                      account: dict = Depends(require_avito_account)):
+                      account: dict = Depends(require_market("avito"))):
     """«Подтвердите заказ» — переход confirm в Avito."""
     check_csrf(request)
     return _bulk(account, user, payload, avito.TRANSITION_CONFIRM, "подтверждено")
@@ -268,7 +268,7 @@ def api_avito_confirm(request: Request, payload: dict = Body(...), user: dict = 
 
 @router.post("/api/avito/ship")
 def api_avito_ship(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-                   account: dict = Depends(require_avito_account)):
+                   account: dict = Depends(require_market("avito"))):
     """«Отправьте заказ» — переход perform. Доступен для доставки курьером продавца."""
     check_csrf(request)
     return _bulk(account, user, payload, avito.TRANSITION_PERFORM, "отправлено")
@@ -294,7 +294,7 @@ def _bulk(account: dict, user: dict, payload: dict, transition: str, verb: str) 
 
 @router.post("/api/avito/orders/{order_id}/reset")
 def api_avito_reset_order(order_id: str, request: Request, admin: dict = Depends(require_manager),
-                          account: dict = Depends(require_avito_account)):
+                          account: dict = Depends(require_market("avito"))):
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке.
 
     Только админу и владельцу: отметка — это результат работы сборщика, и
@@ -318,7 +318,7 @@ def api_avito_reset_order(order_id: str, request: Request, admin: dict = Depends
 
 @router.post("/api/avito/labels/archive.zip")
 def api_avito_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                             account: dict = Depends(require_avito_account)):
+                             account: dict = Depends(require_market("avito"))):
     """Этикетки всех заказов, ждущих выгрузки, — архивом на компьютер.
 
     Сам файл панель не хранит: архив уезжает в браузер, на диске сервера ничего
@@ -360,7 +360,7 @@ def _avito_archive_name(account: dict) -> str:
 
 @router.get("/api/avito/label/{order_id}.pdf")
 def api_avito_label(order_id: str, user: dict = Depends(require_section("orders")),
-                    account: dict = Depends(require_avito_account)):
+                    account: dict = Depends(require_market("avito"))):
     """Оригинальный PDF-файл этикетки от Avito — без нашего редактирования."""
     order = _order_row(account, order_id)
     return _label_response(account, user, [order])
@@ -368,7 +368,7 @@ def api_avito_label(order_id: str, user: dict = Depends(require_section("orders"
 
 @router.post("/api/avito/labels.pdf")
 def api_avito_labels(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-                     account: dict = Depends(require_avito_account)):
+                     account: dict = Depends(require_market("avito"))):
     """Пачка этикеток: Avito принимает до 50 номеров за раз."""
     check_csrf(request)
     ids = [str(i) for i in (payload.get("order_ids") or []) if i]
@@ -409,7 +409,7 @@ def _label_response(account: dict, user: dict, orders: list[dict]) -> Response:
 
 @router.post("/api/avito/sync")
 def api_avito_sync(request: Request, user: dict = Depends(require_section("orders")),
-                   account: dict = Depends(require_avito_account)):
+                   account: dict = Depends(require_market("avito"))):
     check_csrf(request)
     try:
         result = sync.sync_avito(account)
@@ -470,7 +470,7 @@ def _returns_skipped(account: dict) -> list[tuple[str, int]]:
 @router.get("/avito/returns", response_class=HTMLResponse)
 def avito_returns_page(request: Request, q: str = "",
                        user: dict = Depends(require_section("returns")),
-                       account: dict = Depends(require_avito_account)):
+                       account: dict = Depends(require_market("avito"))):
     return templates.TemplateResponse(
         request,
         "avito_returns.html",
@@ -493,7 +493,7 @@ def avito_returns_page(request: Request, q: str = "",
 
 @router.get("/api/avito/returns/{order_id}/raw")
 def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(require_manager),
-                         account: dict = Depends(require_avito_account)):
+                         account: dict = Depends(require_market("avito"))):
     """Ответ Avito по возврату как есть — чтобы видеть, что площадка реально прислала.
 
     Нужен, когда чего-то не хватает на экране: например, Avito не отдал адрес ПВЗ.
@@ -514,7 +514,7 @@ def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(
 @router.get("/avito/returns/print", response_class=HTMLResponse)
 def avito_returns_print(request: Request, q: str = "",
                         user: dict = Depends(require_section("returns")),
-                        account: dict = Depends(require_avito_account)):
+                        account: dict = Depends(require_market("avito"))):
     """Лист для печати: сборщик идёт с ним забирать возвраты."""
     items = _list_returns(account, q)
     now = datetime.now(timezone.utc)
@@ -540,3 +540,41 @@ def avito_returns_print(request: Request, q: str = "",
         },
     )
 
+
+# ------------------------------------------------------------------ для реестра площадок
+def _count(sql: str, params: tuple) -> int:
+    row = db.query_one(sql, params)
+    return row["c"] if row else 0
+
+
+def nav_items(account: dict) -> list[NavItem]:
+    """Меню кабинета Avito. Собранные не в счёт, как и у Ozon: значок — сколько дел осталось."""
+    aid = (account["id"],)
+    return [
+        NavItem("/avito/pack", "Сборка", "avito_pack", "pack"),
+        NavItem("/avito?tab=confirm", "Заказы Avito", "avito", "orders", (
+            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid),
+             "warn", "Подтвердите заказ"),
+            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? "
+                    "AND status = 'ready_to_ship' AND local_state != 'packed'", aid),
+             "accent", "Отправьте заказ"),
+        )),
+        # В таблице лежат только возвраты, готовые к выдаче, — фильтровать ещё
+        # и по return_status незачем: написание значения у Avito плавает.
+        NavItem("/avito/returns", "Возвраты", "avito_returns", "returns", (
+            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return'", aid),
+             "", "Заберите заказ"),
+            (return_acts.pending_count([account["id"]]), "warn", "Акты ждут подтверждения"),
+        )),
+    ]
+
+
+def settings_stats(account_id: int) -> dict[str, int]:
+    aid = (account_id,)
+    return {
+        "Ждут подтверждения": _count(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid),
+        "Ждут отправки": _count(
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'", aid),
+        "Позиций в заказах": _count("SELECT COUNT(*) AS c FROM avito_order_items WHERE account_id = ?", aid),
+    }

@@ -8,8 +8,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from ..core import accounts, db, options, return_acts, returns_pdf, store, sync
 from ..markets.avito import client as avito
-from ..core.deps import (check_csrf, require_owner, require_section, require_avito_account,
-                    require_ozon_account, templates)
+from ..core.deps import check_csrf, require_market, require_owner, require_section, templates
 from ..markets.ozon import client as ozon
 from ..markets.ozon.client import OzonError
 
@@ -132,7 +131,7 @@ def returns_page(
     q: str = "",
     tab: str = "ready",
     user: dict = Depends(require_section("returns")),
-    account: dict = Depends(require_ozon_account),
+    account: dict = Depends(require_market("ozon")),
 ):
     items = _filter_returns([account["id"]], scheme, place, q)
     aid = (account["id"],)
@@ -189,7 +188,7 @@ def returns_page(
 @router.post("/api/returns/acts/by-day")
 def api_act_by_day(request: Request, payload: dict = Body(...),
                    user: dict = Depends(require_section("returns")),
-                   account: dict = Depends(require_ozon_account)):
+                   account: dict = Depends(require_market("ozon"))):
     """Составить акт из возвратов за указанное число. Кто работает с возвратами.
 
     Акт составляет человек: когда поездка закончилась, знает только он. За
@@ -356,7 +355,7 @@ def _collect_sheet(request: Request, user: dict, scheme: str, place: str, q: str
             message=f"Лист возвратов по всем кабинетам: {len(items)} поз. Ozon, {len(avito_orders)} заказов Avito",
         )
     else:
-        account = require_ozon_account(request)
+        account = require_market("ozon")(request)
         items = _filter_returns([account["id"]], scheme, place, q)
         avito_orders = []
         truncated = False
@@ -448,7 +447,7 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         raise HTTPException(status_code=400, detail="Неизвестная отметка")
     note = str(payload.get("note") or "").strip()[:2000]
 
-    account = require_ozon_account(request) if table == "returns" else require_avito_account(request)
+    account = require_market("ozon")(request) if table == "returns" else require_market("avito")(request)
     row = db.query_one(
         f"SELECT id, act_id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
     )
@@ -485,7 +484,7 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
 
 
 @router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_ozon_account)):
+def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_market("ozon"))):
     """Штрихкод Ozon на выдачу возвратов (FBS)."""
     try:
         pdf = ozon.get_client(account).giveout_pdf()
@@ -503,7 +502,7 @@ def api_giveout(user: dict = Depends(require_section("returns")), account: dict 
 
 @router.post("/api/returns/sync")
 def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("returns")),
-                     account: dict = Depends(require_ozon_account)):
+                     account: dict = Depends(require_market("ozon"))):
     check_csrf(request)
     full = bool(payload.get("full"))
     try:

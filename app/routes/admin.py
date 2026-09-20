@@ -5,14 +5,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ..core import access, accounts, db, options, report, security, sync
-from ..markets.avito import client as avito
-from ..markets.yandex import client as yandex
-from ..markets.avito.client import AvitoClient, AvitoError
-from ..core.deps import (check_csrf, current_account, require_manager, require_section,
-                    require_ozon_account, templates)
-from ..markets.ozon import client as ozon
-from ..markets.ozon.client import OzonClient, OzonError
-from ..markets.yandex.client import YandexClient, YandexError
+from ..core.deps import check_csrf, current_account, require_manager, require_market, require_section, templates
+from ..markets import registry
+from ..markets.base import KeyCheckError, MarketError
 
 router = APIRouter()
 
@@ -136,46 +131,9 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
         item["editable"] = access.may_manage(user, item)
         users.append(item)
     account = current_account(request)
-    aid = (account["id"] if account else 0,)
-    # Показываем счётчики текущего кабинета — и только те, что для его площадки.
-    if account and account["marketplace"] == "yandex":
-        stats = {
-            "Ждут сборки": db.query_one(
-                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'STARTED'", aid
-            )["c"],
-            "Ждут отгрузки": db.query_one(
-                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'READY_TO_SHIP'",
-                aid,
-            )["c"],
-            "Собрано": db.query_one(
-                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND local_state = 'packed'", aid
-            )["c"],
-            "Позиций в заказах": db.query_one(
-                "SELECT COUNT(*) AS c FROM yandex_order_items WHERE account_id = ?", aid
-            )["c"],
-        }
-    elif account and account["marketplace"] == "avito":
-        stats = {
-            "Ждут подтверждения": db.query_one(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid
-            )["c"],
-            "Ждут отправки": db.query_one(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'", aid
-            )["c"],
-            "Позиций в заказах": db.query_one(
-                "SELECT COUNT(*) AS c FROM avito_order_items WHERE account_id = ?", aid
-            )["c"],
-        }
-    else:
-        stats = {
-            "Отправлений": db.query_one("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", aid)["c"],
-            "Собрано": db.query_one(
-                "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed'", aid
-            )["c"],
-            "Товаров": db.query_one("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid)["c"],
-            "Штрихкодов": db.query_one("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid)["c"],
-            "Возвратов": db.query_one("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid)["c"],
-        }
+    # Плитки текущего кабинета — какие именно, знает его площадка.
+    market = registry.get(account["marketplace"]) if account else None
+    stats = dict(market.stats(account["id"])) if market else {}
     stats["Событий"] = db.query_one("SELECT COUNT(*) AS c FROM events")["c"]
     cabinets = [
         {**item, **{"status": accounts.status(item)}}
@@ -191,7 +149,7 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "stats": stats,
             "account": account,
             "cabinets": cabinets,
-            "marketplaces": accounts.MARKETPLACES,
+            "marketplaces": registry.MARKETS,
             "ozon": accounts.status(account),
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
@@ -307,65 +265,13 @@ def api_update_user(user_id: int, request: Request, payload: dict = Body(...), a
 
 def _probe(marketplace: str, client_id: str, api_key: str) -> None:
     """Проверить ключи до сохранения: опечатка не должна оставить склад без данных."""
-    # Без повторов и с коротким таймаутом: оператор ждёт ответа здесь и сейчас.
-    if marketplace == "avito":
-        probe = AvitoClient(client_id=client_id, client_secret=api_key, max_retries=1, timeout=20)
-        try:
-            probe.ping()
-        except AvitoError as exc:
-            if exc.status in (401, 403):
-                detail = (
-                    f"Avito отклонил ключи: {exc.message}. "
-                    "Проверьте client_id и client_secret в личном кабинете."
-                )
-            elif exc.status is None:
-                detail = (
-                    f"Не удалось связаться с Avito: {exc.message}. Проверьте доступ в интернет с сервера; "
-                    "если он есть, сохраните ключи без проверки."
-                )
-            else:
-                detail = f"Avito ответил ошибкой: {exc.message}"
-            raise HTTPException(status_code=400, detail=detail) from exc
-        finally:
-            probe.close()
-        return
-
-    if marketplace == "yandex":
-        probe = YandexClient(business_id=client_id, api_key=api_key, max_retries=1, timeout=20)
-        try:
-            probe.ping()
-        except YandexError as exc:
-            if exc.status in (401, 403):
-                detail = (
-                    f"Маркет отклонил ключи: {exc.message}. Проверьте businessId и токен "
-                    "(нужен доступ «Обработка заказов и учёт товаров»)."
-                )
-            elif exc.status is None:
-                detail = (
-                    f"Не удалось связаться с Маркетом: {exc.message}. Проверьте доступ в интернет с сервера; "
-                    "если он есть, сохраните ключи без проверки."
-                )
-            else:
-                detail = f"Маркет ответил ошибкой: {exc.message}"
-            raise HTTPException(status_code=400, detail=detail) from exc
-        return
-
-    probe = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+    market = registry.get(marketplace)
+    if market is None:
+        raise HTTPException(status_code=400, detail="Неизвестная площадка")
     try:
-        probe.ping()
-    except OzonError as exc:
-        if exc.status in (401, 403):
-            detail = f"Ozon отклонил ключи: {exc.message}. Проверьте Client-Id и Api-Key в личном кабинете."
-        elif exc.status is None:
-            detail = (
-                f"Не удалось связаться с Ozon: {exc.message}. Проверьте доступ в интернет с сервера; "
-                "если он есть, сохраните ключи без проверки."
-            )
-        else:
-            detail = f"Ozon ответил ошибкой: {exc.message}"
-        raise HTTPException(status_code=400, detail=detail) from exc
-    finally:
-        probe.close()
+        market.probe(client_id, api_key)
+    except KeyCheckError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/accounts")
@@ -479,21 +385,19 @@ def api_test_account(account_id: int, request: Request, admin: dict = Depends(re
         raise HTTPException(status_code=404, detail="Кабинет не найден")
     if not accounts.is_configured(account):
         raise HTTPException(status_code=400, detail=f"«{account['title']}»: ключи не заданы")
+    market = registry.get(account["marketplace"])
+    if market is None:
+        raise HTTPException(status_code=400, detail=f"«{account['title']}»: неизвестная площадка")
     try:
-        if account["marketplace"] == "avito":
-            result = avito.get_client(account).ping()
-        elif account["marketplace"] == "yandex":
-            result = yandex.get_client(account).ping()
-        else:
-            result = ozon.get_client(account).ping()
-    except (OzonError, AvitoError, YandexError) as exc:
+        result = market.ping(account)
+    except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"{account['title']}: {exc}") from exc
     return {"status": "ok", "message": f"«{account['title']}»: ключи работают", "result": result}
 
 
 @router.post("/api/postings/{posting_number}/reset")
 def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_manager),
-                      account: dict = Depends(require_ozon_account)):
+                      account: dict = Depends(require_market("ozon"))):
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
     check_csrf(request)
     row = db.query_one(
@@ -531,7 +435,7 @@ def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict =
 
 @router.post("/api/returns/statuses")
 def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                         account: dict = Depends(require_ozon_account)):
+                         account: dict = Depends(require_market("ozon"))):
     """Какие статусы возвратов панель загружает и показывает как доступные."""
     check_csrf(request)
     raw = payload.get("statuses") or []
@@ -555,7 +459,7 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
 
 @router.post("/api/returns/received-statuses")
 def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                          account: dict = Depends(require_ozon_account)):
+                          account: dict = Depends(require_market("ozon"))):
     """В каких статусах возврат считается полученным — из них собирается акт.
 
     Пустой список разрешён: это «акты не вести». Отказывать здесь, как в списке

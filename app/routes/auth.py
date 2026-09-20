@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from ..core import accounts, db, security
 from ..core.config import settings
 from ..core.deps import ACCOUNT_COOKIE, check_csrf, current_user, templates
+from ..markets import registry
 
 router = APIRouter()
 
@@ -91,14 +92,14 @@ def switch_account(request: Request, payload: dict = Body(...)):
     )
     # Сборка идёт в конкретном кабинете: чужой раздел после переключения открывать незачем.
     target = security.safe_next(payload.get("next"), "/")
-    # Разделы, общие для всех площадок, при переключении не сбрасываются.
+    # Разделы, общие для всех площадок, при переключении не сбрасываются;
+    # свои адреса и домашнюю страницу площадка объявляет сама.
     shared = ("/logs", "/settings", "/products", "/reports")
-    homes = {"ozon": "/pack", "avito": "/avito", "yandex": "/yandex/pack"}
-    own = {"ozon": ("/pack", "/orders", "/returns", "/api/"), "avito": ("/avito",), "yandex": ("/yandex",)}
-    marketplace = account["marketplace"]
+    market = registry.get(account["marketplace"])
+    own = market.prefixes if market else ()
     # Корень сам ведёт на рабочее место площадки — его не трогаем.
-    if target != "/" and not target.startswith(shared + own.get(marketplace, ())):
-        target = homes.get(marketplace, "/")
+    if target != "/" and not target.startswith(shared + own):
+        target = market.home if market else "/"
 
     response = JSONResponse({"status": "ok", "redirect": target, "account": account["title"]})
     response.set_cookie(

@@ -13,9 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .core import accounts, db, deps, security, sync
 from .core.config import BASE_DIR
 from .core.version import get_commit, get_version
-from .markets.avito import routes as avito_routes
-from .markets.ozon import routes as ozon_routes
-from .markets.yandex import routes as yandex_routes
+from .markets import registry
 from .routes import admin, auth, products, reports, returns
 
 logging.basicConfig(
@@ -50,7 +48,7 @@ def _warn_about_spoofable_client_ip() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
     _warn_about_spoofable_client_ip()
     db.init_db()
     without_keys = [a["title"] for a in accounts.all_accounts(active_only=True) if not accounts.is_configured(a)]
@@ -170,21 +168,17 @@ def healthz(request: Request):
 
 @app.get("/")
 def index(request: Request):
-    """Стартовая страница зависит от кабинета: у каждой площадки своя сборка."""
+    """Стартовая страница зависит от кабинета: у каждой площадки своё рабочее место."""
     account = deps.current_account(request)
-    if account and account["marketplace"] == "avito":
-        # У Avito своё рабочее место сборщика — с него и начинаем, как на Ozon.
-        return RedirectResponse("/avito/pack", status_code=303)
-    if account and account["marketplace"] == "yandex":
-        return RedirectResponse("/yandex/pack", status_code=303)
-    return RedirectResponse("/pack", status_code=303)
+    market = registry.get(account["marketplace"]) if account else None
+    return RedirectResponse(market.home if market else "/pack", status_code=303)
 
 
 app.include_router(auth.router)
-app.include_router(ozon_routes.router)
+# Разделы площадок — из реестра: новая площадка сюда ничего не дописывает.
+for _market in registry.all_markets():
+    app.include_router(_market.router)
 app.include_router(returns.router)
 app.include_router(products.router)
-app.include_router(avito_routes.router)
-app.include_router(yandex_routes.router)
 app.include_router(reports.router)
 app.include_router(admin.router)

@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ...core.config import settings
+from ..base import KeyCheckError, MarketError
 
 log = logging.getLogger("ozon")
 
@@ -34,7 +35,7 @@ RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 4
 
 
-class OzonError(RuntimeError):
+class OzonError(MarketError):
     """Ошибка обращения к Ozon Seller API."""
 
     def __init__(self, message: str, *, status: int | None = None, code: str | None = None, payload: Any = None):
@@ -347,3 +348,26 @@ def reset_client(account_id: int | None = None) -> None:
             client = _clients.pop(key, None)
             if client is not None:
                 client.close()
+
+
+def probe(client_id: str, api_key: str) -> None:
+    """Проверить ключи до сохранения: опечатка не должна оставить склад без данных.
+
+    Без повторов и с коротким таймаутом: оператор ждёт ответа здесь и сейчас.
+    """
+    check = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+    try:
+        check.ping()
+    except OzonError as exc:
+        if exc.status in (401, 403):
+            detail = f"Ozon отклонил ключи: {exc.message}. Проверьте Client-Id и Api-Key в личном кабинете."
+        elif exc.status is None:
+            detail = (
+                f"Не удалось связаться с Ozon: {exc.message}. Проверьте доступ в интернет с сервера; "
+                "если он есть, сохраните ключи без проверки."
+            )
+        else:
+            detail = f"Ozon ответил ошибкой: {exc.message}"
+        raise KeyCheckError(detail) from exc
+    finally:
+        check.close()

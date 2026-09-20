@@ -11,32 +11,6 @@ import re
 from typing import Any
 
 from . import crypto, db
-from .config import settings
-
-# Площадки и то, как называются их ключи в личных кабинетах.
-MARKETPLACES: dict[str, dict[str, str]] = {
-    "ozon": {
-        "title": "Ozon",
-        "id_label": "Client-Id",
-        "key_label": "Api-Key",
-        "hint": "Личный кабинет Ozon → Настройки → Seller API",
-    },
-    "avito": {
-        "title": "Avito",
-        "id_label": "client_id",
-        "key_label": "client_secret",
-        "hint": "Личный кабинет Avito → Настройки → Профиль → API",
-    },
-    # У Маркета в настройках только один идентификатор — кабинета (businessId).
-    # Идентификатор магазина (campaignId) панель не спрашивает: он приходит в
-    # каждом заказе, и заводить его руками значило бы просить то, что и так есть.
-    "yandex": {
-        "title": "Яндекс Маркет",
-        "id_label": "businessId",
-        "key_label": "Api-Key",
-        "hint": "Кабинет Маркета → Настройки → API и модули → Токены авторизации",
-    },
-}
 
 # Ключи площадок — печатаемый ASCII без пробелов. Проверка нужна не для красоты:
 # кириллица в заголовке HTTP роняет запрос ещё до обращения к площадке.
@@ -45,24 +19,32 @@ MAX_LENGTH = 200
 MAX_TITLE = 60
 
 
+def _registry():
+    """Реестр площадок — лениво: он импортирует пакеты площадок, а те — ядро."""
+    from ..markets import registry
+
+    return registry
+
+
 def marketplace_title(marketplace: str) -> str:
-    return MARKETPLACES.get(marketplace, {}).get("title", marketplace or "—")
+    market = _registry().get(marketplace)
+    return market.title if market else (marketplace or "—")
 
 
 def validate(marketplace: str, title: str, client_id: str, api_key: str, *, keys_required: bool = False) -> str | None:
     """Понятная причина отказа или None, если всё в порядке."""
-    if marketplace not in MARKETPLACES:
+    meta = _registry().get(marketplace)
+    if meta is None:
         return "Неизвестная площадка"
     if not title.strip():
         return "Укажите название кабинета"
     if len(title.strip()) > MAX_TITLE:
         return f"Название длиннее {MAX_TITLE} символов"
-    meta = MARKETPLACES[marketplace]
     if keys_required and not (client_id and api_key):
-        return f"Заполните {meta['id_label']} и {meta['key_label']}"
+        return f"Заполните {meta.id_label} и {meta.key_label}"
     if bool(client_id) != bool(api_key):
-        return f"Нужны оба ключа: {meta['id_label']} и {meta['key_label']}"
-    for name, value in ((meta["id_label"], client_id), (meta["key_label"], api_key)):
+        return f"Нужны оба ключа: {meta.id_label} и {meta.key_label}"
+    for name, value in ((meta.id_label, client_id), (meta.key_label, api_key)):
         if not value:
             continue
         if len(value) > MAX_LENGTH:
@@ -138,9 +120,12 @@ def credentials(account: dict | None) -> tuple[str, str, str]:
         api_key = crypto.decrypt(account.get("api_key"))
         if client_id and api_key:
             return client_id, api_key, "panel"
-        # Ключи из .env — только для кабинета Ozon: другой площадки там нет.
-        if account.get("marketplace") == "ozon" and settings.ozon_client_id and settings.ozon_api_key:
-            return settings.ozon_client_id, settings.ozon_api_key, "env"
+        # Запасные ключи из .env есть только у площадок, которые их объявили (Ozon).
+        market = _registry().get(account.get("marketplace"))
+        if market and market.env_credentials:
+            env_id, env_key = market.env_credentials()
+            if env_id and env_key:
+                return env_id, env_key, "env"
     return "", "", "none"
 
 
@@ -226,9 +211,12 @@ def update(account_id: int, *, title: str | None = None, client_id: str | None =
 def delete(account_id: int, *, user: dict | None = None) -> None:
     """Удалить кабинет вместе с его заказами, товарами и возвратами."""
     account = get(account_id)
+    market = _registry().get((account or {}).get("marketplace"))
+    # Таблицы площадки объявляет она сама; у кабинета неизвестной площадки
+    # (запись из старой версии) чистим таблицы всех — лишнее ничего не найдёт.
+    tables = market.tables if market else tuple(t for m in _registry().all_markets() for t in m.tables)
     with db.write() as conn:
-        for table in ("postings", "posting_items", "products", "product_barcodes", "returns",
-                      "avito_orders", "avito_order_items", "yandex_orders", "yandex_order_items"):
+        for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE account_id = ?", (account_id,))
         conn.execute("DELETE FROM pack_state WHERE account_id = ?", (account_id,))
         conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
@@ -244,10 +232,5 @@ def delete(account_id: int, *, user: dict | None = None) -> None:
 
 
 def _reset_clients(account_id: int | None = None) -> None:
-    from ..markets.avito import client as avito
-    from ..markets.ozon import client as ozon
-    from ..markets.yandex import client as yandex
-
-    ozon.reset_client(account_id)
-    avito.reset_client(account_id)
-    yandex.reset_client(account_id)
+    for market in _registry().all_markets():
+        market.reset_client(account_id)
