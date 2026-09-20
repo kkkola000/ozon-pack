@@ -30,8 +30,9 @@
     {% if tab == 'confirm' %}
       Заказы, которые ждут подтверждения. Если не подтвердить до срока, Avito отменит заказ автоматически.
     {% elif tab == 'packed' %}
-      Собранные на складе — отсканированы во вкладке «Сборка». Avito о сборке не знает,
-      для площадки они всё ещё «Отправьте заказ»: отправку подтверждают отсюда.
+      Собранные заказы, ожидающие отправки. Avito о сборке не знает — отметку ставит
+      сканирование во вкладке «Сборка», поэтому отправку подтверждают отсюда. После
+      отправки заказ уходит из панели, а кто и когда его собрал, остаётся в журнале.
       Кнопка «Отправить» доступна для доставки курьером продавца — по остальным способам
       Avito отмечает отправку сам, когда посылку принимают.
     {% else %}
@@ -65,6 +66,7 @@
         <th style="width:150px">Срок</th>
         <th>Состав</th>
         <th style="width:200px">Доставка</th>
+        <th style="width:170px">Статус</th>
         <th style="width:160px">Действия</th>
       </tr>
     </thead>
@@ -100,6 +102,20 @@
           {% if o.terminal_address %}<div class="muted">{{ o.terminal_address }}</div>{% endif %}
           {% if o.buyer_name %}<div class="muted">{{ o.buyer_name }}</div>{% endif %}
           {% if o.tracking_number %}<div class="muted mono">{{ o.tracking_number }}</div>{% endif %}
+        </td>
+        {# Кто и когда собрал — площадка об этом не знает, спросить негде, кроме
+           панели. Снять отметку может только админ или владелец: это результат
+           работы сборщика, и отвечает за него тот, кто отвечает за склад. #}
+        <td class="small">
+          {% if o.local_state == 'packed' %}
+            <span class="tag success">Собрано</span>
+            <div class="muted">Собрал: {{ o.packed_by }}<br>{{ o.packed_at_local }}</div>
+            {% if is_manager(user) %}
+              <button class="btn small no-print" data-reset="{{ o.id }}" style="margin-top:4px">Снять отметку</button>
+            {% endif %}
+          {% else %}
+            <span class="tag {{ 'urgent' if o.status == 'on_confirmation' else 'soon' }}">{{ o.status_label }}</span>
+          {% endif %}
         </td>
         <td class="small no-print">
           {% if 'confirm' in o.actions %}

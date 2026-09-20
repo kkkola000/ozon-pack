@@ -59,6 +59,22 @@ document.querySelectorAll('[data-ship]').forEach((button) => {
   });
 });
 
+/* Снять отметку «собрано». Спрашиваем подтверждение: заказ вернётся в работу и
+   его соберут заново, а отметка о том, кто собирал, пропадёт. */
+document.querySelectorAll('[data-reset]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const id = button.dataset.reset;
+    if (!confirm(`Снять отметку «собрано» с заказа ${id}?`)) return;
+    try {
+      const result = await api(`/api/avito/orders/${encodeURIComponent(id)}/reset`, {});
+      toast(result.message, 'ok');
+      setTimeout(() => window.location.reload(), 800);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+});
+
 /* Печать: файл приходит от Avito как есть, панель его не перерисовывает. */
 async function printLabels(ids, button) {
   if (!ids.length) return;

@@ -584,3 +584,66 @@ def test_shipping_still_works_from_the_packed_tab(client, avito_account):
     page = client.get("/avito?tab=packed")
     assert 'id="btn-ship"' in page.text, "во вкладке «Собранные» нечем отправить"
     assert 'id="btn-confirm"' not in page.text
+
+
+def test_only_a_manager_can_unmark_a_packed_order(client, avito_account):
+    """Снять отметку «собрано» может админ или владелец, но не сборщик.
+
+    Отметка — результат работы сборщика, и отвечает за неё тот, кто отвечает за
+    склад. Иначе ошибившийся сам же и заметает след.
+    """
+    from app import access, security
+
+    target = db.query_one(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
+    )["id"]
+    db.execute(
+        "UPDATE avito_orders SET local_state = 'packed', packed_by = 'sborshik' WHERE id = ?", (target,))
+
+    # Владелец видит кнопку и снимает отметку.
+    page = client.get("/avito?tab=packed")
+    assert f'data-reset="{target}"' in page.text, "владельцу не показали «Снять отметку»"
+    done = client.post(f"/api/avito/orders/{target}/reset", json={})
+    assert done.status_code == 200, done.text
+    row = db.query_one("SELECT local_state, packed_by FROM avito_orders WHERE id = ?", (target,))
+    assert row["local_state"] == "new" and row["packed_by"] is None
+
+    # Сборщику кнопку не показывают и запрос от него не принимают.
+    db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
+    db.execute(
+        "INSERT INTO users(login, password_hash, role, sections, active, created_at) VALUES(?,?,?,?,1,?)",
+        ("sborshik", security.hash_password("parol1234567"), access.PACKER,
+         access.dump_sections(access.PACKER, ["pack", "orders"]), db.now_iso()),
+    )
+    with TestClient(app, follow_redirects=False) as packer:
+        packer.post("/login", data={"login": "sborshik", "password": "parol1234567", "next": "/pack"})
+        csrf = re.search(
+            r'name="csrf-token" content="([^"]*)"', packer.get("/pack").text).group(1)
+        packer.post("/api/account/switch", json={"account_id": avito_account["id"], "next": "/avito"},
+                    headers={"X-CSRF-Token": csrf})
+        page = packer.get("/avito?tab=packed")
+        assert page.status_code == 200, page.text
+        assert "data-reset=" not in page.text, "сборщику показали «Снять отметку»"
+        csrf = re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
+        refused = packer.post(f"/api/avito/orders/{target}/reset", json={},
+                              headers={"X-CSRF-Token": csrf})
+        assert refused.status_code == 403, refused.text
+
+    assert db.query_one("SELECT local_state FROM avito_orders WHERE id = ?", (target,))["local_state"] == "packed"
+
+
+def test_the_packed_tab_shows_who_packed_and_when(client, avito_account):
+    """Кто собрал и когда — площадка об этом не знает, спросить негде."""
+    target = db.query_one(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
+    )["id"]
+    db.execute(
+        "UPDATE avito_orders SET local_state = 'packed', packed_by = 'sborshik', packed_at = ? "
+        "WHERE id = ?", (db.now_iso(), target))
+
+    page = client.get("/avito?tab=packed")
+    assert "Собрано" in page.text
+    assert "Собрал: sborshik" in page.text
+    assert "Статус" in page.text, "в таблице нет колонки статуса"

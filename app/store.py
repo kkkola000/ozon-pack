@@ -719,6 +719,9 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     data["hours_left"] = round(left, 1) if left is not None else None
     data["urgency"] = urgency
     data["created_local"] = local_time(data.get("created_at_api"))
+    # Кто и когда собрал — во вкладке «Собранные» это главное, что нужно знать:
+    # площадка о сборке не знает, и спросить, кроме панели, негде.
+    data["packed_at_local"] = local_time(data.get("packed_at"))
     if with_items:
         data["items"] = avito_items(data["account_id"], data["id"])
     return _with_mark(data)

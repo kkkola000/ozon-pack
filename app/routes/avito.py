@@ -291,6 +291,30 @@ def _bulk(account: dict, user: dict, payload: dict, transition: str, verb: str) 
     }
 
 
+@router.post("/api/avito/orders/{order_id}/reset")
+def api_avito_reset_order(order_id: str, request: Request, admin: dict = Depends(require_manager),
+                          account: dict = Depends(require_avito_account)):
+    """Снять отметку «собрано» — например, если сборку закрыли по ошибке.
+
+    Только админу и владельцу: отметка — это результат работы сборщика, и
+    снимать её должен тот, кто отвечает за склад, а не тот, кто ошибся.
+    """
+    check_csrf(request)
+    order = _order_row(account, order_id)
+    db.execute(
+        "UPDATE avito_orders SET local_state = 'new', packed_at = NULL, packed_by = NULL, "
+        "claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
+        "WHERE account_id = ? AND id = ?",
+        (account["id"], order_id),
+    )
+    db.log_event(
+        "avito_order_reset", level="warn", account_id=account["id"], user=admin,
+        posting_number=order.get("marketplace_id") or order_id,
+        message="Сброшена отметка сборки",
+    )
+    return {"status": "ok", "message": f"{order.get('marketplace_id') or order_id}: отметка сборки снята"}
+
+
 @router.post("/api/avito/labels/archive.zip")
 def api_avito_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
                              account: dict = Depends(require_avito_account)):
