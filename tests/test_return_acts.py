@@ -721,7 +721,10 @@ def test_sync_puts_nothing_into_acts(sample_data):
     client.returns_list = original
 
     assert return_acts.pending() == [], "обновление само завело акт"
-    assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] is None
+    # Из выдачи возврат ушёл — площадка его больше не отдаёт. В акт он при этом
+    # не попал: акт собирается только из полученных.
+    row = db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))
+    assert row is None or row["act_id"] is None
 
 
 def test_act_takes_only_received_returns(sample_data):

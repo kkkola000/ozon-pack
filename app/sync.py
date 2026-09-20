@@ -138,6 +138,60 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
     return {"products": total}
 
 
+def _rebuild_pickup(account_id: int, pickup: list[str], seen: set[str]) -> int:
+    """Пересобрать «К выдаче» по тому, что Ozon только что отдал.
+
+    Раздел строится прямо по статусу строки, а статус панель знает только из
+    загрузки. Возврат, уехавший из пункта, приходит уже в чужом статусе
+    (MovingToSeller) — а его панель не запрашивает вовсе, поэтому в базе
+    навсегда оставался прежний «В пункте выдачи», и строка висела в разделе,
+    сколько ни жми «Обновить». Сверять было не с чем: признак is_ready раздел
+    больше не читает.
+
+    Поэтому то, чего в ответе площадки не оказалось, из выдачи убирается:
+    список — снимок последней загрузки, а не то, что когда-то в него попало.
+    Только после полного обхода: на оборванном списке это вычистило бы всё,
+    до чего не дочитали.
+
+    Возвращает, сколько возвратов ушло из раздела.
+    """
+    if not pickup:
+        return 0
+    places = ",".join("?" for _ in pickup)
+    left = [
+        row["id"]
+        for row in db.query(
+            f"SELECT id FROM returns WHERE account_id = ? AND status_sys IN ({places})",
+            [account_id] + pickup,
+        )
+        if row["id"] not in seen
+    ]
+    if not left:
+        return 0
+    now = db.now_iso()
+    # Список рубим на части: первое обновление после этой правки разбирает всё,
+    # что накопилось, а SQLite держит ограниченное число параметров в запросе.
+    for start in range(0, len(left), 400):
+        batch = left[start : start + 400]
+        marks = ",".join("?" for _ in batch)
+        # Строка без работы — это просто кэш списка выдачи, держать её незачем.
+        db.execute(
+            f"DELETE FROM returns WHERE account_id = ? AND id IN ({marks}) "
+            "AND mark IS NULL AND note IS NULL AND act_id IS NULL",
+            [account_id] + batch,
+        )
+        # А по этим отметка уже стоит или они лежат в акте — их удалять нельзя,
+        # сотрём работу сборщика. Статус снимаем: какой он теперь, площадка не
+        # сказала, а прежний — заведомо неправда, и по нему строка осталась бы
+        # в разделе. Пустой статус покажется прочерком, и это честно.
+        db.execute(
+            f"UPDATE returns SET is_ready = 0, status_sys = NULL, status_name = NULL, updated_at = ? "
+            f"WHERE account_id = ? AND id IN ({marks})",
+            [now, account_id] + batch,
+        )
+    return len(left)
+
+
 def sync_returns(account: dict | None = None, *, full: bool = False,
                  statuses: list[str] | None = None) -> dict:
     """Возвраты FBO и FBS: /v1/returns/list.
@@ -171,6 +225,10 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
     seen: set[str] = set()
     histogram: dict[str, int] = {}
     complete = True
+    # Полнота обхода «к выдаче» считается отдельно: по ней список выдачи
+    # пересобирается заново, и сбой на выборке полученных не должен этому
+    # мешать — это разные запросы к разным статусам.
+    pickup_complete = True
 
     def remember(raw: dict) -> None:
         """Учитываем, что именно вернул Ozon, — histogram виден в интерфейсе."""
@@ -211,6 +269,7 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
             last_id = returns[-1].get("id") or 0
             if not has_next or not last_id:
                 break
+        pickup_complete = complete
     else:
         def walk(filter_: dict, what: str) -> bool:
             """Пролистать выдачу под фильтром. False — обход вышел неполным.
@@ -245,7 +304,8 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
             return False
 
         for status in pickup:
-            complete = walk({"visual_status_name": status}, status) and complete
+            pickup_complete = walk({"visual_status_name": status}, status) and pickup_complete
+        complete = pickup_complete and complete
 
         # Полученные — статус вместе с окном, одним запросом. Фильтра по самому
         # моменту получения (final_moment) в API нет, поэтому окно задаём по
@@ -283,25 +343,9 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
         [account_id] + pickup,
     )
 
-    gone = 0
+    gone = _rebuild_pickup(account_id, pickup, seen) if pickup_complete else 0
     removed = 0
     if complete:
-        # Возврат забрали или он уехал дальше — Ozon его в этих статусах больше
-        # не отдаёт. Сверку делаем только после полностью успешного обхода,
-        # иначе сетевая ошибка очистила бы список выдачи.
-        stale = [
-            row["id"]
-            for row in db.query("SELECT id FROM returns WHERE account_id = ? AND is_ready = 1", (account_id,))
-            if row["id"] not in seen
-        ]
-        if stale:
-            placeholders = ",".join("?" for _ in stale)
-            db.execute(
-                f"UPDATE returns SET is_ready = 0, updated_at = ? WHERE account_id = ? AND id IN ({placeholders})",
-                [db.now_iso(), account_id] + stale,
-            )
-            gone = len(stale)
-
         # Записи в ненужных статусах, оставшиеся от прошлых версий или прошлых
         # настроек, убираем совсем. Кроме тех, по которым уже есть работа:
         # отметка, комментарий или акт — удаление стёрло бы результат проверки

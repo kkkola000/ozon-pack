@@ -86,12 +86,69 @@ def test_return_leaving_pickup_point_is_dropped(sample_data):
     assert db.query_one("SELECT is_ready FROM returns WHERE id = ?", (return_id,))["is_ready"] == 0
 
 
+def test_return_moving_to_seller_leaves_the_pickup_list(sample_data):
+    """Возврат уехал к продавцу — из «К выдаче» он уходит при обновлении.
+
+    Раздел строится прямо по статусу строки, а статус панель знает только из
+    загрузки: в MovingToSeller возврат не запрашивается вовсе, и в базе
+    навсегда оставался прежний «В пункте выдачи». Строка висела в разделе,
+    сколько ни жми «Обновить», — сборщик ехал за тем, чего в пункте нет.
+    """
+    from app import options, sync
+
+    client = sample_data
+    target = client._returns[0]
+    assert target["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"
+    return_id = str(target["id"])
+
+    where, params = options.pickup_sql()
+    pickup = lambda: [r["id"] for r in db.query(f"SELECT id FROM returns WHERE {where}", params)]
+    assert return_id in pickup()
+    before = len(pickup())
+
+    target["visual"]["status"]["sys_name"] = "MovingToSeller"
+    target["visual"]["status"]["display_name"] = "Едет к продавцу"
+    sync.sync_returns()
+
+    assert return_id not in pickup(), "уехавший возврат остался в «К выдаче»"
+    assert len(pickup()) == before - 1
+    # Остальные на месте: убрали один возврат, а не пересобрали раздел пустым.
+    assert before > 1
+
+
+def test_a_marked_return_keeps_its_row_when_it_leaves_the_pickup(sample_data):
+    """Отметку сборщика не стираем вместе со строкой — только снимаем статус."""
+    from app import options, sync
+
+    client = sample_data
+    target = client._returns[0]
+    return_id = str(target["id"])
+    db.execute("UPDATE returns SET mark = 'bad', note = 'вскрыта упаковка' WHERE id = ?", (return_id,))
+
+    target["visual"]["status"]["sys_name"] = "MovingToSeller"
+    sync.sync_returns()
+
+    row = db.query_one("SELECT status_sys, is_ready, mark, note FROM returns WHERE id = ?", (return_id,))
+    assert row is not None, "строку с отметкой удалили"
+    assert row["mark"] == "bad" and row["note"] == "вскрыта упаковка"
+    assert row["is_ready"] == 0
+    where, params = options.pickup_sql()
+    assert return_id not in [r["id"] for r in db.query(f"SELECT id FROM returns WHERE {where}", params)]
+
+
 def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
-    """Сбой связи не должен обнулять список готовых к выдаче."""
-    from app import sync
+    """Сбой связи не должен обнулять список готовых к выдаче.
+
+    Обновление пересобирает раздел по ответу площадки, и оборванный ответ
+    вычистил бы всё, до чего не дочитали. Поэтому пересборка идёт только после
+    полного обхода — этот тест её и сторожит.
+    """
+    from app import options, sync
     from app.ozon import OzonError
 
-    before = db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 1")["c"]
+    where, params = options.pickup_sql()
+    count = lambda: db.query_one(f"SELECT COUNT(*) c FROM returns WHERE {where}", params)["c"]
+    before = count()
     assert before > 0
 
     def boom(*args, **kwargs):
@@ -100,7 +157,7 @@ def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
     monkeypatch.setattr(sample_data, "returns_list", boom)
     sync.sync_returns()
 
-    assert db.query_one("SELECT COUNT(*) c FROM returns WHERE is_ready = 1")["c"] == before
+    assert count() == before
 
 
 def test_products_have_barcodes(sample_data):
