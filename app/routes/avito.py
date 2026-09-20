@@ -25,17 +25,25 @@ log = logging.getLogger("avito")
 
 router = APIRouter()
 
-# Вкладки соответствуют двум задачам сборщика; всё остальное в панель не попадает.
+# Вкладки соответствуют задачам сборщика; всё остальное в панель не попадает.
+#
+# «Собранные» отделены от «Отправьте заказ» так же, как в Ozon: площадка держит
+# их в одном статусе (собрали мы у себя, Avito об этом не знает), и без деления
+# собранное лежало бы вперемешку с несобранным — по списку не видно, сколько
+# работы осталось.
 TABS = {
-    "confirm": ("Подтвердите заказ", avito.STATUS_ON_CONFIRMATION),
-    "ship": ("Отправьте заказ", avito.STATUS_READY_TO_SHIP),
+    "confirm": ("Подтвердите заказ", avito.STATUS_ON_CONFIRMATION, ""),
+    "ship": ("Отправьте заказ", avito.STATUS_READY_TO_SHIP, "local_state != 'packed'"),
+    "packed": ("Собранные", avito.STATUS_READY_TO_SHIP, "local_state = 'packed'"),
 }
 
 
 def _list_orders(account: dict, tab: str, search: str = "", limit: int = 300) -> list[dict]:
-    status = TABS.get(tab, TABS["confirm"])[1]
+    _title, status, extra = TABS.get(tab, TABS["confirm"])
     params: list = [account["id"], status]
     sql = "SELECT * FROM avito_orders WHERE account_id = ? AND status = ?"
+    if extra:
+        sql += f" AND {extra}"
     if search:
         like = f"%{search.strip()}%"
         sql += """
@@ -55,10 +63,11 @@ def _list_orders(account: dict, tab: str, search: str = "", limit: int = 300) ->
 def _counts(account: dict) -> dict:
     return {
         key: db.query_one(
-            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+            "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?"
+            + (f" AND {extra}" if extra else ""),
             (account["id"], status),
         )["c"]
-        for key, (_title, status) in TABS.items()
+        for key, (_title, status, extra) in TABS.items()
     }
 
 

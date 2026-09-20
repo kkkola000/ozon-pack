@@ -173,8 +173,11 @@ def nav_counters(request: Request) -> dict:
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'",
                 (account_id,),
             ),
+            # Собранные не в счёт, как и у Ozon: значок в шапке — это сколько
+            # работы осталось, а не сколько заказов вообще в этом статусе.
             "avito_ship": count(
-                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'",
+                "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? "
+                "AND status = 'ready_to_ship' AND local_state != 'packed'",
                 (account_id,),
             ),
             # В таблице лежат только возвраты, готовые к выдаче, — фильтровать

@@ -1,7 +1,8 @@
 """Заказы Avito: загрузка, подтверждение, отправка, этикетки.
 
-Проверяем главное требование: сборщик видит только «Подтвердите заказ» и
-«Отправьте заказ», а всё остальное панель не показывает и не хранит.
+Проверяем главное требование: сборщик видит только рабочие статусы —
+«Подтвердите заказ» и «Отправьте заказ» (собранное из второго выносится на
+отдельную вкладку), а всё остальное панель не показывает и не хранит.
 """
 import json
 import re
@@ -511,3 +512,75 @@ def test_raw_answer_is_available_to_admin(client, avito_account):
     assert body["raw"]["id"] == row["id"]
     assert "delivery" in body["raw"]
     assert "pickup_address" in body
+
+
+# ------------------------------------------------- вкладка «Собранные»
+def test_packed_orders_move_to_their_own_tab(client, avito_account):
+    """Собранный заказ уходит из «Отправьте заказ» во вкладку «Собранные».
+
+    Avito о сборке не знает: для площадки заказ всё ещё «Отправьте заказ».
+    Собрали мы у себя, и без деления собранное лежало бы вперемешку с
+    несобранным — по списку не видно, сколько работы осталось.
+    """
+    target = db.query_one(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
+    )["id"]
+
+    ship = client.get("/avito?tab=ship")
+    assert target in ship.text
+    assert client.get("/avito?tab=packed").text.count(target) == 0
+
+    db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
+
+    assert target not in client.get("/avito?tab=ship").text, "собранный остался в «Отправьте заказ»"
+    assert target in client.get("/avito?tab=packed").text, "собранного нет во вкладке «Собранные»"
+
+
+def test_the_packed_tab_is_offered(client):
+    """Вкладка есть на экране — иначе о ней никто не узнает."""
+    page = client.get("/avito")
+    assert page.status_code == 200
+    assert "Собранные" in page.text
+    assert "/avito?tab=packed" in page.text
+
+
+def tab_badge(page: str, title: str) -> int:
+    """Число на вкладке, как его видит человек."""
+    found = re.search(rf'{title} <span class="badge">(\d+)</span>', page)
+    assert found, f"на странице нет вкладки «{title}»"
+    return int(found.group(1))
+
+
+def test_packed_orders_leave_the_shipping_count(client, avito_account):
+    """Счётчики — это сколько работы осталось, а не сколько заказов вообще.
+
+    Собранный уходит из числа на «Отправьте заказ» и появляется на
+    «Собранных» — иначе по вкладкам не видно, что уже сделано.
+    """
+    target = db.query_one(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
+    )["id"]
+    before = client.get("/avito").text
+    ship_before = tab_badge(before, "Отправьте заказ")
+    assert tab_badge(before, "Собранные") == 0
+
+    db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
+    after = client.get("/avito").text
+
+    assert tab_badge(after, "Отправьте заказ") == ship_before - 1
+    assert tab_badge(after, "Собранные") == 1
+
+
+def test_shipping_still_works_from_the_packed_tab(client, avito_account):
+    """Отправку подтверждают из «Собранных» — кнопка там та же."""
+    target = db.query_one(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
+        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
+    )["id"]
+    db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
+
+    page = client.get("/avito?tab=packed")
+    assert 'id="btn-ship"' in page.text, "во вкладке «Собранные» нечем отправить"
+    assert 'id="btn-confirm"' not in page.text
