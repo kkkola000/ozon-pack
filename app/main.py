@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import accounts, db, deps, security, sync
 from .config import BASE_DIR
-from .routes import admin, auth, avito, orders, pack, products, reports, returns
+from .routes import admin, auth, avito, orders, pack, products, reports, returns, yandex
 from .version import get_commit, get_version
 
 logging.basicConfig(
@@ -167,11 +167,13 @@ def healthz(request: Request):
 
 @app.get("/")
 def index(request: Request):
-    """Стартовая страница зависит от кабинета: у Avito своя сборка заказов."""
+    """Стартовая страница зависит от кабинета: у каждой площадки своя сборка."""
     account = deps.current_account(request)
     if account and account["marketplace"] == "avito":
         # У Avito своё рабочее место сборщика — с него и начинаем, как на Ozon.
         return RedirectResponse("/avito/pack", status_code=303)
+    if account and account["marketplace"] == "yandex":
+        return RedirectResponse("/yandex/pack", status_code=303)
     return RedirectResponse("/pack", status_code=303)
 
 
@@ -181,5 +183,6 @@ app.include_router(orders.router)
 app.include_router(returns.router)
 app.include_router(products.router)
 app.include_router(avito.router)
+app.include_router(yandex.router)
 app.include_router(reports.router)
 app.include_router(admin.router)

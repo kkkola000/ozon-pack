@@ -91,10 +91,14 @@ def switch_account(request: Request, payload: dict = Body(...)):
     )
     # Сборка идёт в конкретном кабинете: чужой раздел после переключения открывать незачем.
     target = security.safe_next(payload.get("next"), "/")
-    if account["marketplace"] == "avito" and not target.startswith(("/avito", "/logs", "/settings")):
-        target = "/avito"
-    if account["marketplace"] == "ozon" and target.startswith("/avito"):
-        target = "/pack"
+    # Разделы, общие для всех площадок, при переключении не сбрасываются.
+    shared = ("/logs", "/settings", "/products", "/reports")
+    homes = {"ozon": "/pack", "avito": "/avito", "yandex": "/yandex/pack"}
+    own = {"ozon": ("/pack", "/orders", "/returns", "/api/"), "avito": ("/avito",), "yandex": ("/yandex",)}
+    marketplace = account["marketplace"]
+    # Корень сам ведёт на рабочее место площадки — его не трогаем.
+    if target != "/" and not target.startswith(shared + own.get(marketplace, ())):
+        target = homes.get(marketplace, "/")
 
     response = JSONResponse({"status": "ok", "redirect": target, "account": account["title"]})
     response.set_cookie(

@@ -27,7 +27,7 @@
       <option value="">Все кабинеты</option>
       {% for a in accounts %}
         <option value="{{ a.id }}" {{ 'selected' if account_id == a.id }}>
-          {{ 'Avito' if a.marketplace == 'avito' else 'Ozon' }} · {{ a.title }}
+          {{ marketplace_title(a.marketplace) }} · {{ a.title }}
         </option>
       {% endfor %}
     </select>
@@ -64,7 +64,7 @@
         <td class="small mono">{{ r.scanned_local }}</td>
         <td>
           <span class="mono">{{ r.posting_number or '—' }}</span>
-          <div class="muted small">{{ 'Avito' if r.marketplace == 'avito' else 'Ozon' }} · {{ r.account_title or '' }}</div>
+          <div class="muted small">{{ marketplace_title(r.marketplace) }} · {{ r.account_title or '' }}</div>
         </td>
         <td>{{ r.name or '—' }}</td>
         <td class="small mono">

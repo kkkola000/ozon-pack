@@ -153,3 +153,27 @@ def pending_avito(account_id: int) -> list[str]:
 def avito_state(account_id: int) -> dict:
     pending = pending_avito(account_id)
     return {"pending": len(pending), "locked": bool(pending)}
+
+
+# ------------------------------------------------------------------- Яндекс Маркет
+def pending_yandex(account_id: int) -> list[str]:
+    """Заказы Маркета в работе, чей ярлык ещё не выгружен.
+
+    У Маркета ярлык есть с момента подтверждения заказа, а сборка в панели
+    закрывается его сканом — значит, нужен он по каждому заказу в работе, и
+    «Ожидает сборки», и «Ожидает отгрузки». Собранное замок не держит.
+    """
+    from . import yandex
+
+    subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
+    rows = db.query(
+        f"SELECT id FROM yandex_orders WHERE account_id = ? AND substatus IN ({subs}) "
+        "AND local_state != 'packed' AND label_saved_at IS NULL ORDER BY id",
+        [account_id] + list(yandex.WORK_SUBSTATUSES),
+    )
+    return [row["id"] for row in rows]
+
+
+def yandex_state(account_id: int) -> dict:
+    pending = pending_yandex(account_id)
+    return {"pending": len(pending), "locked": bool(pending)}

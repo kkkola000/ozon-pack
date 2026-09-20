@@ -367,6 +367,62 @@ CREATE TABLE IF NOT EXISTS avito_order_items (
     PRIMARY KEY (account_id, order_id, avito_id)
 );
 
+-- Заказы Яндекс Маркета. Отдельная таблица, а не общая с Ozon: у Маркета своя
+-- пара «статус + этап обработки», свой идентификатор заказа и нет номера
+-- отправления — сводить это в одну таблицу значило бы держать половину колонок
+-- пустыми и гадать, чьи они.
+CREATE TABLE IF NOT EXISTS yandex_orders (
+    account_id      INTEGER NOT NULL,
+    -- orderId Маркета. Храним строкой: так же, как у других площадок.
+    id              TEXT NOT NULL,
+    -- Идентификатор магазина. Приходит в самом заказе, в настройках его не
+    -- спрашивают — а нужен он для ярлыка одного заказа и сверки отгрузки.
+    campaign_id     TEXT,
+    external_id     TEXT,
+    status          TEXT,
+    substatus       TEXT,
+    program_type    TEXT,
+    delivery_type   TEXT,
+    service_name    TEXT,
+    -- Дата отгрузки в службу доставки: по ней считается срочность.
+    shipment_date   TEXT,
+    shipment_id     TEXT,
+    buyer_type      TEXT,
+    notes           TEXT,
+    total           REAL,
+    items_count     INTEGER DEFAULT 0,
+    positions_count INTEGER DEFAULT 0,
+    created_at_api  TEXT,
+    updated_at_api  TEXT,
+    raw             TEXT,
+    local_state     TEXT NOT NULL DEFAULT 'new',
+    packed_at       TEXT,
+    packed_by       TEXT,
+    claim_user_id   INTEGER,
+    claim_login     TEXT,
+    claim_at        TEXT,
+    printed_at      TEXT,
+    print_count     INTEGER NOT NULL DEFAULT 0,
+    -- Отметка о выгрузке ярлыка на компьютер — см. postings.label_saved_at.
+    label_saved_at  TEXT,
+    first_seen_at   TEXT,
+    updated_at      TEXT,
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_yandex_sub ON yandex_orders(account_id, substatus, local_state);
+
+CREATE TABLE IF NOT EXISTS yandex_order_items (
+    account_id INTEGER NOT NULL,
+    order_id   TEXT NOT NULL,
+    -- id позиции внутри заказа: у одного артикула бывает несколько строк.
+    item_id    TEXT NOT NULL,
+    offer_id   TEXT,
+    name       TEXT,
+    quantity   INTEGER NOT NULL DEFAULT 1,
+    price      REAL,
+    PRIMARY KEY (account_id, order_id, item_id)
+);
+
 -- Отчёт об отгруженных товарах. Строка появляется в момент, когда сошлась пара
 -- «штрихкод товара -> номер отправления», а не при открытии заказа.
 CREATE TABLE IF NOT EXISTS shipped_items (
@@ -566,6 +622,7 @@ TABLES_WITH_NEW_COLUMNS = (
     "product_sets", "product_set_items",
     "returns", "return_acts",
     "avito_orders", "avito_order_items",
+    "yandex_orders", "yandex_order_items",
     "shipped_items",
 )
 
@@ -692,6 +749,7 @@ DATA_TABLES = (
     "postings", "posting_items", "products", "product_barcodes",
     "product_sets", "product_set_items", "returns",
     "avito_orders", "avito_order_items",
+    "yandex_orders", "yandex_order_items",
 )
 KV_GENERATED_CLEANED = "generated_data_cleaned"
 KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"

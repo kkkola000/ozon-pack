@@ -59,6 +59,13 @@ def require_avito_account(request: Request) -> dict:
     return account
 
 
+def require_yandex_account(request: Request) -> dict:
+    account = require_account(request)
+    if account["marketplace"] != "yandex":
+        raise HTTPException(status_code=409, detail="Этот раздел работает только с кабинетами Яндекс Маркета")
+    return account
+
+
 def require_manager(request: Request) -> dict:
     """Настройка панели: сотрудники, доступы, ключи, статусы.
 
@@ -152,9 +159,11 @@ def nav_counters(request: Request) -> dict:
     from . import db, options
 
     account = current_account(request)
+    empty = {"packaging": 0, "deliver": 0, "returns": 0, "return_acts": 0,
+             "avito_confirm": 0, "avito_ship": 0, "avito_returns": 0,
+             "yandex_pack": 0, "yandex_ship": 0}
     if not account:
-        return {"packaging": 0, "deliver": 0, "returns": 0, "return_acts": 0,
-                "avito_confirm": 0, "avito_ship": 0, "avito_returns": 0}
+        return empty
     account_id = account["id"]
 
     def count(sql: str, params: tuple = ()) -> int:
@@ -164,11 +173,24 @@ def nav_counters(request: Request) -> dict:
     # «К выдаче» считаем прямо по отмеченным статусам — см. options.pickup_sql.
     _ready_sql, _ready_params = options.pickup_sql()
 
+    if account["marketplace"] == "yandex":
+        # Как у Ozon: значок — сколько работы осталось, собранное не в счёт.
+        return {
+            **empty,
+            "yandex_pack": count(
+                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
+                "AND substatus = 'STARTED' AND local_state != 'packed'",
+                (account_id,),
+            ),
+            "yandex_ship": count(
+                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
+                "AND substatus = 'READY_TO_SHIP' AND local_state != 'packed'",
+                (account_id,),
+            ),
+        }
     if account["marketplace"] == "avito":
         return {
-            "packaging": 0,
-            "deliver": 0,
-            "returns": 0,
+            **empty,
             "avito_confirm": count(
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'",
                 (account_id,),
@@ -189,6 +211,7 @@ def nav_counters(request: Request) -> dict:
             "return_acts": _open_acts(account_id),
         }
     return {
+        **empty,
         "packaging": count(
             "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = 'awaiting_packaging'",
             (account_id,),
@@ -203,9 +226,6 @@ def nav_counters(request: Request) -> dict:
             (account_id, *_ready_params),
         ),
         "return_acts": _open_acts(account_id),
-        "avito_confirm": 0,
-        "avito_ship": 0,
-        "avito_returns": 0,
     }
 
 
@@ -255,6 +275,16 @@ templates.env.globals["static_version"] = static_version
 # «Отчётами» просто не увидит на них ссылки.
 templates.env.globals["can_see"] = access.can
 templates.env.globals["role_label"] = access.role_label
+
+
+def _marketplace_title(marketplace: str | None) -> str:
+    from . import accounts
+
+    return accounts.marketplace_title(marketplace or "ozon")
+
+
+# Название площадки по её коду — для отчётов, где строки идут из разных кабинетов.
+templates.env.globals["marketplace_title"] = _marketplace_title
 # «Настраивает панель» — это владелец или администратор. Сравнивать роль со
 # строкой в шаблоне нельзя: владелец под такое сравнение не подходит.
 templates.env.globals["is_manager"] = access.is_manager

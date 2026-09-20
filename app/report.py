@@ -16,7 +16,7 @@ import io
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import db
+from . import accounts, db
 from .config import settings
 
 KV_CUTOFF = "report_cutoff"
@@ -306,7 +306,7 @@ def to_csv(day: str, account_id: int | None = None, status: str | None = None) -
             item["report_date"],
             item["scanned_local"],
             item.get("account_title") or "",
-            "Avito" if item.get("marketplace") == "avito" else "Ozon",
+            accounts.marketplace_title(item.get("marketplace") or "ozon"),
             item.get("posting_number") or "",
             item.get("offer_id") or "",
             item.get("sku") or "",

@@ -27,6 +27,15 @@ MARKETPLACES: dict[str, dict[str, str]] = {
         "key_label": "client_secret",
         "hint": "Личный кабинет Avito → Настройки → Профиль → API",
     },
+    # У Маркета в настройках только один идентификатор — кабинета (businessId).
+    # Идентификатор магазина (campaignId) панель не спрашивает: он приходит в
+    # каждом заказе, и заводить его руками значило бы просить то, что и так есть.
+    "yandex": {
+        "title": "Яндекс Маркет",
+        "id_label": "businessId",
+        "key_label": "Api-Key",
+        "hint": "Кабинет Маркета → Настройки → API и модули → Токены авторизации",
+    },
 }
 
 # Ключи площадок — печатаемый ASCII без пробелов. Проверка нужна не для красоты:
@@ -219,7 +228,7 @@ def delete(account_id: int, *, user: dict | None = None) -> None:
     account = get(account_id)
     with db.write() as conn:
         for table in ("postings", "posting_items", "products", "product_barcodes", "returns",
-                      "avito_orders", "avito_order_items"):
+                      "avito_orders", "avito_order_items", "yandex_orders", "yandex_order_items"):
             conn.execute(f"DELETE FROM {table} WHERE account_id = ?", (account_id,))
         conn.execute("DELETE FROM pack_state WHERE account_id = ?", (account_id,))
         conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
@@ -235,7 +244,8 @@ def delete(account_id: int, *, user: dict | None = None) -> None:
 
 
 def _reset_clients(account_id: int | None = None) -> None:
-    from . import avito, ozon
+    from . import avito, ozon, yandex
 
     ozon.reset_client(account_id)
     avito.reset_client(account_id)
+    yandex.reset_client(account_id)

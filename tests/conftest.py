@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import accounts, avito, db, ozon, store  # noqa: E402
+from app import accounts, avito, db, ozon, store, yandex  # noqa: E402
 from app.config import settings  # noqa: E402
 from tests import fakes  # noqa: E402
 
@@ -25,6 +25,7 @@ def temp_db(tmp_path, monkeypatch):
     db._local.conn = None
     ozon.reset_client()
     avito.reset_client()
+    yandex.reset_client()
     db.init_db()
     # Кабинет по умолчанию создаётся без ключей — в тестах вместо площадок
     # работают подделки, поэтому ключи ставим сразу, как в боевом кабинете.
@@ -39,6 +40,7 @@ def temp_db(tmp_path, monkeypatch):
     db._local.conn = None
     ozon.reset_client()
     avito.reset_client()
+    yandex.reset_client()
 
 
 @pytest.fixture
@@ -50,6 +52,11 @@ def account():
 @pytest.fixture
 def avito_account():
     return accounts.get(accounts.create("avito", "Avito", "test-client", "test-secret"))
+
+
+@pytest.fixture
+def yandex_account():
+    return accounts.get(accounts.create("yandex", "Маркет", "9000001", "test-token"))
 
 
 @pytest.fixture

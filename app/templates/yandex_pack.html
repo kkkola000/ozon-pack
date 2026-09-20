@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Сборка Маркета · {{ account.title }}{% endblock %}
+
+{% block content %}
+{# Тот же замок, что на «Сборке» Ozon: пока ярлыки не выгружены, поля
+   сканирования нет. Сборка закрывается сканом ярлыка — без выгрузки закрывать
+   нечем. #}
+<div class="panel" id="label-gate" hidden>
+  <div class="gate">
+    <div class="what" id="gate-title">Скачайте ярлыки</div>
+    <div class="gate-why">
+      Сборка начинается после выгрузки: ярлыком закрывается каждый заказ, поэтому
+      берём их заранее — все заказы в работе кабинета <b>«{{ account.title }}»</b>,
+      одним архивом.
+    </div>
+    <button class="btn primary big" id="btn-labels">Скачать ярлыки</button>
+  </div>
+</div>
+
+<div class="panel" id="scan-panel">
+  <div class="scanbar">
+    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Сканируйте штрихкод товара или ярлык заказа…" autofocus>
+    <button class="btn big" id="btn-clear" title="Очистить поле">Очистить</button>
+  </div>
+  <div id="banner" class="banner idle">
+    Отсканируйте штрихкод товара — система сама найдёт заказ Маркета и отправит ярлык на печать.
+  </div>
+</div>
+
+<div id="active-panel"></div>
+
+<div class="panel" id="idle-panel">
+  <div class="row between">
+    <h2 style="margin:0">Очередь</h2>
+    <div class="row small muted">
+      <span>Обновлено: <span id="sync-time">—</span></span>
+      <button class="btn small" id="btn-sync">Обновить из Маркета</button>
+    </div>
+  </div>
+  <div class="row" style="margin-top:12px; gap:22px">
+    <div class="stat"><div class="muted small">Ожидает сборки</div><div class="value" id="c-packaging">{{ counters.awaiting_packaging }}</div></div>
+    <div class="stat"><div class="muted small">Ожидает отгрузки</div><div class="value" id="c-deliver">{{ counters.awaiting_deliver }}</div></div>
+    <div class="stat"><div class="muted small">Собрано сегодня</div><div class="value ok" id="c-packed">{{ counters.packed_today }}</div></div>
+  </div>
+  <p class="muted small" style="margin:14px 0 0">
+    Порядок работы: сканируете товар → система показывает заказ и его состав, ярлык уходит на печать →
+    упаковали, наклеили ярлык → сканируете ярлык → заказ закрыт.
+    Товар не из заказа и повторная сборка блокируются.
+    <br>Штрихкоды товаров Маркет не отдаёт: панель берёт их из каталога Ozon по артикулу продавца.
+    Если артикулы на площадках совпадают, сканируется как обычно.
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Последние сканы</h2>
+  <div id="history" class="small muted">Пока пусто.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/yandex_pack.js?v={{ static_version() }}"></script>
+{% endblock %}

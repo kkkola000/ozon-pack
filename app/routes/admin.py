@@ -4,12 +4,13 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import access, accounts, avito, db, options, report, security, sync
+from .. import access, accounts, avito, db, options, report, security, sync, yandex
 from ..avito import AvitoClient, AvitoError
 from ..deps import (check_csrf, current_account, require_manager, require_section,
                     require_ozon_account, templates)
 from .. import ozon
 from ..ozon import OzonClient, OzonError
+from ..yandex import YandexClient, YandexError
 
 router = APIRouter()
 
@@ -63,6 +64,13 @@ EVENT_LABELS = {
     "avito_order_reset": "Сброшена отметка сборки Avito",
     "avito_returns_print": "Печать листа возвратов Avito",
     "avito_error": "Ошибка Avito",
+    "yandex_pack_start": "Начата сборка (Маркет)",
+    "yandex_pack_complete": "Заказ Маркета собран",
+    "yandex_pack_release": "Сборка Маркета отменена",
+    "yandex_label_print": "Печать ярлыка Маркета",
+    "yandex_labels_archive": "Выгрузка ярлыков Маркета",
+    "yandex_order_reset": "Сброшена отметка сборки (Маркет)",
+    "yandex_error": "Ошибка Маркета",
 }
 
 
@@ -128,7 +136,23 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
     account = current_account(request)
     aid = (account["id"] if account else 0,)
     # Показываем счётчики текущего кабинета — и только те, что для его площадки.
-    if account and account["marketplace"] == "avito":
+    if account and account["marketplace"] == "yandex":
+        stats = {
+            "Ждут сборки": db.query_one(
+                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'STARTED'", aid
+            )["c"],
+            "Ждут отгрузки": db.query_one(
+                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'READY_TO_SHIP'",
+                aid,
+            )["c"],
+            "Собрано": db.query_one(
+                "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND local_state = 'packed'", aid
+            )["c"],
+            "Позиций в заказах": db.query_one(
+                "SELECT COUNT(*) AS c FROM yandex_order_items WHERE account_id = ?", aid
+            )["c"],
+        }
+    elif account and account["marketplace"] == "avito":
         stats = {
             "Ждут подтверждения": db.query_one(
                 "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid
@@ -304,6 +328,26 @@ def _probe(marketplace: str, client_id: str, api_key: str) -> None:
             probe.close()
         return
 
+    if marketplace == "yandex":
+        probe = YandexClient(business_id=client_id, api_key=api_key, max_retries=1, timeout=20)
+        try:
+            probe.ping()
+        except YandexError as exc:
+            if exc.status in (401, 403):
+                detail = (
+                    f"Маркет отклонил ключи: {exc.message}. Проверьте businessId и токен "
+                    "(нужен доступ «Обработка заказов и учёт товаров»)."
+                )
+            elif exc.status is None:
+                detail = (
+                    f"Не удалось связаться с Маркетом: {exc.message}. Проверьте доступ в интернет с сервера; "
+                    "если он есть, сохраните ключи без проверки."
+                )
+            else:
+                detail = f"Маркет ответил ошибкой: {exc.message}"
+            raise HTTPException(status_code=400, detail=detail) from exc
+        return
+
     probe = OzonClient(client_id=client_id, api_key=api_key, max_retries=1, timeout=20)
     try:
         probe.ping()
@@ -436,9 +480,11 @@ def api_test_account(account_id: int, request: Request, admin: dict = Depends(re
     try:
         if account["marketplace"] == "avito":
             result = avito.get_client(account).ping()
+        elif account["marketplace"] == "yandex":
+            result = yandex.get_client(account).ping()
         else:
             result = ozon.get_client(account).ping()
-    except (OzonError, AvitoError) as exc:
+    except (OzonError, AvitoError, YandexError) as exc:
         raise HTTPException(status_code=502, detail=f"{account['title']}: {exc}") from exc
     return {"status": "ok", "message": f"«{account['title']}»: ключи работают", "result": result}
 

@@ -42,6 +42,15 @@
         {%- if c.return_acts %}<span class="badge warn" title="Акты ждут подтверждения">{{ c.return_acts }}</span>{% endif %}
       </a>
       {% endif %}
+    {% elif cab.current and cab.current.marketplace == 'yandex' %}
+      {% if can_see(user, 'pack') %}<a href="/yandex/pack" class="{{ 'active' if active_tab == 'yandex_pack' }}">Сборка</a>{% endif %}
+      {% if can_see(user, 'orders') %}
+      <a href="/yandex?tab=pack" class="{{ 'active' if active_tab == 'yandex' }}">
+        Заказы Маркета
+        {% if c.yandex_pack %}<span class="badge warn" title="Ожидает сборки">{{ c.yandex_pack }}</span>{% endif %}
+        {% if c.yandex_ship %}<span class="badge accent" title="Ожидает отгрузки">{{ c.yandex_ship }}</span>{% endif %}
+      </a>
+      {% endif %}
     {% else %}
       {% if can_see(user, 'pack') %}<a href="/pack" class="{{ 'active' if active_tab == 'pack' }}">Сборка</a>{% endif %}
       {% if can_see(user, 'orders') %}

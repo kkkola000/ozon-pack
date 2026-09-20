@@ -105,6 +105,30 @@ def _dt(value: Any) -> str | None:
     return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def _yandex_dt(value: Any) -> str | None:
+    """Дата Маркета к ISO-8601 UTC.
+
+    Маркет пишет даты по-своему: «ДД-ММ-ГГГГ ЧЧ:ММ:СС» для моментов и
+    «ДД-ММ-ГГГГ» для дня отгрузки, время московское и без смещения. Хранить это
+    как есть нельзя: срочность считается от момента в UTC, а строки такого вида
+    даже не сортируются. День без времени берём как его конец — отгрузить надо
+    в этот день, и до полуночи заказ не просрочен.
+    """
+    raw = _text(value)
+    if not raw:
+        return None
+    for fmt, whole_day in (("%d-%m-%Y %H:%M:%S", False), ("%d-%m-%Y", True)):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        if whole_day:
+            parsed = parsed.replace(hour=23, minute=59, second=59)
+        parsed = parsed.replace(tzinfo=timezone(timedelta(hours=3)))
+        return parsed.astimezone(timezone.utc).isoformat()
+    return _dt(raw)
+
+
 def _moment(value: Any) -> str | None:
     """То же, что _dt, но нераспознанное — это None, а не исходная строка.
 
@@ -725,3 +749,174 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     if with_items:
         data["items"] = avito_items(data["account_id"], data["id"])
     return _with_mark(data)
+
+
+# --------------------------------------------------------------- Яндекс Маркет
+def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
+    """Заказ из POST /v1/businesses/{businessId}/orders, не трогая наши отметки.
+
+    Локальное состояние сборки (packed_at, кто взял в работу, выгружен ли ярлык)
+    принадлежит панели: площадка о нём не знает и затирать его нельзя.
+    """
+    order_id = _text(raw.get("orderId"))
+    if not order_id:
+        raise ValueError("В ответе Маркета нет orderId")
+
+    delivery = raw.get("delivery") or {}
+    shipment = delivery.get("shipment") or {}
+    prices = raw.get("prices") or {}
+    payment = prices.get("payment") or {}
+    items = raw.get("items") or []
+    quantity = sum(int(item.get("count") or 0) for item in items)
+
+    now = db.now_iso()
+    existing = conn.execute(
+        "SELECT first_seen_at FROM yandex_orders WHERE account_id = ? AND id = ?", (account_id, order_id)
+    ).fetchone()
+
+    conn.execute(
+        """
+        INSERT INTO yandex_orders (
+            account_id, id, campaign_id, external_id, status, substatus, program_type,
+            delivery_type, service_name, shipment_date, shipment_id, buyer_type, notes,
+            total, items_count, positions_count, created_at_api, updated_at_api, raw,
+            first_seen_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(account_id, id) DO UPDATE SET
+            campaign_id = excluded.campaign_id, external_id = excluded.external_id,
+            status = excluded.status, substatus = excluded.substatus,
+            program_type = excluded.program_type, delivery_type = excluded.delivery_type,
+            service_name = excluded.service_name, shipment_date = excluded.shipment_date,
+            shipment_id = excluded.shipment_id, buyer_type = excluded.buyer_type,
+            notes = excluded.notes, total = excluded.total, items_count = excluded.items_count,
+            positions_count = excluded.positions_count, created_at_api = excluded.created_at_api,
+            updated_at_api = excluded.updated_at_api, raw = excluded.raw,
+            updated_at = excluded.updated_at
+        """,
+        (
+            account_id,
+            order_id,
+            _text(raw.get("campaignId")),
+            _text(raw.get("externalOrderId")),
+            _text(raw.get("status")),
+            _text(raw.get("substatus")),
+            _text(raw.get("programType")),
+            _text(delivery.get("type")),
+            _text(delivery.get("serviceName")),
+            _yandex_dt(shipment.get("shipmentDate")),
+            _text(shipment.get("id")),
+            _text(raw.get("buyerType")),
+            _text(raw.get("notes")),
+            _num(payment.get("value")),
+            quantity,
+            len(items),
+            _yandex_dt(raw.get("creationDate")),
+            _yandex_dt(raw.get("updateDate")),
+            json.dumps(raw, ensure_ascii=False),
+            (existing["first_seen_at"] if existing else now) or now,
+            now,
+        ),
+    )
+
+    # Состав перечитываем целиком: позицию из заказа могут убрать, и остаться
+    # в панели она не должна — сборщик пойдёт искать то, чего в заказе нет.
+    conn.execute(
+        "DELETE FROM yandex_order_items WHERE account_id = ? AND order_id = ?", (account_id, order_id)
+    )
+    for item in items:
+        item_id = _text(item.get("id")) or _text(item.get("offerId"))
+        if not item_id:
+            continue
+        item_prices = item.get("prices") or {}
+        conn.execute(
+            """
+            INSERT INTO yandex_order_items(account_id, order_id, item_id, offer_id, name, quantity, price)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, order_id, item_id) DO UPDATE SET
+                offer_id = excluded.offer_id, name = excluded.name,
+                quantity = excluded.quantity, price = excluded.price
+            """,
+            (
+                account_id,
+                order_id,
+                item_id,
+                _text(item.get("offerId")),
+                _text(item.get("offerName")),
+                int(item.get("count") or 1),
+                _num((item_prices.get("payment") or {}).get("value")),
+            ),
+        )
+    return order_id
+
+
+def yandex_items(account_id: int, order_id: str) -> list[dict]:
+    """Состав заказа вместе со штрихкодами из каталога панели.
+
+    Маркет штрихкодов не отдаёт — сверять скан не с чем. Зато артикул (offerId)
+    у товара тот же, что на других площадках, и по нему в каталоге находятся
+    штрихкоды: тогда сборщик сканирует товар как обычно, а пересорт ловится.
+    """
+    rows = db.query(
+        "SELECT * FROM yandex_order_items WHERE account_id = ? AND order_id = ? ORDER BY name",
+        (account_id, order_id),
+    )
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["barcodes"] = offer_barcodes(item.get("offer_id"))
+        items.append(item)
+    return items
+
+
+def offer_barcodes(offer_id: str | None) -> list[str]:
+    """Штрихкоды товара по артикулу — из каталога любого кабинета панели.
+
+    Кабинет не ограничиваем намеренно: каталог наполняется из Ozon, а заказ
+    пришёл из Маркета. Артикул у продавца один на все площадки, и искать
+    штрихкод только в своём кабинете значило бы не найти его никогда.
+    """
+    if not offer_id:
+        return []
+    rows = db.query(
+        "SELECT DISTINCT b.barcode FROM product_barcodes b "
+        "JOIN products p ON p.account_id = b.account_id AND p.sku = b.sku "
+        "WHERE p.offer_id = ? ORDER BY b.barcode",
+        (offer_id,),
+    )
+    return [row["barcode"] for row in rows]
+
+
+def yandex_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
+    """Строка БД -> объект для шаблона: подписи, срочность, состав."""
+    from .yandex import DELIVERY_LABELS, SUBSTATUS_LABELS
+
+    data = dict(row)
+    data.pop("raw", None)
+    substatus = data.get("substatus") or ""
+    data["status_label"] = SUBSTATUS_LABELS.get(substatus, substatus or data.get("status") or "")
+    data["delivery_label"] = DELIVERY_LABELS.get(
+        data.get("delivery_type") or "", data.get("delivery_type") or ""
+    )
+    # Срочность считаем по дате отгрузки: именно её нельзя пропустить.
+    deadline = data.get("shipment_date")
+    left = hours_left(deadline)
+    if left is None:
+        urgency = "none"
+    elif left < 0:
+        urgency = "overdue"
+    elif left < 6:
+        urgency = "urgent"
+    elif left < 24:
+        urgency = "soon"
+    else:
+        urgency = "ok"
+    data["deadline"] = deadline
+    data["deadline_local"] = local_time(deadline, "%d.%m") if deadline else ""
+    data["hours_left"] = round(left, 1) if left is not None else None
+    data["urgency"] = urgency
+    data["created_local"] = local_time(data.get("created_at_api"))
+    data["packed_at_local"] = local_time(data.get("packed_at"))
+    data["claim_active"] = claim_is_active(data.get("claim_at"))
+    if with_items:
+        data["items"] = yandex_items(data["account_id"], data["id"])
+    return data

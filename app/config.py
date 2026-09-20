@@ -60,6 +60,12 @@ class Settings:
     # На сколько дней назад просить заказы Avito при синхронизации.
     avito_days_back: int = field(default_factory=lambda: _int("AVITO_DAYS_BACK", 30))
 
+    # --- Partner API Яндекс Маркета ---
+    # Ключи кабинетов Маркета хранятся в панели, в .env их нет.
+    yandex_base_url: str = field(default_factory=lambda: os.getenv(
+        "YANDEX_API_URL", "https://api.partner.market.yandex.ru").rstrip("/"))
+    yandex_timeout: int = field(default_factory=lambda: _int("YANDEX_TIMEOUT", 60))
+
     # --- Приложение ---
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", "").strip())
     db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", str(BASE_DIR / "data" / "ozon-pack.db")))
