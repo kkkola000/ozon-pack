@@ -1984,8 +1984,6 @@ def test_pickup_list_is_exactly_the_ticked_statuses(sample_data):
     строк с другим статусом, даже если признак «к выдаче» остался от прошлых
     обновлений.
     """
-    from app.routes import returns as returns_routes
-
     account = accounts.default_account()
     assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
     take_everything(account)
@@ -1998,7 +1996,7 @@ def test_pickup_list_is_exactly_the_ticked_statuses(sample_data):
         (account["id"], "WRONG-1", 1, "MovingToSeller", "Коляска в пути", "ещё едет"),
     )
 
-    shown = returns_routes._filter_returns([account["id"]])
+    shown = ozon_returns.ready([account["id"]])
     assert "WRONG-1" not in {r["id"] for r in shown}
     assert all(r["status_sys"] == "ArrivedAtReturnPlace" for r in shown), (
         f"в разделе статусы: {sorted({r['status_sys'] for r in shown})}"
@@ -2025,8 +2023,6 @@ def test_act_is_exactly_the_ticked_received_statuses(sample_data):
 
 def test_changing_the_ticks_changes_both_sections(sample_data):
     """Сняли галочку — раздел и акт сразу отвечают новой настройке."""
-    from app.routes import returns as returns_routes
-
     account = accounts.default_account()
     take_everything(account)
     assert make_act(account)["act_id"]
@@ -2035,7 +2031,7 @@ def test_changing_the_ticks_changes_both_sections(sample_data):
     ozon_returns.set_returns_statuses(["ReceivedBySeller"])
     ozon_returns.set_received_statuses([])
 
-    shown = returns_routes._filter_returns([account["id"]])
+    shown = ozon_returns.ready([account["id"]])
     assert shown and all(r["status_sys"] == "ReceivedBySeller" for r in shown)
     assert ozon_returns.received_returns(account["id"], store.local_day()) == [], (
         "акт собирается по снятой галочке"

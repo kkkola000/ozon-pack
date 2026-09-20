@@ -10,7 +10,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, sync
+from app.core import accounts, db, return_acts, store, sync
 from app.markets.avito import client as avito
 from app.main import app
 from tests import fakes
@@ -282,21 +282,28 @@ def test_only_returns_ready_for_pickup_are_stored(avito_account):
     assert histogram.get(avito.RETURN_IN_TRANSIT) == len(in_transit)
 
 
-def test_return_that_left_pickup_point_disappears(avito_account):
-    """Возврат забрали, Avito сменил статус — из панели он уходит."""
+def test_return_that_left_pickup_point_counts_as_received(avito_account):
+    """Возврат забрали, Avito перестал его отдавать — значит, он получен.
+
+    Своего статуса «получен» у Avito нет, и это единственный признак: строку
+    не удаляем, а помечаем полученной — из полученных за день собирается акт.
+    """
     row = returns_of(avito_account)[0]
     client = avito.get_client(avito_account)
     client._orders[row["id"]]["returnPolicy"]["returnStatus"] = avito.RETURN_IN_TRANSIT
 
-    avito_sync.sync_avito(avito_account)
-    assert db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
+    result = avito_sync.sync_avito(avito_account)
+    stored = db.query_one(
+        "SELECT received_at, received_day FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], row["id"]),
-    )["c"] == 0
+    )
+    assert stored and stored["received_at"], "получение не записано"
+    assert stored["received_day"] == store.local_day(stored["received_at"])
+    assert result.get("avito_received") == 1
 
 
 def test_page_shows_returns_ready_for_pickup(client, avito_account):
-    page = client.get("/avito/returns")
+    page = client.get("/returns")
     assert page.status_code == 200
     assert "Заберите заказ" in page.text
     for row in returns_of(avito_account):
@@ -305,7 +312,7 @@ def test_page_shows_returns_ready_for_pickup(client, avito_account):
 
 def test_page_explains_what_was_skipped(client, avito_account):
     """Отброшенные возвраты не исчезают молча — их количество видно на странице."""
-    page = client.get("/avito/returns")
+    page = client.get("/returns")
     assert "Возврат в пути" in page.text
     assert "в панель не попадают" in page.text
 
@@ -316,14 +323,14 @@ def test_returns_page_is_read_only(client):
     Забранный возврат Avito переводит дальше сам, и синхронизация убирает его
     из панели — ручная отметка была бы вторым источником правды.
     """
-    page = client.get("/avito/returns")
+    page = client.get("/returns")
     # В шапке остаётся переключатель кабинетов — проверяем именно фильтр списка.
     assert 'name="show"' not in page.text
     assert "Забранные" not in page.text
     assert "Отметить забранными" not in page.text
     assert 'class="pick"' not in page.text
     # Старая ссылка с фильтром не должна ничего ломать.
-    assert client.get("/avito/returns?show=taken").status_code == 200
+    assert client.get("/returns?show=taken").status_code == 200
 
 
 def test_marking_returns_taken_is_gone(client, avito_account):
@@ -332,26 +339,102 @@ def test_marking_returns_taken_is_gone(client, avito_account):
     assert response.status_code == 404, "ручная отметка должна быть убрана целиком"
 
 
-def test_collected_return_disappears_on_sync(client, avito_account):
-    """Кладовщик забрал возврат — Avito меняет статус, и заказ уходит из панели."""
+def test_collected_return_leaves_the_pickup_list(client, avito_account):
+    """Кладовщик забрал возврат — Avito меняет статус, и из «К выдаче» он уходит.
+
+    Сама строка остаётся: по ней ещё нужна отметка, и она ждёт акта за своё
+    число. Забирать по ней больше нечего — в списке к выдаче её нет.
+    """
     row = returns_of(avito_account)[0]
     client_api = avito.get_client(avito_account)
     client_api._orders[row["id"]]["status"] = avito.STATUS_CLOSED
 
     avito_sync.sync_avito(avito_account)
     assert db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
+        "SELECT received_at FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], row["id"]),
-    )["c"] == 0
-    assert (row["marketplace_id"] or row["id"]) not in client.get("/avito/returns").text
+    )["received_at"], "получение не записано"
+    assert (row["marketplace_id"] or row["id"]) not in client.get("/returns").text
+
+
+def test_received_return_becomes_an_act(client, avito_account):
+    """Полный круг возврата Avito — тот же, что у Ozon: забрали, акт, отметка, подпись.
+
+    Раньше возврат Avito просто исчезал из панели: акта по нему не выходило,
+    и принимать было нечего.
+    """
+    row = returns_of(avito_account)[0]
+    api = avito.get_client(avito_account)
+    api._orders[row["id"]]["status"] = avito.STATUS_CLOSED
+    avito_sync.sync_avito(avito_account)
+
+    day = db.query_one(
+        "SELECT received_day FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["received_day"]
+
+    # Сколько попадёт в акт, панель считает до его составления — как у Ozon.
+    preview = client.post("/api/returns/acts/by-day", json={"day": day, "dry_run": True})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["found"] >= 1
+
+    made = client.post("/api/returns/acts/by-day", json={"day": day})
+    assert made.status_code == 200, made.text
+    act_id = made.json()["act_id"]
+    assert act_id, made.text
+
+    act = return_acts.detail(act_id)
+    assert row["id"] in {item["id"] for item in act["avito"]}
+    assert act["can_confirm"] is False, "акт без отметок подтверждать нельзя"
+
+    # Отметка сборщика и подпись под актом — теми же общими кнопками.
+    marked = client.post(
+        "/api/returns/mark",
+        json={"marketplace": "avito", "id": row["id"], "mark": "ok", "note": "коробка цела"},
+    )
+    assert marked.status_code == 200, marked.text
+    assert return_acts.detail(act_id)["can_confirm"] is True
+
+    confirmed = client.post(f"/api/returns/acts/{act_id}/confirm")
+    assert confirmed.status_code == 200, confirmed.text
+    assert return_acts.get(act_id)["confirmed_at"]
+
+
+def test_received_return_is_claimed_once(client, avito_account):
+    """Возврат, попавший в акт, во второй акт не возьмут — иначе две отметки на одну работу."""
+    row = returns_of(avito_account)[0]
+    api = avito.get_client(avito_account)
+    api._orders[row["id"]]["status"] = avito.STATUS_CLOSED
+    avito_sync.sync_avito(avito_account)
+    day = db.query_one(
+        "SELECT received_day FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["received_day"]
+
+    first = client.post("/api/returns/acts/by-day", json={"day": day}).json()
+    assert first["act_id"]
+    second = client.post("/api/returns/acts/by-day", json={"day": day}).json()
+    assert second["act_id"] is None, "тот же возврат попал во второй акт"
+
+    # И повторная синхронизация второй раз получение не записывает.
+    before = db.query_one(
+        "SELECT received_at FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["received_at"]
+    avito_sync.sync_avito(avito_account)
+    after = db.query_one(
+        "SELECT received_at FROM avito_orders WHERE account_id = ? AND id = ?",
+        (avito_account["id"], row["id"]),
+    )["received_at"]
+    assert after == before
 
 
 def test_returns_print_sheet(client, avito_account):
-    page = client.get("/avito/returns/print")
+    page = client.get("/returns/print")
     assert page.status_code == 200
-    assert "Возвраты Avito" in page.text
+    assert "Возвраты к выдаче" in page.text
     assert "Принял (сборщик)" in page.text
-    assert db.query_one("SELECT COUNT(*) AS c FROM events WHERE kind = 'avito_returns_print'")["c"] == 1
+    assert db.query_one("SELECT COUNT(*) AS c FROM events WHERE kind = 'returns_print'")["c"] == 1
 
 
 def test_print_sheet_shows_pickup_address_without_status(client, avito_account):
@@ -361,7 +444,7 @@ def test_print_sheet_shows_pickup_address_without_status(client, avito_account):
         "UPDATE avito_orders SET terminal_address = ?, service_name = ? WHERE account_id = ? AND id = ?",
         ("Москва, Настасьинский пер., 8с2", "Boxberry", avito_account["id"], row["id"]),
     )
-    page = client.get("/avito/returns/print")
+    page = client.get("/returns/print")
     assert "Пункт выдачи" in page.text
     assert "Москва, Настасьинский пер., 8с2" in page.text
     assert "Boxberry" in page.text
@@ -369,10 +452,18 @@ def test_print_sheet_shows_pickup_address_without_status(client, avito_account):
     assert "Заберите заказ" not in page.text
 
 
-def test_returns_section_is_closed_for_ozon_cabinet(client):
+def test_returns_section_shows_the_current_cabinet(client, avito_account):
+    """Раздел возвратов один, а строки в нём — текущего кабинета.
+
+    Переключились на Ozon — возвраты Avito из списка уходят: их забирают в
+    другую поездку. Для общей поездки есть лист по всем кабинетам.
+    """
     ozon_account = accounts.all_accounts()[0]
     client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/pack"})
-    assert client.get("/avito/returns").status_code == 409
+    page = client.get("/returns")
+    assert page.status_code == 200
+    for row in returns_of(avito_account):
+        assert (row["marketplace_id"] or row["id"]) not in page.text
 
 
 def test_old_order_returned_today_is_not_lost(avito_account):
@@ -502,7 +593,7 @@ def test_print_sheet_falls_back_to_pvz_code(client, avito_account):
         "WHERE account_id = ? AND id = ?",
         (avito_account["id"], row["id"]),
     )
-    page = client.get("/avito/returns/print")
+    page = client.get("/returns/print")
     assert "ПВЗ MSK14" in page.text
 
 

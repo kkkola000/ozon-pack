@@ -1,0 +1,68 @@
+{# Вкладка «К выдаче», кабинет Ozon: свои фильтры и своя таблица.
+   Рамку страницы и кнопки печати рисует общий returns.html. #}
+<form class="row no-print" method="get" action="/returns" style="margin-top:14px">
+  <select name="scheme">
+    <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
+    <option value="FBO" {{ 'selected' if scheme == 'FBO' }}>Только FBO</option>
+    <option value="FBS" {{ 'selected' if scheme == 'FBS' }}>Только FBS</option>
+  </select>
+  <select name="place">
+    <option value="">Все пункты выдачи</option>
+    {% for name in places %}<option value="{{ name }}" {{ 'selected' if place == name }}>{{ name }}</option>{% endfor %}
+  </select>
+  <input type="search" name="q" value="{{ q }}" placeholder="Товар, артикул, заказ, штрихкод…" style="width:240px">
+  <button class="btn" type="submit">Показать</button>
+  {% if q or place or scheme != 'all' %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
+</form>
+
+{% if items %}
+<table style="margin-top:10px">
+  <thead>
+    <tr>
+      <th style="width:130px">Возврат</th>
+      <th>Товар</th>
+      <th style="width:130px">Артикул / SKU</th>
+      <th style="width:70px">Кол-во</th>
+      <th style="width:200px">Где лежит</th>
+      <th style="width:170px">Статус</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in items %}
+    <tr>
+      <td>
+        <div class="mono">{{ r.id }}</div>
+        <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
+        {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
+      </td>
+      <td>
+        <div>{{ r.product_name or 'Без названия' }}</div>
+        <div class="muted small">
+          {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
+          {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
+        </div>
+      </td>
+      <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
+      <td style="font-weight:700">{{ r.quantity }}</td>
+      <td class="small">
+        <div>{{ r.place_name or '—' }}</div>
+        <div class="muted">{{ r.place_address or '' }}</div>
+        {# Когда возврат стал готов к выдаче. Только для сведения: по нему
+           видно, что лежит давно, а что привезли сегодня. Список по нему не
+           строится — состав раздела решают отмеченные статусы. #}
+        {% if r.arrived_local %}<div class="muted">Готов к выдаче с {{ r.arrived_local }}</div>{% endif %}
+      </td>
+      {# Отметки тут нет намеренно: возврат ещё лежит в пункте выдачи, решать
+         по нему нечего — его даже в руках не держали. Отмечают привезённое,
+         во вкладке «Ждёт подтверждения». #}
+      <td class="small">
+        <div>{{ r.status_label or '—' }}</div>
+        {% if r.storage_sum %}<div class="muted">Хранение: {{ r.storage_sum }} ₽</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <div class="empty">Возвратов не найдено.</div>
+{% endif %}

@@ -5,6 +5,7 @@ import hmac
 import re
 from datetime import datetime, timezone
 
+import jinja2
 from fastapi import HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
@@ -12,7 +13,30 @@ from . import access
 from .config import BASE_DIR, settings
 from .version import build_label
 
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+
+def _template_env() -> jinja2.Environment:
+    """Шаблоны ядра плюс шаблоны площадок под своим префиксом.
+
+    «ozon/returns_list.html» — это app/markets/ozon/templates/returns_list.html.
+    Так кусок страницы лежит рядом с кодом, который его наполняет, а общие
+    страницы не превращаются в список из трёх веток «если это Ozon».
+
+    Каталоги ищем на диске, а не через реестр площадок: шаблоны нужны раньше,
+    чем площадки успевают объявиться, и ядро по именам их не знает.
+    """
+    markets = BASE_DIR / "app" / "markets"
+    by_market = {
+        path.parent.name: jinja2.FileSystemLoader(str(path))
+        for path in sorted(markets.glob("*/templates")) if path.is_dir()
+    }
+    loader = jinja2.ChoiceLoader([
+        jinja2.FileSystemLoader(str(BASE_DIR / "app" / "templates")),
+        jinja2.PrefixLoader(by_market),
+    ])
+    return jinja2.Environment(loader=loader, autoescape=jinja2.select_autoescape())
+
+
+templates = Jinja2Templates(env=_template_env())
 
 # Выбранный кабинет держим в отдельной куке: менять его может любой вошедший,
 # поэтому переподписывать сессию (и сбрасывать CSRF) на каждое переключение незачем.

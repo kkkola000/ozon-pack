@@ -1,0 +1,107 @@
+{# Настройки кабинета Ozon: печать стикеров и статусы возвратов.
+   Кусок подключается страницей настроек, когда текущий кабинет — Ozon. #}
+<h2 style="margin-top:18px">Печать стикеров</h2>
+<p class="muted small" style="margin-top:0">
+  На принтер уходит файл, который отдал Ozon, без каких-либо изменений.
+  В Chrome и Edge он печатается сам; в Safari открывается в отдельной вкладке —
+  печатать PDF из скрытого окна Safari не умеет, выходит пустой лист.
+</p>
+<div class="banner ok" style="font-size:14px; margin: 12px 0">
+  Печатается оригинальный стикер Ozon.
+</div>
+<p class="muted small">
+  Если на бумаге стикер выглядит иначе, дело в настройках печати браузера:
+  размер бумаги должен совпадать с этикеткой, масштаб 100 %, поля «нет»,
+  колонтитулы выключены. Проверить сам файл можно кнопкой «Открыть PDF»
+  у отправления на рабочем месте сборщика.
+</p>
+
+<h2 style="margin-top:18px">Какие возвраты загружать</h2>
+<p class="muted small" style="margin-top:0">
+  Сборщик должен видеть только то, что реально может получить. Панель забирает из Ozon
+  возвраты в отмеченных статусах, остальные не сохраняет и не показывает.
+</p>
+<div style="display:grid; gap:6px; max-width:640px">
+  {% for code, label, hint in returns_choices %}
+    <label class="check">
+      <input type="checkbox" class="return-status" value="{{ code }}" {{ 'checked' if code in returns_statuses }}>
+      <span><b>{{ label }}</b> <span class="muted small">— {{ hint }} ({{ code }})</span></span>
+    </label>
+  {% endfor %}
+</div>
+<button class="btn primary" id="btn-save-statuses" style="margin-top:12px">Сохранить и обновить возвраты</button>
+
+<h2 style="margin-top:18px">Какие возвраты считать полученными</h2>
+<p class="muted small" style="margin-top:0">
+  Возврат в отмеченном статусе уже у нас: по нему нужна отметка. Панель копит
+  такие возвраты, а акт за нужное число администратор составляет сам в
+  разделе <a href="/returns?tab=acts">«Возвраты»</a> — за одно число актов
+  бывает несколько, по числу поездок. Подтверждённый акт уходит в
+  <a href="/reports/returns">«Отчёты»</a>. Возврат, попавший в акт, второй раз
+  в акт не возьмётся.
+</p>
+<div style="display:grid; gap:6px; max-width:640px">
+  {% for code, label, hint in returns_choices %}
+    <label class="check">
+      <input type="checkbox" class="received-status" value="{{ code }}" {{ 'checked' if code in received_statuses }}>
+      <span><b>{{ label }}</b> <span class="muted small">— {{ hint }} ({{ code }})</span></span>
+    </label>
+  {% endfor %}
+</div>
+<p class="muted small">
+  Статус, отмеченный в обоих списках, считается «к выдаче»: за таким возвратом
+  ещё едут, и класть в акт то, что не забрали, нельзя. Снять все отметки —
+  значит выключить акты: полученные возвраты просто перестанут загружаться.
+</p>
+
+<label class="muted small row" style="gap:10px; margin-top:12px">
+  Загружать полученные за последние
+  <input type="number" id="received-days" min="1" max="365" value="{{ received_days }}"
+         style="width:90px" inputmode="numeric">
+  дней
+</label>
+<p class="muted small" style="max-width:640px">
+  По статусу «Получен» Ozon отдаёт весь архив — читать его целиком долго, и на
+  складе с историей самые свежие возвраты не дочитываются вовсе. Поэтому
+  полученные берутся за последние дни. Ставьте с запасом относительно того,
+  как часто ездят за возвратами: пропущенное этим окном придётся доставать
+  полным обновлением.
+</p>
+<button class="btn primary" id="btn-save-received" style="margin-top:4px">Сохранить и обновить возвраты</button>
+
+<script>
+/* Кнопки этого раздела живут здесь же: раздел принадлежит Ozon, и его
+   обработчики не должны лежать в общей странице настроек. */
+document.getElementById('btn-save-statuses')?.addEventListener('click', async (event) => {
+  const statuses = Array.from(document.querySelectorAll('.return-status:checked')).map((box) => box.value);
+  if (!statuses.length) { toast('Отметьте хотя бы один статус', 'error'); return; }
+  event.target.disabled = true;
+  event.target.textContent = 'Обновляем…';
+  try {
+    const result = await api('/api/returns/statuses', { statuses });
+    toast(result.message, 'ok', 9000);
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    event.target.disabled = false;
+    event.target.textContent = 'Сохранить и обновить возвраты';
+  }
+});
+
+/* Пустой список здесь допустим: это «не вести акты», осознанный выбор. */
+document.getElementById('btn-save-received')?.addEventListener('click', async (event) => {
+  const statuses = Array.from(document.querySelectorAll('.received-status:checked')).map((box) => box.value);
+  const days = Number(document.getElementById('received-days').value);
+  event.target.disabled = true;
+  event.target.textContent = 'Обновляем…';
+  try {
+    const result = await api('/api/returns/received-statuses', { statuses, days });
+    toast(result.message, 'ok', 9000);
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (error) {
+    toast(error.message, 'error', 12000);
+    event.target.disabled = false;
+    event.target.textContent = 'Сохранить и обновить возвраты';
+  }
+});
+</script>

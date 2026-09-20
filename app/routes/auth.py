@@ -94,7 +94,7 @@ def switch_account(request: Request, payload: dict = Body(...)):
     target = security.safe_next(payload.get("next"), "/")
     # Разделы, общие для всех площадок, при переключении не сбрасываются;
     # свои адреса и домашнюю страницу площадка объявляет сама.
-    shared = ("/logs", "/settings", "/products", "/reports")
+    shared = ("/logs", "/settings", "/products", "/reports", "/returns")
     market = registry.get(account["marketplace"])
     own = market.prefixes if market else ()
     # Корень сам ведёт на рабочее место площадки — его не трогаем.

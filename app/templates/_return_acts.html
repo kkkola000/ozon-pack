@@ -11,8 +11,10 @@
         <span class="hint-wrap" style="margin-left:6px">
           <button type="button" class="hint" aria-label="Как это работает">?</button>
           <span class="hint-body">
-            Возврат в статусе «Получен» уже у нас — панель копит такие возвраты, а акт вы
-            составляете сами за нужное число. За возвратами ездят несколько раз в день,
+            Полученный возврат уже у нас — панель копит такие возвраты, а акт вы
+            составляете сами за нужное число. Что считать получением, решает площадка:
+            у Ozon это статус «Получен», у Avito — возврат пропал из пункта выдачи.
+            За возвратами ездят несколько раз в день,
             поэтому актов за одно число бывает несколько: в каждый попадает только то, что
             ещё ни в один акт не вошло, — задвоить возврат нельзя.
             <br><br>Возвраты акта держатся здесь, даже когда площадка перестала их отдавать,
@@ -41,7 +43,7 @@
 {% if not acts %}
   <div class="empty">
     Неподтверждённых актов нет. Акт составляют после поездки в пункт выдачи,
-    когда возвраты перейдут в статус «Получен»: выберите дату и нажмите
+    когда площадка отдаст возвраты полученными: выберите дату и нажмите
     «Составить акт».
   </div>
 {% endif %}
@@ -84,64 +86,11 @@
           <th style="width:220px">Отметка</th>
         </tr>
       </thead>
+      {# Строки рисует площадка: в одном акте бывают и позиции Ozon, и заказы
+         Avito — колонки те же, а содержимое клеток у каждой своё. #}
       <tbody>
-        {% for r in act.ozon %}
-        <tr>
-          <td>
-            <div class="mono">{{ r.id }}</div>
-            <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
-            {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
-          </td>
-          <td>
-            <div>{{ r.product_name or 'Без названия' }}</div>
-            <div class="muted small">
-              {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
-              {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
-              {% if r.arrived_local %} · готов к выдаче с {{ r.arrived_local }}{% endif %}
-            </div>
-          </td>
-          <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
-          <td style="font-weight:700">{{ r.quantity }}</td>
-          <td class="small" data-mark-cell>
-            <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
-                    data-mark-open data-marketplace="ozon" data-id="{{ r.id }}"
-                    data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
-                    data-subject="{{ r.id }} · {{ r.product_name or 'Без названия' }}"
-                    title="{{ r.note or '' }}">
-              {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
-            </button>
-            <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
-            <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
-          </td>
-        </tr>
-        {% endfor %}
-
-        {% for r in act.avito %}
-        <tr>
-          <td>
-            <div class="mono">{{ r.marketplace_id or r.id }}</div>
-            <span class="tag">Avito</span>
-            {% if r.return_tracking %}<div class="muted small mono">{{ r.return_tracking }}</div>{% endif %}
-          </td>
-          <td>
-            {% for item in r['items'] %}
-              <div><b>{{ item.quantity }} ×</b> {{ item.title or 'Без названия' }}</div>
-            {% endfor %}
-          </td>
-          <td class="small mono">—</td>
-          <td style="font-weight:700">{{ r.items_count }}</td>
-          <td class="small" data-mark-cell>
-            <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
-                    data-mark-open data-marketplace="avito" data-id="{{ r.id }}"
-                    data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
-                    data-subject="Заказ {{ r.marketplace_id or r.id }}"
-                    title="{{ r.note or '' }}">
-              {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
-            </button>
-            <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
-            <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
-          </td>
-        </tr>
+        {% for section in act.sections %}
+          {% with rows = section.rows, editable = True %}{% include section.template %}{% endwith %}
         {% endfor %}
       </tbody>
     </table>

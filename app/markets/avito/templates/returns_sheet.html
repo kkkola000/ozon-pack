@@ -1,0 +1,50 @@
+{# Таблица возвратов Avito на листе печати. Строки приходят как rows —
+   и для листа к выдаче, и для акта: колонки одни и те же. #}
+<table>
+  <thead>
+    <tr>
+      <th class="num">№</th>
+      {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
+      <th style="width:120px">Заказ</th>
+      <th style="width:96px">Трек возврата</th>
+      <th>Товары</th>
+      <th class="qty">Кол-во</th>
+      <th style="width:170px">Пункт выдачи</th>
+      <th class="mark">Отметка</th>
+      <th style="width:120px">Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="num">{{ loop.index }}</td>
+      {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
+      <td class="mono">{{ r.marketplace_id or r.id }}
+        {% if r.buyer_name %}<div style="font-size:10px">{{ r.buyer_name }}</div>{% endif %}
+      </td>
+      <td>
+        {% if r.return_tracking %}
+          <div class="bc" data-barcode="{{ r.return_tracking }}" data-barcode-height="26" data-barcode-module="0.8"></div>
+          <div class="mono" style="font-size:9px">{{ r.return_tracking }}</div>
+        {% else %}—{% endif %}
+      </td>
+      <td>
+        {% for item in r['items'] %}
+          <div>{{ item.quantity }} × {{ item.title or 'Без названия' }}
+            <span style="font-size:10px;color:#444">{{ item.seller_id or item.avito_id or '' }}</span>
+          </div>
+        {% endfor %}
+      </td>
+      <td class="qty">{{ r.items_count }}</td>
+      <td style="font-size:10px">
+        {{ r.service_name or r.service_label or '—' }}
+        {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
+        {% if r.terminal_code %}<div>ПВЗ {{ r.terminal_code }}</div>{% endif %}
+        {% if not r.terminal_address and not r.terminal_code %}<div>адрес Avito не прислал</div>{% endif %}
+      </td>
+      <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
+      <td style="font-size:10px">{{ r.note or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

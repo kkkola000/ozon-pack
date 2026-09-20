@@ -1,4 +1,10 @@
-"""Раздел «Возвраты FBO/FBS»: что готово к выдаче и печать листа."""
+"""Раздел «Возвраты» — один на все площадки.
+
+Раздел общий: что готово к выдаче, лист для поездки в пункт выдачи, отметки
+«принят / не принят», акты за день. Откуда берутся строки и как они выглядят,
+знает площадка — она объявляет ReturnsSource, а здесь по именам площадок
+ничего не решается.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
@@ -6,187 +12,100 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ..core import accounts, db, return_acts, returns_pdf, store, sync
-from ..markets.avito import client as avito
-from ..core.deps import check_csrf, require_market, require_owner, require_section, templates
-
-
-def ozon_returns():
-    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
-    from ..markets.ozon import returns as _module
-
-    return _module
-
-
-def avito_store():
-    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
-    from ..markets.avito import store as _module
-
-    return _module
+from ..core import accounts, db, return_acts, returns_pdf, store
+from ..core import sync as core_sync
+from ..core.deps import (check_csrf, current_account, require_account, require_owner, require_section,
+                         templates)
+from ..markets.base import MarketError
 
 router = APIRouter()
-
 
 # Значение параметра, которым просят лист сразу по всем кабинетам.
 ALL_ACCOUNTS = "all"
 
-# Куда пишется отметка сборщика: раздел возвратов один, а таблицы у площадок разные.
-MARK_TABLES = {"ozon": "returns", "avito": "avito_orders"}
+
+def _registry():
+    from ..markets import registry
+
+    return registry
 
 
-def _filter_returns(
-    account_ids: list[int],
-    scheme: str = "all",
-    place: str = "",
-    q: str = "",
-    limit: int = 1000,
-) -> list[dict]:
-    """Возвраты Ozon, готовые к выдаче, по одному кабинету или сразу по нескольким.
-
-    В панели только то, что лежит в пункте выдачи: забранное Ozon переводит
-    дальше сам, и синхронизация убирает такие записи.
-    """
-    if not account_ids:
-        return []
-    placeholders = ",".join("?" for _ in account_ids)
-    ready_sql, ready_params = ozon_returns().pickup_sql("r.status_sys")
-    conditions = [f"r.account_id IN ({placeholders})", ready_sql]
-    params: list = list(account_ids) + list(ready_params)
-    if scheme in ("FBO", "FBS"):
-        conditions.append("(r.type = ? OR r.scheme = ?)")
-        params += [scheme, scheme]
-    if place:
-        conditions.append("r.place_name = ?")
-        params.append(place)
-    if q:
-        like = f"%{q.strip()}%"
-        conditions.append(
-            "(r.product_name LIKE ? OR r.offer_id LIKE ? OR r.sku LIKE ? OR r.order_number LIKE ?"
-            " OR r.posting_number LIKE ? OR r.barcode LIKE ? OR r.id LIKE ?)"
-        )
-        params += [like] * 7
-    where = " WHERE " + " AND ".join(conditions)
-    # Пункт выдачи впереди: за возвратами едут в конкретный ПВЗ, и на листе по
-    # нескольким кабинетам строки одного пункта должны идти подряд.
-    rows = db.query(
-        f"SELECT r.*, a.title AS account_title FROM returns r "
-        f"LEFT JOIN accounts a ON a.id = r.account_id{where} "
-        f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
-        params + [limit],
-    )
-    return [ozon_returns().return_view(row) for row in rows]
+def require_returns(request: Request) -> dict:
+    """Кабинет площадки, у которой в панели есть возвраты."""
+    account = require_account(request)
+    market = _registry().get(account["marketplace"])
+    if market is None or market.returns is None:
+        title = market.title if market else account["marketplace"]
+        raise HTTPException(status_code=409, detail=f"У площадки «{title}» раздела возвратов в панели нет")
+    return account
 
 
-def _avito_returns(account_ids: list[int], limit: int = 500) -> list[dict]:
-    """Возвраты Avito, готовые к выдаче. Строка — заказ целиком, с вложенными товарами."""
-    if not account_ids:
-        return []
-    placeholders = ",".join("?" for _ in account_ids)
-    rows = db.query(
-        f"SELECT o.*, a.title AS account_title FROM avito_orders o "
-        f"LEFT JOIN accounts a ON a.id = o.account_id "
-        f"WHERE o.account_id IN ({placeholders}) AND o.status = ? "
-        f"ORDER BY a.title, (o.updated_at_api IS NULL), o.updated_at_api DESC LIMIT ?",
-        list(account_ids) + [avito.STATUS_ON_RETURN, limit],
-    )
-    return [avito_store().avito_view(row) for row in rows]
+def _source(account: dict):
+    return _registry().require(account["marketplace"]).returns
 
 
-def _accounts_by_marketplace() -> tuple[list[int], list[int]]:
-    """Включённые кабинеты, разложенные по площадкам."""
+def _sections_everywhere(limit: int = 1000) -> list[dict]:
+    """Всё, что готово к выдаче, по всем включённым кабинетам — секциями по площадкам."""
     active = accounts.all_accounts(active_only=True)
-    return (
-        [a["id"] for a in active if a["marketplace"] == "ozon"],
-        [a["id"] for a in active if a["marketplace"] == "avito"],
-    )
+    sections = []
+    for market, source in return_acts.sources():
+        ids = [a["id"] for a in active if a["marketplace"] == market.code]
+        rows = source.ready(ids, params={}, limit=limit) if ids else []
+        if rows:
+            sections.append(_section(market, source, rows))
+    return sections
+
+
+def _section(market, source, rows: list[dict]) -> dict:
+    return {
+        "code": market.code,
+        "label": source.label,
+        "unit": source.unit,
+        "rows": rows,
+        "pieces": sum(int(source.quantity(row) or 0) for row in rows),
+        "template": source.sheet_template,
+        "table": source.table,
+        "pdf_table": source.pdf_table,
+    }
 
 
 def ready_everywhere() -> int:
     """Сколько возвратов готово к выдаче во всех кабинетах — для подписи кнопки.
 
-    Считаем запросом: выбирать строки целиком ради длины дорого, у Avito к
-    каждому заказу ещё и товары подтягиваются отдельным запросом.
+    Считаем запросом: выбирать строки целиком ради длины дорого.
     """
-    ozon_ids, avito_ids = _accounts_by_marketplace()
+    active = accounts.all_accounts(active_only=True)
     total = 0
-    if ozon_ids:
-        placeholders = ",".join("?" for _ in ozon_ids)
-        ready_sql, ready_params = ozon_returns().pickup_sql()
-        total += db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE {ready_sql} AND account_id IN ({placeholders})",
-            list(ready_params) + list(ozon_ids),
-        )["c"]
-    if avito_ids:
-        placeholders = ",".join("?" for _ in avito_ids)
-        total += db.query_one(
-            f"SELECT COUNT(*) AS c FROM avito_orders WHERE status = ? AND account_id IN ({placeholders})",
-            [avito.STATUS_ON_RETURN] + avito_ids,
-        )["c"]
+    for market, source in return_acts.sources():
+        ids = [a["id"] for a in active if a["marketplace"] == market.code]
+        if ids:
+            total += source.count_ready(ids)
     return total
-
-
-def _places(account: dict) -> list[str]:
-    ready_sql, ready_params = ozon_returns().pickup_sql()
-    rows = db.query(
-        f"SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND {ready_sql} "
-        "AND place_name IS NOT NULL ORDER BY place_name",
-        [account["id"]] + list(ready_params),
-    )
-    return [row["place_name"] for row in rows]
 
 
 @router.get("/returns", response_class=HTMLResponse)
 def returns_page(
     request: Request,
-    scheme: str = "all",
-    place: str = "",
-    q: str = "",
     tab: str = "ready",
     user: dict = Depends(require_section("returns")),
-    account: dict = Depends(require_market("ozon")),
+    account: dict = Depends(require_returns),
 ):
-    items = _filter_returns([account["id"]], scheme, place, q)
-    aid = (account["id"],)
-    ready_sql, ready_params = ozon_returns().pickup_sql()
-    ready_args = list(aid) + list(ready_params)
-    totals = {
-        "ready": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}", ready_args
-        )["c"],
-        "fbo": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
-            "AND (type = 'FBO' OR scheme = 'FBO')", ready_args
-        )["c"],
-        "fbs": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
-            "AND (type = 'FBS' OR scheme = 'FBS')", ready_args
-        )["c"],
-    }
-    import json as _json
-
-    wanted = ozon_returns().get_returns_statuses()
-    try:
-        histogram = _json.loads(db.kv_get("returns_last_statuses") or "{}")
-    except ValueError:
-        histogram = {}
-    hidden = {code: count for code, count in histogram.items() if code not in set(wanted)}
-
+    source = _source(account)
+    params = {key: value for key, value in request.query_params.items() if key != "tab"}
+    page = source.page(account, params)
     return templates.TemplateResponse(
         request,
         "returns.html",
         {
             "request": request,
             "user": user,
-            "items": items,
-            "wanted_labels": [ozon_returns().status_label(code) for code in wanted],
-            "hidden_statuses": [(ozon_returns().status_label(code), count) for code, count in sorted(hidden.items())],
-            "places": _places(account),
             "account": account,
-            "scheme": scheme,
-            "place": place,
-            "q": q,
-            "totals": totals,
-            "sync": sync.status(),
+            **page,
+            "list_template": source.list_template,
+            "hint_template": source.hint_template,
+            "ready_total": source.count_ready([account["id"]]),
+            "query": params,
+            "sync": core_sync.status(),
             "all_total": ready_everywhere(),
             "tab": "acts" if tab == "acts" else "ready",
             "acts": return_acts.pending([account["id"]]),
@@ -197,10 +116,45 @@ def returns_page(
     )
 
 
+@router.post("/api/returns/sync")
+def api_returns_sync(request: Request, payload: dict = Body(default={}),
+                     user: dict = Depends(require_section("returns")),
+                     account: dict = Depends(require_returns)):
+    """Обновить возвраты кабинета — как именно, знает площадка."""
+    check_csrf(request)
+    full = bool(payload.get("full"))
+    try:
+        result = _source(account).sync(account, full=full)
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
+    return {"status": "ok", "message": result.get("message") or "Возвраты обновлены", "result": result}
+
+
+@router.get("/api/returns/giveout.pdf")
+def api_giveout(user: dict = Depends(require_section("returns")),
+                account: dict = Depends(require_returns)):
+    """Документ площадки на выдачу возвратов — у кого он есть (Ozon: штрихкод FBS)."""
+    source = _source(account)
+    if not source.giveout:
+        raise HTTPException(status_code=409, detail="У этой площадки документа на выдачу нет")
+    try:
+        pdf = source.giveout(account)
+    except MarketError as exc:
+        raise HTTPException(status_code=502, detail=f"Площадка не отдала документ выдачи: {exc.message}") from exc
+    db.log_event(
+        "returns_giveout", account_id=account["id"], user=user, message="Запрошен штрихкод выдачи возвратов"
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="giveout.pdf"', "Cache-Control": "no-store"},
+    )
+
+
 @router.post("/api/returns/acts/by-day")
 def api_act_by_day(request: Request, payload: dict = Body(...),
                    user: dict = Depends(require_section("returns")),
-                   account: dict = Depends(require_market("ozon"))):
+                   account: dict = Depends(require_returns)):
     """Составить акт из возвратов за указанное число. Кто работает с возвратами.
 
     Акт составляет человек: когда поездка закончилась, знает только он. За
@@ -216,9 +170,12 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
     в нём разные дни значило бы подтверждать одной подписью две работы.
     """
     check_csrf(request)
+    source = _source(account)
+    if not source.received:
+        raise HTTPException(status_code=409, detail="Площадка не ведёт полученные возвраты — акт составить не из чего")
     day = _valid_day(str(payload.get("day") or ""))
     if bool(payload.get("dry_run")):
-        ids = ozon_returns().received_returns(account["id"], day)
+        ids = source.received(account["id"], day)
         return {
             "status": "ok" if ids else "warning",
             "found": len(ids),
@@ -226,7 +183,7 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
             "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
                         "За это число полученных возвратов без акта нет"),
         }
-    return ozon_returns().from_received(account["id"], day, user=user)
+    return return_acts.from_received(source, account["id"], day, user=user)
 
 
 def _valid_day(day: str) -> str:
@@ -284,6 +241,14 @@ def _act_or_404(act_id: str) -> dict:
     return act
 
 
+def _act_sections(act: dict) -> list[dict]:
+    """Секции акта для листа: те же, что у листа к выдаче, только строки уже с отметками."""
+    by_code = {market.code: (market, source) for market, source in return_acts.sources()}
+    return [
+        _section(*by_code[part["code"]], part["rows"]) for part in act["sections"] if part["code"] in by_code
+    ]
+
+
 @router.get("/returns/acts/{act_id}/print", response_class=HTMLResponse)
 def act_print(act_id: str, request: Request, user: dict = Depends(require_section("returns"))):
     """Лист акта — тот же вид, что и лист выдачи, но уже с отметками."""
@@ -294,14 +259,12 @@ def act_print(act_id: str, request: Request, user: dict = Depends(require_sectio
         {
             "request": request,
             "user": user,
-            "items": act["ozon"],
-            "avito_orders": act["avito"],
+            "sections": _act_sections(act),
             "account": None,
             "everywhere": act["kind"] == ALL_ACCOUNTS,
             "truncated": False,
             "printed_at": datetime.now(timezone.utc),
-            "scheme": "all",
-            "place": "",
+            "subtitle": "",
             "act": act,
         },
     )
@@ -313,7 +276,7 @@ def act_pdf(act_id: str, user: dict = Depends(require_section("returns"))):
     printed_at = datetime.now(timezone.utc)
     try:
         pdf = returns_pdf.build_sheet(
-            act["ozon"], act["avito"], user=user, printed_at=printed_at,
+            _act_sections(act), user=user, printed_at=printed_at,
             everywhere=act["kind"] == ALL_ACCOUNTS, account=None, act=act,
         )
     except returns_pdf.PdfUnavailable as exc:
@@ -343,84 +306,69 @@ def _mark_printed(table: str, rows: list[dict]) -> None:
     )
 
 
-def _collect_sheet(request: Request, user: dict, scheme: str, place: str, q: str, scope: str,
-                   *, kind: str) -> dict:
+def _collect_sheet(request: Request, user: dict, scope: str, *, kind: str) -> dict:
     """Данные листа возвратов — общие для печати из браузера и для файла PDF.
 
-    scope=all — один лист сразу по всем кабинетам, Ozon и Avito. Фильтры
+    scope=all — один лист сразу по всем кабинетам и площадкам. Фильтры
     текущего кабинета к нему не применяются: на таком листе нужно всё, что
     готово к выдаче, иначе сборщик уедет за частью возвратов.
     """
     everywhere = scope == ALL_ACCOUNTS
+    params = {key: value for key, value in request.query_params.items() if key != "scope"}
 
     if everywhere:
-        ozon_ids, avito_ids = _accounts_by_marketplace()
-        items = _filter_returns(ozon_ids)
-        avito_orders = _avito_returns(avito_ids)
+        sections = _sections_everywhere()
         account = None
-        scheme, place, q = "all", "", ""
+        subtitle = ""
         # Лимит выборки может обрезать лист. Промолчать нельзя: сборщик уедет,
         # решив, что забрал всё, и за остатком никто не вернётся.
-        truncated = len(items) + len(avito_orders) < ready_everywhere()
+        truncated = sum(len(s["rows"]) for s in sections) < ready_everywhere()
         db.log_event(
             kind, user=user,
-            message=f"Лист возвратов по всем кабинетам: {len(items)} поз. Ozon, {len(avito_orders)} заказов Avito",
+            message="Лист возвратов по всем кабинетам: "
+                    + ", ".join(f"{s['label']} {len(s['rows'])} {s['unit']}" for s in sections),
         )
     else:
-        account = require_market("ozon")(request)
-        items = _filter_returns([account["id"]], scheme, place, q)
-        avito_orders = []
+        account = require_returns(request)
+        market = _registry().require(account["marketplace"])
+        source = market.returns
+        rows = source.ready([account["id"]], params=params)
+        sections = [_section(market, source, rows)] if rows else []
+        subtitle = source.page(account, params).get("sheet_subtitle", "")
         truncated = False
         db.log_event(
             kind, account_id=account["id"], user=user,
-            message=f"Лист возвратов: {len(items)} поз.",
+            message=f"Лист возвратов: {len(rows)} {source.unit}",
         )
 
-    _mark_printed("returns", items)
-    _mark_printed("avito_orders", avito_orders)
-    # Акт печать больше не заводит: его составляет площадка. Ozon отдаёт акт
-    # выдачи с составом и временем, и «Ждёт подтверждения» собирается из него —
-    # это факт передачи, а не намерение съездить.
+    for section in sections:
+        _mark_printed(section["table"], section["rows"])
+    # Акт печать не заводит: его составляет человек за число, когда поездка
+    # закончилась, — это факт передачи, а не намерение съездить.
 
     return {
-        "items": items,
-        "avito_orders": avito_orders,
+        "sections": sections,
         "account": account,
         "everywhere": everywhere,
         "truncated": truncated,
         "printed_at": datetime.now(timezone.utc),
-        "scheme": scheme,
-        "place": place,
+        "subtitle": subtitle,
     }
 
 
 @router.get("/returns/print", response_class=HTMLResponse)
-def returns_print(
-    request: Request,
-    scheme: str = "all",
-    place: str = "",
-    q: str = "",
-    scope: str = "",
-    user: dict = Depends(require_section("returns")),
-):
+def returns_print(request: Request, scope: str = "", user: dict = Depends(require_section("returns"))):
     """Лист для печати: сборщик идёт с ним получать возвраты."""
-    sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_print")
+    sheet = _collect_sheet(request, user, scope, kind="returns_print")
     return templates.TemplateResponse(
-        request, "returns_print.html", {"request": request, "user": user, **sheet}
+        request, "returns_print.html", {"request": request, "user": user, "act": None, **sheet}
     )
 
 
 @router.get("/returns/sheet.pdf")
-def returns_sheet_pdf(
-    request: Request,
-    scheme: str = "all",
-    place: str = "",
-    q: str = "",
-    scope: str = "",
-    user: dict = Depends(require_section("returns")),
-):
+def returns_sheet_pdf(request: Request, scope: str = "", user: dict = Depends(require_section("returns"))):
     """Тот же лист готовым файлом: сохранить, переслать, напечатать где угодно."""
-    sheet = _collect_sheet(request, user, scheme, place, q, scope, kind="returns_pdf")
+    sheet = _collect_sheet(request, user, scope, kind="returns_pdf")
     try:
         pdf = returns_pdf.build_sheet(user=user, **sheet)
     except returns_pdf.PdfUnavailable as exc:
@@ -446,9 +394,14 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
     эти поля не трогает и при обновлении списка комментарий не пропадёт.
     """
     check_csrf(request)
-    table = MARK_TABLES.get(str(payload.get("marketplace") or "ozon"))
-    if not table:
+    code = str(payload.get("marketplace") or "").strip()
+    account = current_account(request)
+    if not code and account:
+        code = account["marketplace"]
+    market = _registry().get(code)
+    if market is None or market.returns is None:
         raise HTTPException(status_code=400, detail="Неизвестная площадка")
+    table = market.returns.table
 
     return_id = str(payload.get("id") or "").strip()
     if not return_id:
@@ -459,7 +412,11 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         raise HTTPException(status_code=400, detail="Неизвестная отметка")
     note = str(payload.get("note") or "").strip()[:2000]
 
-    account = require_market("ozon")(request) if table == "returns" else require_market("avito")(request)
+    # Отмечают возврат текущего кабинета: строка чужого кабинета не находится.
+    if not account or account["marketplace"] != code:
+        raise HTTPException(
+            status_code=409, detail=f"Этот раздел работает только с кабинетами площадки «{market.title}»"
+        )
     row = db.query_one(
         f"SELECT id, act_id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
     )

@@ -26,23 +26,20 @@
   </style>
 </head>
 <body>
+  {# Лист один на все площадки: рамка, итоги и подписи — здесь, а таблицу
+     каждой площадки рисует её собственный кусок (sheet_template). #}
   <div class="head">
     <div>
       <h1>{% if act %}Акт · {{ act.title }}{% else %}Возвраты к выдаче
         {% if everywhere %} · все кабинеты{% elif account %} · {{ account.title }}{% endif %}
-        {% if scheme != 'all' %}({{ scheme }}){% endif %}
-        {% if place %} · {{ place }}{% endif %}{% endif %}
+        {% if subtitle %} {{ subtitle }}{% endif %}{% endif %}
       </h1>
       <div class="meta">
-        {% if items %}
-          Ozon: <b>{{ items | length }}</b> поз., <b>{{ items | sum(attribute='quantity') }}</b> шт.
-        {% endif %}
-        {% if avito_orders %}
-          {% if items %} · {% endif %}
-          Avito: <b>{{ avito_orders | length }}</b> заказ(ов),
-          <b>{{ avito_orders | sum(attribute='items_count') }}</b> шт.
-        {% endif %}
-        {% if not items and not avito_orders %}Ничего не готово к выдаче{% endif %}
+        {% for s in sections %}
+          {% if not loop.first %} · {% endif %}
+          {{ s.label }}: <b>{{ s.rows | length }}</b> {{ s.unit }}, <b>{{ s.pieces }}</b> шт.
+        {% endfor %}
+        {% if not sections %}Ничего не готово к выдаче{% endif %}
         {% if act %} · принято {{ act.marked_ok }}, не принято {{ act.marked_bad }}
           {%- if act.unmarked %}, без отметки {{ act.unmarked }}{% endif %}
           {%- if act.source_label %} · {{ act.source_label }}{% endif %}{% endif %}
@@ -53,107 +50,15 @@
     <button class="no-print" onclick="window.print()">Печать</button>
   </div>
 
-  {% if items %}
-  {% if everywhere %}<h2 class="section">Ozon</h2>{% endif %}
-  <table>
-    <thead>
-      <tr>
-        <th class="num">№</th>
-        {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
-        <th style="width:120px">Возврат</th>
-        <th style="width:96px">Схема / штрихкод</th>
-        <th>Товар</th>
-        <th style="width:110px">Артикул / SKU</th>
-        <th class="qty">Кол-во</th>
-        <th style="width:170px">Пункт выдачи</th>
-        <th class="mark">Отметка</th>
-        <th style="width:120px">Комментарий</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in items %}
-      <tr>
-        <td class="num">{{ loop.index }}</td>
-        {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
-        <td class="mono">{{ r.id }}<div style="font-size:10px">{{ r.order_number or '' }}</div></td>
-        <td>
-          <div>{{ r.type or r.scheme or '—' }}</div>
-          {% if r.barcode %}
-            <div class="bc" data-barcode="{{ r.barcode }}" data-barcode-height="26" data-barcode-module="0.8"></div>
-            <div class="mono" style="font-size:9px">{{ r.barcode }}</div>
-          {% endif %}
-        </td>
-        <td>
-          {{ r.product_name or 'Без названия' }}
-          {% if r.return_reason %}<div style="font-size:10px;color:#444">{{ r.return_reason }}</div>{% endif %}
-        </td>
-        <td class="mono" style="font-size:10px">{{ r.offer_id or '—' }}<div>{{ r.sku or '' }}</div></td>
-        <td class="qty">{{ r.quantity }}</td>
-        <td style="font-size:10px">
-          {{ r.place_name or '—' }}
-          {% if r.place_address %}<div>{{ r.place_address }}</div>{% endif %}
-        </td>
-        <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
-        <td style="font-size:10px">{{ r.note or '' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
+  {% for section in sections %}
+    {# Заголовок площадки нужен, когда их на листе больше одной или лист общий. #}
+    {% if everywhere or sections | length > 1 or not loop.first %}
+      <h2 class="section">{{ section.label }}</h2>
+    {% endif %}
+    {% with rows = section.rows %}{% include section.template %}{% endwith %}
+  {% endfor %}
 
-  {% if avito_orders %}
-  <h2 class="section">Avito</h2>
-  <table>
-    <thead>
-      <tr>
-        <th class="num">№</th>
-        {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
-        <th style="width:120px">Заказ</th>
-        <th style="width:96px">Трек возврата</th>
-        <th>Товары</th>
-        <th class="qty">Кол-во</th>
-        <th style="width:170px">Куда ехать</th>
-        <th class="mark">Отметка</th>
-        <th style="width:120px">Комментарий</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in avito_orders %}
-      <tr>
-        <td class="num">{{ loop.index }}</td>
-        {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
-        <td class="mono">{{ r.marketplace_id or r.id }}
-          {% if r.buyer_name %}<div style="font-size:10px">{{ r.buyer_name }}</div>{% endif %}
-        </td>
-        <td>
-          {% if r.return_tracking %}
-            <div class="bc" data-barcode="{{ r.return_tracking }}" data-barcode-height="26" data-barcode-module="0.8"></div>
-            <div class="mono" style="font-size:9px">{{ r.return_tracking }}</div>
-          {% else %}—{% endif %}
-        </td>
-        <td>
-          {% for item in r["items"] %}
-            <div>{{ item.quantity }} × {{ item.title or 'Без названия' }}
-              <span style="font-size:10px;color:#444">{{ item.seller_id or item.avito_id or '' }}</span>
-            </div>
-          {% endfor %}
-        </td>
-        <td class="qty">{{ r.items_count }}</td>
-        <td style="font-size:10px">
-          {{ r.service_name or r.service_label or '—' }}
-          {% if r.terminal_address %}<div>{{ r.terminal_address }}</div>{% endif %}
-          {% if r.terminal_code %}<div>ПВЗ {{ r.terminal_code }}</div>{% endif %}
-          {% if not r.terminal_address and not r.terminal_code %}<div>адрес Avito не прислал</div>{% endif %}
-        </td>
-        <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
-        <td style="font-size:10px">{{ r.note or '' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-
-  {% if not items and not avito_orders %}
+  {% if not sections %}
   <p style="margin:24px 0;font-size:13px">Ни одного возврата, готового к выдаче.</p>
   {% endif %}
 

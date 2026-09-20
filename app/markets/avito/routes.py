@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -19,8 +18,7 @@ from . import client as avito, pack as avito_pack
 from ...core import db, labels, return_acts
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
-from ..base import NavItem
-from ...routes import returns as returns_routes
+from ..base import NavItem, Workspace
 from ...core import store as core_store
 from ...core import sync as core_sync
 from . import store, sync
@@ -82,7 +80,7 @@ def avito_page(request: Request, tab: str = "confirm", q: str = "", user: dict =
         tab = "confirm"
     return templates.TemplateResponse(
         request,
-        "avito.html",
+        "avito/orders.html",
         {
             "request": request,
             "user": user,
@@ -125,13 +123,14 @@ def avito_pack_page(request: Request, user: dict = Depends(require_section("pack
                     account: dict = Depends(require_market("avito"))):
     return templates.TemplateResponse(
         request,
-        "avito_pack.html",
+        "market_pack.html",
         {
             "request": request,
             "user": user,
             "account": account,
             "state": avito_pack.load_state(account, user),
             "counters": _pack_counters(account),
+            "workspace": WORKSPACE,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "avito_pack",
         },
@@ -431,69 +430,6 @@ def api_avito_sync(request: Request, user: dict = Depends(require_section("order
 # такие возвраты панель и хранит: пока посылка едет обратно, забирать нечего.
 # Забирать вручную ничего не отмечают: как только возврат получен, Avito
 # переводит заказ дальше, и ближайшая синхронизация убирает его из панели.
-def _list_returns(account: dict, search: str = "", limit: int = 500) -> list[dict]:
-    params: list = [account["id"], avito.STATUS_ON_RETURN]
-    sql = "SELECT * FROM avito_orders WHERE account_id = ? AND status = ?"
-    if search:
-        like = f"%{search.strip()}%"
-        sql += """
-            AND (id LIKE ? OR marketplace_id LIKE ? OR return_tracking LIKE ? OR tracking_number LIKE ?
-                 OR buyer_name LIKE ?
-                 OR EXISTS (SELECT 1 FROM avito_order_items i
-                            WHERE i.account_id = avito_orders.account_id AND i.order_id = avito_orders.id
-                            AND (i.title LIKE ? OR i.avito_id LIKE ? OR i.seller_id LIKE ?)))
-        """
-        params += [like] * 8
-    sql += " ORDER BY (updated_at_api IS NULL), updated_at_api DESC LIMIT ?"
-    params.append(limit)
-    return [store.avito_view(row) for row in db.query(sql, params)]
-
-
-def _return_totals(account: dict) -> dict:
-    ready = db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
-        (account["id"], avito.STATUS_ON_RETURN),
-    )["c"]
-    return {"ready": ready}
-
-
-def _returns_skipped(account: dict) -> list[tuple[str, int]]:
-    """Что Avito вернул по возвратам помимо готовых к выдаче — для пояснения."""
-    try:
-        histogram = json.loads(db.kv_get(f"avito_returns_statuses:{account['id']}") or "{}")
-    except ValueError:
-        return []
-    return sorted(
-        (avito.RETURN_STATUS_LABELS.get(code, code), count)
-        for code, count in histogram.items()
-        if not avito.is_ready_for_pickup(code)
-    )
-
-
-@router.get("/avito/returns", response_class=HTMLResponse)
-def avito_returns_page(request: Request, q: str = "",
-                       user: dict = Depends(require_section("returns")),
-                       account: dict = Depends(require_market("avito"))):
-    return templates.TemplateResponse(
-        request,
-        "avito_returns.html",
-        {
-            "request": request,
-            "user": user,
-            "account": account,
-            "items": _list_returns(account, q),
-            "totals": _return_totals(account),
-            "skipped": _returns_skipped(account),
-            "q": q,
-            "sync": core_sync.status(),
-            # Лист по всем кабинетам общий для площадок и живёт в разделе возвратов
-            "all_total": returns_routes.ready_everywhere(),
-            "csrf": request.state.session.get("csrf"),
-            "active_tab": "avito_returns",
-        },
-    )
-
-
 @router.get("/api/avito/returns/{order_id}/raw")
 def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(require_manager),
                          account: dict = Depends(require_market("avito"))):
@@ -514,37 +450,23 @@ def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(
     }
 
 
-@router.get("/avito/returns/print", response_class=HTMLResponse)
-def avito_returns_print(request: Request, q: str = "",
-                        user: dict = Depends(require_section("returns")),
-                        account: dict = Depends(require_market("avito"))):
-    """Лист для печати: сборщик идёт с ним забирать возвраты."""
-    items = _list_returns(account, q)
-    now = datetime.now(timezone.utc)
-    db.log_event(
-        "avito_returns_print", account_id=account["id"], user=user,
-        message=f"Лист возвратов Avito: {len(items)} поз.",
-    )
-    if items:
-        placeholders = ",".join("?" for _ in items)
-        db.execute(
-            f"UPDATE avito_orders SET printed_at = ? WHERE account_id = ? AND id IN ({placeholders})",
-            [db.now_iso(), account["id"]] + [item["id"] for item in items],
-        )
-    return templates.TemplateResponse(
-        request,
-        "avito_returns_print.html",
-        {
-            "request": request,
-            "user": user,
-            "account": account,
-            "items": items,
-            "printed_at": now,
-        },
-    )
-
-
 # ------------------------------------------------------------------ для реестра площадок
+# Рабочее место сборщика: страница одна на все площадки, слова — свои.
+WORKSPACE = Workspace(
+    placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…",
+    banner="Отсканируйте стикер отправления — откроется сборка заказа.",
+    sync_label="Обновить из Avito",
+    gate_title="Скачайте этикетки",
+    download="Скачать этикетки",
+    gate_template="avito/pack_gate.html",
+    help_template="avito/pack_help.html",
+    counters=(
+        ("c-to-pack", "to_pack", "К сборке", ""),
+        ("c-packed", "packed_today", "Собрано сегодня", "ok"),
+        ("c-confirm", "confirm", "Ждут подтверждения", ""),
+    ),
+)
+
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0
@@ -562,10 +484,14 @@ def nav_items(account: dict) -> list[NavItem]:
                     "AND status = 'ready_to_ship' AND local_state != 'packed'", aid),
              "accent", "Отправьте заказ"),
         )),
+        # Раздел возвратов один на все площадки — адрес общий, счётчики свои.
         # В таблице лежат только возвраты, готовые к выдаче, — фильтровать ещё
         # и по return_status незачем: написание значения у Avito плавает.
-        NavItem("/avito/returns", "Возвраты", "avito_returns", "returns", (
-            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_return'", aid),
+        # Полученные (пропавшие из выдачи) в счётчик не идут: забирать нечего,
+        # они ждут акта.
+        NavItem("/returns", "Возвраты", "returns", "returns", (
+            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? "
+                    "AND status = 'on_return' AND received_at IS NULL", aid),
              "", "Заберите заказ"),
             (return_acts.pending_count([account["id"]]), "warn", "Акты ждут подтверждения"),
         )),

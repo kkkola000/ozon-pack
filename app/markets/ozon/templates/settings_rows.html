@@ -1,0 +1,7 @@
+{# Строка «Возвраты» в сводке настроек, кабинет Ozon. #}
+<dt>Возвраты</dt>
+<dd class="small">
+  Загружаются в статусах: <b>{{ returns_statuses | join(', ') }}</b>
+  <div class="muted">{{ 'задано в панели' if returns_source == 'panel' else 'значение из файла .env' }} — меняется ниже</div>
+  Полученными считаются: <b>{{ received_statuses | join(', ') if received_statuses else 'не задано — акты не ведутся' }}</b>
+</dd>

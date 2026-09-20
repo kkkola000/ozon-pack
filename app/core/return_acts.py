@@ -4,25 +4,21 @@
 каждой строке не поставят отметку и акт не подтвердят, он висит во вкладке
 «Ждёт подтверждения»; подтверждённый уходит в «Отчёты».
 
-Что считается фактом получения. Возврат перешёл в статус «Получен»
-(ReceivedBySeller) — значит, он уже у нас. Актов о возвратах Ozon не отдаёт:
-своего документа, по которому можно было бы собрать состав, у площадки нет,
-поэтому состав собирается по статусам.
-
-Акт составляет человек: выбирает число и нажимает «Составить акт». Панель не
-знает, когда поездка закончилась, — возвраты переходят в «Получен» по одному,
-растянуто во времени, и любой срок, через который «акт считается закрытым»,
-был бы выдумкой.
+Что считается фактом получения — решает площадка: у Ozon это статус «Получен»
+(ReceivedBySeller), у Avito — возврат пропал из пункта выдачи. Актов о
+возвратах площадки не отдают, поэтому состав собирается по их данным, а сам
+акт заводит человек за выбранное число.
 
 Число, а не промежуток: акт — это поездка, а не отчётный период. За возвратами
 ездят несколько раз в день, поэтому актов за одно число бывает несколько —
 каждый со своим временем составления, и в каждый попадает только то, что ещё
 ни в один акт не вошло.
 
-Защита от задвоения. Возврат, попавший в акт, второй раз в акт не попадёт:
-act_id ставится один раз и не снимается даже после подтверждения. Момент
-получения (received_at) тоже пишется однократно, поэтому возврат, который Ozon
-отдаёт «полученным» неделю подряд, остаётся в своём акте.
+Защита от задвоения. Строка, попавшая в акт, второй раз в акт не попадёт:
+act_id ставится один раз и не снимается даже после подтверждения.
+
+Строки акта лежат в таблицах площадок (returns у Ozon, avito_orders у Avito);
+какие это таблицы, ядро узнаёт из объявлений площадок и по именам их не знает.
 """
 from __future__ import annotations
 
@@ -30,20 +26,6 @@ import uuid
 from datetime import datetime
 
 from . import db, store
-
-
-def ozon_returns():
-    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
-    from ..markets.ozon import returns as _module
-
-    return _module
-
-
-def avito_store():
-    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
-    from ..markets.avito import store as _module
-
-    return _module
 
 # Возврат пропал из выдачи, а статус «Получен» по нему не приходил: такие
 # собираем в акт за день, иначе они исчезли бы с экрана молча — то есть ровно
@@ -56,6 +38,13 @@ BY_DAY = "byday"
 RECEIVED = "received"
 UPLOADED = "upload"
 FROM_GIVEOUT = "ozon"
+
+
+def sources() -> list:
+    """Площадки с возвратами: [(market, source)]. Реестр — лениво."""
+    from ..markets import registry
+
+    return [(market, market.returns) for market in registry.all_markets() if market.returns]
 
 
 def _new_id() -> str:
@@ -83,35 +72,14 @@ def _next_seq(conn, account_id: int, day: str) -> int:
     ).fetchone()["c"] + 1
 
 
-def _claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
-    """Забрать возвраты в акт. Возвращает, сколько реально переехало.
-
-    Берём свободные и те, что лежат в неподтверждённом акте «без статуса»:
-    факт получения от площадки точнее нашей догадки о пропаже. Возврат из
-    любого другого акта не трогаем — это и есть защита от второго акта на ту
-    же работу.
-    """
-    placeholders = ",".join("?" for _ in return_ids)
-    cursor = conn.execute(
-        f"""
-        UPDATE returns SET act_id = ?
-        WHERE account_id = ? AND id IN ({placeholders})
-          AND (act_id IS NULL
-               OR act_id IN (SELECT id FROM return_acts
-                             WHERE kind = ? AND confirmed_at IS NULL))
-        """,
-        [act_id, account_id] + return_ids + [NO_SHEET],
-    )
-    return cursor.rowcount or 0
-
-
 def _drop_empty_spares(conn) -> None:
     """Акт «без статуса», из которого всё разобрали, больше не нужен."""
-    conn.execute(
-        "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
-        "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
-        (NO_SHEET,),
-    )
+    for _market, source in sources():
+        conn.execute(
+            "DELETE FROM return_acts WHERE kind = ? AND confirmed_at IS NULL "
+            f"AND id NOT IN (SELECT DISTINCT act_id FROM {source.table} WHERE act_id IS NOT NULL)",
+            (NO_SHEET,),
+        )
 
 
 def drop_empty(account_id: int) -> int:
@@ -123,12 +91,70 @@ def drop_empty(account_id: int) -> int:
 
     Подтверждённый акт не трогаем ни при каких условиях: он уже документ.
     """
+    used = " UNION ".join(
+        f"SELECT DISTINCT act_id FROM {source.table} WHERE act_id IS NOT NULL" for _m, source in sources()
+    ) or "SELECT NULL"
     with db.write() as conn:
         return conn.execute(
             "DELETE FROM return_acts WHERE account_id = ? AND confirmed_at IS NULL "
-            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)",
+            f"AND id NOT IN ({used})",
             (account_id,),
         ).rowcount or 0
+
+
+def from_received(source, account_id: int, day: str, *, user: dict | None = None) -> dict:
+    """Свести в акт полученные возвраты за указанное число.
+
+    Каждый вызов — отдельный акт: за возвратами ездят несколько раз в день, и
+    каждая поездка подписывается отдельно. В акт попадает только то, что ещё ни
+    в один акт не вошло, поэтому нажать кнопку дважды подряд не страшно —
+    второй акт просто не из чего собрать.
+
+    Что именно «получено», знает площадка (source.received), как забрать строки
+    в акт — тоже (source.claim). Возвращает {'status', 'message', 'act_id', 'added'}.
+    """
+    if not (source.received and source.claim):
+        return {"status": "error", "message": "Площадка не ведёт полученные возвраты", "act_id": None, "added": 0}
+    ids = source.received(account_id, day)
+    if not ids:
+        return {
+            "status": "warning",
+            "message": f"За {_day_label(day)} полученных возвратов без акта нет — "
+                       "либо их ещё не забрали, либо они уже в акте.",
+            "act_id": None,
+            "added": 0,
+        }
+
+    act_id = _new_id()
+    now = db.now_iso()
+    with db.write() as conn:
+        seq = _next_seq(conn, account_id, day)
+        conn.execute(
+            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day, day_seq) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (act_id, now, (user or {}).get("login"), BY_DAY, account_id, day, seq),
+        )
+        added = source.claim(conn, act_id, account_id, ids)
+        if not added:
+            # Возвраты разобрали между выборкой и записью: акт за то же число
+            # составили в соседней вкладке. Пустой акт оставлять нельзя — его
+            # потом не удалить.
+            conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
+            return {"status": "warning", "act_id": None, "added": 0,
+                    "message": "Эти возвраты только что попали в другой акт"}
+        _drop_empty_spares(conn)
+
+    act = detail(act_id)
+    db.log_event(
+        "return_act_received", account_id=account_id, user=user,
+        message=f"{act['title']}: {_returns_word(added)}",
+    )
+    return {
+        "status": "ok",
+        "act_id": act_id,
+        "added": added,
+        "message": f"{act['title']}: {_returns_word(added)}",
+    }
 
 
 # ------------------------------------------------------------------- чтение
@@ -137,37 +163,33 @@ def get(act_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def rows_of(act_id: str) -> tuple[list[dict], list[dict]]:
-    """Строки акта: возвраты Ozon и заказы Avito."""
-    ozon = [
-        ozon_returns().return_view(row) for row in db.query(
-            "SELECT r.*, a.title AS account_title FROM returns r "
-            "LEFT JOIN accounts a ON a.id = r.account_id "
-            "WHERE r.act_id = ? ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name",
-            (act_id,),
-        )
-    ]
-    avito = [
-        avito_store().avito_view(row) for row in db.query(
-            "SELECT o.*, a.title AS account_title FROM avito_orders o "
-            "LEFT JOIN accounts a ON a.id = o.account_id WHERE o.act_id = ? ORDER BY a.title, o.id",
-            (act_id,),
-        )
-    ]
-    return ozon, avito
+def rows_of(act_id: str) -> list[tuple]:
+    """Строки акта по площадкам: [(market, source, rows)] — только непустые."""
+    result = []
+    for market, source in sources():
+        rows = source.act_rows(act_id)
+        if rows:
+            result.append((market, source, rows))
+    return result
 
 
-def _summary(act: dict, ozon: list[dict], avito: list[dict]) -> dict:
-    rows = ozon + avito
+def _summary(act: dict, sections: list[tuple]) -> dict:
+    """Акт с итогами. Строки доступны и все вместе (rows), и по коду площадки (act['ozon'])."""
+    rows = [row for _m, _s, part in sections for row in part]
     marked_ok = sum(1 for row in rows if row.get("mark") == "ok")
     marked_bad = sum(1 for row in rows if row.get("mark") == "bad")
     unmarked = len(rows) - marked_ok - marked_bad
     kind = act.get("kind")
+    by_market = {market.code: part for market, _s, part in sections}
     return {
         **act,
+        **{market.code: [] for market, _s in sources()},
+        **by_market,
         "rows": rows,
-        "ozon": ozon,
-        "avito": avito,
+        "sections": [
+            {"code": market.code, "label": source.label, "template": source.act_template, "rows": part}
+            for market, source, part in sections
+        ],
         "total": len(rows),
         "marked_ok": marked_ok,
         "marked_bad": marked_bad,
@@ -241,12 +263,12 @@ def pending(account_ids: list[int] | None = None) -> list[dict]:
         if (account_ids is not None and act["kind"] != "all"
                 and act["account_id"] not in account_ids):
             continue
-        ozon, avito = rows_of(act["id"])
-        if not ozon and not avito:
+        sections = rows_of(act["id"])
+        if not sections:
             # Строки удалили (сменили статусы возвратов, почистили базу) —
             # показывать пустой акт незачем.
             continue
-        result.append(_summary(act, ozon, avito))
+        result.append(_summary(act, sections))
     return result
 
 
@@ -275,11 +297,11 @@ def confirmed(account_id: int | None = None, limit: int = 200) -> list[dict]:
     ids = [row["id"] for row in acts]
     placeholders = ",".join("?" for _ in ids)
     totals: dict[str, dict] = {act_id: {"total": 0, "ok": 0, "bad": 0} for act_id in ids}
-    for table in ("returns", "avito_orders"):
+    for _market, source in sources():
         for row in db.query(
             f"SELECT act_id, COUNT(*) AS total, "
             f"SUM(mark = 'ok') AS ok, SUM(mark = 'bad') AS bad "
-            f"FROM {table} WHERE act_id IN ({placeholders}) GROUP BY act_id",
+            f"FROM {source.table} WHERE act_id IN ({placeholders}) GROUP BY act_id",
             ids,
         ):
             counts = totals[row["act_id"]]
@@ -307,8 +329,7 @@ def detail(act_id: str) -> dict | None:
     act = get(act_id)
     if not act:
         return None
-    ozon, avito = rows_of(act_id)
-    return _summary(act, ozon, avito)
+    return _summary(act, rows_of(act_id))
 
 
 def progress(act_id: str) -> dict | None:
@@ -321,10 +342,10 @@ def progress(act_id: str) -> dict | None:
     if not act:
         return None
     total = ok = bad = 0
-    for table in ("returns", "avito_orders"):
+    for _market, source in sources():
         row = db.query_one(
             f"SELECT COUNT(*) AS total, SUM(mark = 'ok') AS ok, SUM(mark = 'bad') AS bad "
-            f"FROM {table} WHERE act_id = ?",
+            f"FROM {source.table} WHERE act_id = ?",
             (act_id,),
         )
         total += row["total"] or 0
@@ -413,9 +434,9 @@ def remove(act_id: str, user: dict) -> dict:
     title = _title(act)
     freed = 0
     with db.write() as conn:
-        for table in ("returns", "avito_orders"):
+        for _market, source in sources():
             cursor = conn.execute(
-                f"UPDATE {table} SET act_id = NULL, mark = NULL, note = NULL, "
+                f"UPDATE {source.table} SET act_id = NULL, mark = NULL, note = NULL, "
                 f"mark_at = NULL, mark_by = NULL WHERE act_id = ?",
                 (act_id,),
             )

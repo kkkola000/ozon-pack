@@ -1,0 +1,58 @@
+{# Вкладка «К выдаче», кабинет Avito: свой поиск и своя таблица.
+   Рамку страницы и кнопки печати рисует общий returns.html. #}
+<form class="row no-print" method="get" action="/returns" style="margin-top:14px">
+  <input type="search" name="q" value="{{ q }}" placeholder="Номер заказа, товар, трек-номер…" style="width:260px">
+  <button class="btn" type="submit">Найти</button>
+  {% if q %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
+</form>
+
+{% if items %}
+<table style="margin-top:10px">
+  <thead>
+    <tr>
+      <th style="width:180px">Заказ</th>
+      <th>Товар</th>
+      <th style="width:70px">Кол-во</th>
+      <th style="width:200px">Доставка</th>
+      <th style="width:180px">Возврат</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in items %}
+    <tr>
+      <td>
+        <div class="mono" style="font-weight:700">{{ r.marketplace_id or r.id }}</div>
+        <div class="muted small">{{ r.created_local }}</div>
+      </td>
+      <td>
+        {% for item in r['items'] %}
+          <div>
+            <b>{{ item.quantity }} ×</b> {{ item.title or 'Без названия' }}
+            <span class="muted small mono">({{ item.seller_id or item.avito_id }})</span>
+          </div>
+        {% endfor %}
+      </td>
+      <td style="font-weight:700">{{ r.items_count }}</td>
+      <td class="small">
+        <div>{{ r.service_label }}</div>
+        <div class="muted">{{ r.service_name or '' }}</div>
+        {% if r.terminal_address %}<div class="muted">{{ r.terminal_address }}</div>{% endif %}
+        {% if r.terminal_code %}<div class="muted mono">ПВЗ {{ r.terminal_code }}</div>{% endif %}
+        {% if not r.terminal_address and not r.terminal_code %}
+          <div class="muted">адрес Avito не прислал</div>
+        {% endif %}
+      </td>
+      {# Отметки тут нет — как и у Ozon: возврат ещё лежит в пункте выдачи,
+         в руках его не держали. Отмечают привезённое, во вкладке «Ждёт
+         подтверждения». #}
+      <td class="small">
+        <span class="tag success">{{ r.return_label }}</span>
+        {% if r.return_tracking %}<div class="muted mono">{{ r.return_tracking }}</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <div class="empty">Возвратов не найдено — забирать нечего.</div>
+{% endif %}

@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import accounts, db, labels
+from app.markets import yandex as yandex_market
 from app.markets.yandex import client as yandex
 from app.main import app
 from app.markets.yandex import pack as yandex_pack
@@ -291,3 +292,14 @@ def test_settings_probe_and_test_keys(client, market):
     )
     assert created.status_code == 200, created.text
     assert accounts.get(created.json()["account_id"])["marketplace"] == "yandex"
+
+
+def test_returns_section_is_closed_for_the_market(client, market):
+    """Возвраты Маркет в панель не отдаёт — раздел ему не показывается.
+
+    Отказ должен быть понятным: это не поломка, а «у этой площадки такого нет».
+    """
+    assert not any(item.tab == "returns" for item in yandex_market.MARKET.nav(market))
+    response = client.get("/returns")
+    assert response.status_code == 409
+    assert "Яндекс Маркет" in response.text

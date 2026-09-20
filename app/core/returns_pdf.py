@@ -5,6 +5,10 @@
 браузер печатать отказывается или печатает не то. Состав колонок тот же, что
 у HTML-листа, — два листа одного дня не должны расходиться.
 
+Лист состоит из секций по площадкам. Как выглядит таблица каждой — знает
+площадка (ReturnsSource.pdf_table); здесь только рамка: заголовок, итоги,
+подписи, предупреждение об усечённом списке.
+
 Шрифт нужен свой: встроенные в PDF шрифты кириллицу не показывают. Берём
 DejaVu (в Debian и Ubuntu это пакет fonts-dejavu-core), при его отсутствии —
 Liberation или FreeFont. Если не нашлось ничего, честно говорим об этом, а не
@@ -12,7 +16,6 @@ Liberation или FreeFont. Если не нашлось ничего, чест�
 """
 from __future__ import annotations
 
-import io
 import os
 from datetime import datetime
 from pathlib import Path
@@ -128,13 +131,13 @@ def barcode_svg(data: str, height: float = 22, module: float = 0.62) -> bytes:
     ).encode()
 
 
-def _cut(value: object, limit: int) -> str:
+def cut(value: object, limit: int) -> str:
     """Длинное название не должно расталкивать колонки на пол-листа."""
     text = str(value or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _mark_cell(row: dict) -> str:
+def mark_cell(row: dict) -> str:
     """Отметка так, чтобы её было видно и на чёрно-белой печати."""
     sign = row.get("mark_sign") or "☐"
     label = row.get("mark_label") or ""
@@ -195,111 +198,20 @@ def _sheet_class():
     return _SHEET_CLASS
 
 
-def _ozon_table(pdf, items: list[dict], *, everywhere: bool) -> None:
-    headings = ["№"]
-    widths = [8.0]
-    if everywhere:
-        headings.append("Кабинет")
-        widths.append(22.0)
-    headings += ["Возврат", "Схема", "Штрихкод", "Товар", "Артикул / SKU", "Кол-во",
-                 "Пункт выдачи", "Отметка", "Комментарий"]
-    widths += [30.0, 12.0, 32.0, 48.0, 24.0, 14.0, 36.0, 20.0, 33.0]
-    # Раскладываем по ширине листа: иначе на A4 таблица уезжает за поля.
-    free = pdf.w - pdf.l_margin - pdf.r_margin
-    scale = free / sum(widths)
-    widths = [width * scale for width in widths]
-
-    pdf.set_font("sheet", "", 7)
-    with pdf.table(col_widths=tuple(widths), first_row_as_headings=True,
-                   line_height=4, padding=1.2, repeat_headings=1) as table:
-        head = table.row()
-        for name in headings:
-            head.cell(name)
-        for index, item in enumerate(items, start=1):
-            row = table.row()
-            row.cell(str(index))
-            if everywhere:
-                row.cell(_cut(item.get("account_title") or "—", 22))
-            barcode = str(item.get("barcode") or "").strip()
-            # Номер штрихкода печатаем рядом с самим кодом: не считался сканером —
-            # в пункте выдачи набьют руками, а не поедут за листом заново.
-            row.cell("\n".join(x for x in (str(item.get("id")), item.get("order_number"), barcode) if x))
-            row.cell(item.get("type") or item.get("scheme") or "—")
-            if barcode:
-                row.cell(img=io.BytesIO(barcode_svg(barcode)), img_fill_width=True)
-            else:
-                row.cell("—")
-            row.cell(_cut(item.get("product_name") or "Без названия", 70))
-            row.cell(f"{item.get('offer_id') or '—'}\n{item.get('sku') or ''}".strip())
-            row.cell(str(item.get("quantity") or ""))
-            row.cell(_cut(
-                " · ".join(x for x in (item.get("place_name"), item.get("place_address")) if x) or "—", 60
-            ))
-            row.cell(_mark_cell(item))
-            row.cell(_cut(item.get("note"), 60))
-
-
-def _avito_table(pdf, orders: list[dict], *, everywhere: bool) -> None:
-    headings = ["№"]
-    widths = [8.0]
-    if everywhere:
-        headings.append("Кабинет")
-        widths.append(22.0)
-    headings += ["Заказ", "Трек возврата", "Товары", "Кол-во", "Куда ехать", "Отметка", "Комментарий"]
-    widths += [30.0, 32.0, 62.0, 14.0, 42.0, 20.0, 33.0]
-    free = pdf.w - pdf.l_margin - pdf.r_margin
-    scale = free / sum(widths)
-    widths = [width * scale for width in widths]
-
-    pdf.set_font("sheet", "", 7)
-    with pdf.table(col_widths=tuple(widths), first_row_as_headings=True,
-                   line_height=4, padding=1.2, repeat_headings=1) as table:
-        head = table.row()
-        for name in headings:
-            head.cell(name)
-        for index, order in enumerate(orders, start=1):
-            row = table.row()
-            row.cell(str(index))
-            if everywhere:
-                row.cell(_cut(order.get("account_title") or "—", 22))
-            tracking = str(order.get("return_tracking") or "").strip()
-            row.cell("\n".join(
-                x for x in (str(order.get("marketplace_id") or order.get("id")),
-                            order.get("buyer_name"), tracking) if x
-            ))
-            if tracking:
-                row.cell(img=io.BytesIO(barcode_svg(tracking)), img_fill_width=True)
-            else:
-                row.cell("—")
-            goods = "\n".join(
-                f"{item.get('quantity')} × {_cut(item.get('title') or 'Без названия', 52)}"
-                for item in (order.get("items") or [])
-            )
-            row.cell(goods or "—")
-            row.cell(str(order.get("items_count") or ""))
-            where = [order.get("service_name") or order.get("service_label"), order.get("terminal_address")]
-            if order.get("terminal_code"):
-                where.append(f"ПВЗ {order['terminal_code']}")
-            row.cell(_cut(" · ".join(x for x in where if x) or "адрес Avito не прислал", 70))
-            row.cell(_mark_cell(order))
-            row.cell(_cut(order.get("note"), 60))
-
-
 def build_sheet(
-    items: list[dict],
-    avito_orders: list[dict],
+    sections: list[dict],
     *,
     user: dict,
     printed_at: datetime,
     everywhere: bool = False,
     account: dict | None = None,
-    scheme: str = "all",
-    place: str = "",
+    subtitle: str = "",
     truncated: bool = False,
     act: dict | None = None,
 ) -> bytes:
     """Собрать лист возвратов. Возвращает готовый PDF байтами.
 
+    sections — секции по площадкам: {label, unit, rows, pieces, pdf_table}.
     act — печатаем акт получения, а не лист к выдаче: те же строки, но уже с
     отметками, и в заголовке видно, за какую поездку этот акт.
     """
@@ -311,19 +223,10 @@ def build_sheet(
             title += " · все кабинеты"
         elif account:
             title += f" · {account['title']}"
-        if scheme != "all":
-            title += f" ({scheme})"
-        if place:
-            title += f" · {place}"
+        if subtitle:
+            title += f" {subtitle}"
 
-    parts = []
-    if items:
-        parts.append(f"Ozon: {len(items)} поз., {sum(int(i.get('quantity') or 0) for i in items)} шт.")
-    if avito_orders:
-        parts.append(
-            f"Avito: {len(avito_orders)} заказ(ов), "
-            f"{sum(int(o.get('items_count') or 0) for o in avito_orders)} шт."
-        )
+    parts = [f"{s['label']}: {len(s['rows'])} {s['unit']}, {s['pieces']} шт." for s in sections if s["rows"]]
     if not parts:
         parts.append("Ничего не готово к выдаче")
     if act:
@@ -342,14 +245,13 @@ def build_sheet(
     pdf.alias_nb_pages()
     pdf.add_page()
 
-    if items:
-        if everywhere:
-            pdf.section("Ozon")
-        _ozon_table(pdf, items, everywhere=everywhere)
-    if avito_orders:
-        pdf.section("Avito")
-        _avito_table(pdf, avito_orders, everywhere=everywhere)
-    if not items and not avito_orders:
+    filled = [s for s in sections if s["rows"]]
+    for index, section in enumerate(filled):
+        # Заголовок секции нужен, когда площадок на листе больше одной или лист общий.
+        if everywhere or len(filled) > 1 or index > 0:
+            pdf.section(section["label"])
+        section["pdf_table"](pdf, section["rows"], everywhere)
+    if not filled:
         pdf.set_font("sheet", "", 10)
         pdf.ln(6)
         pdf.cell(0, 6, "Ни одного возврата, готового к выдаче.", new_x="LMARGIN", new_y="NEXT")

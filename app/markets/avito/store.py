@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS avito_orders (
     mark_at         TEXT,
     mark_by         TEXT,
     act_id          TEXT,
+    -- Возврат пропал из пункта выдачи — значит, его забрали. Своего статуса
+    -- «получен» у Avito нет, и это единственный признак получения: по нему
+    -- возврат попадает в акт, как у Ozon по статусу «Получен». Пишется один
+    -- раз: вторая запись означала бы второй акт на ту же работу.
+    received_at     TEXT,
+    -- Тот же момент местной датой: по ней акты собираются «за указанное число».
+    received_day    TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)

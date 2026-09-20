@@ -1,0 +1,46 @@
+{# Таблица возвратов Ozon на листе печати. Строки приходят как rows —
+   и для листа к выдаче, и для акта: колонки одни и те же. #}
+<table>
+  <thead>
+    <tr>
+      <th class="num">№</th>
+      {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
+      <th style="width:120px">Возврат</th>
+      <th style="width:96px">Схема / штрихкод</th>
+      <th>Товар</th>
+      <th style="width:110px">Артикул / SKU</th>
+      <th class="qty">Кол-во</th>
+      <th style="width:170px">Пункт выдачи</th>
+      <th class="mark">Отметка</th>
+      <th style="width:120px">Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="num">{{ loop.index }}</td>
+      {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
+      <td class="mono">{{ r.id }}<div style="font-size:10px">{{ r.order_number or '' }}</div></td>
+      <td>
+        <div>{{ r.type or r.scheme or '—' }}</div>
+        {% if r.barcode %}
+          <div class="bc" data-barcode="{{ r.barcode }}" data-barcode-height="26" data-barcode-module="0.8"></div>
+          <div class="mono" style="font-size:9px">{{ r.barcode }}</div>
+        {% endif %}
+      </td>
+      <td>
+        {{ r.product_name or 'Без названия' }}
+        {% if r.return_reason %}<div style="font-size:10px;color:#444">{{ r.return_reason }}</div>{% endif %}
+      </td>
+      <td class="mono" style="font-size:10px">{{ r.offer_id or '—' }}<div>{{ r.sku or '' }}</div></td>
+      <td class="qty">{{ r.quantity }}</td>
+      <td style="font-size:10px">
+        {{ r.place_name or '—' }}
+        {% if r.place_address %}<div>{{ r.place_address }}</div>{% endif %}
+      </td>
+      <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
+      <td style="font-size:10px">{{ r.note or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

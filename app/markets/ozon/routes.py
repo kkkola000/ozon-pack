@@ -12,8 +12,7 @@ from ...core import access, db, labels, return_acts, sync
 from ...core.config import settings
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
-from ..base import NavItem
-from . import client as ozon
+from ..base import NavItem, Workspace
 from . import pack as packing
 from . import returns, store
 from .client import OzonError
@@ -31,12 +30,13 @@ def pack_page(request: Request, user: dict = Depends(require_section("pack")),
     counters = _counters(account)
     return templates.TemplateResponse(
         request,
-        "pack.html",
+        "market_pack.html",
         {
             "request": request,
             "user": user,
             "state": state,
             "counters": counters,
+            "workspace": WORKSPACE,
             "account": account,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "pack",
@@ -243,7 +243,7 @@ def orders_page(request: Request, tab: str = "packaging", q: str = "", user: dic
     }
     return templates.TemplateResponse(
         request,
-        "orders.html",
+        "ozon/orders.html",
         {
             "request": request,
             "user": user,
@@ -301,6 +301,23 @@ def api_sync(request: Request, user: dict = Depends(require_section("orders")),
 
 
 # ------------------------------------------------------------------ для реестра площадок
+# Рабочее место сборщика: страница одна на все площадки, слова — свои.
+WORKSPACE = Workspace(
+    placeholder="Сканируйте штрихкод товара или стикер отправления…",
+    banner="Отсканируйте штрихкод товара — система сама найдёт отправление и отправит стикер на печать.",
+    sync_label="Обновить из Ozon",
+    gate_title="Скачайте стикеры",
+    download="Скачать стикеры",
+    gate_template="ozon/pack_gate.html",
+    help_template="ozon/pack_help.html",
+    counters=(
+        ("c-packaging", "awaiting_packaging", "Ожидает сборки", ""),
+        ("c-deliver", "awaiting_deliver", "Ожидает отгрузки", ""),
+        ("c-packed", "packed_today", "Собрано сегодня", "ok"),
+        ("c-returns", "returns_ready", "Возвраты к выдаче", ""),
+    ),
+)
+
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0
@@ -319,6 +336,7 @@ def nav_items(account: dict) -> list[NavItem]:
                     "AND local_state = 'new'", aid),
              "accent", "Ожидает отгрузки"),
         )),
+        # Раздел возвратов один на все площадки — адрес общий, счётчики свои.
         NavItem("/returns", "Возвраты", "returns", "returns", (
             (_count(f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}",
                     (account["id"], *ready_params)),
@@ -338,43 +356,6 @@ def settings_stats(account_id: int) -> dict[str, int]:
         "Штрихкодов": _count("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid),
         "Возвратов": _count("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid),
     }
-
-
-@router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_market("ozon"))):
-    """Штрихкод Ozon на выдачу возвратов (FBS)."""
-    try:
-        pdf = ozon.get_client(account).giveout_pdf()
-    except OzonError as exc:
-        raise HTTPException(status_code=502, detail=f"Ozon не отдал документ выдачи: {exc.message}") from exc
-    db.log_event(
-        "returns_giveout", account_id=account["id"], user=user, message="Запрошен штрихкод выдачи возвратов"
-    )
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="giveout.pdf"', "Cache-Control": "no-store"},
-    )
-
-
-@router.post("/api/returns/sync")
-def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("returns")),
-                     account: dict = Depends(require_market("ozon"))):
-    check_csrf(request)
-    full = bool(payload.get("full"))
-    try:
-        result = returns.sync_returns(account, full=full)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {"status": "ok", "message": _sync_message(result), "result": result}
-
-
-def _sync_message(result: dict) -> str:
-    """Что сделало обновление. Акт панель не составляет — это решение сборщика."""
-    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
-    if result.get("returns_gone"):
-        parts.append(f"ушло из выдачи: {result['returns_gone']}")
-    return ". ".join(parts)
 
 
 @router.post("/api/postings/{posting_number}/reset")

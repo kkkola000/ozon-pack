@@ -1,13 +1,16 @@
 {% extends "base.html" %}
-{% block title %}Возвраты FBO/FBS · Ozon Pack{% endblock %}
+{% block title %}Возвраты · {{ account.title }}{% endblock %}
 
+{# Раздел один на все площадки. Рамка страницы — здесь: плитки, вкладки,
+   кнопки печати, акты. Что внутри списка «К выдаче» — знает площадка: её
+   фильтры и таблица подключаются ниже как list_template. #}
 {% block content %}
 <div class="panel">
   <div class="row between no-print">
     <div class="row" style="gap:28px">
-      <div class="stat"><div class="muted small">Готовы к выдаче</div><div class="value">{{ totals.ready }}</div></div>
-      <div class="stat"><div class="muted small">FBO</div><div class="value">{{ totals.fbo }}</div></div>
-      <div class="stat"><div class="muted small">FBS</div><div class="value">{{ totals.fbs }}</div></div>
+      {% for label, value in stats %}
+      <div class="stat"><div class="muted small">{{ label }}</div><div class="value">{{ value }}</div></div>
+      {% endfor %}
     </div>
     <div class="row">
       <span class="small muted">{% if sync.last_ok %}Обновлено: {{ sync.last_ok | local_dt }}{% endif %}</span>
@@ -22,7 +25,7 @@
   <div class="row no-print" style="margin:16px 0; gap:8px">
     <div class="tabs" style="margin:0">
       <a href="/returns" class="{{ 'active' if tab == 'ready' }}">
-        К выдаче <span class="badge">{{ totals.ready }}</span>
+        К выдаче <span class="badge">{{ ready_total }}</span>
       </a>
       <a href="/returns?tab=acts" class="{{ 'active' if tab == 'acts' }}">
         Ждёт подтверждения
@@ -33,105 +36,33 @@
        кнопками, которую перестают читать, — поэтому под знак. #}
     <span class="hint-wrap">
       <button type="button" class="hint" aria-label="Какие возвраты сюда попадают">?</button>
-      <span class="hint-body">
-        Загружаются возвраты в статусе <b>{{ wanted_labels | join(', ') }}</b> — то, что можно
-        забрать в пункте выдачи. Забранный возврат Ozon переводит дальше сам, и он пропадает
-        из списка при ближайшем обновлении — отмечать вручную ничего не нужно.
-        {% if hidden_statuses %}
-          <br><br>При последней синхронизации Ozon вернул и другие:
-          {% for label, count in hidden_statuses %}{{ label }} — {{ count }}{% if not loop.last %}, {% endif %}{% endfor %}
-          — они скрыты и в панель не попадают.
-        {% endif %}
-        {% if is_manager(user) %}<br><br><a href="/settings">Изменить статусы</a>{% endif %}
-      </span>
+      <span class="hint-body">{% include hint_template %}</span>
     </span>
   </div>
 
   {% if tab == 'acts' %}
     {% include "_return_acts.html" %}
   {% else %}
-  <form class="row no-print" method="get" action="/returns" style="margin-top:14px">
-    <select name="scheme">
-      <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
-      <option value="FBO" {{ 'selected' if scheme == 'FBO' }}>Только FBO</option>
-      <option value="FBS" {{ 'selected' if scheme == 'FBS' }}>Только FBS</option>
-    </select>
-    <select name="place">
-      <option value="">Все пункты выдачи</option>
-      {% for name in places %}<option value="{{ name }}" {{ 'selected' if place == name }}>{{ name }}</option>{% endfor %}
-    </select>
-    <input type="search" name="q" value="{{ q }}" placeholder="Товар, артикул, заказ, штрихкод…" style="width:240px">
-    <button class="btn" type="submit">Показать</button>
-    {% if q or place or scheme != 'all' %}<a class="btn" href="/returns">Сбросить</a>{% endif %}
-  </form>
-
+  {# Фильтры списка у каждой площадки свои, а печать — общая: лист и кнопки
+     одни и те же, меняются только строки. Поэтому кнопки здесь, а не в
+     куске площадки; фильтры уезжают в ссылку как есть. #}
   <div class="row no-print" style="margin-top:12px">
     <span class="grow"></span>
     <a class="btn" href="/returns/print?scope=all" target="_blank"
-       title="Один лист со всеми возвратами, готовыми к выдаче: кабинеты Ozon и Avito, без фильтров">
+       title="Один лист со всеми возвратами, готовыми к выдаче: все кабинеты и площадки, без фильтров">
       Печать по всем кабинетам ({{ all_total }})
     </a>
-    <a class="btn" href="/returns/sheet.pdf?scheme={{ scheme }}&place={{ place }}&q={{ q }}"
+    <a class="btn" href="/returns/sheet.pdf{% if query %}?{{ query | urlencode }}{% endif %}"
        title="Тот же лист готовым файлом: сохранить, переслать, напечатать где угодно">
       Скачать PDF
     </a>
-    <a class="btn primary" id="btn-print"
-       href="/returns/print?scheme={{ scheme }}&place={{ place }}&q={{ q }}" target="_blank">
+    <a class="btn primary" id="btn-print" target="_blank"
+       href="/returns/print{% if query %}?{{ query | urlencode }}{% endif %}">
       Печать листа ({{ items | length }})
     </a>
   </div>
 
-  {% if items %}
-  <table style="margin-top:10px">
-    <thead>
-      <tr>
-        <th style="width:130px">Возврат</th>
-        <th>Товар</th>
-        <th style="width:130px">Артикул / SKU</th>
-        <th style="width:70px">Кол-во</th>
-        <th style="width:200px">Где лежит</th>
-        <th style="width:170px">Статус</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for r in items %}
-      <tr>
-        <td>
-          <div class="mono">{{ r.id }}</div>
-          <span class="tag {{ 'fbo' if (r.type or r.scheme) == 'FBO' else 'fbs' }}">{{ r.type or r.scheme or '—' }}</span>
-          {% if r.barcode %}<div class="muted small mono">{{ r.barcode }}</div>{% endif %}
-        </td>
-        <td>
-          <div>{{ r.product_name or 'Без названия' }}</div>
-          <div class="muted small">
-            {% if r.return_reason %}Причина: {{ r.return_reason }}{% endif %}
-            {% if r.order_number %} · Заказ {{ r.order_number }}{% endif %}
-          </div>
-        </td>
-        <td class="small mono">{{ r.offer_id or '—' }}<div class="muted">{{ r.sku or '' }}</div></td>
-        <td style="font-weight:700">{{ r.quantity }}</td>
-        <td class="small">
-          <div>{{ r.place_name or '—' }}</div>
-          <div class="muted">{{ r.place_address or '' }}</div>
-          {# Когда возврат стал готов к выдаче. Только для сведения: по нему
-             видно, что лежит давно, а что привезли сегодня. Список по нему не
-             строится — состав раздела решают отмеченные статусы. #}
-          {% if r.arrived_local %}<div class="muted">Готов к выдаче с {{ r.arrived_local }}</div>{% endif %}
-        </td>
-        {# Отметки тут нет намеренно: возврат ещё лежит в пункте выдачи, решать
-           по нему нечего — его даже в руках не держали. Отмечают привезённое,
-           во вкладке «Ждёт подтверждения». #}
-        <td class="small">
-          <div>{{ r.status_label or '—' }}</div>
-          {% if r.storage_sum %}<div class="muted">Хранение: {{ r.storage_sum }} ₽</div>{% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-    <div class="empty">Возвратов не найдено.</div>
-  {% endif %}
+  {% include list_template %}
   {% endif %}
 </div>
 {% include "_return_mark.html" %}

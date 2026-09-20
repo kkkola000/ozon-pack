@@ -263,9 +263,11 @@ def test_avito_return_can_be_marked(client, avito_cabinet):
         (avito_cabinet["id"], order["id"]),
     )
     assert row["mark"] == "ok" and row["note"] == "принял целым"
+    assert response.json()["mark_label"] == "Принят"
 
-    page = client.get("/avito/returns")
-    assert "принял целым" in page.text
+    # На вкладке «К выдаче» отметок нет ни у одной площадки: возврат ещё лежит
+    # в пункте выдачи, в руках его не держали. Отмечают привезённое — в акте.
+    assert "принял целым" not in client.get("/returns").text
 
 
 def test_unknown_marketplace_is_refused(client):

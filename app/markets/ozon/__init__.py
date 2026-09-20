@@ -17,7 +17,8 @@ MARKET = Market(
     key_label="Api-Key",
     hint="Личный кабинет Ozon → Настройки → Seller API",
     home="/pack",
-    prefixes=("/pack", "/orders", "/returns", "/api/"),
+    # «/returns» тут нет намеренно: раздел возвратов общий, он в списке ядра.
+    prefixes=("/pack", "/orders", "/api/"),
     tables=("postings", "posting_items", "products", "product_barcodes", "returns"),
     router=routes.router,
     get_client=client.get_client,
@@ -39,6 +40,11 @@ MARKET = Market(
         save=store.upsert_products,
         key=store.product_key,
     ),
+    # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.
+    returns=returns.SOURCE,
+    workspace=routes.WORKSPACE,
+    settings_rows="ozon/settings_rows.html",
+    settings_panel="ozon/settings_panel.html",
     settings_context=lambda _account: {
         "returns_statuses": returns.get_returns_statuses(),
         "returns_choices": returns.RETURN_STATUS_CHOICES,

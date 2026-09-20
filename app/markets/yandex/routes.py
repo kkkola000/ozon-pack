@@ -18,7 +18,7 @@ from ...core import access, db, labels, sync
 from . import client as yandex, pack as yandex_pack
 from ...core.config import settings
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
-from ..base import NavItem
+from ..base import NavItem, Workspace
 from .client import YandexError
 from ...core import store as core_store
 from . import store
@@ -76,7 +76,7 @@ def yandex_page(request: Request, tab: str = "pack", q: str = "", user: dict = D
         tab = "pack"
     return templates.TemplateResponse(
         request,
-        "yandex.html",
+        "yandex/orders.html",
         {
             "request": request,
             "user": user,
@@ -246,13 +246,14 @@ def yandex_pack_page(request: Request, user: dict = Depends(require_section("pac
                      account: dict = Depends(require_market("yandex"))):
     return templates.TemplateResponse(
         request,
-        "yandex_pack.html",
+        "market_pack.html",
         {
             "request": request,
             "user": user,
             "account": account,
             "state": yandex_pack.load_state(account, user),
             "counters": _pack_counters(account),
+            "workspace": WORKSPACE,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "yandex_pack",
         },
@@ -309,6 +310,22 @@ def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
 
 
 # ------------------------------------------------------------------ для реестра площадок
+# Рабочее место сборщика: страница одна на все площадки, слова — свои.
+WORKSPACE = Workspace(
+    placeholder="Сканируйте штрихкод товара или ярлык заказа…",
+    banner="Отсканируйте штрихкод товара — система сама найдёт заказ Маркета и отправит ярлык на печать.",
+    sync_label="Обновить из Маркета",
+    gate_title="Скачайте ярлыки",
+    download="Скачать ярлыки",
+    gate_template="yandex/pack_gate.html",
+    help_template="yandex/pack_help.html",
+    counters=(
+        ("c-packaging", "awaiting_packaging", "Ожидает сборки", ""),
+        ("c-deliver", "awaiting_deliver", "Ожидает отгрузки", ""),
+        ("c-packed", "packed_today", "Собрано сегодня", "ok"),
+    ),
+)
+
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0

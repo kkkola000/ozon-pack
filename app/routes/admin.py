@@ -60,6 +60,8 @@ EVENT_LABELS = {
     "avito_label_print": "Печать этикетки Avito",
     "avito_labels_archive": "Выгрузка этикеток Avito",
     "avito_order_reset": "Сброшена отметка сборки Avito",
+    # Своего листа возвратов у Avito больше нет — лист общий. Подпись оставлена
+    # для записей в журнале, сделанных до объединения разделов.
     "avito_returns_print": "Печать листа возвратов Avito",
     "avito_error": "Ошибка Avito",
     "yandex_pack_start": "Начата сборка (Маркет)",
@@ -160,7 +162,10 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "can_manage_users": access.is_manager(user),
             "is_owner": access.is_owner(user),
             # Что ещё показать в настройках — знает площадка (у Ozon: статусы возвратов).
+            # Её значения и её же куски страницы; у кого их нет, у того раздел пуст.
             **(market.settings_context(account) if market and market.settings_context else {}),
+            "settings_rows": market.settings_rows if market else None,
+            "settings_panel": market.settings_panel if market else None,
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",

@@ -14,9 +14,10 @@ import sqlite3
 from ...core import db, return_acts
 from ...core import sync as core_sync
 from ...core.config import settings
-from ...core.return_acts import (BY_DAY, NO_SHEET, _claim, _day_label, _drop_empty_spares,
-                                 _new_id, _next_seq, _returns_word, detail)
+from ...core.return_acts import NO_SHEET
+from ...core.returns_pdf import barcode_svg, cut, mark_cell
 from ...core.store import _DAY, _dt, _moment, _raw_json, _text, _with_mark, local_day, local_time
+from ..base import ReturnsSource
 from . import client as ozon
 from .client import OzonError, iso_moment
 
@@ -696,53 +697,239 @@ def received_returns(account_id: int, day: str) -> list[str]:
     ]
 
 
-def from_received(account_id: int, day: str, *, user: dict | None = None) -> dict:
-    """Свести в акт полученные возвраты за указанное число.
+def claim(conn, act_id: str, account_id: int, return_ids: list[str]) -> int:
+    """Забрать возвраты в акт. Возвращает, сколько реально переехало.
 
-    Каждый вызов — отдельный акт: за возвратами ездят несколько раз в день, и
-    каждая поездка подписывается отдельно. В акт попадает только то, что ещё ни
-    в один акт не вошло, поэтому нажать кнопку дважды подряд не страшно —
-    второй акт просто не из чего собрать.
-
-    Возвращает {'status', 'message', 'act_id', 'added'}.
+    Берём свободные и те, что лежат в неподтверждённом акте «без статуса»:
+    факт получения от площадки точнее нашей догадки о пропаже. Возврат из
+    любого другого акта не трогаем — это и есть защита от второго акта на ту
+    же работу.
     """
-    ids = received_returns(account_id, day)
-    if not ids:
-        return {
-            "status": "warning",
-            "message": f"За {_day_label(day)} полученных возвратов без акта нет — "
-                       "либо их ещё не забрали, либо они уже в акте.",
-            "act_id": None,
-            "added": 0,
-        }
-
-    act_id = _new_id()
-    now = db.now_iso()
-    with db.write() as conn:
-        seq = _next_seq(conn, account_id, day)
-        conn.execute(
-            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day, day_seq) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (act_id, now, (user or {}).get("login"), BY_DAY, account_id, day, seq),
-        )
-        added = _claim(conn, act_id, account_id, ids)
-        if not added:
-            # Возвраты разобрали между выборкой и записью: акт за то же число
-            # составили в соседней вкладке. Пустой акт оставлять нельзя — его
-            # потом не удалить.
-            conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
-            return {"status": "warning", "act_id": None, "added": 0,
-                    "message": "Эти возвраты только что попали в другой акт"}
-        _drop_empty_spares(conn)
-
-    act = detail(act_id)
-    db.log_event(
-        "return_act_received", account_id=account_id, user=user,
-        message=f"{act['title']}: {_returns_word(added)}",
+    placeholders = ",".join("?" for _ in return_ids)
+    cursor = conn.execute(
+        f"""
+        UPDATE returns SET act_id = ?
+        WHERE account_id = ? AND id IN ({placeholders})
+          AND (act_id IS NULL
+               OR act_id IN (SELECT id FROM return_acts
+                             WHERE kind = ? AND confirmed_at IS NULL))
+        """,
+        [act_id, account_id] + list(return_ids) + [NO_SHEET],
     )
-    return {
-        "status": "ok",
-        "act_id": act_id,
-        "added": added,
-        "message": f"{act['title']}: {_returns_word(added)}",
+    return cursor.rowcount or 0
+
+
+def from_received(account_id: int, day: str, *, user: dict | None = None) -> dict:
+    """Свести в акт полученные возвраты Ozon за число. Сама сборка — в ядре."""
+    return return_acts.from_received(SOURCE, account_id, day, user=user)
+
+
+# ------------------------------------------------------- раздел «Возвраты»
+def ready(account_ids: list[int], params: dict | None = None, limit: int = 1000) -> list[dict]:
+    """Возвраты, готовые к выдаче, по одному кабинету или сразу по нескольким.
+
+    В панели только то, что лежит в пункте выдачи: забранное Ozon переводит
+    дальше сам, и синхронизация убирает такие записи.
+    """
+    if not account_ids:
+        return []
+    params = params or {}
+    scheme = str(params.get("scheme") or "all")
+    place = str(params.get("place") or "")
+    q = str(params.get("q") or "")
+
+    placeholders = ",".join("?" for _ in account_ids)
+    ready_sql, ready_params = pickup_sql("r.status_sys")
+    conditions = [f"r.account_id IN ({placeholders})", ready_sql]
+    args: list = list(account_ids) + list(ready_params)
+    if scheme in ("FBO", "FBS"):
+        conditions.append("(r.type = ? OR r.scheme = ?)")
+        args += [scheme, scheme]
+    if place:
+        conditions.append("r.place_name = ?")
+        args.append(place)
+    if q:
+        like = f"%{q.strip()}%"
+        conditions.append(
+            "(r.product_name LIKE ? OR r.offer_id LIKE ? OR r.sku LIKE ? OR r.order_number LIKE ?"
+            " OR r.posting_number LIKE ? OR r.barcode LIKE ? OR r.id LIKE ?)"
+        )
+        args += [like] * 7
+    where = " WHERE " + " AND ".join(conditions)
+    # Пункт выдачи впереди: за возвратами едут в конкретный ПВЗ, и на листе по
+    # нескольким кабинетам строки одного пункта должны идти подряд.
+    rows = db.query(
+        f"SELECT r.*, a.title AS account_title FROM returns r "
+        f"LEFT JOIN accounts a ON a.id = r.account_id{where} "
+        f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
+        args + [limit],
+    )
+    return [return_view(row) for row in rows]
+
+
+def count_ready(account_ids: list[int]) -> int:
+    if not account_ids:
+        return 0
+    placeholders = ",".join("?" for _ in account_ids)
+    ready_sql, ready_params = pickup_sql()
+    return db.query_one(
+        f"SELECT COUNT(*) AS c FROM returns WHERE {ready_sql} AND account_id IN ({placeholders})",
+        list(ready_params) + list(account_ids),
+    )["c"]
+
+
+def places(account_id: int) -> list[str]:
+    """Пункты выдачи, в которых что-то лежит, — для фильтра раздела."""
+    ready_sql, ready_params = pickup_sql()
+    rows = db.query(
+        f"SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND {ready_sql} "
+        "AND place_name IS NOT NULL ORDER BY place_name",
+        [account_id] + list(ready_params),
+    )
+    return [row["place_name"] for row in rows]
+
+
+def page(account: dict, params: dict) -> dict:
+    """Контекст вкладки «К выдаче» для кабинета Ozon."""
+    scheme = str(params.get("scheme") or "all")
+    place = str(params.get("place") or "")
+    q = str(params.get("q") or "")
+    items = ready([account["id"]], params={"scheme": scheme, "place": place, "q": q})
+
+    ready_sql, ready_params = pickup_sql()
+    args = [account["id"]] + list(ready_params)
+    totals = {
+        "ready": db.query_one(
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}", args
+        )["c"],
+        "fbo": db.query_one(
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
+            "AND (type = 'FBO' OR scheme = 'FBO')", args
+        )["c"],
+        "fbs": db.query_one(
+            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
+            "AND (type = 'FBS' OR scheme = 'FBS')", args
+        )["c"],
     }
+    wanted = get_returns_statuses()
+    try:
+        histogram = json.loads(db.kv_get("returns_last_statuses") or "{}")
+    except ValueError:
+        histogram = {}
+    hidden = {code: count for code, count in histogram.items() if code not in set(wanted)}
+
+    # Заголовок листа печати: по нему на бумаге видно, с каким фильтром его собрали.
+    subtitle = ""
+    if scheme != "all":
+        subtitle += f"({scheme})"
+    if place:
+        subtitle += f" · {place}"
+    return {
+        "items": items,
+        "stats": [("Готовы к выдаче", totals["ready"]), ("FBO", totals["fbo"]), ("FBS", totals["fbs"])],
+        "totals": totals,
+        "wanted_labels": [status_label(code) for code in wanted],
+        "hidden_statuses": [(status_label(code), count) for code, count in sorted(hidden.items())],
+        "places": places(account["id"]),
+        "scheme": scheme,
+        "place": place,
+        "q": q,
+        "sheet_subtitle": subtitle.strip(),
+    }
+
+
+def act_rows(act_id: str) -> list[dict]:
+    rows = db.query(
+        "SELECT r.*, a.title AS account_title FROM returns r "
+        "LEFT JOIN accounts a ON a.id = r.account_id WHERE r.act_id = ? "
+        "ORDER BY a.title, r.product_name, r.id",
+        (act_id,),
+    )
+    return [return_view(row) for row in rows]
+
+
+def quantity(row: dict) -> int:
+    return int(row.get("quantity") or 0)
+
+
+def sync(account: dict, full: bool = False) -> dict:
+    """Обновить возвраты кабинета и сказать словами, что изменилось."""
+    result = sync_returns(account, full=full)
+    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
+    if result.get("returns_gone"):
+        parts.append(f"ушло из выдачи: {result['returns_gone']}")
+    result["message"] = ". ".join(parts)
+    return result
+
+
+def giveout(account: dict) -> bytes:
+    """Штрихкод Ozon на выдачу возвратов (FBS) — документ площадки."""
+    return ozon.get_client(account).giveout_pdf()
+
+
+def pdf_table(pdf, items: list[dict], everywhere: bool) -> None:
+    """Таблица возвратов Ozon на листе PDF — те же колонки, что в HTML-листе."""
+    import io
+
+    headings = ["№"]
+    widths = [8.0]
+    if everywhere:
+        headings.append("Кабинет")
+        widths.append(22.0)
+    headings += ["Возврат", "Схема", "Штрихкод", "Товар", "Артикул / SKU", "Кол-во",
+                 "Пункт выдачи", "Отметка", "Комментарий"]
+    widths += [30.0, 12.0, 32.0, 48.0, 24.0, 14.0, 36.0, 20.0, 33.0]
+    # Раскладываем по ширине листа: иначе на A4 таблица уезжает за поля.
+    free = pdf.w - pdf.l_margin - pdf.r_margin
+    scale = free / sum(widths)
+    widths = [width * scale for width in widths]
+
+    pdf.set_font("sheet", "", 7)
+    with pdf.table(col_widths=tuple(widths), first_row_as_headings=True,
+                   line_height=4, padding=1.2, repeat_headings=1) as table:
+        head = table.row()
+        for name in headings:
+            head.cell(name)
+        for index, item in enumerate(items, start=1):
+            row = table.row()
+            row.cell(str(index))
+            if everywhere:
+                row.cell(cut(item.get("account_title") or "—", 22))
+            barcode = str(item.get("barcode") or "").strip()
+            # Номер штрихкода печатаем рядом с самим кодом: не считался сканером —
+            # в пункте выдачи набьют руками, а не поедут за листом заново.
+            row.cell("\n".join(x for x in (str(item.get("id")), item.get("order_number"), barcode) if x))
+            row.cell(item.get("type") or item.get("scheme") or "—")
+            if barcode:
+                row.cell(img=io.BytesIO(barcode_svg(barcode)), img_fill_width=True)
+            else:
+                row.cell("—")
+            row.cell(cut(item.get("product_name") or "Без названия", 70))
+            row.cell(f"{item.get('offer_id') or '—'}\n{item.get('sku') or ''}".strip())
+            row.cell(str(item.get("quantity") or ""))
+            row.cell(cut(
+                " · ".join(x for x in (item.get("place_name"), item.get("place_address")) if x) or "—", 60
+            ))
+            row.cell(mark_cell(item))
+            row.cell(cut(item.get("note"), 60))
+
+
+SOURCE = ReturnsSource(
+    table="returns",
+    label="Ozon",
+    unit="поз.",
+    ready=ready,
+    count_ready=count_ready,
+    page=page,
+    act_rows=act_rows,
+    quantity=quantity,
+    list_template="ozon/returns_list.html",
+    sheet_template="ozon/returns_sheet.html",
+    act_template="ozon/returns_act_rows.html",
+    hint_template="ozon/returns_hint.html",
+    pdf_table=pdf_table,
+    sync=sync,
+    received=received_returns,
+    claim=claim,
+    giveout=giveout,
+)

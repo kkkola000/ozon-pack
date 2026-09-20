@@ -559,8 +559,12 @@ def test_all_cabinets_sheet_ignores_current_cabinet_filters(client, many_cabinet
         assert str(return_id) in page.text, "фильтр обрезал лист по всем кабинетам"
 
 
-def test_all_cabinets_sheet_reachable_from_avito_cabinet(client, many_cabinets):
-    """Из кабинета Avito обычный /returns закрыт, а общий лист должен открываться."""
+def test_sheet_works_from_avito_cabinet(client, many_cabinets):
+    """Раздел возвратов один: из кабинета Avito открываются оба листа.
+
+    Обычный — по текущему кабинету, общий — сразу по всем. Раньше из Avito
+    первый отвечал отказом: лист умел только Ozon.
+    """
     csrf = login(client)
     switched = client.post(
         "/api/account/switch",
@@ -569,7 +573,9 @@ def test_all_cabinets_sheet_reachable_from_avito_cabinet(client, many_cabinets):
     )
     assert switched.status_code == 200, switched.text
 
-    assert client.get("/returns/print").status_code == 409, "раздел Ozon должен остаться закрыт"
+    own = client.get("/returns/print")
+    assert own.status_code == 200
+    assert "Кабинет Avito" in own.text
     assert client.get("/returns/print?scope=all").status_code == 200
 
 
@@ -586,11 +592,8 @@ def test_all_cabinets_sheet_warns_when_it_does_not_fit(client, many_cabinets, mo
     from app.routes import returns as returns_routes
 
     login(client)
-    original = returns_routes._filter_returns
-    monkeypatch.setattr(
-        returns_routes, "_filter_returns",
-        lambda ids, *a, **kw: original(ids, *a, **{**kw, "limit": 3}),
-    )
+    original = returns_routes._sections_everywhere
+    monkeypatch.setattr(returns_routes, "_sections_everywhere", lambda limit=3: original(limit))
     page = client.get("/returns/print?scope=all")
     assert page.status_code == 200
     assert "поместилась только часть возвратов" in page.text

@@ -75,6 +75,14 @@ class Utf8JSONResponse(JSONResponse):
 
 app = FastAPI(title="Ozon Pack", docs_url=None, redoc_url=None, lifespan=lifespan,
               default_response_class=Utf8JSONResponse)
+# Свои файлы площадки — под её кодом: /static/ozon/pack.js лежит в
+# app/markets/ozon/static/pack.js. Подключаем раньше общего «/static», иначе
+# он перехватил бы эти адреса на себя: совпадения ищутся по порядку.
+for _market in registry.all_markets():
+    _own_static = BASE_DIR / "app" / "markets" / _market.code / "static"
+    if _own_static.is_dir():
+        app.mount(f"/static/{_market.code}", StaticFiles(directory=str(_own_static)),
+                  name=f"static_{_market.code}")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 
 

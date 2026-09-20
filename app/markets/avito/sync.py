@@ -9,7 +9,7 @@ from ...core import db
 from ...core import sync as core_sync
 from ...core.config import settings
 from . import client as avito
-from . import store
+from . import returns, store
 from .client import AvitoError
 
 log = logging.getLogger("avito.sync")
@@ -76,26 +76,48 @@ def sync_avito(account: dict | None = None) -> dict:
                 saved += 1
     db.kv_set(f"avito_returns_statuses:{account_id}", json.dumps(returns_seen, ensure_ascii=False))
 
-    # Заказ ушёл из рабочих статусов — Avito его больше не отдаёт, убираем и мы.
-    stale = [
-        row["id"]
-        for row in db.query("SELECT id FROM avito_orders WHERE account_id = ?", (account_id,))
+    # Заказ ушёл из рабочих статусов — Avito его больше не отдаёт.
+    #
+    # Возврат при этом не пропажа, а факт: пропал из пункта выдачи — значит,
+    # его забрали. Своего статуса «получен» у Avito нет, и это единственный
+    # признак получения. Такую строку не удаляем, а помечаем полученной: из
+    # полученных за день составляется акт, как у Ozon по статусу «Получен».
+    # Раньше она просто исчезала, и акта по возвратам Avito не выходило вовсе.
+    gone = [
+        dict(row)
+        for row in db.query(
+            "SELECT id, status, received_at, act_id FROM avito_orders WHERE account_id = ?", (account_id,)
+        )
         if row["id"] not in seen
     ]
-    if stale:
-        placeholders = ",".join("?" for _ in stale)
+    received_now = [
+        row["id"] for row in gone
+        if row["status"] == avito.STATUS_ON_RETURN and not row["received_at"]
+    ]
+    # Полученный возврат и дальше держим в базе: по нему ещё нужна отметка, и
+    # он лежит в акте. Удаляем только то, к работе отношения не имеющее.
+    stale = [
+        row["id"] for row in gone
+        if row["id"] not in set(received_now) and not row["received_at"] and not row["act_id"]
+    ]
+    received_count = 0
+    if received_now or stale:
         with db.write() as conn:
-            conn.execute(
-                f"DELETE FROM avito_order_items WHERE account_id = ? AND order_id IN ({placeholders})",
-                [account_id] + stale,
-            )
-            conn.execute(
-                f"DELETE FROM avito_orders WHERE account_id = ? AND id IN ({placeholders})",
-                [account_id] + stale,
-            )
+            if received_now:
+                received_count = returns.mark_received(conn, account_id, received_now)
+            if stale:
+                placeholders = ",".join("?" for _ in stale)
+                conn.execute(
+                    f"DELETE FROM avito_order_items WHERE account_id = ? AND order_id IN ({placeholders})",
+                    [account_id] + stale,
+                )
+                conn.execute(
+                    f"DELETE FROM avito_orders WHERE account_id = ? AND id IN ({placeholders})",
+                    [account_id] + stale,
+                )
     result = {"avito": saved}
     ready = db.query_one(
-        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
+        "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ? AND received_at IS NULL",
         (account_id, avito.STATUS_ON_RETURN),
     )["c"]
     if ready:
@@ -103,6 +125,8 @@ def sync_avito(account: dict | None = None) -> dict:
     skipped = sum(count for code, count in returns_seen.items() if not avito.is_ready_for_pickup(code))
     if skipped:
         result["avito_returns_skipped"] = skipped
+    if received_count:
+        result["avito_received"] = received_count
     if stale:
         result["avito_gone"] = len(stale)
     return result
