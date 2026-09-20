@@ -10,7 +10,8 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, db, labels, store, sync, yandex
+from app.core import accounts, db, labels, store, sync
+from app.markets.yandex import client as yandex
 from app.main import app
 
 

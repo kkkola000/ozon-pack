@@ -1,6 +1,6 @@
 """Разбор ответов Ozon и вычисляемые поля."""
-from app import db, store
-from app.config import settings
+from app.core import db, store
+from app.core.config import settings
 
 
 def test_upsert_posting_keeps_local_state(account, sample_data):
@@ -71,7 +71,7 @@ def test_returns_loaded_only_in_wanted_statuses(sample_data):
 
 def test_return_leaving_pickup_point_is_dropped(sample_data):
     """Возврат забрали — Ozon его больше не отдаёт, значит из выдачи он уходит."""
-    from app import sync
+    from app.core import sync
 
     client = sample_data
     target = client._returns[0]
@@ -94,7 +94,7 @@ def test_return_moving_to_seller_leaves_the_pickup_list(sample_data):
     навсегда оставался прежний «В пункте выдачи». Строка висела в разделе,
     сколько ни жми «Обновить», — сборщик ехал за тем, чего в пункте нет.
     """
-    from app import options, sync
+    from app.core import options, sync
 
     client = sample_data
     target = client._returns[0]
@@ -118,7 +118,7 @@ def test_return_moving_to_seller_leaves_the_pickup_list(sample_data):
 
 def test_a_marked_return_keeps_its_row_when_it_leaves_the_pickup(sample_data):
     """Отметку сборщика не стираем вместе со строкой — только снимаем статус."""
-    from app import options, sync
+    from app.core import options, sync
 
     client = sample_data
     target = client._returns[0]
@@ -143,8 +143,8 @@ def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
     вычистил бы всё, до чего не дочитали. Поэтому пересборка идёт только после
     полного обхода — этот тест её и сторожит.
     """
-    from app import options, sync
-    from app.ozon import OzonError
+    from app.core import options, sync
+    from app.markets.ozon.client import OzonError
 
     where, params = options.pickup_sql()
     count = lambda: db.query_one(f"SELECT COUNT(*) c FROM returns WHERE {where}", params)["c"]
@@ -168,7 +168,7 @@ def test_products_have_barcodes(sample_data):
 
 def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
     """Если Ozon вернёт всё подряд, лишнее не должно попасть в список выдачи."""
-    from app import sync
+    from app.core import sync
 
     client = sample_data
     original = client.returns_list
@@ -192,7 +192,7 @@ def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
 
 def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):
     """Записи, оставшиеся от прежних настроек, удаляются при синхронизации."""
-    from app import sync
+    from app.core import sync
 
     db.execute(
         "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity, is_ready,"
@@ -206,7 +206,7 @@ def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):
 
 def test_statuses_can_be_changed_from_panel(sample_data):
     """Список статусов задаётся в интерфейсе и переопределяет .env."""
-    from app import options, sync
+    from app.core import options, sync
 
     options.set_returns_statuses(["ArrivedAtReturnPlace", "MovingToSeller"])
     assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
@@ -219,8 +219,8 @@ def test_statuses_can_be_changed_from_panel(sample_data):
 def test_legacy_env_value_is_upgraded(monkeypatch):
     """Старое значение из .env, записанное прежним установщиком, не должно
     возвращать в список выдачи возвраты, которые нельзя забрать."""
-    from app import options
-    from app.config import settings
+    from app.core import options
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "returns_ready_statuses", ["ArrivedAtReturnPlace", "WaitingShipment"])
     assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
@@ -298,7 +298,7 @@ def test_arrival_date_does_not_decide_the_section(sample_data, account):
     Состав раздела решают отмеченные в настройках статусы. Дата готовности —
     только для сведения: ставим её старее некуда и убеждаемся, что список тот же.
     """
-    from app import options
+    from app.core import options
 
     before = [row["id"] for row in db.query(
         "SELECT id FROM returns WHERE account_id = ? AND is_ready = 1 ORDER BY id", (account["id"],)

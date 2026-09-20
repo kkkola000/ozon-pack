@@ -4,13 +4,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import access, accounts, avito, db, options, report, security, sync, yandex
-from ..avito import AvitoClient, AvitoError
-from ..deps import (check_csrf, current_account, require_manager, require_section,
+from ..core import access, accounts, db, options, report, security, sync
+from ..markets.avito import client as avito
+from ..markets.yandex import client as yandex
+from ..markets.avito.client import AvitoClient, AvitoError
+from ..core.deps import (check_csrf, current_account, require_manager, require_section,
                     require_ozon_account, templates)
-from .. import ozon
-from ..ozon import OzonClient, OzonError
-from ..yandex import YandexClient, YandexError
+from ..markets.ozon import client as ozon
+from ..markets.ozon.client import OzonClient, OzonError
+from ..markets.yandex.client import YandexClient, YandexError
 
 router = APIRouter()
 

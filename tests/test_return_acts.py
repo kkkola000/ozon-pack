@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from datetime import datetime, timedelta, timezone
 
-from app import accounts, db, options, return_acts, store, sync
+from app.core import accounts, db, options, return_acts, store, sync
 from app.main import app
 
 
@@ -31,7 +31,7 @@ def take_everything(account=None):
     Обновление это заметит и запишет момент получения, но акта не составит:
     акт — решение человека.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = account or accounts.default_account()
     taken = ozon.get_client(account).receive()
@@ -167,7 +167,7 @@ def before_local_midnight(days: int) -> datetime:
     несколько часов после такого момента попадает уже в следующее число —
     ровно на этом возвраты одной поездки и разъезжались.
     """
-    from app.config import settings
+    from app.core.config import settings
 
     day = (datetime.now(timezone.utc) - timedelta(days=days)).date() + timedelta(days=1)
     local_midnight = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
@@ -181,7 +181,7 @@ def test_receipt_date_comes_from_the_platform(sample_data):
     сегодня. Со временем «сейчас» обновление объявило бы полученным сегодня
     всё, что увидело впервые, — так и вышел акт на 2446 позиций.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -206,7 +206,7 @@ def test_receipt_date_comes_from_the_handover(sample_data):
     19-го. По change_moment такой возврат вставал в акт за 18-е — днём, когда
     его ещё никто не держал.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -236,7 +236,7 @@ def test_a_later_handover_moment_fixes_the_day(sample_data):
     без final_moment, число встало по смене статуса — и оставалось тем же,
     сколько ни жми «Обновить». Возврат так и висел в акте за 18-е.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -267,7 +267,7 @@ def test_a_moved_day_takes_the_return_out_of_the_old_act(sample_data):
 
     Акт при этом не составляется: его по-прежнему заводит человек кнопкой.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -300,7 +300,7 @@ def test_a_marked_return_stays_in_its_act(sample_data):
     Отметку ставил сборщик, держа возврат в руках. Перенести её работу в
     другой акт — значит потерять её или задвоить.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -326,7 +326,7 @@ def test_a_confirmed_act_keeps_its_day(sample_data):
     Акт подписан, работа по нему закрыта. Менять под ним число получения
     значило бы переписывать готовый документ задним числом.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -375,7 +375,7 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
     Иначе в received_day оседает сама строка, такого числа нет ни в одном
     календаре, и возврат не найти: из «К выдаче» он ушёл, в акт не попадает.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -394,7 +394,7 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
 
 def test_returns_of_one_trip_land_on_one_day(sample_data):
     """Одна поездка — одно число, пока площадка меняет статусы в тех же сутках."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -420,7 +420,7 @@ def test_status_change_after_midnight_does_not_split_the_trip(sample_data):
     число брали из change_moment, такая поездка разъезжалась на два акта:
     часть возвратов уходила в следующие сутки, хотя привезли их разом.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -443,7 +443,7 @@ def test_status_change_after_midnight_does_not_split_the_trip(sample_data):
 
 def test_archive_does_not_get_into_todays_act(sample_data):
     """Акт за сегодня — только сегодняшняя поездка, без истории склада."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -467,7 +467,7 @@ def test_archive_does_not_get_into_todays_act(sample_data):
 # ------------------------------------ несколько актов за одно число, без задвоения
 def test_several_acts_a_day_split_the_returns(sample_data):
     """Две поездки за день — два акта, и в каждом только свои возвраты."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -497,7 +497,7 @@ def test_several_acts_a_day_split_the_returns(sample_data):
 
 def test_second_act_the_same_day_takes_only_the_new_returns(sample_data):
     """Возврат из первого акта во второй не переезжает и не дублируется."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -532,7 +532,7 @@ def test_pressing_twice_with_nothing_new_makes_no_act(sample_data):
 
 def test_a_return_is_never_in_two_acts(sample_data):
     """Общее правило раздела, при любом порядке действий."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -620,7 +620,7 @@ def test_day_without_receipts_says_so(sample_data):
 
 
 def login_as_packer(client) -> str:
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
@@ -707,7 +707,7 @@ def test_sync_puts_nothing_into_acts(sample_data):
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
     account = accounts.default_account()
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     client = ozon.get_client(account)
     target = db.query_one("SELECT id FROM returns WHERE is_ready = 1 LIMIT 1")["id"]
@@ -933,7 +933,7 @@ def test_unknown_act_is_404(client):
 # ------------------------------------------------------------------ переделать
 def login_as_admin(client) -> str:
     """Администратор — не владелец: принятое переделывать ему не дают."""
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
@@ -1261,7 +1261,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
     Иначе пришлось бы тянуть всё, что изменилось за период, и отсеивать статус
     у себя: лишний трафик и лишние страницы на ровном месте.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -1288,7 +1288,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
 
 def test_received_older_than_the_window_are_not_loaded(sample_data):
     """За окном возвраты не тянутся: по «Получен» площадка отдаёт весь архив."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -1309,7 +1309,7 @@ def test_received_older_than_the_window_are_not_loaded(sample_data):
 
 def test_window_depth_is_a_setting(sample_data):
     """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
     options.set_received_days(40)
@@ -1412,7 +1412,7 @@ def test_unknown_act_is_404(client):
 # ------------------------------------------------------------------ переделать
 def login_as_admin(client) -> str:
     """Администратор — не владелец: принятое переделывать ему не дают."""
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
@@ -1740,7 +1740,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
     Иначе пришлось бы тянуть всё, что изменилось за период, и отсеивать статус
     у себя: лишний трафик и лишние страницы на ровном месте.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -1767,7 +1767,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
 
 def test_received_older_than_the_window_are_not_loaded(sample_data):
     """За окном возвраты не тянутся: по «Получен» площадка отдаёт весь архив."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)
@@ -1788,7 +1788,7 @@ def test_received_older_than_the_window_are_not_loaded(sample_data):
 
 def test_window_depth_is_a_setting(sample_data):
     """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
     options.set_received_days(40)
@@ -1896,7 +1896,7 @@ def test_acts_are_sorted_by_the_receipt_day(sample_data):
     Акт называют днём поездки — по нему его и ищут. Составить акт за вчера
     можно сегодня, и тогда порядок по времени создания врёт.
     """
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     account = accounts.default_account()
     client = ozon.get_client(account)

@@ -1,8 +1,10 @@
 """Кабинеты: ключи площадок, демо-режим и разделение данных."""
 import pytest
 
-from app import accounts, avito, db, ozon, sync
-from app.config import settings
+from app.core import accounts, db, sync
+from app.markets.avito import client as avito
+from app.markets.ozon import client as ozon
+from app.core.config import settings
 
 
 @pytest.fixture
@@ -152,7 +154,7 @@ def test_two_cabinets_keep_data_apart(sample_data):
     barcode = db.query_one(
         "SELECT barcode FROM product_barcodes WHERE account_id = ? LIMIT 1", (second_id,)
     )["barcode"]
-    from app import packing
+    from app.markets.ozon import pack as packing
 
     kind, _target = packing.classify(second_id, barcode)
     assert kind == "product"

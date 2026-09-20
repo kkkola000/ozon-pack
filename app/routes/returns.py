@@ -6,11 +6,12 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, avito, db, options, return_acts, returns_pdf, store, sync
-from ..deps import (check_csrf, require_owner, require_section, require_avito_account,
+from ..core import accounts, db, options, return_acts, returns_pdf, store, sync
+from ..markets.avito import client as avito
+from ..core.deps import (check_csrf, require_owner, require_section, require_avito_account,
                     require_ozon_account, templates)
-from .. import ozon
-from ..ozon import OzonError
+from ..markets.ozon import client as ozon
+from ..markets.ozon.client import OzonError
 
 router = APIRouter()
 

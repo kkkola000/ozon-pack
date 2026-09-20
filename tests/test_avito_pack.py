@@ -1,7 +1,8 @@
 """Сборка заказов Avito: стикер открывает заказ, штрихкод товара пишется в отчёт."""
 import pytest
 
-from app import avito_pack, db, report, store
+from app.markets.avito import pack as avito_pack
+from app.core import db, report, store
 
 
 def orders(account, status="ready_to_ship"):
@@ -21,7 +22,7 @@ def shipped(status=None):
 
 @pytest.fixture
 def avito_data(avito_account):
-    from app import sync
+    from app.core import sync
 
     sync.sync_avito(avito_account)
     ready = orders(avito_account)

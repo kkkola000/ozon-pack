@@ -22,7 +22,7 @@ from typing import Any
 
 import httpx
 
-from .config import settings
+from ...core.config import settings
 
 log = logging.getLogger("avito")
 
@@ -402,7 +402,7 @@ _client_lock = threading.Lock()
 
 def get_client(account: dict | None = None) -> AvitoClient:
     """Клиент кабинета по его ключам. Кэшируется, пока ключи не поменяли."""
-    from . import accounts
+    from ...core import accounts
 
     if account is None:
         raise AvitoError("Не выбран кабинет Avito")

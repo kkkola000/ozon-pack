@@ -11,11 +11,14 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, avito, db, ozon, return_acts, store, yandex
-from .avito import AvitoError
-from .yandex import YandexError
+from . import accounts, db, return_acts, store
+from ..markets.avito import client as avito
+from ..markets.ozon import client as ozon
+from ..markets.yandex import client as yandex
+from ..markets.avito.client import AvitoError
+from ..markets.yandex.client import YandexError
 from .config import settings
-from .ozon import OzonError, iso_moment
+from ..markets.ozon.client import OzonError, iso_moment
 
 log = logging.getLogger("sync")
 

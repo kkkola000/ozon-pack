@@ -89,7 +89,7 @@ def test_script_still_gets_json(client):
 
 def test_missing_pdf_library_is_explained_on_a_page(client, monkeypatch):
     """Ровно тот случай, что был у оператора: кнопка «Скачать PDF» без fpdf2."""
-    from app import returns_pdf
+    from app.core import returns_pdf
 
     monkeypatch.setattr(returns_pdf, "_SHEET_CLASS", None)
     monkeypatch.setitem(__import__("sys").modules, "fpdf", None)

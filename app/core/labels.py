@@ -140,7 +140,7 @@ def ozon_state(account_id: int) -> dict:
 # ------------------------------------------------------------------- Avito
 def pending_avito(account_id: int) -> list[str]:
     """Заказы «Отправьте заказ», чья этикетка ещё не выгружена."""
-    from . import avito
+    from ..markets.avito import client as avito
 
     rows = db.query(
         "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? "
@@ -163,7 +163,7 @@ def pending_yandex(account_id: int) -> list[str]:
     закрывается его сканом — значит, нужен он по каждому заказу в работе, и
     «Ожидает сборки», и «Ожидает отгрузки». Собранное замок не держит.
     """
-    from . import yandex
+    from ..markets.yandex import client as yandex
 
     subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
     rows = db.query(

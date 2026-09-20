@@ -1,7 +1,8 @@
 """Сборка заказов Маркета — по образцу Ozon: товар открывает заказ, ярлык закрывает."""
 import pytest
 
-from app import db, report, store, sync, yandex, yandex_pack
+from app.core import db, report, store, sync
+from app.markets.yandex import client as yandex, pack as yandex_pack
 
 
 @pytest.fixture
@@ -263,7 +264,7 @@ def test_ready_to_ship_orders_are_packable_too(market, user):
 
 def test_switching_cabinet_releases_the_previous_claim(market, user, account):
     """Одна строка pack_state на сборщика: бронь в кабинете Ozon отпускается."""
-    from app import packing
+    from app.markets.ozon import pack as packing
     from tests.conftest import pick_posting
 
     posting = pick_posting(positions=1)

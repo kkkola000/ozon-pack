@@ -6,7 +6,8 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# app/core/config.py -> app/core -> app -> корень репозитория
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def _load_dotenv(path: Path) -> None:

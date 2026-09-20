@@ -14,11 +14,12 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import access, db, labels, store, sync, yandex, yandex_pack
-from ..config import settings
-from ..deps import (check_csrf, require_manager, require_section, require_yandex_account, safe_filename,
+from ...core import access, db, labels, store, sync
+from . import client as yandex, pack as yandex_pack
+from ...core.config import settings
+from ...core.deps import (check_csrf, require_manager, require_section, require_yandex_account, safe_filename,
                     templates)
-from ..yandex import YandexError
+from .client import YandexError
 
 log = logging.getLogger("yandex")
 

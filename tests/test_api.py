@@ -4,7 +4,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db
+from app.core import db
 from app.main import app
 
 
@@ -56,7 +56,7 @@ def test_scan_endpoint(client):
 
 
 def test_packer_cannot_open_settings(client):
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer1', ?, 'packer', 1, ?)",
@@ -69,7 +69,7 @@ def test_packer_cannot_open_settings(client):
 
 def test_packer_cannot_open_logs(client):
     """В журнале видны чужие входы с IP и неудачные попытки — это для админа."""
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer3', ?, 'packer', 1, ?)",
@@ -98,7 +98,7 @@ def test_label_pdf(client):
 
 
 def test_cabinet_api_requires_admin(client):
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('packer2', ?, 'packer', 1, ?)",
@@ -110,7 +110,7 @@ def test_cabinet_api_requires_admin(client):
 
 
 def test_save_cabinet_keys_from_settings(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     account_id = accounts.default_account()["id"]
@@ -128,7 +128,7 @@ def test_save_cabinet_keys_from_settings(client):
 
 
 def test_cabinet_keys_are_validated(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     account_id = accounts.default_account()["id"]
@@ -141,7 +141,7 @@ def test_cabinet_keys_are_validated(client):
 
 
 def test_add_and_delete_cabinet(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     created = client.post(
@@ -159,7 +159,7 @@ def test_add_and_delete_cabinet(client):
 
 
 def test_last_cabinet_cannot_be_deleted(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     account_id = accounts.default_account()["id"]
@@ -168,7 +168,7 @@ def test_last_cabinet_cannot_be_deleted(client):
 
 
 def test_switching_cabinet_changes_section(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     avito_id = accounts.create("avito", "Avito магазин")
@@ -191,7 +191,7 @@ def test_returns_statuses_endpoint(client):
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200, response.text
-    from app import options
+    from app.core import options
 
     assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
     assert "В пункте выдачи" in response.json()["message"]
@@ -236,7 +236,7 @@ def test_login_keeps_internal_next(client, target):
 
 
 def test_switch_account_does_not_redirect_outside(client):
-    from app import accounts
+    from app.core import accounts
 
     csrf = login(client)
     account_id = accounts.default_account()["id"]
@@ -296,7 +296,7 @@ def test_password_change_closes_old_sessions(client):
 
 
 def test_password_change_leaves_other_users_alone(client):
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     csrf = login(client)
     db.execute(
@@ -336,7 +336,7 @@ def test_database_file_is_not_world_readable(client):
 
     from pathlib import Path
 
-    from app.config import settings
+    from app.core.config import settings
 
     mode = stat.S_IMODE(Path(settings.db_path).stat().st_mode)
     assert mode == 0o600, oct(mode)
@@ -360,13 +360,14 @@ def test_database_file_is_not_world_readable(client):
     ],
 )
 def test_safe_filename(raw, expected):
-    from app.deps import safe_filename
+    from app.core.deps import safe_filename
 
     assert safe_filename(raw) == expected
 
 
 def test_label_header_survives_hostile_filename(client, monkeypatch):
-    from app import accounts, ozon
+    from app.core import accounts
+    from app.markets.ozon import client as ozon
 
     login(client)
     fake = ozon.get_client(accounts.default_account())
@@ -400,7 +401,7 @@ def test_label_header_survives_hostile_filename(client, monkeypatch):
 )
 def test_label_url_from_response_must_stay_on_ozon(url):
     """По адресу из ответа панель ходит сама — увести её в чужую сеть нельзя."""
-    from app.ozon import OzonClient, OzonError
+    from app.markets.ozon.client import OzonClient, OzonError
 
     client_obj = OzonClient(client_id="x", api_key="y")
     try:
@@ -412,7 +413,7 @@ def test_label_url_from_response_must_stay_on_ozon(url):
 
 @pytest.mark.parametrize("url", ["https://api-seller.ozon.ru/f/1.pdf", "/f/1.pdf", "f/1.pdf"])
 def test_label_url_on_same_host_is_allowed(url):
-    from app.ozon import OzonClient
+    from app.markets.ozon.client import OzonClient
 
     client_obj = OzonClient(client_id="x", api_key="y")
     try:
@@ -449,8 +450,8 @@ def test_startup_warns_about_spoofable_client_ip(monkeypatch, caplog):
 
 def test_version_matches_file():
     """Номер версии в /healthz берётся из VERSION — по нему сверяют выкладку."""
-    from app.config import BASE_DIR
-    from app.version import get_version
+    from app.core.config import BASE_DIR
+    from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
     assert get_version() == "1.32.0"
@@ -464,7 +465,7 @@ def test_version_matches_file():
 @pytest.fixture
 def many_cabinets(client):
     """Второй кабинет Ozon со своими возвратами и кабинет Avito со своими."""
-    from app import accounts, sync
+    from app.core import accounts, sync
 
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
     sync.sync_returns(second)
@@ -481,7 +482,8 @@ def _ready_ids(account_id):
 
 
 def test_all_cabinets_sheet_covers_every_cabinet(client, many_cabinets):
-    from app import accounts, avito
+    from app.core import accounts
+    from app.markets.avito import client as avito
 
     login(client)
     first_ids = _ready_ids(accounts.default_account()["id"])
@@ -513,7 +515,7 @@ def test_all_cabinets_sheet_covers_every_cabinet(client, many_cabinets):
 
 def test_single_cabinet_sheet_stays_as_before(client, many_cabinets):
     """Обычный лист по-прежнему только про текущий кабинет."""
-    from app import accounts
+    from app.core import accounts
 
     login(client)
     second_ids = _ready_ids(many_cabinets["second"]["id"])
@@ -529,7 +531,7 @@ def test_single_cabinet_sheet_stays_as_before(client, many_cabinets):
 
 
 def test_all_cabinets_sheet_marks_everything_printed(client, many_cabinets):
-    from app import avito
+    from app.markets.avito import client as avito
 
     login(client)
     assert client.get("/returns/print?scope=all").status_code == 200
@@ -606,7 +608,7 @@ def test_all_cabinets_sheet_is_quiet_when_everything_fits(client, many_cabinets)
 
 @pytest.fixture
 def vpn_only(monkeypatch):
-    from app.config import settings
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "ip_allowlist", ["127.0.0.1", "10.8.0.0/24"])
     return settings
@@ -645,7 +647,7 @@ def test_localhost_stays_open_even_when_not_listed(sample_data, monkeypatch, ip)
     и он же остаётся путём восстановления по SSH, если туннель отвалится. Без
     этого исключения список, набранный руками, тихо ломал бы HEALTHCHECK.
     """
-    from app.config import settings
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "ip_allowlist", ["10.8.0.0/24"])
     with _client_from(ip, sample_data) as local:
@@ -662,7 +664,7 @@ def test_foreign_address_cannot_pretend_to_be_vpn(sample_data, vpn_only):
 
 def test_empty_allowlist_lets_everyone_in(sample_data, monkeypatch):
     """Без списка ограничения нет — установка без VPN работает как прежде."""
-    from app.config import settings
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "ip_allowlist", [])
     with _client_from("203.0.113.7", sample_data) as anyone:

@@ -602,7 +602,7 @@ def upsert_avito_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> 
     if not order_id:
         raise ValueError("В ответе Avito нет id заказа")
 
-    from . import avito as avito_client
+    from ..markets.avito import client as avito_client
 
     delivery = raw.get("delivery") or {}
     buyer = delivery.get("buyerInfo") or {}
@@ -712,7 +712,7 @@ def avito_items(account_id: int, order_id: str) -> list[dict]:
 
 def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     """Строка БД -> объект для шаблона: подписи статуса, срочность, действия."""
-    from .avito import RETURN_STATUS_LABELS, SERVICE_LABELS, STATUS_LABELS
+    from ..markets.avito.client import RETURN_STATUS_LABELS, SERVICE_LABELS, STATUS_LABELS
 
     data = dict(row)
     data.pop("raw", None)
@@ -888,7 +888,7 @@ def offer_barcodes(offer_id: str | None) -> list[str]:
 
 def yandex_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     """Строка БД -> объект для шаблона: подписи, срочность, состав."""
-    from .yandex import DELIVERY_LABELS, SUBSTATUS_LABELS
+    from ..markets.yandex.client import DELIVERY_LABELS, SUBSTATUS_LABELS
 
     data = dict(row)
     data.pop("raw", None)

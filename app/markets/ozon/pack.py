@@ -15,10 +15,10 @@ import json
 import re
 from typing import Any
 
-from . import db, product_sets, report, store
-from .config import settings
-from . import ozon
-from .ozon import OzonError
+from ...core import db, product_sets, report, store
+from ...core.config import settings
+from . import client as ozon
+from .client import OzonError
 
 POSTING_NUMBER_RE = re.compile(r"^\d{5,}-\d{3,}-\d{1,3}$")
 

@@ -14,7 +14,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, packing, product_sets, store
+from app.core import db, product_sets, store
+from app.markets.ozon import pack as packing
 from app.main import app
 from tests.conftest import account_id, barcode_of, pick_posting
 
@@ -290,7 +291,7 @@ def login(client, login="admin", password="test-admin-pass") -> str:
 
 
 def test_products_page_is_admin_only(client):
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
@@ -368,7 +369,7 @@ def test_set_is_deleted_through_the_api(client):
 
 def test_sets_do_not_leak_between_cabinets(account, sample_data):
     """Кабинеты не пересекаются: набор одного не должен влиять на другой."""
-    from app import accounts, sync
+    from app.core import accounts, sync
 
     sku = pick_posting(positions=1)["items"][0]["sku"]
     make_set(account, sku, [{"barcode": "9990000000086"}])

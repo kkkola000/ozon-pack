@@ -13,7 +13,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import access, db, security
+from app.core import access, db, security
 from app.main import app
 
 

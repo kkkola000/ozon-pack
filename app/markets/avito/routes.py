@@ -15,11 +15,12 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import avito, avito_pack, db, labels, store, sync
-from ..avito import AvitoError
-from ..deps import (check_csrf, require_section, require_manager, require_avito_account, safe_filename,
+from . import client as avito, pack as avito_pack
+from ...core import db, labels, store, sync
+from .client import AvitoError
+from ...core.deps import (check_csrf, require_section, require_manager, require_avito_account, safe_filename,
                     templates)
-from . import returns as returns_routes
+from ...routes import returns as returns_routes
 
 log = logging.getLogger("avito")
 

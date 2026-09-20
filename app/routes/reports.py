@@ -6,8 +6,8 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from .. import accounts, report, return_acts
-from ..deps import require_section, templates
+from ..core import accounts, report, return_acts
+from ..core.deps import require_section, templates
 
 router = APIRouter()
 

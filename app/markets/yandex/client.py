@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .config import settings
+from ...core.config import settings
 
 log = logging.getLogger("yandex")
 
@@ -270,7 +270,7 @@ _client_lock = threading.Lock()
 
 def get_client(account: dict | None = None) -> YandexClient:
     """Клиент кабинета по его ключам. Кэшируется, пока ключи не поменяли."""
-    from . import accounts
+    from ...core import accounts
 
     if account is None:
         raise YandexError("Не выбран кабинет Яндекс Маркета")

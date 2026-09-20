@@ -12,9 +12,10 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import catalog, db, ozon, product_sets
+from app.core import catalog, db, product_sets
+from app.markets.ozon import client as ozon
 from app.main import app
-from app.ozon import OzonError
+from app.markets.ozon.client import OzonError
 from tests.conftest import account_id
 from tests.fakes import CATALOG_ARCHIVED, CATALOG_EXTRA
 
@@ -188,7 +189,7 @@ def test_refresh_requires_csrf(client):
 
 
 def test_refresh_is_admin_only(client):
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES(?,?,?,1,?)",
@@ -231,7 +232,7 @@ def test_second_start_does_not_run_twice(account, monkeypatch):
 # ------------------------------------------------------------------ сборка
 def test_archived_product_still_scans_in_an_open_order(account, sample_data, user):
     """Штрихкод архивного товара не должен ломать начатую сборку."""
-    from app import packing
+    from app.markets.ozon import pack as packing
     from tests.conftest import barcode_of, pick_posting
 
     posting = pick_posting(positions=1)

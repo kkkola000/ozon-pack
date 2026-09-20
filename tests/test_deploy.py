@@ -7,7 +7,7 @@ import textwrap
 
 import pytest
 
-from app.config import BASE_DIR
+from app.core.config import BASE_DIR
 
 DEPLOY = BASE_DIR / "deploy"
 SCRIPTS = sorted(DEPLOY.glob("*.sh"))
@@ -619,7 +619,7 @@ def test_settings_have_no_host_field():
     панели: скрипты правили HOST в .env, рапортовали об успехе, а панель
     продолжала слушать все интерфейсы, потому что адрес был вписан в юнит.
     """
-    from app.config import Settings
+    from app.core.config import Settings
 
     assert not hasattr(Settings(), "host"), "Settings.host вернулся — адрес задаёт юнит systemd"
     unit = (DEPLOY / "ozon-pack.service").read_text(encoding="utf-8")

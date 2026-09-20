@@ -11,8 +11,11 @@ import random
 import threading
 from datetime import datetime, timedelta, timezone
 
-from app import accounts, avito, ozon, yandex
-from app.avito import (
+from app.core import accounts
+from app.markets.avito import client as avito
+from app.markets.ozon import client as ozon
+from app.markets.yandex import client as yandex
+from app.markets.avito.client import (
     RETURN_IN_TRANSIT,
     RETURN_READY,
     RETURN_READY_ALT,
@@ -29,8 +32,8 @@ from app.avito import (
     AvitoClient,
     AvitoError,
 )
-from app.ozon import OzonClient, OzonError, iso_moment as _iso
-from app.yandex import (
+from app.markets.ozon.client import OzonClient, OzonError, iso_moment as _iso
+from app.markets.yandex.client import (
     SUBSTATUS_READY_TO_SHIP,
     SUBSTATUS_STARTED,
     YandexClient,

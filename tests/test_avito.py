@@ -10,7 +10,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, avito, db, store, sync
+from app.core import accounts, db, store, sync
+from app.markets.avito import client as avito
 from app.main import app
 from tests import fakes
 
@@ -236,7 +237,7 @@ def test_sync_all_covers_both_marketplaces(avito_account):
 
 def test_one_broken_cabinet_does_not_stop_others(avito_account, monkeypatch):
     """Кабинет без связи не должен ронять синхронизацию остальных."""
-    from app import ozon
+    from app.markets.ozon import client as ozon
 
     def boom(*args, **kwargs):
         raise ozon.OzonError("нет связи")
@@ -380,7 +381,7 @@ def test_old_order_returned_today_is_not_lost(avito_account):
     """
     from datetime import datetime, timedelta, timezone
 
-    from app.config import settings
+    from app.core.config import settings
 
     client = avito.get_client(avito_account)
     returns = [o for o in client._orders.values() if o["status"] == avito.STATUS_ON_RETURN]
@@ -592,7 +593,7 @@ def test_only_a_manager_can_unmark_a_packed_order(client, avito_account):
     Отметка — результат работы сборщика, и отвечает за неё тот, кто отвечает за
     склад. Иначе ошибившийся сам же и заметает след.
     """
-    from app import access, security
+    from app.core import access, security
 
     target = db.query_one(
         "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",

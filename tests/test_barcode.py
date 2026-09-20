@@ -1,6 +1,6 @@
 """Кодирование Code128 и разбор вариантов штрихкода."""
 from tests.code128 import PATTERNS, encode_code128b, total_modules
-from app.packing import barcode_variants
+from app.markets.ozon.pack import barcode_variants
 
 
 def test_code128_structure():

@@ -10,7 +10,8 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, avito, db, labels, store
+from app.core import accounts, db, labels, store
+from app.markets.avito import client as avito
 from app.main import app
 
 
@@ -132,7 +133,7 @@ def test_the_download_is_written_to_the_log(client):
 
 def test_nothing_is_stored_on_disk(client, tmp_path):
     """Панель стикеры у себя не держит: файл уезжает в браузер и живёт там."""
-    from app.config import settings
+    from app.core.config import settings
 
     csrf = login(client)
     data_dir = __import__("pathlib").Path(settings.db_path).parent
@@ -216,7 +217,7 @@ def test_a_failed_batch_does_not_lose_the_rest(monkeypatch):
 # -------------------------------------------------------------------- Avito
 @pytest.fixture
 def avito_cabinet(sample_data):
-    from app import sync
+    from app.core import sync
 
     cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
     sync.sync_avito(cabinet)

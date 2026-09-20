@@ -22,7 +22,8 @@ import json
 import logging
 import threading
 
-from . import db, ozon, store
+from . import db, store
+from ..markets.ozon import client as ozon
 
 log = logging.getLogger("catalog")
 

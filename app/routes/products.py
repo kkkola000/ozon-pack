@@ -19,8 +19,8 @@ import json
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from .. import catalog, db, product_sets
-from ..deps import check_csrf, require_manager, require_section, require_ozon_account, templates
+from ..core import catalog, db, product_sets
+from ..core.deps import check_csrf, require_manager, require_section, require_ozon_account, templates
 
 router = APIRouter()
 

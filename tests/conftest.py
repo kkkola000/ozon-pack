@@ -8,8 +8,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import accounts, avito, db, ozon, store, yandex  # noqa: E402
-from app.config import settings  # noqa: E402
+from app.core import accounts, db, store  # noqa: E402
+from app.markets.avito import client as avito  # noqa: E402
+from app.markets.ozon import client as ozon  # noqa: E402
+from app.markets.yandex import client as yandex  # noqa: E402
+from app.core.config import settings  # noqa: E402
 from tests import fakes  # noqa: E402
 
 
@@ -62,7 +65,7 @@ def yandex_account():
 @pytest.fixture
 def sample_data():
     """Загрузить в тестовую БД отправления, товары и возвраты из подделки Ozon."""
-    from app import sync
+    from app.core import sync
 
     sync.sync_all()
     return ozon.get_client(accounts.default_account())
@@ -76,7 +79,7 @@ def user():
 
 @pytest.fixture
 def other_user():
-    from app.security import hash_password
+    from app.core.security import hash_password
 
     db.execute(
         "INSERT INTO users(login, password_hash, role, active, created_at) VALUES('petrov', ?, 'packer', 1, ?)",

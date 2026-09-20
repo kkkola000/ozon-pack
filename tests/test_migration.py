@@ -8,8 +8,9 @@ import subprocess
 
 import pytest
 
-from app import accounts, db, ozon
-from app.config import BASE_DIR, settings
+from app.core import accounts, db
+from app.markets.ozon import client as ozon
+from app.core.config import BASE_DIR, settings
 
 # Схему прошлой версии берём из истории git, а не переписываем руками:
 # так тест проверяет реальную базу пользователя, а не наше представление о ней.
@@ -275,7 +276,7 @@ def test_automatic_acts_of_1_17_are_removed():
     статусом Ozon отдаёт весь архив — на живом складе вышел один акт на 2446
     позиций. Такой акт не подтвердить, и он закрывает собой настоящие.
     """
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
@@ -301,7 +302,7 @@ def test_automatic_acts_of_1_17_are_removed():
 
 def test_cleanup_keeps_marked_returns_and_runs_once():
     """Работу сборщика чистка не трогает и второй раз не запускается."""
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
@@ -337,7 +338,7 @@ def test_received_days_are_recomputed_from_the_handover():
     числам: шесть в акт попадали, седьмой нет. Обновление пересчитывает число
     по `final_moment` у всего, что ещё ждёт акта.
     """
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
@@ -356,7 +357,7 @@ def test_received_days_are_recomputed_from_the_handover():
 
     db.init_db()
 
-    from app import store
+    from app.core import store
 
     late = db.query_one("SELECT received_at, received_day FROM returns WHERE id = 'R-late'")
     assert late["received_day"] == store.local_day("2026-05-10T18:50:00+00:00")
@@ -369,7 +370,7 @@ def test_received_days_are_recomputed_from_the_handover():
 
 def test_received_days_repair_does_not_touch_acts_and_runs_once():
     """Строку из акта не переносим: там работа идёт, и число менять нельзя."""
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
@@ -407,7 +408,7 @@ def test_status_change_is_filled_from_the_saved_answer():
     """
     import json
 
-    from app import accounts, return_acts, store
+    from app.core import accounts, return_acts, store
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
@@ -436,7 +437,7 @@ def test_status_change_is_filled_from_the_saved_answer():
 
 
 def test_status_change_backfill_runs_once():
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
@@ -457,7 +458,7 @@ def test_unreceived_returns_are_released_from_spare_acts():
     без «Получен», — в акте приёмки оказывался и тот, что едет к продавцу.
     Удалишь акт, а обновление кладёт его обратно.
     """
-    from app import accounts, return_acts
+    from app.core import accounts, return_acts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
@@ -478,7 +479,7 @@ def test_unreceived_returns_are_released_from_spare_acts():
 
 def test_release_keeps_marked_rows_and_confirmed_acts():
     """Работу сборщика и закрытые акты не трогаем."""
-    from app import accounts, return_acts
+    from app.core import accounts, return_acts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
@@ -515,7 +516,7 @@ def test_arrival_date_is_filled_from_the_saved_answer():
     """
     import json
 
-    from app import accounts, store
+    from app.core import accounts, store
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))
@@ -546,7 +547,7 @@ def test_arrival_date_is_filled_from_the_saved_answer():
 
 def test_arrival_backfill_keeps_confirmed_acts_and_runs_once():
     """Подтверждённый акт не передатируется, а повтор установки ничего не делает."""
-    from app import accounts
+    from app.core import accounts
 
     account_id = accounts.default_account()["id"]
     db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))

@@ -4,9 +4,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from .. import accounts, db, security
-from ..config import settings
-from ..deps import ACCOUNT_COOKIE, check_csrf, current_user, templates
+from ..core import accounts, db, security
+from ..core.config import settings
+from ..core.deps import ACCOUNT_COOKIE, check_csrf, current_user, templates
 
 router = APIRouter()
 

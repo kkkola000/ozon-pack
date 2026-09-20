@@ -244,7 +244,9 @@ def delete(account_id: int, *, user: dict | None = None) -> None:
 
 
 def _reset_clients(account_id: int | None = None) -> None:
-    from . import avito, ozon, yandex
+    from ..markets.avito import client as avito
+    from ..markets.ozon import client as ozon
+    from ..markets.yandex import client as yandex
 
     ozon.reset_client(account_id)
     avito.reset_client(account_id)

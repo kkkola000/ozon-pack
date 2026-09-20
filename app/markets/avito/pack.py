@@ -17,8 +17,8 @@ from __future__ import annotations
 import json
 import re
 
-from . import db, report, store
-from .avito import STATUS_LABELS
+from ...core import db, report, store
+from .client import STATUS_LABELS
 
 # Заказы, которые сборщику имеет смысл собирать.
 PACKABLE = "ready_to_ship"

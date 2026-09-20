@@ -10,7 +10,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app import accounts, avito, db, returns_pdf, store
+from app.core import accounts, db, returns_pdf, store
+from app.markets.avito import client as avito
 from app.main import app
 
 
@@ -69,7 +70,8 @@ def test_mark_and_comment_are_saved(client):
 
 def an_act_return() -> str:
     """Съездить за возвратами и свести их в акт — там и живут отметки."""
-    from app import ozon, return_acts, store, sync
+    from app.markets.ozon import client as ozon
+    from app.core import return_acts, store, sync
 
     account = accounts.default_account()
     ozon.get_client(account).receive()
@@ -120,7 +122,7 @@ def test_mark_can_be_cleared(client):
 
 def test_sync_does_not_wipe_the_mark(client):
     """Главное свойство: обновление списка из Ozon отметку не трогает."""
-    from app import sync
+    from app.core import sync
 
     csrf = login(client)
     return_id = a_return()
@@ -148,7 +150,7 @@ def test_unknown_return_is_refused(client):
 
 def test_mark_from_another_cabinet_is_refused(client):
     """Возврат чужого кабинета отметить нельзя — кабинеты не смешиваются."""
-    from app import sync
+    from app.core import sync
 
     csrf = login(client)
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
@@ -212,7 +214,8 @@ def test_mark_window_saves_by_the_decision_itself(client):
 
 def test_marks_live_in_the_act(client):
     """Отмечают привезённое — во вкладке «Ждёт подтверждения», внутри акта."""
-    from app import accounts, ozon, return_acts, store, sync
+    from app.core import accounts, return_acts, store, sync
+    from app.markets.ozon import client as ozon
 
     csrf = login(client)
     account = accounts.default_account()
@@ -229,7 +232,7 @@ def test_marks_live_in_the_act(client):
 # ---------------------------------------------------------------- отметка у Avito
 @pytest.fixture
 def avito_cabinet(client):
-    from app import sync
+    from app.core import sync
 
     cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
     sync.sync_avito(cabinet)
@@ -360,7 +363,7 @@ def test_sheet_pdf_keeps_the_scheme_visible(client):
 
 def test_sheet_pdf_covers_every_cabinet(client):
     """scope=all — тот же охват, что и у листа для печати: Ozon и Avito вместе."""
-    from app import sync
+    from app.core import sync
 
     login(client)
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
@@ -417,7 +420,7 @@ def test_panel_starts_without_the_pdf_library():
     import ast
     import pathlib
 
-    tree = ast.parse(pathlib.Path("app/returns_pdf.py").read_text())
+    tree = ast.parse(pathlib.Path(returns_pdf.__file__).read_text())
     top_level = []
     for node in tree.body:
         if isinstance(node, ast.Import):

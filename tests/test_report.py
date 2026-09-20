@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app import db, packing, report, store
+from app.core import db, report, store
+from app.markets.ozon import pack as packing
 from tests.conftest import barcode_of, pick_posting
 
 

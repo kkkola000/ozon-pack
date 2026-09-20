@@ -10,10 +10,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import accounts, db, deps, security, sync
-from .config import BASE_DIR
-from .routes import admin, auth, avito, orders, pack, products, reports, returns, yandex
-from .version import get_commit, get_version
+from .core import accounts, db, deps, security, sync
+from .core.config import BASE_DIR
+from .core.version import get_commit, get_version
+from .markets.avito import routes as avito_routes
+from .markets.ozon import routes as ozon_routes
+from .markets.yandex import routes as yandex_routes
+from .routes import admin, auth, products, reports, returns
 
 logging.basicConfig(
     level=logging.INFO,
@@ -178,11 +181,10 @@ def index(request: Request):
 
 
 app.include_router(auth.router)
-app.include_router(pack.router)
-app.include_router(orders.router)
+app.include_router(ozon_routes.router)
 app.include_router(returns.router)
 app.include_router(products.router)
-app.include_router(avito.router)
-app.include_router(yandex.router)
+app.include_router(avito_routes.router)
+app.include_router(yandex_routes.router)
 app.include_router(reports.router)
 app.include_router(admin.router)

@@ -1,8 +1,9 @@
 """Сценарии рабочего места сборщика — то, ради чего вся панель."""
 import pytest
 
-from app import db, packing, store
-from app.config import settings
+from app.core import db, store
+from app.markets.ozon import pack as packing
+from app.core.config import settings
 from tests.conftest import barcode_of, pick_posting
 
 
@@ -202,8 +203,8 @@ def test_switching_posting_releases_previous(account, sample_data, user, other_u
 
 def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
     """Отгруженное отправление не должно оставаться во вкладке «Собранные»."""
-    from app import sync
-    from app.routes.orders import _list_postings
+    from app.core import sync
+    from app.markets.ozon.routes import _list_postings
 
     posting = pick_posting(positions=1)
     number = posting["posting_number"]
@@ -231,8 +232,8 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     """Отменённое отправление тоже не место в очереди на отгрузку."""
     import json
 
-    from app import store
-    from app.routes.orders import _list_postings
+    from app.core import store
+    from app.markets.ozon.routes import _list_postings
 
     posting = pick_posting(positions=1)
     number = posting["posting_number"]
@@ -250,7 +251,7 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
 
 def test_switching_cabinet_frees_the_claim(account, sample_data, user, other_user):
     """Сборщик ушёл в другой кабинет — отправление не должно висеть забронированным."""
-    from app import accounts, sync
+    from app.core import accounts, sync
 
     posting = pick_posting()
     packing.select_posting(account, user, posting["posting_number"])

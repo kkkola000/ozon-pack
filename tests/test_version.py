@@ -2,8 +2,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import version
-from app.config import BASE_DIR
+from app.core import version
+from app.core.config import BASE_DIR
 from app.main import app
 
 
