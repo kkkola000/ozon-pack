@@ -31,6 +31,20 @@ from datetime import datetime
 
 from . import db, store
 
+
+def ozon_returns():
+    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
+    from ..markets.ozon import returns as _module
+
+    return _module
+
+
+def avito_store():
+    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
+    from ..markets.avito import store as _module
+
+    return _module
+
 # Возврат пропал из выдачи, а статус «Получен» по нему не приходил: такие
 # собираем в акт за день, иначе они исчезли бы с экрана молча — то есть ровно
 # так, как было до актов.
@@ -54,105 +68,6 @@ def _returns_word(count: int) -> str:
     if 11 <= tail_100 <= 14 or tail_10 == 0 or tail_10 >= 5:
         return f"{count} возвратов"
     return f"{count} возврат" + ("" if tail_10 == 1 else "а")
-
-
-# --------------------------------------------------------------- сбор актов
-def _free_received(account_id: int) -> tuple[str, list]:
-    """Условие «полученный возврат, который ещё можно забрать в акт».
-
-    Одно и на предпросмотр, и на саму сборку: иначе кнопка обещала бы одно, а
-    акт собирал бы другое.
-
-    Статус спрашиваем **текущий**, а не только момент получения. Момент
-    пишется один раз и не снимается — он про то, что возврат когда-то был
-    получен. Возврат, вернувшийся в пункт выдачи, по одному лишь моменту
-    попадал в акт приёмки со статусом «В пункте выдачи», хотя на складе его
-    нет.
-    """
-    from .options import get_received_statuses
-
-    statuses = list(get_received_statuses())
-    marks = ",".join("?" for _ in statuses) or "''"
-    sql = (
-        f"account_id = ? AND received_at IS NOT NULL AND status_sys IN ({marks}) "
-        "AND (act_id IS NULL OR act_id IN (SELECT id FROM return_acts "
-        "WHERE kind = ? AND confirmed_at IS NULL))"
-    )
-    return sql, [account_id] + statuses + [NO_SHEET]
-
-
-def received_returns(account_id: int, day: str) -> list[str]:
-    """Полученные возвраты кабинета за число, которые ещё ни в один акт не попали.
-
-    Это и есть защита от задвоения: возврат с act_id сюда не попадает ни при
-    каком повторе — ни когда Ozon снова отдаёт его «полученным», ни когда то же
-    число выбрали второй раз.
-
-    Исключение — акт «без статуса»: туда возврат попал по догадке о пропаже, и
-    пришедший «Получен» эту догадку заменяет. Иначе на один возврат оказалось
-    бы два акта, то есть две отметки на одну работу.
-
-    Число — день перехода в «Получен»: акт это поездка за конкретный день.
-    """
-    where, params = _free_received(account_id)
-    return [
-        row["id"] for row in db.query(
-            f"SELECT id FROM returns WHERE {where} AND received_day = ? ORDER BY received_at, id",
-            params + [day],
-        )
-    ]
-
-
-def from_received(account_id: int, day: str, *, user: dict | None = None) -> dict:
-    """Свести в акт полученные возвраты за указанное число.
-
-    Каждый вызов — отдельный акт: за возвратами ездят несколько раз в день, и
-    каждая поездка подписывается отдельно. В акт попадает только то, что ещё ни
-    в один акт не вошло, поэтому нажать кнопку дважды подряд не страшно —
-    второй акт просто не из чего собрать.
-
-    Возвращает {'status', 'message', 'act_id', 'added'}.
-    """
-    ids = received_returns(account_id, day)
-    if not ids:
-        return {
-            "status": "warning",
-            "message": f"За {_day_label(day)} полученных возвратов без акта нет — "
-                       "либо их ещё не забрали, либо они уже в акте.",
-            "act_id": None,
-            "added": 0,
-        }
-
-    act_id = _new_id()
-    now = db.now_iso()
-    with db.write() as conn:
-        seq = _next_seq(conn, account_id, day)
-        conn.execute(
-            "INSERT INTO return_acts(id, created_at, created_by, kind, account_id, received_day, day_seq) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (act_id, now, (user or {}).get("login"), BY_DAY, account_id, day, seq),
-        )
-        added = _claim(conn, act_id, account_id, ids)
-        if not added:
-            # Возвраты разобрали между выборкой и записью: акт за то же число
-            # составили в соседней вкладке. Пустой акт оставлять нельзя — его
-            # потом не удалить.
-            conn.execute("DELETE FROM return_acts WHERE id = ?", (act_id,))
-            return {"status": "warning", "act_id": None, "added": 0,
-                    "message": "Эти возвраты только что попали в другой акт"}
-        _drop_empty_spares(conn)
-
-    act = detail(act_id)
-    db.log_event(
-        "return_act_received", account_id=account_id, user=user,
-        message=f"{act['title']}: {_returns_word(added)}",
-    )
-    return {
-        "status": "ok",
-        "act_id": act_id,
-        "added": added,
-        "message": f"{act['title']}: {_returns_word(added)}",
-    }
 
 
 def _next_seq(conn, account_id: int, day: str) -> int:
@@ -225,7 +140,7 @@ def get(act_id: str) -> dict | None:
 def rows_of(act_id: str) -> tuple[list[dict], list[dict]]:
     """Строки акта: возвраты Ozon и заказы Avito."""
     ozon = [
-        store.return_view(row) for row in db.query(
+        ozon_returns().return_view(row) for row in db.query(
             "SELECT r.*, a.title AS account_title FROM returns r "
             "LEFT JOIN accounts a ON a.id = r.account_id "
             "WHERE r.act_id = ? ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name",
@@ -233,7 +148,7 @@ def rows_of(act_id: str) -> tuple[list[dict], list[dict]]:
         )
     ]
     avito = [
-        store.avito_view(row) for row in db.query(
+        avito_store().avito_view(row) for row in db.query(
             "SELECT o.*, a.title AS account_title FROM avito_orders o "
             "LEFT JOIN accounts a ON a.id = o.account_id WHERE o.act_id = ? ORDER BY a.title, o.id",
             (act_id,),

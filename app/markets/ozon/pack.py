@@ -15,10 +15,11 @@ import json
 import re
 from typing import Any
 
-from ...core import db, product_sets, report, store
+from ...core import db, product_sets, report
 from ...core.config import settings
 from . import client as ozon
 from .client import OzonError
+from . import store
 
 POSTING_NUMBER_RE = re.compile(r"^\d{5,}-\d{3,}-\d{1,3}$")
 
@@ -1069,3 +1070,19 @@ def label_pdf(account: dict, user: dict, posting_numbers: list[str]) -> tuple[by
                 message="Стикер отправлен на печать", conn=conn,
             )
     return pdf, filename
+
+
+# ------------------------------------------------------------------- Ozon
+def pending_labels(account_id: int) -> list[str]:
+    """Отправления «Ожидает отгрузки», чей стикер ещё не выгружен.
+
+    Только этот статус: в «Ожидает сборки» стикера ещё нет, а всё, что уехало
+    дальше, замок не держит — там стикер уже не получить.
+    """
+
+    rows = db.query(
+        "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? "
+        "AND label_saved_at IS NULL ORDER BY posting_number",
+        (account_id, store.STATUS_AWAITING_DELIVER),
+    )
+    return [row["posting_number"] for row in rows]

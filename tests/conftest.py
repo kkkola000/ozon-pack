@@ -8,12 +8,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core import accounts, db, store  # noqa: E402
+from app.core import accounts, db  # noqa: E402
 from app.markets.avito import client as avito  # noqa: E402
 from app.markets.ozon import client as ozon  # noqa: E402
 from app.markets.yandex import client as yandex  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from tests import fakes  # noqa: E402
+from app.markets.ozon import store as ozon_store  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +94,7 @@ def account_id() -> int:
     return accounts.default_account()["id"]
 
 
-def pick_posting(status=store.STATUS_AWAITING_DELIVER, positions=None):
+def pick_posting(status=ozon_store.STATUS_AWAITING_DELIVER, positions=None):
     """Первое отправление в статусе, при желании — с нужным числом позиций."""
     sql = "SELECT * FROM postings WHERE account_id = ? AND status = ? AND local_state = 'new'"
     params = [account_id(), status]
@@ -102,7 +103,7 @@ def pick_posting(status=store.STATUS_AWAITING_DELIVER, positions=None):
         params.append(positions)
     row = db.query_one(sql + " ORDER BY posting_number", params)
     assert row is not None, f"нет отправления {status} с {positions} позициями"
-    return store.posting_view(row)
+    return ozon_store.posting_view(row)
 
 
 def barcode_of(sku: str) -> str:

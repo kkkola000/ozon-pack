@@ -37,7 +37,7 @@
       </a>
       {% endif %}
     {% endfor %}
-    {% if can_see(user, 'products') %}
+    {% if can_see(user, 'products') and market_has_catalog(request) %}
       <a href="/products" class="{{ 'active' if active_tab == 'products' }}"
          title="Каталог кабинета и наборы: из чего собирается товар">Товары</a>
     {% endif %}

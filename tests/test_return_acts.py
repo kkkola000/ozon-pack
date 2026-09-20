@@ -21,8 +21,9 @@ from fastapi.testclient import TestClient
 
 from datetime import datetime, timedelta, timezone
 
-from app.core import accounts, db, options, return_acts, store, sync
+from app.core import accounts, db, return_acts, store, sync
 from app.main import app
+from app.markets.ozon import returns as ozon_returns
 
 
 def take_everything(account=None):
@@ -35,14 +36,14 @@ def take_everything(account=None):
 
     account = account or accounts.default_account()
     taken = ozon.get_client(account).receive()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     return taken
 
 
 def make_act(account=None, day=None, user=None):
     """Составить акт за число — то же, что нажать кнопку во вкладке."""
     account = account or accounts.default_account()
-    return return_acts.from_received(
+    return ozon_returns.from_received(
         account["id"], day or store.local_day(), user=user or {"login": "admin"}
     )
 
@@ -105,7 +106,7 @@ def test_sync_does_not_make_acts(sample_data):
     assert taken, "подделка не отдала ни одного возврата из пункта выдачи"
     assert return_acts.pending() == [], "обновление составило акт само"
     # Но получение записано — акт будет из чего составить.
-    free = return_acts.received_returns(accounts.default_account()["id"], store.local_day())
+    free = ozon_returns.received_returns(accounts.default_account()["id"], store.local_day())
     assert set(free) >= set(taken)
 
 
@@ -117,7 +118,7 @@ def test_act_takes_everything_received_that_day(sample_data):
     assert len(acts) == 1 and acts[0]["by_day"] is True
     assert acts[0]["received_day"] == store.local_day()
     assert acts[0]["total"] == result["added"]
-    assert not return_acts.received_returns(accounts.default_account()["id"], store.local_day())
+    assert not ozon_returns.received_returns(accounts.default_account()["id"], store.local_day())
 
 
 def test_act_title_names_the_day_the_number_and_the_time(sample_data):
@@ -191,11 +192,11 @@ def test_receipt_date_comes_from_the_platform(sample_data):
     old["visual"]["status"]["display_name"] = "Получен продавцом"
     old["logistic"]["final_moment"] = handover.isoformat()
     old["visual"]["change_moment"] = handover.isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     row = db.query_one("SELECT received_day FROM returns WHERE id = ?", (str(old["id"]),))
     assert row["received_day"] == store.local_day(handover.isoformat()), "записан сегодняшним числом"
-    assert str(old["id"]) not in return_acts.received_returns(account["id"], store.local_day())
+    assert str(old["id"]) not in ozon_returns.received_returns(account["id"], store.local_day())
 
 
 def test_receipt_date_comes_from_the_handover(sample_data):
@@ -215,7 +216,7 @@ def test_receipt_date_comes_from_the_handover(sample_data):
     assert store.local_day(flipped.isoformat()) != store.local_day(handover.isoformat())
     ids = client.receive(final_moment=handover.isoformat(), change_moment=flipped.isoformat())
     assert ids, "подделка не отдала ни одного возврата"
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     days = {
         row["received_day"] for row in db.query(
@@ -223,10 +224,10 @@ def test_receipt_date_comes_from_the_handover(sample_data):
         )
     }
     assert days == {store.local_day(handover.isoformat())}, "число взято из смены статуса"
-    assert len(return_acts.received_returns(
+    assert len(ozon_returns.received_returns(
         account["id"], store.local_day(handover.isoformat())
     )) == len(ids), "в акт попали не все возвраты поездки"
-    assert not return_acts.received_returns(account["id"], store.local_day(flipped.isoformat()))
+    assert not ozon_returns.received_returns(account["id"], store.local_day(flipped.isoformat()))
 
 
 def test_a_later_handover_moment_fixes_the_day(sample_data):
@@ -243,7 +244,7 @@ def test_a_later_handover_moment_fixes_the_day(sample_data):
     flipped = days_ago(3, hour=20)
     handover = flipped + timedelta(hours=13)
     target = client.receive(change_moment=flipped.isoformat(), final_moment=flipped.isoformat())[0]
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     assert db.query_one("SELECT received_day FROM returns WHERE id = ?", (target,))[
         "received_day"] == store.local_day(flipped.isoformat())
 
@@ -251,11 +252,11 @@ def test_a_later_handover_moment_fixes_the_day(sample_data):
     for item in client._returns:
         if str(item["id"]) == target:
             item["logistic"]["final_moment"] = handover.isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     row = db.query_one("SELECT received_at, received_day FROM returns WHERE id = ?", (target,))
     assert row["received_day"] == store.local_day(handover.isoformat()), "число залипло на первой записи"
-    assert target in return_acts.received_returns(account["id"], store.local_day(handover.isoformat()))
+    assert target in ozon_returns.received_returns(account["id"], store.local_day(handover.isoformat()))
 
 
 def test_a_moved_day_takes_the_return_out_of_the_old_act(sample_data):
@@ -276,7 +277,7 @@ def test_a_moved_day_takes_the_return_out_of_the_old_act(sample_data):
     ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
     target = client.receive(str(ready[0]["id"]),
                             change_moment=flipped.isoformat(), final_moment=flipped.isoformat())[0]
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     old_day = store.local_day(flipped.isoformat())
     act = make_act(day=old_day)["act_id"]
     assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] == act
@@ -285,11 +286,11 @@ def test_a_moved_day_takes_the_return_out_of_the_old_act(sample_data):
     for item in client._returns:
         if str(item["id"]) == target:
             item["logistic"]["final_moment"] = handover.isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] is None
     new_day = store.local_day(handover.isoformat())
-    assert target in return_acts.received_returns(account["id"], new_day)
+    assert target in ozon_returns.received_returns(account["id"], new_day)
     assert not return_acts.get(act), "пустой акт остался на экране"
     assert not return_acts.pending([account["id"]]), "обновление само составило акт"
 
@@ -308,14 +309,14 @@ def test_a_marked_return_stays_in_its_act(sample_data):
     ready = [r for r in client._returns if r["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"]
     target = client.receive(str(ready[0]["id"]),
                             change_moment=flipped.isoformat(), final_moment=flipped.isoformat())[0]
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     act = make_act(day=store.local_day(flipped.isoformat()))["act_id"]
     db.execute("UPDATE returns SET mark = 'ok' WHERE id = ?", (target,))
 
     for item in client._returns:
         if str(item["id"]) == target:
             item["logistic"]["final_moment"] = (flipped + timedelta(hours=13)).isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] == act
 
@@ -332,7 +333,7 @@ def test_a_confirmed_act_keeps_its_day(sample_data):
     client = ozon.get_client(account)
     flipped = days_ago(3, hour=20)
     target = client.receive(change_moment=flipped.isoformat(), final_moment=flipped.isoformat())[0]
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     day = store.local_day(flipped.isoformat())
     act = make_act(day=day)["act_id"]
     db.execute("UPDATE returns SET mark = 'ok' WHERE act_id = ?", (act,))
@@ -341,7 +342,7 @@ def test_a_confirmed_act_keeps_its_day(sample_data):
     for item in client._returns:
         if str(item["id"]) == target:
             item["logistic"]["final_moment"] = (flipped + timedelta(hours=13)).isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     row = db.query_one("SELECT received_day FROM returns WHERE id = ?", (target,))
     assert row["received_day"] == day, "число возврата в подтверждённом акте переписали"
@@ -362,7 +363,7 @@ def test_status_change_is_the_fallback(sample_data):
         "product": {"sku": 1, "offer_id": "X", "name": "Коляска", "quantity": 1},
     }
     with db.write() as conn:
-        store.upsert_return(conn, account["id"], raw)
+        ozon_returns.upsert_return(conn, account["id"], raw)
 
     row = db.query_one("SELECT received_at, received_day FROM returns WHERE id = ?", ("777000111",))
     assert row["received_day"] == store.local_day(flipped.isoformat())
@@ -382,14 +383,14 @@ def test_unreadable_moment_does_not_lose_the_return(sample_data):
     ids = client.receive(final_moment="10.05.2026 18:50", change_moment="позавчера")
     assert ids
     # Нечитаемый момент площадка всё равно отдаёт — окно загрузки его не режет.
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     rows = db.query(
         f"SELECT received_day FROM returns WHERE id IN ({','.join('?' for _ in ids)})", ids
     )
     assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["received_day"]) for row in rows)
     # И находятся: за сегодня, раз у площадки внятного числа не нашлось.
-    assert len(return_acts.received_returns(account["id"], store.local_day())) == len(ids)
+    assert len(ozon_returns.received_returns(account["id"], store.local_day())) == len(ids)
 
 
 def test_returns_of_one_trip_land_on_one_day(sample_data):
@@ -406,10 +407,10 @@ def test_returns_of_one_trip_land_on_one_day(sample_data):
                    final_moment=(morning + timedelta(minutes=5)).isoformat())
     client.receive(*[str(r["id"]) for r in ready[1:]],
                    final_moment=(morning + timedelta(hours=6)).isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     day = store.local_day(morning.isoformat())
-    assert len(return_acts.received_returns(account["id"], day)) == len(ready)
+    assert len(ozon_returns.received_returns(account["id"], day)) == len(ready)
     assert make_act(day=day)["added"] == len(ready), "в акт попали не все возвраты поездки"
 
 
@@ -434,11 +435,11 @@ def test_status_change_after_midnight_does_not_split_the_trip(sample_data):
                    final_moment=evening.isoformat(), change_moment=evening.isoformat())
     client.receive(*[str(r["id"]) for r in ready[1:]],
                    final_moment=evening.isoformat(), change_moment=late.isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     evening_day = store.local_day(evening.isoformat())
-    assert len(return_acts.received_returns(account["id"], evening_day)) == len(ready)
-    assert not return_acts.received_returns(account["id"], store.local_day(late.isoformat()))
+    assert len(ozon_returns.received_returns(account["id"], evening_day)) == len(ready)
+    assert not ozon_returns.received_returns(account["id"], store.local_day(late.isoformat()))
 
 
 def test_archive_does_not_get_into_todays_act(sample_data):
@@ -453,11 +454,11 @@ def test_archive_does_not_get_into_todays_act(sample_data):
         item["visual"]["status"]["display_name"] = "Получен продавцом"
         item["logistic"]["final_moment"] = earlier.isoformat()
         item["visual"]["change_moment"] = earlier.isoformat()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     today = [r["id"] for r in db.query("SELECT id FROM returns WHERE is_ready = 1")]
     client.receive(*today)
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     result = make_act(account)
     in_act = {row["id"] for row in return_acts.detail(result["act_id"])["ozon"]}
@@ -476,11 +477,11 @@ def test_several_acts_a_day_split_the_returns(sample_data):
 
     first_trip, second_trip = ready[:2], ready[2:]
     client.receive(*first_trip)
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     first = make_act()
 
     client.receive(*second_trip)
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     second = make_act()
 
     assert first["act_id"] != second["act_id"], "вторая поездка попала в акт первой"
@@ -504,13 +505,13 @@ def test_second_act_the_same_day_takes_only_the_new_returns(sample_data):
     ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
 
     client.receive(ready[0])
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     first = make_act()
     in_first = {row["id"] for row in return_acts.detail(first["act_id"])["ozon"]}
     assert ready[0] in in_first
 
     client.receive(ready[1])
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     second = make_act()
 
     assert second["added"] == 1, "во второй акт попало не только новое"
@@ -539,7 +540,7 @@ def test_a_return_is_never_in_two_acts(sample_data):
     ready = [row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1")]
     for chunk in (ready[:1], ready[1:3], ready[3:]):
         client.receive(*chunk)
-        sync.sync_returns(account)
+        ozon_returns.sync_returns(account)
         make_act()
         make_act()  # повтор вхолостую — акта из ничего быть не должно
 
@@ -552,7 +553,7 @@ def test_a_return_is_never_in_two_acts(sample_data):
 # --------------------------------------------- защита от повторной загрузки
 def test_repeat_sync_does_not_move_returns(acts):
     before = act_returns()
-    sync.sync_returns(accounts.default_account())
+    ozon_returns.sync_returns(accounts.default_account())
     assert act_returns() == before, "повторная синхронизация перетасовала акты"
 
 
@@ -561,7 +562,7 @@ def test_return_still_reported_as_received_is_not_taken_twice(acts):
     act = return_acts.pending()[0]
     before = {row["id"] for row in act["ozon"]}
     for _ in range(3):
-        sync.sync_returns(accounts.default_account())
+        ozon_returns.sync_returns(accounts.default_account())
         make_act()
     assert len(return_acts.pending()) == 1, "повтор статуса завёл лишний акт"
     assert {row["id"] for row in return_acts.pending()[0]["ozon"]} == before
@@ -570,7 +571,7 @@ def test_return_still_reported_as_received_is_not_taken_twice(acts):
 def test_moment_of_receipt_is_written_once(acts):
     """Дата получения не переписывается: иначе возврат уехал бы в новый акт."""
     row = db.query_one("SELECT id, received_at FROM returns WHERE received_at IS NOT NULL LIMIT 1")
-    sync.sync_returns(accounts.default_account())
+    ozon_returns.sync_returns(accounts.default_account())
     again = db.query_one("SELECT received_at FROM returns WHERE id = ?", (row["id"],))
     assert again["received_at"] == row["received_at"]
 
@@ -581,7 +582,7 @@ def test_return_of_a_confirmed_act_is_never_taken_again(acts):
     mark_all(act)
     return_acts.confirm(act["id"], {"login": "admin"})
 
-    sync.sync_returns(accounts.default_account())
+    ozon_returns.sync_returns(accounts.default_account())
     assert make_act()["act_id"] is None, "подтверждённые возвраты собрались заново"
     assert return_acts.pending() == []
     still = {row["act_id"] for row in db.query("SELECT act_id FROM returns WHERE act_id IS NOT NULL")}
@@ -613,7 +614,7 @@ def test_only_the_chosen_day_gets_into_the_act(sample_data):
 
 def test_day_without_receipts_says_so(sample_data):
     account = accounts.default_account()
-    result = return_acts.from_received(account["id"], "2001-01-01", user={"login": "admin"})
+    result = ozon_returns.from_received(account["id"], "2001-01-01", user={"login": "admin"})
     assert result["status"] == "warning"
     assert result["act_id"] is None
     assert "01.01.2001" in result["message"]
@@ -717,7 +718,7 @@ def test_sync_puts_nothing_into_acts(sample_data):
         [r for r in original(*a, **kw)[0] if str(r.get("id")) != str(target)],
         original(*a, **kw)[1],
     )
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     client.returns_list = original
 
     assert return_acts.pending() == [], "обновление само завело акт"
@@ -778,24 +779,24 @@ def test_received_statuses_are_a_separate_setting(sample_data):
     Иначе включить акты значило бы показать сборщику то, за чем ехать уже не
     надо, — а выключить показ значило бы потерять акты.
     """
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
-    assert options.get_received_statuses() == ["ReceivedBySeller"]
-    assert set(options.wanted_statuses()) == {"ArrivedAtReturnPlace", "ReceivedBySeller"}
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+    assert ozon_returns.get_received_statuses() == ["ReceivedBySeller"]
+    assert set(ozon_returns.wanted_statuses()) == {"ArrivedAtReturnPlace", "ReceivedBySeller"}
 
 
 def test_status_in_both_lists_stays_on_the_pickup_list(sample_data):
     """За таким возвратом ещё едут: закрывать актом неполученное нельзя."""
-    options.set_received_statuses(["ArrivedAtReturnPlace", "ReceivedBySeller"])
+    ozon_returns.set_received_statuses(["ArrivedAtReturnPlace", "ReceivedBySeller"])
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
-    sync.sync_returns(accounts.default_account())
+    ozon_returns.sync_returns(accounts.default_account())
 
     ready = db.query("SELECT received_at FROM returns WHERE is_ready = 1")
     assert ready and all(row["received_at"] is None for row in ready)
 
 
 def test_empty_received_list_turns_the_acts_off(sample_data):
-    options.set_received_statuses([])
+    ozon_returns.set_received_statuses([])
     db.execute("DELETE FROM return_acts")
     db.execute("UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL")
     take_everything()
@@ -1011,7 +1012,7 @@ def test_owner_deletes_an_act_and_the_day_can_be_taken_again(client):
         assert row["note"] is None and row["mark_by"] is None
 
     # Момент получения — факт площадки, его не трогали: акт собирается за то же число.
-    assert set(return_acts.received_returns(account["id"], store.local_day())) == set(ids)
+    assert set(ozon_returns.received_returns(account["id"], store.local_day())) == set(ids)
     again = make_act()
     assert again["status"] == "ok" and again["added"] == len(ids)
     assert return_acts.detail(again["act_id"])["unmarked"] == len(ids)
@@ -1274,7 +1275,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
 
     client.returns_list = spy
     try:
-        sync.sync_returns(account)
+        ozon_returns.sync_returns(account)
     finally:
         client.returns_list = original
 
@@ -1292,10 +1293,10 @@ def test_received_older_than_the_window_are_not_loaded(sample_data):
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    long_ago = days_ago(options.get_received_days() + 30)
+    long_ago = days_ago(ozon_returns.get_received_days() + 30)
     ids = client.receive(final_moment=long_ago.isoformat(), change_moment=long_ago.isoformat())
     assert ids
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     # Строки в базе остаются — они загружались, пока лежали в пункте выдачи.
     # Проверяем другое: полученными они не записались, значит и в акт за число
@@ -1311,23 +1312,23 @@ def test_window_depth_is_a_setting(sample_data):
     """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
     from app.markets.ozon import client as ozon
 
-    assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
-    options.set_received_days(40)
-    assert options.get_received_days() == 40
+    assert ozon_returns.get_received_days() == ozon_returns.DEFAULT_RECEIVED_DAYS
+    ozon_returns.set_received_days(40)
+    assert ozon_returns.get_received_days() == 40
 
     account = accounts.default_account()
     client = ozon.get_client(account)
     moment = days_ago(30)
     ids = client.receive(final_moment=moment.isoformat(), change_moment=moment.isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     assert len(db.query(
         f"SELECT id FROM returns WHERE received_at IS NOT NULL "
         f"AND id IN ({','.join('?' for _ in ids)})", ids
     )) == len(ids), "возврат внутри расширенного окна не записался полученным"
 
     # Бессмысленные значения обрезаются, а не роняют загрузку.
-    assert options.set_received_days(0) == 1
-    assert options.set_received_days(10 ** 6) == options.MAX_RECEIVED_DAYS
+    assert ozon_returns.set_received_days(0) == 1
+    assert ozon_returns.set_received_days(10 ** 6) == ozon_returns.MAX_RECEIVED_DAYS
 
 
 def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
@@ -1338,12 +1339,12 @@ def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
     всё, до чего не дочитали.
     """
     account = accounts.default_account()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     ready_before = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
     assert ready_before, "в демо-данных нет возвратов к выдаче"
 
     monkeypatch.setattr(sync, "RETURNS_MAX_PAGES", 0)
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     after = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
     assert after == ready_before, "обрыв обхода вычистил список выдачи"
 
@@ -1490,7 +1491,7 @@ def test_owner_deletes_an_act_and_the_day_can_be_taken_again(client):
         assert row["note"] is None and row["mark_by"] is None
 
     # Момент получения — факт площадки, его не трогали: акт собирается за то же число.
-    assert set(return_acts.received_returns(account["id"], store.local_day())) == set(ids)
+    assert set(ozon_returns.received_returns(account["id"], store.local_day())) == set(ids)
     again = make_act()
     assert again["status"] == "ok" and again["added"] == len(ids)
     assert return_acts.detail(again["act_id"])["unmarked"] == len(ids)
@@ -1753,7 +1754,7 @@ def test_received_are_asked_by_status_and_window_at_once(sample_data):
 
     client.returns_list = spy
     try:
-        sync.sync_returns(account)
+        ozon_returns.sync_returns(account)
     finally:
         client.returns_list = original
 
@@ -1771,10 +1772,10 @@ def test_received_older_than_the_window_are_not_loaded(sample_data):
 
     account = accounts.default_account()
     client = ozon.get_client(account)
-    long_ago = days_ago(options.get_received_days() + 30)
+    long_ago = days_ago(ozon_returns.get_received_days() + 30)
     ids = client.receive(final_moment=long_ago.isoformat(), change_moment=long_ago.isoformat())
     assert ids
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     # Строки в базе остаются — они загружались, пока лежали в пункте выдачи.
     # Проверяем другое: полученными они не записались, значит и в акт за число
@@ -1790,23 +1791,23 @@ def test_window_depth_is_a_setting(sample_data):
     """Глубину окна задают в «Настройках» — ездят не все раз в неделю."""
     from app.markets.ozon import client as ozon
 
-    assert options.get_received_days() == options.DEFAULT_RECEIVED_DAYS
-    options.set_received_days(40)
-    assert options.get_received_days() == 40
+    assert ozon_returns.get_received_days() == ozon_returns.DEFAULT_RECEIVED_DAYS
+    ozon_returns.set_received_days(40)
+    assert ozon_returns.get_received_days() == 40
 
     account = accounts.default_account()
     client = ozon.get_client(account)
     moment = days_ago(30)
     ids = client.receive(final_moment=moment.isoformat(), change_moment=moment.isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     assert len(db.query(
         f"SELECT id FROM returns WHERE received_at IS NOT NULL "
         f"AND id IN ({','.join('?' for _ in ids)})", ids
     )) == len(ids), "возврат внутри расширенного окна не записался полученным"
 
     # Бессмысленные значения обрезаются, а не роняют загрузку.
-    assert options.set_received_days(0) == 1
-    assert options.set_received_days(10 ** 6) == options.MAX_RECEIVED_DAYS
+    assert ozon_returns.set_received_days(0) == 1
+    assert ozon_returns.set_received_days(10 ** 6) == ozon_returns.MAX_RECEIVED_DAYS
 
 
 def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
@@ -1817,12 +1818,12 @@ def test_page_ceiling_does_not_pass_for_a_full_walk(sample_data, monkeypatch):
     всё, до чего не дочитали.
     """
     account = accounts.default_account()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     ready_before = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
     assert ready_before, "в демо-данных нет возвратов к выдаче"
 
     monkeypatch.setattr(sync, "RETURNS_MAX_PAGES", 0)
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     after = db.query_one("SELECT COUNT(*) AS c FROM returns WHERE is_ready = 1")["c"]
     assert after == ready_before, "обрыв обхода вычистил список выдачи"
 
@@ -1846,7 +1847,7 @@ def test_a_return_in_transit_never_enters_an_act(sample_data):
     )
 
     for _ in range(2):   # повторное обновление тоже не должно её подбирать
-        sync.sync_returns(account)
+        ozon_returns.sync_returns(account)
         assert db.query_one("SELECT act_id FROM returns WHERE id = 'TRANSIT-1'")["act_id"] is None
 
     # И вообще ни в одном акте нет строки без момента получения.
@@ -1905,11 +1906,11 @@ def test_acts_are_sorted_by_the_receipt_day(sample_data):
 
     older, newer = days_ago(5, hour=9), days_ago(2, hour=9)
     client.receive(str(ready[0]["id"]), final_moment=newer.isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     make_act(day=store.local_day(newer.isoformat()))          # свежее число, составлен первым
 
     client.receive(*[str(r["id"]) for r in ready[1:]], final_moment=older.isoformat())
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
     make_act(day=store.local_day(older.isoformat()))          # старое число, составлен вторым
 
     days = [a["received_day"] for a in return_acts.pending([account["id"]])]
@@ -1929,14 +1930,14 @@ def test_returned_to_pickup_leaves_the_act_candidates(sample_data):
     taken = take_everything(account)
     assert taken
     target = taken[0]
-    assert target in return_acts.received_returns(account["id"], store.local_day())
+    assert target in ozon_returns.received_returns(account["id"], store.local_day())
 
     # Площадка снова отдаёт его как лежащий в пункте.
     db.execute(
         "UPDATE returns SET status_sys = 'ArrivedAtReturnPlace', is_ready = 1 WHERE id = ?",
         (target,),
     )
-    assert target not in return_acts.received_returns(account["id"], store.local_day())
+    assert target not in ozon_returns.received_returns(account["id"], store.local_day())
 
     result = make_act(account)
     assert db.query_one("SELECT act_id FROM returns WHERE id = ?", (target,))["act_id"] is None
@@ -1957,7 +1958,7 @@ def test_stale_pickup_flag_is_cleared_by_the_status(sample_data):
     в списке и уходил на печать: сборщик ехал за тем, чего в пункте нет.
     """
     account = accounts.default_account()
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     # Строка от прошлых обновлений: статус уже не «к выдаче», а признак остался.
     # Комментарий бережёт её от чистки — видно, что с ней сделает обновление.
@@ -1968,7 +1969,7 @@ def test_stale_pickup_flag_is_cleared_by_the_status(sample_data):
     )
     assert db.query_one("SELECT is_ready FROM returns WHERE id = 'STALE-1'")["is_ready"] == 1
 
-    sync.sync_returns(account)
+    ozon_returns.sync_returns(account)
 
     assert db.query_one("SELECT is_ready FROM returns WHERE id = 'STALE-1'")["is_ready"] == 0, (
         "возврат остался в списке к выдаче"
@@ -1986,7 +1987,7 @@ def test_pickup_list_is_exactly_the_ticked_statuses(sample_data):
     from app.routes import returns as returns_routes
 
     account = accounts.default_account()
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
     take_everything(account)
 
     # Строка с чужим статусом и взведённым признаком — так бывает после
@@ -2010,7 +2011,7 @@ def test_act_is_exactly_the_ticked_received_statuses(sample_data):
     Отмечен «Получен продавцом» — значит в акт идёт только он.
     """
     account = accounts.default_account()
-    assert options.get_received_statuses() == ["ReceivedBySeller"]
+    assert ozon_returns.get_received_statuses() == ["ReceivedBySeller"]
     take_everything(account)
     result = make_act(account)
     assert result["act_id"], result["message"]
@@ -2031,11 +2032,11 @@ def test_changing_the_ticks_changes_both_sections(sample_data):
     assert make_act(account)["act_id"]
 
     # «Получен продавцом» переносим в список загружаемых: теперь это «к выдаче».
-    options.set_returns_statuses(["ReceivedBySeller"])
-    options.set_received_statuses([])
+    ozon_returns.set_returns_statuses(["ReceivedBySeller"])
+    ozon_returns.set_received_statuses([])
 
     shown = returns_routes._filter_returns([account["id"]])
     assert shown and all(r["status_sys"] == "ReceivedBySeller" for r in shown)
-    assert return_acts.received_returns(account["id"], store.local_day()) == [], (
+    assert ozon_returns.received_returns(account["id"], store.local_day()) == [], (
         "акт собирается по снятой галочке"
     )

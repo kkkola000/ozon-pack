@@ -43,6 +43,19 @@ class NavItem:
 
 
 @dataclass(frozen=True)
+class CatalogSource:
+    """Откуда площадка наполняет общий каталог товаров и штрихкодов.
+
+    client(account) — клиент с product_list/product_info; save(conn, account_id,
+    items) — сохранить карточки; key(item) — ключ карточки в ответе.
+    """
+
+    client: Callable[[dict], Any]
+    save: Callable[[Any, int, list[dict]], int]
+    key: Callable[[dict], str | None]
+
+
+@dataclass(frozen=True)
 class Market:
     code: str                    # "ozon" — так площадка записана в accounts.marketplace
     title: str                   # «Яндекс Маркет» — как показать человеку
@@ -57,9 +70,20 @@ class Market:
     reset_client: Callable[[int | None], None]
     probe: Callable[[str, str], None]        # проверить ключи до сохранения; KeyCheckError с текстом
     ping: Callable[[dict], dict]             # проверить ключи кабинета; MarketError при отказе
-    sync: Callable[..., dict]                # загрузка данных кабинета: sync(account, *, returns=True)
+    sync: Callable[..., dict]                # загрузка данных кабинета: sync(account, *, returns_too=True)
     nav: Callable[[dict], list[NavItem]]     # меню и счётчики для кабинета
     stats: Callable[[int], dict[str, int]]   # плитки в «Настройках»
     # Запасные ключи из .env — только там, где они исторически были (Ozon).
     env_credentials: Callable[[], tuple[str, str]] | None = None
+    # Свои таблицы: DDL и какие из них хранят ответ площадки целиком (колонка raw).
+    schema: str = ""
+    raw_tables: tuple[str, ...] = ()
+    # Разовые правки своих таблиц в старых базах; вызываются после создания схемы.
+    migrate: Callable[[Any], None] | None = None
+    # Что ещё не выгружено из стикеров — для замка на «Сборке». None — стикеров нет.
+    pending_labels: Callable[[int], list[str]] | None = None
+    # Умеет ли площадка наполнять каталог товаров (штрихкоды для сборки).
+    catalog: CatalogSource | None = None
+    # Дополнительные переменные для страницы «Настройки» текущего кабинета.
+    settings_context: Callable[[dict], dict] | None = None
     extra: dict[str, Any] = field(default_factory=dict)

@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import re
 
-from ...core import db, report, store
+from ...core import db, report
 from .client import STATUS_LABELS
+from . import store
+from ...core import store as core_store
 
 # Заказы, которые сборщику имеет смысл собирать.
 PACKABLE = "ready_to_ship"
@@ -239,7 +241,7 @@ def open_order(account: dict, user: dict, order: dict, code: str | None = None) 
             sound="error",
             state=load_state(account, user),
         )
-    if store.claim_is_active(order.get("claim_at")) and order.get("claim_user_id") != user["id"]:
+    if core_store.claim_is_active(order.get("claim_at")) and order.get("claim_user_id") != user["id"]:
         return ScanResult(
             "error",
             f"Заказ {number} уже собирает {order.get('claim_login')}.",
@@ -363,3 +365,16 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None,
         completed_order=order_id,
         state=load_state(account, user),
     )
+
+
+# ------------------------------------------------------------------- Avito
+def pending_labels(account_id: int) -> list[str]:
+    """Заказы «Отправьте заказ», чья этикетка ещё не выгружена."""
+    from . import client as avito
+
+    rows = db.query(
+        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? "
+        "AND local_state != 'packed' AND label_saved_at IS NULL ORDER BY id",
+        (account_id, avito.STATUS_READY_TO_SHIP),
+    )
+    return [row["id"] for row in rows]

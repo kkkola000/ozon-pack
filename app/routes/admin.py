@@ -4,10 +4,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from ..core import access, accounts, db, options, report, security, sync
-from ..core.deps import check_csrf, current_account, require_manager, require_market, require_section, templates
+from ..core import access, accounts, db, report, security, sync
+from ..core.deps import check_csrf, current_account, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
+
 
 router = APIRouter()
 
@@ -158,11 +159,8 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "manager_only": access.MANAGER_ONLY,
             "can_manage_users": access.is_manager(user),
             "is_owner": access.is_owner(user),
-            "returns_statuses": options.get_returns_statuses(),
-            "returns_choices": options.RETURN_STATUS_CHOICES,
-            "returns_source": options.returns_source(),
-            "received_statuses": options.get_received_statuses(),
-            "received_days": options.get_received_days(),
+            # Что ещё показать в настройках — знает площадка (у Ozon: статусы возвратов).
+            **(market.settings_context(account) if market and market.settings_context else {}),
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
@@ -395,29 +393,6 @@ def api_test_account(account_id: int, request: Request, admin: dict = Depends(re
     return {"status": "ok", "message": f"«{account['title']}»: ключи работают", "result": result}
 
 
-@router.post("/api/postings/{posting_number}/reset")
-def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_manager),
-                      account: dict = Depends(require_market("ozon"))):
-    """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
-    check_csrf(request)
-    row = db.query_one(
-        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Отправление не найдено")
-    state = "cancelled" if row["status"] == "cancelled" else "new"
-    db.execute(
-        "UPDATE postings SET local_state = ?, packed_at = NULL, packed_by = NULL,"
-        " claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE account_id = ? AND posting_number = ?",
-        (state, account["id"], posting_number),
-    )
-    db.log_event(
-        "posting_reset", level="warn", account_id=account["id"], user=admin,
-        posting_number=posting_number, message="Сброшена отметка сборки",
-    )
-    return {"status": "ok", "message": f"{posting_number}: отметка сборки снята"}
-
-
 @router.post("/api/report/cutoff")
 def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     """Во сколько закрывается отчётный день об отгрузке."""
@@ -430,71 +405,4 @@ def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict =
         "status": "ok",
         "message": f"Отчётный день закрывается в {value}. Сканы после этого времени идут в следующий день.",
         "cutoff": value,
-    }
-
-
-@router.post("/api/returns/statuses")
-def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                         account: dict = Depends(require_market("ozon"))):
-    """Какие статусы возвратов панель загружает и показывает как доступные."""
-    check_csrf(request)
-    raw = payload.get("statuses") or []
-    known = {code for code, _label, _hint in options.RETURN_STATUS_CHOICES}
-    statuses = [str(s).strip() for s in raw if str(s).strip() in known]
-    if not statuses:
-        raise HTTPException(status_code=400, detail="Выберите хотя бы один статус")
-
-    options.set_returns_statuses(statuses, user=admin)
-    try:
-        result = sync.sync_returns(account)
-    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
-        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
-    names = ", ".join(options.status_label(code) for code in statuses)
-    return {
-        "status": "ok",
-        "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
-        "result": result,
-    }
-
-
-@router.post("/api/returns/received-statuses")
-def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                          account: dict = Depends(require_market("ozon"))):
-    """В каких статусах возврат считается полученным — из них собирается акт.
-
-    Пустой список разрешён: это «акты не вести». Отказывать здесь, как в списке
-    к выдаче, нельзя — иначе выключить акты было бы невозможно.
-    """
-    check_csrf(request)
-    raw = payload.get("statuses") or []
-    known = {code for code, _label, _hint in options.RETURN_STATUS_CHOICES}
-    unknown = [str(s).strip() for s in raw if str(s).strip() not in known]
-    if unknown:
-        raise HTTPException(status_code=400, detail=f"Неизвестный статус: {', '.join(unknown)}")
-    statuses = [str(s).strip() for s in raw if str(s).strip()]
-
-    # Глубина окна сохраняется вместе со статусами: обе настройки про одно и то
-    # же — что панель считает полученным и за какой срок это забирает.
-    days = payload.get("days")
-    if days is not None:
-        try:
-            days = int(days)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="Срок указывается числом дней") from None
-        options.set_received_days(days, user=admin)
-
-    options.set_received_statuses(statuses, user=admin)
-    try:
-        result = sync.sync_returns(account)
-    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
-        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
-    if not statuses:
-        return {"status": "ok", "result": result,
-                "message": "Акты больше не из чего составлять: полученные возвраты не загружаются."}
-    names = ", ".join(options.status_label(code) for code in statuses)
-    return {
-        "status": "ok",
-        "message": f"Полученными считаются возвраты в статусах: {names}. "
-                   f"Обновлено возвратов: {result.get('returns', 0)}.",
-        "result": result,
     }

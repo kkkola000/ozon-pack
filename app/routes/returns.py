@@ -6,11 +6,23 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ..core import accounts, db, options, return_acts, returns_pdf, store, sync
+from ..core import accounts, db, return_acts, returns_pdf, store, sync
 from ..markets.avito import client as avito
 from ..core.deps import check_csrf, require_market, require_owner, require_section, templates
-from ..markets.ozon import client as ozon
-from ..markets.ozon.client import OzonError
+
+
+def ozon_returns():
+    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
+    from ..markets.ozon import returns as _module
+
+    return _module
+
+
+def avito_store():
+    """Модуль площадки — лениво: ядро не импортирует площадки при загрузке."""
+    from ..markets.avito import store as _module
+
+    return _module
 
 router = APIRouter()
 
@@ -37,7 +49,7 @@ def _filter_returns(
     if not account_ids:
         return []
     placeholders = ",".join("?" for _ in account_ids)
-    ready_sql, ready_params = options.pickup_sql("r.status_sys")
+    ready_sql, ready_params = ozon_returns().pickup_sql("r.status_sys")
     conditions = [f"r.account_id IN ({placeholders})", ready_sql]
     params: list = list(account_ids) + list(ready_params)
     if scheme in ("FBO", "FBS"):
@@ -62,7 +74,7 @@ def _filter_returns(
         f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
         params + [limit],
     )
-    return [store.return_view(row) for row in rows]
+    return [ozon_returns().return_view(row) for row in rows]
 
 
 def _avito_returns(account_ids: list[int], limit: int = 500) -> list[dict]:
@@ -77,7 +89,7 @@ def _avito_returns(account_ids: list[int], limit: int = 500) -> list[dict]:
         f"ORDER BY a.title, (o.updated_at_api IS NULL), o.updated_at_api DESC LIMIT ?",
         list(account_ids) + [avito.STATUS_ON_RETURN, limit],
     )
-    return [store.avito_view(row) for row in rows]
+    return [avito_store().avito_view(row) for row in rows]
 
 
 def _accounts_by_marketplace() -> tuple[list[int], list[int]]:
@@ -99,7 +111,7 @@ def ready_everywhere() -> int:
     total = 0
     if ozon_ids:
         placeholders = ",".join("?" for _ in ozon_ids)
-        ready_sql, ready_params = options.pickup_sql()
+        ready_sql, ready_params = ozon_returns().pickup_sql()
         total += db.query_one(
             f"SELECT COUNT(*) AS c FROM returns WHERE {ready_sql} AND account_id IN ({placeholders})",
             list(ready_params) + list(ozon_ids),
@@ -114,7 +126,7 @@ def ready_everywhere() -> int:
 
 
 def _places(account: dict) -> list[str]:
-    ready_sql, ready_params = options.pickup_sql()
+    ready_sql, ready_params = ozon_returns().pickup_sql()
     rows = db.query(
         f"SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND {ready_sql} "
         "AND place_name IS NOT NULL ORDER BY place_name",
@@ -135,7 +147,7 @@ def returns_page(
 ):
     items = _filter_returns([account["id"]], scheme, place, q)
     aid = (account["id"],)
-    ready_sql, ready_params = options.pickup_sql()
+    ready_sql, ready_params = ozon_returns().pickup_sql()
     ready_args = list(aid) + list(ready_params)
     totals = {
         "ready": db.query_one(
@@ -152,7 +164,7 @@ def returns_page(
     }
     import json as _json
 
-    wanted = options.get_returns_statuses()
+    wanted = ozon_returns().get_returns_statuses()
     try:
         histogram = _json.loads(db.kv_get("returns_last_statuses") or "{}")
     except ValueError:
@@ -166,8 +178,8 @@ def returns_page(
             "request": request,
             "user": user,
             "items": items,
-            "wanted_labels": [options.status_label(code) for code in wanted],
-            "hidden_statuses": [(options.status_label(code), count) for code, count in sorted(hidden.items())],
+            "wanted_labels": [ozon_returns().status_label(code) for code in wanted],
+            "hidden_statuses": [(ozon_returns().status_label(code), count) for code, count in sorted(hidden.items())],
             "places": _places(account),
             "account": account,
             "scheme": scheme,
@@ -206,7 +218,7 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
     check_csrf(request)
     day = _valid_day(str(payload.get("day") or ""))
     if bool(payload.get("dry_run")):
-        ids = return_acts.received_returns(account["id"], day)
+        ids = ozon_returns().received_returns(account["id"], day)
         return {
             "status": "ok" if ids else "warning",
             "found": len(ids),
@@ -214,7 +226,7 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
             "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
                         "За это число полученных возвратов без акта нет"),
         }
-    return return_acts.from_received(account["id"], day, user=user)
+    return ozon_returns().from_received(account["id"], day, user=user)
 
 
 def _valid_day(day: str) -> str:
@@ -481,40 +493,3 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         # Отдаём их сразу — иначе кнопка появляется только после перезагрузки.
         "act": return_acts.progress(row["act_id"]) if row["act_id"] else None,
     }
-
-
-@router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_market("ozon"))):
-    """Штрихкод Ozon на выдачу возвратов (FBS)."""
-    try:
-        pdf = ozon.get_client(account).giveout_pdf()
-    except OzonError as exc:
-        raise HTTPException(status_code=502, detail=f"Ozon не отдал документ выдачи: {exc.message}") from exc
-    db.log_event(
-        "returns_giveout", account_id=account["id"], user=user, message="Запрошен штрихкод выдачи возвратов"
-    )
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": 'inline; filename="giveout.pdf"', "Cache-Control": "no-store"},
-    )
-
-
-@router.post("/api/returns/sync")
-def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("returns")),
-                     account: dict = Depends(require_market("ozon"))):
-    check_csrf(request)
-    full = bool(payload.get("full"))
-    try:
-        result = sync.sync_returns(account, full=full)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {"status": "ok", "message": _sync_message(result), "result": result}
-
-
-def _sync_message(result: dict) -> str:
-    """Что сделало обновление. Акт панель не составляет — это решение сборщика."""
-    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
-    if result.get("returns_gone"):
-        parts.append(f"ушло из выдачи: {result['returns_gone']}")
-    return ". ".join(parts)

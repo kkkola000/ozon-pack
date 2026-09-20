@@ -1,10 +1,12 @@
 """Сценарии рабочего места сборщика — то, ради чего вся панель."""
 import pytest
 
-from app.core import db, store
+from app.core import db
 from app.markets.ozon import pack as packing
 from app.core.config import settings
 from tests.conftest import barcode_of, pick_posting
+from app.markets.ozon import store as ozon_store
+from app.markets.ozon import sync as ozon_sync
 
 
 def scan_all_items(account, user, posting):
@@ -83,7 +85,7 @@ def test_wrong_label_is_blocked(account, sample_data, user):
     packing.select_posting(account, user, first["posting_number"])
     other = db.query_one(
         "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? AND posting_number != ? LIMIT 1",
-        (account["id"], store.STATUS_AWAITING_DELIVER, first["posting_number"]),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER, first["posting_number"]),
     )["posting_number"]
 
     result = packing.scan(account, user, other)
@@ -95,11 +97,11 @@ def test_wrong_label_is_blocked(account, sample_data, user):
 def test_label_before_all_items_is_blocked(account, sample_data, user):
     row = db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND status = ? AND items_count > 1 AND local_state = 'new' LIMIT 1",
-        (account["id"], store.STATUS_AWAITING_DELIVER),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER),
     )
     if not row:
         pytest.skip("в демо-данных нет многопозиционного отправления")
-    posting = store.posting_view(row)
+    posting = ozon_store.posting_view(row)
     packing.select_posting(account, user, posting["posting_number"])
 
     result = packing.scan(account, user, posting["posting_number"])
@@ -139,7 +141,7 @@ def test_claim_blocks_second_packer(account, sample_data, user, other_user):
 
 
 def test_awaiting_packaging_requires_ship_first(account, sample_data, user):
-    posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
+    posting = pick_posting(status=ozon_store.STATUS_AWAITING_PACKAGING)
     result = packing.scan(account, user, posting["posting_number"])
     assert result["action"] == "needs_ship"
     assert packing.load_state(account, user)["active"] is None
@@ -147,10 +149,10 @@ def test_awaiting_packaging_requires_ship_first(account, sample_data, user):
 
 def test_auto_ship_on_scan_setting(account, sample_data, user, monkeypatch):
     monkeypatch.setattr(settings, "auto_ship_on_scan", True)
-    posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
+    posting = pick_posting(status=ozon_store.STATUS_AWAITING_PACKAGING)
     result = packing.scan(account, user, posting["posting_number"])
     assert result["action"] == "posting_selected"
-    assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["status"] == store.STATUS_AWAITING_DELIVER
+    assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["status"] == ozon_store.STATUS_AWAITING_DELIVER
 
 
 def test_unknown_code(account, sample_data, user):
@@ -170,10 +172,10 @@ def test_release_frees_posting(account, sample_data, user, other_user):
 
 
 def test_ship_moves_status(account, sample_data, user):
-    posting = pick_posting(status=store.STATUS_AWAITING_PACKAGING)
+    posting = pick_posting(status=ozon_store.STATUS_AWAITING_PACKAGING)
     result = packing.ship_posting(account, user, posting["posting_number"])
     assert result["status"] == "ok"
-    assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["status"] == store.STATUS_AWAITING_DELIVER
+    assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))["status"] == ozon_store.STATUS_AWAITING_DELIVER
 
     again = packing.ship_posting(account, user, posting["posting_number"])
     assert again["status"] == "ok"  # повторный вызов безопасен
@@ -192,7 +194,7 @@ def test_switching_posting_releases_previous(account, sample_data, user, other_u
     packing.select_posting(account, user, first["posting_number"])
     second = db.query_one(
         "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? AND posting_number != ? LIMIT 1",
-        (account["id"], store.STATUS_AWAITING_DELIVER, first["posting_number"]),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER, first["posting_number"]),
     )["posting_number"]
     packing.select_posting(account, user, second)
 
@@ -203,7 +205,6 @@ def test_switching_posting_releases_previous(account, sample_data, user, other_u
 
 def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
     """Отгруженное отправление не должно оставаться во вкладке «Собранные»."""
-    from app.core import sync
     from app.markets.ozon.routes import _list_postings
 
     posting = pick_posting(positions=1)
@@ -217,7 +218,7 @@ def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
 
     # Ozon отгрузил отправление — статус ушёл из «Ожидает отгрузки»
     sample_data._postings[number]["status"] = "delivering"
-    sync.sync_postings()
+    ozon_sync.sync_postings()
 
     assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], number))["status"] == "delivering"
     packed_after = [p["posting_number"] for p in _list_postings(account, "packed")]
@@ -232,7 +233,6 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     """Отменённое отправление тоже не место в очереди на отгрузку."""
     import json
 
-    from app.core import store
     from app.markets.ozon.routes import _list_postings
 
     posting = pick_posting(positions=1)
@@ -244,7 +244,7 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     raw = json.loads(db.query_one("SELECT raw FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], number))["raw"])
     raw["status"] = "cancelled"
     with db.write() as conn:
-        store.upsert_posting(conn, account["id"], raw)
+        ozon_store.upsert_posting(conn, account["id"], raw)
 
     assert number not in [p["posting_number"] for p in _list_postings(account, "packed")]
 
@@ -264,7 +264,7 @@ def test_switching_cabinet_frees_the_claim(account, sample_data, user, other_use
     sync.sync_account(second)
     other = db.query_one(
         "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? AND local_state = 'new' LIMIT 1",
-        (second["id"], store.STATUS_AWAITING_DELIVER),
+        (second["id"], ozon_store.STATUS_AWAITING_DELIVER),
     )["posting_number"]
     packing.select_posting(second, user, other)
 
@@ -346,7 +346,7 @@ def test_no_print_on_wrong_scans_in_open_posting(account, sample_data, user):
     other_number = db.query_one(
         "SELECT posting_number FROM postings WHERE account_id = ? AND posting_number != ? "
         "AND status = ? AND local_state = 'new' LIMIT 1",
-        (account["id"], number, store.STATUS_AWAITING_DELIVER),
+        (account["id"], number, ozon_store.STATUS_AWAITING_DELIVER),
     )["posting_number"]
 
     for code in (foreign_sku and barcode_of(foreign_sku), other_number, "нет-такого-кода"):
@@ -405,7 +405,7 @@ def sku_in_several_postings(account, user):
         GROUP BY i.sku HAVING COUNT(DISTINCT i.posting_number) > 1
         LIMIT 1
         """,
-        (account["id"], store.STATUS_AWAITING_DELIVER),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER),
     )
     if not row:
         pytest.skip("в демо-данных нет товара сразу в нескольких отправлениях")

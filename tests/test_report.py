@@ -3,9 +3,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.core import db, report, store
+from app.core import db, report
 from app.markets.ozon import pack as packing
 from tests.conftest import barcode_of, pick_posting
+from app.markets.ozon import store as ozon_store
 
 
 def shipped_rows(status=None):
@@ -93,7 +94,7 @@ def test_every_unit_gets_its_own_row(account, sample_data, user):
         WHERE p.account_id = ? AND p.status = ? AND p.local_state = 'new' AND i.quantity > 1
         LIMIT 1
         """,
-        (account["id"], store.STATUS_AWAITING_DELIVER),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER),
     )
     if not posting:
         pytest.skip("в тестовых данных нет позиции с количеством больше одного")
@@ -135,7 +136,7 @@ def test_wrong_label_is_recorded_as_error(account, sample_data, user):
     other = db.query_one(
         "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? "
         "AND local_state = 'new' AND posting_number != ? LIMIT 1",
-        (account["id"], store.STATUS_AWAITING_DELIVER, first["posting_number"]),
+        (account["id"], ozon_store.STATUS_AWAITING_DELIVER, first["posting_number"]),
     )["posting_number"]
 
     packing.select_posting(account, user, first["posting_number"])

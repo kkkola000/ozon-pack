@@ -2,7 +2,9 @@
 import pytest
 
 from app.markets.avito import pack as avito_pack
-from app.core import db, report, store
+from app.core import db, report
+from app.markets.avito import sync as avito_sync
+from app.markets.avito import store as avito_store
 
 
 def orders(account, status="ready_to_ship"):
@@ -22,9 +24,8 @@ def shipped(status=None):
 
 @pytest.fixture
 def avito_data(avito_account):
-    from app.core import sync
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     ready = orders(avito_account)
     assert ready, "в подделке Avito нет заказов «Отправьте заказ»"
     return ready
@@ -181,7 +182,7 @@ def test_report_row_carries_scanned_barcode_and_seller_article(avito_account, av
     row = shipped("ok")[0]
     assert row["barcode"] == "СВОЙ-ШТРИХКОД-777"
     assert row["sku"] is None, "у Avito SKU нет"
-    items = store.avito_items(avito_account["id"], order["id"])
+    items = avito_store.avito_items(avito_account["id"], order["id"])
     assert row["name"] == items[0]["title"]
     assert row["report_date"] == report.report_date()
 

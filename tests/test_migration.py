@@ -11,6 +11,7 @@ import pytest
 from app.core import accounts, db
 from app.markets.ozon import client as ozon
 from app.core.config import BASE_DIR, settings
+from app.markets.ozon import migrations as ozon_migrations
 
 # Схему прошлой версии берём из истории git, а не переписываем руками:
 # так тест проверяет реальную базу пользователя, а не наше представление о ней.
@@ -179,7 +180,7 @@ def test_schema_parser_ignores_sql_comments():
     На этом уже спотыкались: комментарий в теле CREATE TABLE разрывался по
     запятой, и в ALTER TABLE уезжал кусок русского текста вместо имени колонки.
     """
-    tables = [line.split()[-2] for line in db.SCHEMA.splitlines()
+    tables = [line.split()[-2] for line in db.full_schema().splitlines()
               if line.startswith("CREATE TABLE IF NOT EXISTS")]
     assert len(tables) >= 10, "не нашлись таблицы схемы"
     for table in tables:
@@ -248,10 +249,10 @@ def test_every_schema_table_gets_new_columns():
     """
     import re
 
-    in_schema = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db.SCHEMA))
+    in_schema = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", db.full_schema()))
     # Эти создаёт и наполняет сама схема при первом запуске, колонок в них не
     # прибавлялось ни разу; остальные обязаны быть в списке.
-    migrated = set(db.TABLES_WITH_NEW_COLUMNS)
+    migrated = set(db.tables_with_new_columns())
     forgotten = in_schema - migrated
     assert not forgotten, (
         "таблицы из схемы не попали в миграцию колонок: " + ", ".join(sorted(forgotten))
@@ -260,8 +261,8 @@ def test_every_schema_table_gets_new_columns():
 
 def test_create_sql_survives_semicolon_in_comment():
     """Комментарий с «;» не должен обрывать оператор CREATE TABLE."""
-    assert ";" in db.SCHEMA
-    for line in db.SCHEMA.splitlines():
+    assert ";" in db.full_schema()
+    for line in db.full_schema().splitlines():
         if line.startswith("CREATE TABLE IF NOT EXISTS"):
             table = line.split()[-2]
             sql = db.create_sql(table)
@@ -279,7 +280,7 @@ def test_automatic_acts_of_1_17_are_removed():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_AUTO_ACTS_CLEANED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("auto1", db.now_iso(), "received", account_id),
@@ -305,7 +306,7 @@ def test_cleanup_keeps_marked_returns_and_runs_once():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_AUTO_ACTS_CLEANED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_AUTO_ACTS_CLEANED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("auto2", db.now_iso(), "received", account_id),
@@ -341,7 +342,7 @@ def test_received_days_are_recomputed_from_the_handover():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_DAYS_FIXED,))
     db.execute(
         "INSERT INTO returns(account_id, id, is_ready, final_moment, received_at, received_day) "
         "VALUES(?,?,?,?,?,?)",
@@ -373,7 +374,7 @@ def test_received_days_repair_does_not_touch_acts_and_runs_once():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_DAYS_FIXED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_DAYS_FIXED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("act-keep", db.now_iso(), "byday", account_id),
@@ -411,7 +412,7 @@ def test_status_change_is_filled_from_the_saved_answer():
     from app.core import accounts, return_acts, store
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_CHANGED_FILLED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("spare1", "2026-09-16T08:42:00+00:00", "nosheet", account_id),
@@ -440,7 +441,7 @@ def test_status_change_backfill_runs_once():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_CHANGED_FILLED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_CHANGED_FILLED,))
     db.init_db()
     db.execute(
         "INSERT INTO returns(account_id, id, is_ready, raw) VALUES(?,?,?,?)",
@@ -461,7 +462,7 @@ def test_unreceived_returns_are_released_from_spare_acts():
     from app.core import accounts, return_acts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_SPARES_RELEASED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("spare-live", db.now_iso(), "nosheet", account_id),
@@ -482,7 +483,7 @@ def test_release_keeps_marked_rows_and_confirmed_acts():
     from app.core import accounts, return_acts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_SPARES_RELEASED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_SPARES_RELEASED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id) VALUES(?,?,?,?)",
         ("spare-marked", db.now_iso(), "nosheet", account_id),
@@ -519,7 +520,7 @@ def test_arrival_date_is_filled_from_the_saved_answer():
     from app.core import accounts, store
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_ARRIVED_FILLED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id, received_day) VALUES(?,?,?,?,?)",
         ("act-18", "2026-09-18T18:00:00+00:00", "byday", account_id, "2026-09-18"),
@@ -550,7 +551,7 @@ def test_arrival_backfill_keeps_confirmed_acts_and_runs_once():
     from app.core import accounts
 
     account_id = accounts.default_account()["id"]
-    db.execute("DELETE FROM kv WHERE key = ?", (db.KV_ARRIVED_FILLED,))
+    db.execute("DELETE FROM kv WHERE key = ?", (ozon_migrations.KV_ARRIVED_FILLED,))
     db.execute(
         "INSERT INTO return_acts(id, created_at, kind, account_id, confirmed_at) VALUES(?,?,?,?,?)",
         ("act-signed", db.now_iso(), "byday", account_id, db.now_iso()),

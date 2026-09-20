@@ -22,8 +22,8 @@ import json
 import logging
 import threading
 
-from . import db, store
-from ..markets.ozon import client as ozon
+from . import db
+
 
 log = logging.getLogger("catalog")
 
@@ -76,6 +76,17 @@ def offers_of(client, *, on_page=None) -> tuple[list[str], int]:
     return offers, archived
 
 
+def _source(account: dict):
+    """Кто наполняет каталог этого кабинета. Площадка без каталога — понятная ошибка."""
+    from ..markets import registry
+
+    market = registry.get(account.get("marketplace"))
+    if market is None or market.catalog is None:
+        title = market.title if market else account.get("marketplace")
+        raise RuntimeError(f"Площадка «{title}» каталог товаров не отдаёт")
+    return market.catalog
+
+
 def refresh(account: dict, *, progress=None) -> dict:
     """Перечитать каталог кабинета целиком. Возвращает, что получилось.
 
@@ -84,7 +95,8 @@ def refresh(account: dict, *, progress=None) -> dict:
     зависшая панель.
     """
     account_id = account["id"]
-    client = ozon.get_client(account)
+    source = _source(account)
+    client = source.client(account)
     offers, archived_listed = offers_of(client, on_page=lambda found: progress and progress(0, found))
     total = len(offers)
     if progress:
@@ -98,8 +110,8 @@ def refresh(account: dict, *, progress=None) -> dict:
         fresh = [item for item in items if not _is_archived(item)]
         if fresh:
             with db.write() as conn:
-                saved += store.upsert_products(conn, account_id, fresh)
-            live += [key for key in (store.product_key(item) for item in fresh) if key]
+                saved += source.save(conn, account_id, fresh)
+            live += [key for key in (source.key(item) for item in fresh) if key]
         if progress:
             progress(min(start + INFO_CHUNK, total), total)
 
@@ -216,3 +228,21 @@ def start(account: dict, user: dict | None = None) -> dict:
 
     threading.Thread(target=work, name=f"catalog-{account_id}", daemon=True).start()
     return {"status": "started", "message": "Обновляем каталог — это может занять минуту"}
+
+
+def offer_barcodes(offer_id: str | None) -> list[str]:
+    """Штрихкоды товара по артикулу — из каталога любого кабинета панели.
+
+    Кабинет не ограничиваем намеренно: каталог наполняется из Ozon, а заказ
+    пришёл из Маркета. Артикул у продавца один на все площадки, и искать
+    штрихкод только в своём кабинете значило бы не найти его никогда.
+    """
+    if not offer_id:
+        return []
+    rows = db.query(
+        "SELECT DISTINCT b.barcode FROM product_barcodes b "
+        "JOIN products p ON p.account_id = b.account_id AND p.sku = b.sku "
+        "WHERE p.offer_id = ? ORDER BY b.barcode",
+        (offer_id,),
+    )
+    return [row["barcode"] for row in rows]

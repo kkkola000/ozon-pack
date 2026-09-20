@@ -10,14 +10,17 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, labels, store, sync
+from app.core import accounts, db, labels
 from app.markets.yandex import client as yandex
 from app.main import app
+from app.markets.yandex import pack as yandex_pack
+from app.markets.yandex import sync as yandex_sync
+from app.markets.yandex import store as yandex_store
 
 
 @pytest.fixture
 def market(yandex_account):
-    sync.sync_yandex(yandex_account)
+    yandex_sync.sync_yandex(yandex_account)
     return yandex_account
 
 
@@ -62,7 +65,7 @@ def test_left_orders_are_dropped_even_if_market_returns_them(market):
     for order in gone:
         order["status"] = "PROCESSING"     # Маркет вдруг отдал их мимо фильтра
     client.ignore_filter = True
-    result = sync.sync_yandex(market)
+    result = yandex_sync.sync_yandex(market)
     assert result.get("yandex_skipped") == len(gone)
     assert not {str(o["orderId"]) for o in gone} & {r["id"] for r in orders_in(market)}
 
@@ -70,7 +73,7 @@ def test_left_orders_are_dropped_even_if_market_returns_them(market):
 def test_items_come_with_barcodes_from_the_ozon_catalogue(market, sample_data):
     """Штрихкодов у Маркета нет — их даёт каталог Ozon по артикулу продавца."""
     order = orders_in(market)[0]
-    items = store.yandex_items(market["id"], order["id"])
+    items = yandex_store.yandex_items(market["id"], order["id"])
     assert items
     assert all(item["offer_id"] for item in items)
     assert all(item["barcodes"] for item in items), "артикулы подделки совпадают с каталогом Ozon"
@@ -80,7 +83,7 @@ def test_items_come_with_barcodes_from_the_ozon_catalogue(market, sample_data):
 
 def test_without_a_catalogue_items_have_no_barcodes(market):
     order = orders_in(market)[0]
-    assert all(not item["barcodes"] for item in store.yandex_items(market["id"], order["id"]))
+    assert all(not item["barcodes"] for item in yandex_store.yandex_items(market["id"], order["id"]))
 
 
 def test_order_leaving_work_substatus_disappears(market):
@@ -88,7 +91,7 @@ def test_order_leaving_work_substatus_disappears(market):
     fake = yandex.get_client(market)
     fake._orders[order["id"]]["status"] = "DELIVERY"
     fake._orders[order["id"]]["substatus"] = "DELIVERY_SERVICE_RECEIVED"
-    result = sync.sync_yandex(market)
+    result = yandex_sync.sync_yandex(market)
     assert result.get("yandex_gone") == 1
     assert order["id"] not in {r["id"] for r in orders_in(market)}
     assert not db.query("SELECT 1 FROM yandex_order_items WHERE order_id = ?", (order["id"],))
@@ -101,7 +104,7 @@ def test_sync_keeps_local_marks(market, user):
         "WHERE account_id = ? AND id = ?",
         (user["login"], db.now_iso(), db.now_iso(), market["id"], order["id"]),
     )
-    sync.sync_yandex(market)
+    yandex_sync.sync_yandex(market)
     row = db.query_one("SELECT * FROM yandex_orders WHERE account_id = ? AND id = ?", (market["id"], order["id"]))
     assert row["local_state"] == "packed"
     assert row["packed_by"] == user["login"]
@@ -110,7 +113,7 @@ def test_sync_keeps_local_marks(market, user):
 
 def test_market_dates_are_normalised(market):
     """«ДД-ММ-ГГГГ ЧЧ:ММ:СС» Маркета хранится как ISO UTC — иначе срочность не посчитать."""
-    order = store.yandex_view(orders_in(market)[0])
+    order = yandex_store.yandex_view(orders_in(market)[0])
     assert order["shipment_date"].endswith("+00:00")
     assert order["created_at_api"].endswith("+00:00")
     assert order["urgency"] in {"soon", "ok", "urgent"}
@@ -121,7 +124,7 @@ def test_market_dates_are_normalised(market):
     raw = {"orderId": 1, "creationDate": "12-11-2025 18:30:15",
            "delivery": {"shipment": {"shipmentDate": "13-11-2025"}}, "items": []}
     with db.write() as conn:
-        store.upsert_yandex_order(conn, market["id"], raw)
+        yandex_store.upsert_yandex_order(conn, market["id"], raw)
     row = db.query_one("SELECT * FROM yandex_orders WHERE account_id = ? AND id = '1'", (market["id"],))
     assert row["created_at_api"] == "2025-11-12T15:30:15+00:00"      # московское 18:30 -> UTC
     assert row["shipment_date"] == "2025-11-13T20:59:59+00:00"       # конец дня по Москве
@@ -129,7 +132,7 @@ def test_market_dates_are_normalised(market):
 
 def test_orders_are_separated_by_cabinet(market):
     second = accounts.get(accounts.create("yandex", "Второй Маркет", "9000002", "token-2"))
-    sync.sync_yandex(second)
+    yandex_sync.sync_yandex(second)
     first_ids = {r["id"] for r in orders_in(market)}
     second_ids = {r["id"] for r in orders_in(second)}
     assert first_ids and second_ids
@@ -221,9 +224,9 @@ def test_sync_button_reports_count(client):
 
 # ------------------------------------------------------------------ ярлыки
 def test_pending_labels_cover_every_order_in_work(market):
-    pending = labels.pending_yandex(market["id"])
+    pending = yandex_pack.pending_labels(market["id"])
     assert set(pending) == {r["id"] for r in orders_in(market)}
-    assert labels.yandex_state(market["id"])["locked"] is True
+    assert labels.state(yandex_pack.pending_labels(market["id"]))["locked"] is True
 
 
 def test_a_packed_order_does_not_hold_the_lock(market, user):
@@ -232,7 +235,7 @@ def test_a_packed_order_does_not_hold_the_lock(market, user):
             "UPDATE yandex_orders SET local_state = 'packed', packed_by = ?, packed_at = ? WHERE id = ?",
             (user["login"], db.now_iso(), row["id"]),
         )
-    assert labels.yandex_state(market["id"]) == {"pending": 0, "locked": False}
+    assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
 
 
 def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
@@ -242,7 +245,7 @@ def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = sorted(archive.namelist())
     assert names == sorted(f"{r['id']}.pdf" for r in orders_in(market))
-    assert labels.yandex_state(market["id"]) == {"pending": 0, "locked": False}
+    assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
     assert db.query_one("SELECT 1 FROM events WHERE kind = 'yandex_labels_archive'")
 
     again = client.post("/api/yandex/labels/archive.zip")
@@ -255,7 +258,7 @@ def test_new_order_locks_the_scanner_again(client, market):
     fresh = fake._make_order(20, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
     fresh["status"], fresh["substatus"] = "PROCESSING", yandex.SUBSTATUS_STARTED
     fake._orders[str(fresh["orderId"])] = fresh
-    sync.sync_yandex(market)
+    yandex_sync.sync_yandex(market)
     state = client.get("/api/yandex/pack/state").json()["labels"]
     assert state == {"pending": 1, "locked": True}
 

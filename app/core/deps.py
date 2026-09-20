@@ -149,6 +149,15 @@ templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 
 
+def market_has_catalog(request: Request) -> bool:
+    """Показывать ли «Товары»: только площадкам, которые наполняют каталог."""
+    from ..markets import registry
+
+    account = current_account(request)
+    market = registry.get(account["marketplace"]) if account else None
+    return bool(market and market.catalog)
+
+
 def market_nav(request: Request) -> list:
     """Пункты меню текущего кабинета — их объявляет площадка."""
     from ..markets import registry
@@ -197,6 +206,7 @@ def account_switcher(request: Request) -> dict:
 
 templates.env.globals["build_label"] = build_label
 templates.env.globals["market_nav"] = market_nav
+templates.env.globals["market_has_catalog"] = market_has_catalog
 templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version

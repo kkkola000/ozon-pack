@@ -7,8 +7,8 @@ Ozon умеет больше остальных: отдаёт каталог т�
 from __future__ import annotations
 
 from ...core.config import settings
-from ..base import Market
-from . import client, routes, sync
+from ..base import CatalogSource, Market
+from . import client, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="ozon",
@@ -29,4 +29,21 @@ MARKET = Market(
     stats=routes.settings_stats,
     # Первый кабинет Ozon исторически мог получать ключи из .env.
     env_credentials=lambda: (settings.ozon_client_id, settings.ozon_api_key),
+    schema=store.SCHEMA + returns.SCHEMA,
+    raw_tables=("postings", "returns"),
+    migrate=migrations.migrate,
+    pending_labels=pack.pending_labels,
+    # Каталог со штрихкодами умеет наполнять только Ozon — им пользуются все площадки.
+    catalog=CatalogSource(
+        client=lambda account: client.get_client(account),
+        save=store.upsert_products,
+        key=store.product_key,
+    ),
+    settings_context=lambda _account: {
+        "returns_statuses": returns.get_returns_statuses(),
+        "returns_choices": returns.RETURN_STATUS_CHOICES,
+        "returns_source": returns.returns_source(),
+        "received_statuses": returns.get_received_statuses(),
+        "received_days": returns.get_received_days(),
+    },
 )

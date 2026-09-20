@@ -1,14 +1,16 @@
 """Сборка заказов Маркета — по образцу Ozon: товар открывает заказ, ярлык закрывает."""
 import pytest
 
-from app.core import db, report, store, sync
+from app.core import db, report
 from app.markets.yandex import client as yandex, pack as yandex_pack
+from app.markets.yandex import sync as yandex_sync
+from app.markets.yandex import store as yandex_store
 
 
 @pytest.fixture
 def market(yandex_account, sample_data):
     """Кабинет Маркета вместе с каталогом Ozon — без него штрихкодов не найти."""
-    sync.sync_yandex(yandex_account)
+    yandex_sync.sync_yandex(yandex_account)
     return yandex_account
 
 
@@ -18,7 +20,7 @@ def work_orders(account):
         "ORDER BY (shipment_date IS NULL), shipment_date, id",
         (account["id"],),
     )
-    return [store.yandex_view(r) for r in rows]
+    return [yandex_store.yandex_view(r) for r in rows]
 
 
 def shipped(status=None):

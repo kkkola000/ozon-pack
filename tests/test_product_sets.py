@@ -14,10 +14,12 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import db, product_sets, store
+from app.core import db, product_sets
 from app.markets.ozon import pack as packing
 from app.main import app
 from tests.conftest import account_id, barcode_of, pick_posting
+from app.markets.ozon import sync as ozon_sync
+from app.markets.ozon import store as ozon_store
 
 
 def make_set(account, sku, parts, title="Набор"):
@@ -369,14 +371,14 @@ def test_set_is_deleted_through_the_api(client):
 
 def test_sets_do_not_leak_between_cabinets(account, sample_data):
     """Кабинеты не пересекаются: набор одного не должен влиять на другой."""
-    from app.core import accounts, sync
+    from app.core import accounts
 
     sku = pick_posting(positions=1)["items"][0]["sku"]
     make_set(account, sku, [{"barcode": "9990000000086"}])
 
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
-    sync.sync_postings(second)
-    sync.sync_products(second)
+    ozon_sync.sync_postings(second)
+    ozon_sync.sync_products(second)
     assert product_sets.set_skus(second["id"]) == set()
     assert product_sets.parents_of(second["id"], barcodes=["9990000000086"]) == []
 
@@ -393,7 +395,7 @@ def test_state_survives_a_composition_change(account, set_posting, user):
     assert [p["sku"] for p in item["parts"]] == [parts[1]["sku"]]
     # Прогресс по выброшенной части просто не учитывается, состояние целое.
     assert item["scanned"] == 0
-    assert isinstance(store.posting_view(db.query_one(
+    assert isinstance(ozon_store.posting_view(db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?",
         (account["id"], state["active"]["posting_number"]))), dict)
 

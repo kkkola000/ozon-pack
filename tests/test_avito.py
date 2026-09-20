@@ -10,16 +10,18 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, store, sync
+from app.core import accounts, db, sync
 from app.markets.avito import client as avito
 from app.main import app
 from tests import fakes
+from app.markets.avito import sync as avito_sync
+from app.markets.avito import store as avito_store
 
 
 @pytest.fixture
 def avito_account():
     account = accounts.get(accounts.create("avito", "Avito", "test-client", "test-secret"))
-    sync.sync_avito(account)
+    avito_sync.sync_avito(account)
     return account
 
 
@@ -66,12 +68,12 @@ def test_buyer_phone_is_not_stored(avito_account):
     # Имя остаётся: по нему находят посылку в пункте выдачи.
     assert any(row["buyer_name"] for row in rows)
     assert all("phoneNumber" not in (row["raw"] or "") for row in rows)
-    assert "buyer_phone" not in db.SCHEMA
+    assert "buyer_phone" not in db.full_schema()
 
 
 def test_order_items_are_saved(avito_account):
     order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]
-    items = store.avito_items(avito_account["id"], order["id"])
+    items = avito_store.avito_items(avito_account["id"], order["id"])
     assert items, "у заказа должен быть состав"
     assert all(item["title"] for item in items)
     assert order["positions_count"] == len(items)
@@ -83,7 +85,7 @@ def test_order_leaving_work_status_disappears(avito_account):
     client = avito.get_client(avito_account)
     client._orders[order["id"]]["status"] = avito.STATUS_IN_TRANSIT
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     left = db.query_one(
         "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], order["id"]),
@@ -153,7 +155,7 @@ def test_double_confirm_is_reported_not_silent(client, avito_account):
 def test_order_from_another_cabinet_is_not_touched(client, avito_account):
     """Чужой заказ не подтвердить: кабинеты изолированы."""
     other = accounts.get(accounts.create("avito", "Второй Avito", "id-2", "secret-2"))
-    sync.sync_avito(other)
+    avito_sync.sync_avito(other)
     foreign = db.query_one(
         "SELECT id FROM avito_orders WHERE account_id = ? LIMIT 1", (other["id"],)
     )["id"]
@@ -286,7 +288,7 @@ def test_return_that_left_pickup_point_disappears(avito_account):
     client = avito.get_client(avito_account)
     client._orders[row["id"]]["returnPolicy"]["returnStatus"] = avito.RETURN_IN_TRANSIT
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     assert db.query_one(
         "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], row["id"]),
@@ -336,7 +338,7 @@ def test_collected_return_disappears_on_sync(client, avito_account):
     client_api = avito.get_client(avito_account)
     client_api._orders[row["id"]]["status"] = avito.STATUS_CLOSED
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     assert db.query_one(
         "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], row["id"]),
@@ -392,7 +394,7 @@ def test_old_order_returned_today_is_not_lost(avito_account):
         order["createdAt"] = long_ago.isoformat().replace("+00:00", "Z")
         order["returnPolicy"] = {"returnStatus": avito.RETURN_READY, "trackingNumber": "RT-OLD"}
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     stored = db.query_one(
         "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
         (avito_account["id"], avito.STATUS_ON_RETURN),
@@ -409,7 +411,7 @@ def test_returns_are_requested_without_creation_window(avito_account, monkeypatc
         return []
 
     monkeypatch.setattr(fakes.FakeAvitoClient, "orders_all", fake_orders_all)
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
 
     assert len(calls) == 2, "рабочие статусы и возвраты должны запрашиваться отдельно"
     work, returns = calls
@@ -431,7 +433,7 @@ def test_live_api_spelling_ready_for_pickup_is_accepted(avito_account):
     for order in returns:
         order["returnPolicy"] = {"returnStatus": "ready_for_pickup", "trackingNumber": "RT-LIVE"}
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     stored = db.query(
         "SELECT return_status FROM avito_orders WHERE account_id = ? AND status = ?",
         (avito_account["id"], avito.STATUS_ON_RETURN),
@@ -440,7 +442,7 @@ def test_live_api_spelling_ready_for_pickup_is_accepted(avito_account):
     assert {row["return_status"] for row in stored} == {"ready_for_pickup"}
 
     # И подпись у них человеческая, а не сырой код из API.
-    view = store.avito_view(db.query_one(
+    view = avito_store.avito_view(db.query_one(
         "SELECT * FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
         (avito_account["id"], avito.STATUS_ON_RETURN),
     ))
@@ -483,7 +485,7 @@ def test_address_is_saved_from_any_shape(avito_account):
     order["delivery"].pop("terminalInfo", None)
     order["delivery"]["pickupPoint"] = {"address": "Санкт-Петербург, Невский пр., 100", "code": "SPB7"}
 
-    sync.sync_avito(avito_account)
+    avito_sync.sync_avito(avito_account)
     row = db.query_one(
         "SELECT terminal_address, terminal_code FROM avito_orders WHERE account_id = ? AND id = ?",
         (avito_account["id"], order["id"]),

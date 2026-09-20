@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 
 from app.core import db
 from app.main import app
+from app.markets.ozon import returns as ozon_returns
+from app.markets.avito import sync as avito_sync
 
 
 @pytest.fixture
@@ -191,9 +193,8 @@ def test_returns_statuses_endpoint(client):
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200, response.text
-    from app.core import options
 
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
     assert "В пункте выдачи" in response.json()["message"]
 
 
@@ -465,12 +466,12 @@ def test_version_matches_file():
 @pytest.fixture
 def many_cabinets(client):
     """Второй кабинет Ozon со своими возвратами и кабинет Avito со своими."""
-    from app.core import accounts, sync
+    from app.core import accounts
 
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
-    sync.sync_returns(second)
+    ozon_returns.sync_returns(second)
     avito_one = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(avito_one)
+    avito_sync.sync_avito(avito_one)
     return {"second": second, "avito": avito_one}
 
 

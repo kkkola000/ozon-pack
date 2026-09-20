@@ -1,6 +1,8 @@
 """Разбор ответов Ozon и вычисляемые поля."""
 from app.core import db, store
 from app.core.config import settings
+from app.markets.ozon import store as ozon_store
+from app.markets.ozon import returns as ozon_returns
 
 
 def test_upsert_posting_keeps_local_state(account, sample_data):
@@ -11,7 +13,7 @@ def test_upsert_posting_keeps_local_state(account, sample_data):
     import json
 
     with db.write() as conn:
-        store.upsert_posting(conn, account["id"], json.loads(raw))
+        ozon_store.upsert_posting(conn, account["id"], json.loads(raw))
 
     row = db.query_one("SELECT local_state, packed_by FROM postings WHERE posting_number = ?", (number,))
     assert row["local_state"] == "packed"
@@ -25,7 +27,7 @@ def test_cancelled_posting_marked_locally(account, sample_data):
     raw = json.loads(db.query_one("SELECT raw FROM postings WHERE posting_number = ?", (number,))["raw"])
     raw["status"] = "cancelled"
     with db.write() as conn:
-        store.upsert_posting(conn, account["id"], raw)
+        ozon_store.upsert_posting(conn, account["id"], raw)
     assert db.query_one("SELECT local_state FROM postings WHERE posting_number = ?", (number,))["local_state"] == "cancelled"
 
 
@@ -34,7 +36,7 @@ def test_urgency_buckets():
 
     now = datetime.now(timezone.utc)
     def view(hours):
-        return store.posting_view(
+        return ozon_store.posting_view(
             {"account_id": 1, "posting_number": "1-1-1",
              "shipment_date": (now + timedelta(hours=hours)).isoformat(),
              "status": "awaiting_deliver", "local_state": "new", "claim_at": None},
@@ -71,7 +73,6 @@ def test_returns_loaded_only_in_wanted_statuses(sample_data):
 
 def test_return_leaving_pickup_point_is_dropped(sample_data):
     """Возврат забрали — Ozon его больше не отдаёт, значит из выдачи он уходит."""
-    from app.core import sync
 
     client = sample_data
     target = client._returns[0]
@@ -81,7 +82,7 @@ def test_return_leaving_pickup_point_is_dropped(sample_data):
 
     target["visual"]["status"]["sys_name"] = "ReceivedBySeller"
     target["visual"]["status"]["display_name"] = "Получен продавцом"
-    sync.sync_returns()
+    ozon_returns.sync_returns()
 
     assert db.query_one("SELECT is_ready FROM returns WHERE id = ?", (return_id,))["is_ready"] == 0
 
@@ -94,21 +95,20 @@ def test_return_moving_to_seller_leaves_the_pickup_list(sample_data):
     навсегда оставался прежний «В пункте выдачи». Строка висела в разделе,
     сколько ни жми «Обновить», — сборщик ехал за тем, чего в пункте нет.
     """
-    from app.core import options, sync
 
     client = sample_data
     target = client._returns[0]
     assert target["visual"]["status"]["sys_name"] == "ArrivedAtReturnPlace"
     return_id = str(target["id"])
 
-    where, params = options.pickup_sql()
+    where, params = ozon_returns.pickup_sql()
     pickup = lambda: [r["id"] for r in db.query(f"SELECT id FROM returns WHERE {where}", params)]
     assert return_id in pickup()
     before = len(pickup())
 
     target["visual"]["status"]["sys_name"] = "MovingToSeller"
     target["visual"]["status"]["display_name"] = "Едет к продавцу"
-    sync.sync_returns()
+    ozon_returns.sync_returns()
 
     assert return_id not in pickup(), "уехавший возврат остался в «К выдаче»"
     assert len(pickup()) == before - 1
@@ -118,7 +118,6 @@ def test_return_moving_to_seller_leaves_the_pickup_list(sample_data):
 
 def test_a_marked_return_keeps_its_row_when_it_leaves_the_pickup(sample_data):
     """Отметку сборщика не стираем вместе со строкой — только снимаем статус."""
-    from app.core import options, sync
 
     client = sample_data
     target = client._returns[0]
@@ -126,13 +125,13 @@ def test_a_marked_return_keeps_its_row_when_it_leaves_the_pickup(sample_data):
     db.execute("UPDATE returns SET mark = 'bad', note = 'вскрыта упаковка' WHERE id = ?", (return_id,))
 
     target["visual"]["status"]["sys_name"] = "MovingToSeller"
-    sync.sync_returns()
+    ozon_returns.sync_returns()
 
     row = db.query_one("SELECT status_sys, is_ready, mark, note FROM returns WHERE id = ?", (return_id,))
     assert row is not None, "строку с отметкой удалили"
     assert row["mark"] == "bad" and row["note"] == "вскрыта упаковка"
     assert row["is_ready"] == 0
-    where, params = options.pickup_sql()
+    where, params = ozon_returns.pickup_sql()
     assert return_id not in [r["id"] for r in db.query(f"SELECT id FROM returns WHERE {where}", params)]
 
 
@@ -143,10 +142,9 @@ def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
     вычистил бы всё, до чего не дочитали. Поэтому пересборка идёт только после
     полного обхода — этот тест её и сторожит.
     """
-    from app.core import options, sync
     from app.markets.ozon.client import OzonError
 
-    where, params = options.pickup_sql()
+    where, params = ozon_returns.pickup_sql()
     count = lambda: db.query_one(f"SELECT COUNT(*) c FROM returns WHERE {where}", params)["c"]
     before = count()
     assert before > 0
@@ -155,7 +153,7 @@ def test_network_error_does_not_clear_pickup_list(sample_data, monkeypatch):
         raise OzonError("Сеть недоступна")
 
     monkeypatch.setattr(sample_data, "returns_list", boom)
-    sync.sync_returns()
+    ozon_returns.sync_returns()
 
     assert count() == before
 
@@ -168,7 +166,6 @@ def test_products_have_barcodes(sample_data):
 
 def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
     """Если Ozon вернёт всё подряд, лишнее не должно попасть в список выдачи."""
-    from app.core import sync
 
     client = sample_data
     original = client.returns_list
@@ -178,7 +175,7 @@ def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
         return original(limit=limit, last_id=last_id, filter_=None)
 
     monkeypatch.setattr(client, "returns_list", ignores_filter)
-    result = sync.sync_returns()
+    result = ozon_returns.sync_returns()
 
     statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
     assert statuses <= {"ArrivedAtReturnPlace", "ReceivedBySeller"}, statuses
@@ -192,7 +189,6 @@ def test_ignored_api_filter_still_filters_locally(sample_data, monkeypatch):
 
 def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):
     """Записи, оставшиеся от прежних настроек, удаляются при синхронизации."""
-    from app.core import sync
 
     db.execute(
         "INSERT INTO returns(account_id, id, type, status_sys, status_name, product_name, quantity, is_ready,"
@@ -200,17 +196,16 @@ def test_returns_in_other_statuses_are_cleaned_up(account, sample_data):
         " VALUES(?, 'old-1', 'FBS', 'MovingToSeller', 'Едет к продавцу', 'Старый возврат', 1, 1, ?, ?)",
         (account["id"], db.now_iso(), db.now_iso()),
     )
-    sync.sync_returns()
+    ozon_returns.sync_returns()
     assert db.query_one("SELECT COUNT(*) c FROM returns WHERE id = 'old-1'")["c"] == 0
 
 
 def test_statuses_can_be_changed_from_panel(sample_data):
     """Список статусов задаётся в интерфейсе и переопределяет .env."""
-    from app.core import options, sync
 
-    options.set_returns_statuses(["ArrivedAtReturnPlace", "MovingToSeller"])
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
-    sync.sync_returns()
+    ozon_returns.set_returns_statuses(["ArrivedAtReturnPlace", "MovingToSeller"])
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace", "MovingToSeller"]
+    ozon_returns.sync_returns()
 
     statuses = {row["status_sys"] for row in db.query("SELECT DISTINCT status_sys FROM returns")}
     assert "MovingToSeller" in statuses
@@ -219,20 +214,19 @@ def test_statuses_can_be_changed_from_panel(sample_data):
 def test_legacy_env_value_is_upgraded(monkeypatch):
     """Старое значение из .env, записанное прежним установщиком, не должно
     возвращать в список выдачи возвраты, которые нельзя забрать."""
-    from app.core import options
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "returns_ready_statuses", ["ArrivedAtReturnPlace", "WaitingShipment"])
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
 
     # Осознанно выбранное значение уважаем
     monkeypatch.setattr(settings, "returns_ready_statuses", ["WaitingShipment"])
-    assert options.get_returns_statuses() == ["WaitingShipment"]
+    assert ozon_returns.get_returns_statuses() == ["WaitingShipment"]
 
     # Выбор в панели важнее файла
     monkeypatch.setattr(settings, "returns_ready_statuses", ["WaitingShipment"])
-    options.set_returns_statuses(["ArrivedAtReturnPlace"])
-    assert options.get_returns_statuses() == ["ArrivedAtReturnPlace"]
+    ozon_returns.set_returns_statuses(["ArrivedAtReturnPlace"])
+    assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
 
 
 def test_ozon_print_sheet_shows_pickup_address_without_status(sample_data, account):
@@ -298,7 +292,6 @@ def test_arrival_date_does_not_decide_the_section(sample_data, account):
     Состав раздела решают отмеченные в настройках статусы. Дата готовности —
     только для сведения: ставим её старее некуда и убеждаемся, что список тот же.
     """
-    from app.core import options
 
     before = [row["id"] for row in db.query(
         "SELECT id FROM returns WHERE account_id = ? AND is_ready = 1 ORDER BY id", (account["id"],)
@@ -306,7 +299,7 @@ def test_arrival_date_does_not_decide_the_section(sample_data, account):
     assert before
     db.execute("UPDATE returns SET arrived_at = ? WHERE account_id = ?", ("2019-01-01T00:00:00+00:00", account["id"]))
 
-    where, params = options.pickup_sql()
+    where, params = ozon_returns.pickup_sql()
     after = [row["id"] for row in db.query(
         f"SELECT id FROM returns WHERE account_id = ? AND {where} ORDER BY id", [account["id"]] + params
     )]

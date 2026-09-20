@@ -14,12 +14,14 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, labels, store, sync
+from ...core import access, db, labels, sync
 from . import client as yandex, pack as yandex_pack
 from ...core.config import settings
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem
 from .client import YandexError
+from ...core import store as core_store
+from . import store
 
 log = logging.getLogger("yandex")
 
@@ -196,7 +198,7 @@ def api_yandex_labels_archive(request: Request, user: dict = Depends(require_sec
     отметка о выгрузке — по ней открывается сканирование.
     """
     check_csrf(request)
-    ids = labels.pending_yandex(account["id"])
+    ids = yandex_pack.pending_labels(account["id"])
     if not ids:
         raise HTTPException(status_code=400, detail="Все ярлыки уже выгружены")
     ids = ids[: labels.MAX_AT_ONCE]
@@ -209,7 +211,7 @@ def api_yandex_labels_archive(request: Request, user: dict = Depends(require_sec
         "yandex_labels_archive", account_id=account["id"], user=user,
         message=f"Выгружены ярлыки: {len(saved)} шт.",
     )
-    stamp = store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
+    stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
     name = safe_filename(f"yandex-labels-{account.get('title') or account['id']}-{stamp}.zip")
     return Response(
         content=archive,
@@ -263,7 +265,7 @@ def api_yandex_pack_state(user: dict = Depends(require_section("pack")),
     return {
         "state": yandex_pack.load_state(account, user),
         "counters": _pack_counters(account),
-        "labels": labels.yandex_state(account["id"]),
+        "labels": labels.state(yandex_pack.pending_labels(account["id"])),
     }
 
 

@@ -53,100 +53,6 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, sort, id);
 
-CREATE TABLE IF NOT EXISTS postings (
-    account_id       INTEGER NOT NULL,
-    posting_number   TEXT NOT NULL,
-    order_id         INTEGER,
-    order_number     TEXT,
-    status           TEXT,
-    substatus        TEXT,
-    in_process_at    TEXT,
-    shipment_date    TEXT,
-    delivering_date  TEXT,
-    delivery_method  TEXT,
-    warehouse_id     INTEGER,
-    warehouse_name   TEXT,
-    tpl_provider     TEXT,
-    tracking_number  TEXT,
-    is_express       INTEGER DEFAULT 0,
-    is_multibox      INTEGER DEFAULT 0,
-    multi_box_qty    INTEGER DEFAULT 0,
-    barcode_upper    TEXT,
-    barcode_lower    TEXT,
-    region           TEXT,
-    city             TEXT,
-    delivery_type    TEXT,
-    payment_type     TEXT,
-    is_premium       INTEGER DEFAULT 0,
-    requires_mark    INTEGER DEFAULT 0,
-    requires_gtd     INTEGER DEFAULT 0,
-    items_count      INTEGER DEFAULT 0,
-    positions_count  INTEGER DEFAULT 0,
-    cancel_reason    TEXT,
-    raw              TEXT,
-    local_state      TEXT NOT NULL DEFAULT 'new',
-    claim_user_id    INTEGER,
-    claim_login      TEXT,
-    claim_at         TEXT,
-    printed_at       TEXT,
-    print_count      INTEGER NOT NULL DEFAULT 0,
-    -- Когда стикер выгрузили на компьютер. Самого файла панель не хранит: он
-    -- уезжает в браузер и живёт там. Здесь только отметка, и по ней решается,
-    -- пускать ли к сканированию: без стикеров сборку начинать нечем.
-    label_saved_at   TEXT,
-    packed_at        TEXT,
-    packed_by        TEXT,
-    shipped_at       TEXT,
-    first_seen_at    TEXT,
-    updated_at       TEXT,
-    PRIMARY KEY (account_id, posting_number)
-);
-CREATE INDEX IF NOT EXISTS idx_postings_status ON postings(account_id, status, local_state);
-CREATE INDEX IF NOT EXISTS idx_postings_shipment ON postings(account_id, shipment_date);
-
-CREATE TABLE IF NOT EXISTS posting_items (
-    account_id     INTEGER NOT NULL,
-    posting_number TEXT NOT NULL,
-    sku            TEXT NOT NULL,
-    offer_id       TEXT,
-    name           TEXT,
-    quantity       INTEGER NOT NULL DEFAULT 1,
-    price          TEXT,
-    currency       TEXT,
-    mandatory_mark INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (account_id, posting_number, sku)
-);
-CREATE INDEX IF NOT EXISTS idx_items_sku ON posting_items(account_id, sku);
-CREATE INDEX IF NOT EXISTS idx_items_offer ON posting_items(account_id, offer_id);
-
-CREATE TABLE IF NOT EXISTS products (
-    account_id INTEGER NOT NULL,
-    sku        TEXT NOT NULL,
-    offer_id   TEXT,
-    name       TEXT,
-    image      TEXT,
-    barcodes   TEXT,
-    -- Товар в архиве Ozon: он не продаётся, и в разделе «Товары» его быть не
-    -- должно. Строку при этом не удаляем — её штрихкоды могут понадобиться,
-    -- если архивный товар остался в несобранном заказе.
-    archived   INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT,
-    PRIMARY KEY (account_id, sku)
-);
-CREATE INDEX IF NOT EXISTS idx_products_live ON products(account_id, archived);
-
-CREATE TABLE IF NOT EXISTS product_barcodes (
-    account_id INTEGER NOT NULL,
-    barcode    TEXT NOT NULL,
-    sku        TEXT NOT NULL,
-    PRIMARY KEY (account_id, barcode)
-);
-CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
-
--- Набор: товар площадки, который физически собирается из нескольких разных
--- товаров со своими штрихкодами. Площадка о составе не знает — в отправлении
--- стоит одна позиция с одним SKU, а сборщик сканирует то, что лежит на полке.
--- Без состава такой скан был бы «товар не из этого отправления».
 CREATE TABLE IF NOT EXISTS product_sets (
     account_id INTEGER NOT NULL,
     sku        TEXT NOT NULL,
@@ -203,73 +109,6 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_at ON events(at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_posting ON events(posting_number);
 
-CREATE TABLE IF NOT EXISTS returns (
-    account_id        INTEGER NOT NULL,
-    id                TEXT NOT NULL,
-    type              TEXT,
-    scheme            TEXT,
-    status_sys        TEXT,
-    status_name       TEXT,
-    order_id          INTEGER,
-    order_number      TEXT,
-    posting_number    TEXT,
-    sku               TEXT,
-    offer_id          TEXT,
-    product_name      TEXT,
-    quantity          INTEGER DEFAULT 1,
-    price             TEXT,
-    currency          TEXT,
-    place_name        TEXT,
-    place_address     TEXT,
-    target_place_name TEXT,
-    return_reason     TEXT,
-    return_date       TEXT,
-    final_moment      TEXT,
-    -- visual.change_moment: когда площадка в последний раз меняла статус. По
-    -- нему же строится окно загрузки, а для акта «без статуса» это
-    -- единственное известное число — получения у такого акта ещё нет.
-    status_changed_at TEXT,
-    -- storage.arrived_moment: когда возврат стал готов к выдаче, то есть
-    -- доехал до пункта. Видно в списке «К выдаче»: по нему понятно, что лежит
-    -- давно, а что привезли только что.
-    arrived_at        TEXT,
-    storage_until     TEXT,
-    storage_sum       TEXT,
-    barcode           TEXT,
-    is_ready          INTEGER NOT NULL DEFAULT 0,
-    raw               TEXT,
-    printed_at        TEXT,
-    -- Отметка сборщика: возврат приняли ('ok') или не приняли ('bad'), плюс
-    -- комментарий. Всё это заводит панель, площадка о таких отметках не знает,
-    -- поэтому синхронизация эти колонки не трогает.
-    mark              TEXT,
-    note              TEXT,
-    mark_at           TEXT,
-    mark_by           TEXT,
-    -- Акт, по которому за возвратом ездили. Ставится один раз и больше не
-    -- меняется: это же и защита от повторной загрузки — возврат, уже попавший
-    -- в акт, во второй акт не возьмут, даже когда акт подтверждён и закрыт.
-    act_id            TEXT,
-    -- Когда панель впервые увидела возврат в статусе «Получен». Пишется один
-    -- раз: Ozon отдаёт этот статус и дальше, а повторная запись означала бы
-    -- второй акт на тот же возврат.
-    received_at       TEXT,
-    -- Тот же момент местной датой — по ней возвраты грузят «за указанное
-    -- число». Считать дату из received_at в запросе нельзя: сдвиг часового
-    -- пояса живёт в настройках, а не в SQLite.
-    received_day      TEXT,
-    first_seen_at     TEXT,
-    updated_at        TEXT,
-    PRIMARY KEY (account_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_returns_ready ON returns(account_id, is_ready, type);
-CREATE INDEX IF NOT EXISTS idx_returns_act ON returns(act_id);
-CREATE INDEX IF NOT EXISTS idx_returns_received ON returns(account_id, received_day, act_id);
-
--- Акт получения возвратов: возвраты, которые перешли в статус «Получен», —
--- одна поездка в пункт выдачи. Акт закрывает поездку целиком: и FBS, и FBO.
--- Акт бывает и по всем кабинетам сразу, поэтому к кабинету не привязан жёстко:
--- строки внутри могут быть из разных кабинетов и с разных площадок.
 CREATE TABLE IF NOT EXISTS return_acts (
     id           TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
@@ -295,136 +134,6 @@ CREATE INDEX IF NOT EXISTS idx_return_acts_open ON return_acts(confirmed_at, cre
 CREATE INDEX IF NOT EXISTS idx_return_acts_day ON return_acts(kind, account_id, received_day);
 
 -- Заказы Авито: структура API другая, поэтому отдельная таблица.
-CREATE TABLE IF NOT EXISTS avito_orders (
-    account_id      INTEGER NOT NULL,
-    id              TEXT NOT NULL,
-    marketplace_id  TEXT,
-    status          TEXT,
-    service_type    TEXT,
-    service_name    TEXT,
-    dispatch_number TEXT,
-    tracking_number TEXT,
-    terminal_code   TEXT,
-    terminal_address TEXT,
-    -- Имя покупателя нужно на листе возвратов, чтобы найти посылку в ПВЗ.
-    -- Телефон панель не хранит: он нигде не показывается, а персональные
-    -- данные без цели — лишний риск (см. _drop_buyer_contacts ниже).
-    buyer_name      TEXT,
-    confirm_till    TEXT,
-    ship_till       TEXT,
-    delivery_date   TEXT,
-    return_status   TEXT,
-    return_tracking TEXT,
-    price           REAL,
-    total           REAL,
-    delivery_price  REAL,
-    commission      REAL,
-    items_count     INTEGER DEFAULT 0,
-    positions_count INTEGER DEFAULT 0,
-    actions         TEXT,
-    created_at_api  TEXT,
-    updated_at_api  TEXT,
-    raw             TEXT,
-    local_state     TEXT NOT NULL DEFAULT 'new',
-    confirmed_at    TEXT,
-    confirmed_by    TEXT,
-    shipped_at      TEXT,
-    shipped_by      TEXT,
-    printed_at      TEXT,
-    print_count     INTEGER NOT NULL DEFAULT 0,
-    -- Отметка о выгрузке стикера на компьютер — см. такую же колонку в postings.
-    label_saved_at  TEXT,
-    -- Сборка на складе: у Avito нет штрихкодов товаров, поэтому отметка
-    -- «собран» ставится по факту сканирования стикера и товара, а не площадкой.
-    packed_at       TEXT,
-    packed_by       TEXT,
-    claim_user_id   INTEGER,
-    claim_login     TEXT,
-    claim_at        TEXT,
-    -- Отметка сборщика при получении возврата — см. такие же колонки в returns.
-    mark            TEXT,
-    note            TEXT,
-    mark_at         TEXT,
-    mark_by         TEXT,
-    act_id          TEXT,
-    first_seen_at   TEXT,
-    updated_at      TEXT,
-    PRIMARY KEY (account_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_avito_status ON avito_orders(account_id, status);
-CREATE INDEX IF NOT EXISTS idx_avito_return ON avito_orders(account_id, return_status);
-
-CREATE TABLE IF NOT EXISTS avito_order_items (
-    account_id INTEGER NOT NULL,
-    order_id   TEXT NOT NULL,
-    avito_id   TEXT NOT NULL,
-    seller_id  TEXT,
-    title      TEXT,
-    quantity   INTEGER NOT NULL DEFAULT 1,
-    price      REAL,
-    image      TEXT,
-    location   TEXT,
-    PRIMARY KEY (account_id, order_id, avito_id)
-);
-
--- Заказы Яндекс Маркета. Отдельная таблица, а не общая с Ozon: у Маркета своя
--- пара «статус + этап обработки», свой идентификатор заказа и нет номера
--- отправления — сводить это в одну таблицу значило бы держать половину колонок
--- пустыми и гадать, чьи они.
-CREATE TABLE IF NOT EXISTS yandex_orders (
-    account_id      INTEGER NOT NULL,
-    -- orderId Маркета. Храним строкой: так же, как у других площадок.
-    id              TEXT NOT NULL,
-    -- Идентификатор магазина. Приходит в самом заказе, в настройках его не
-    -- спрашивают — а нужен он для ярлыка одного заказа и сверки отгрузки.
-    campaign_id     TEXT,
-    external_id     TEXT,
-    status          TEXT,
-    substatus       TEXT,
-    program_type    TEXT,
-    delivery_type   TEXT,
-    service_name    TEXT,
-    -- Дата отгрузки в службу доставки: по ней считается срочность.
-    shipment_date   TEXT,
-    shipment_id     TEXT,
-    buyer_type      TEXT,
-    notes           TEXT,
-    total           REAL,
-    items_count     INTEGER DEFAULT 0,
-    positions_count INTEGER DEFAULT 0,
-    created_at_api  TEXT,
-    updated_at_api  TEXT,
-    raw             TEXT,
-    local_state     TEXT NOT NULL DEFAULT 'new',
-    packed_at       TEXT,
-    packed_by       TEXT,
-    claim_user_id   INTEGER,
-    claim_login     TEXT,
-    claim_at        TEXT,
-    printed_at      TEXT,
-    print_count     INTEGER NOT NULL DEFAULT 0,
-    -- Отметка о выгрузке ярлыка на компьютер — см. postings.label_saved_at.
-    label_saved_at  TEXT,
-    first_seen_at   TEXT,
-    updated_at      TEXT,
-    PRIMARY KEY (account_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_yandex_sub ON yandex_orders(account_id, substatus, local_state);
-
-CREATE TABLE IF NOT EXISTS yandex_order_items (
-    account_id INTEGER NOT NULL,
-    order_id   TEXT NOT NULL,
-    -- id позиции внутри заказа: у одного артикула бывает несколько строк.
-    item_id    TEXT NOT NULL,
-    offer_id   TEXT,
-    name       TEXT,
-    quantity   INTEGER NOT NULL DEFAULT 1,
-    price      REAL,
-    PRIMARY KEY (account_id, order_id, item_id)
-);
-
--- Отчёт об отгруженных товарах. Строка появляется в момент, когда сошлась пара
--- «штрихкод товара -> номер отправления», а не при открытии заказа.
 CREATE TABLE IF NOT EXISTS shipped_items (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id     INTEGER NOT NULL,
@@ -590,10 +299,22 @@ def _without_comments(sql: str) -> str:
     return re.sub(r"--[^\n]*", "", sql)
 
 
+def _registry():
+    """Реестр площадок — лениво: их пакеты сами импортируют этот модуль."""
+    from ..markets import registry
+
+    return registry
+
+
+def full_schema() -> str:
+    """Схема целиком: общие таблицы плюс таблицы каждой площадки."""
+    return SCHEMA + "".join(market.schema for market in _registry().all_markets())
+
+
 def create_sql(table: str) -> str:
-    """Оператор CREATE TABLE для таблицы из SCHEMA — нужен при миграции."""
+    """Оператор CREATE TABLE для таблицы из схемы — нужен при миграции."""
     marker = f"CREATE TABLE IF NOT EXISTS {table} ("
-    for statement in _without_comments(SCHEMA).split(";"):
+    for statement in _without_comments(full_schema()).split(";"):
         if marker in statement:
             return statement.strip() + ";"
     raise KeyError(f"в схеме нет таблицы {table}")
@@ -616,15 +337,17 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 # каждая таблица схемы, которая может уже существовать на сервере, обязана
 # быть в списке: иначе обновление падает на первом запросе к новой колонке.
 # Полноту списка держит проверка в tests/test_migration.py.
-TABLES_WITH_NEW_COLUMNS = (
+CORE_TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
-    "postings", "posting_items", "products", "product_barcodes",
-    "product_sets", "product_set_items",
-    "returns", "return_acts",
-    "avito_orders", "avito_order_items",
-    "yandex_orders", "yandex_order_items",
-    "shipped_items",
+    "product_sets", "product_set_items", "return_acts", "shipped_items",
 )
+
+
+def tables_with_new_columns() -> tuple[str, ...]:
+    """Общие таблицы плюс таблицы всех площадок — им дописываются новые колонки."""
+    return CORE_TABLES_WITH_NEW_COLUMNS + tuple(
+        table for market in _registry().all_markets() for table in market.tables
+    )
 
 
 def _schema_columns(table: str) -> list[tuple[str, str]]:
@@ -741,27 +464,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER")
             conn.execute(f"UPDATE {table} SET account_id = ?", (account_id,))
 
-    for table in TABLES_WITH_NEW_COLUMNS:
+    for table in tables_with_new_columns():
         _add_missing_columns(conn, table)
 
 
-DATA_TABLES = (
-    "postings", "posting_items", "products", "product_barcodes",
-    "product_sets", "product_set_items", "returns",
-    "avito_orders", "avito_order_items",
-    "yandex_orders", "yandex_order_items",
-)
+CORE_DATA_TABLES = ("product_sets", "product_set_items")
+
+
+def data_tables() -> tuple[str, ...]:
+    """Все таблицы с данными кабинетов — общие и площадок."""
+    return CORE_DATA_TABLES + tuple(table for market in _registry().all_markets() for table in market.tables)
 KV_GENERATED_CLEANED = "generated_data_cleaned"
 KV_CONTACTS_CLEANED = "buyer_contacts_cleaned"
-KV_AUTO_ACTS_CLEANED = "auto_return_acts_cleaned"
 KV_OWNER_SET = "owner_role_assigned"
-KV_DAYS_FIXED = "received_days_repaired"
-KV_CHANGED_FILLED = "status_changed_backfilled"
-KV_SPARES_RELEASED = "unreceived_released_from_acts"
-KV_ARRIVED_FILLED = "arrived_moment_backfilled"
-# Число, каким его выбирают в календаре. Всё, что на это не похоже, в акт не
-# попадёт ни при каком выборе даты.
-_DAY_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def _parsed_moment(value: Any) -> str | None:
@@ -773,8 +488,9 @@ def _parsed_moment(value: Any) -> str | None:
     except ValueError:
         return None
     return str(value)
-# Таблицы, у которых есть колонка raw с ответом площадки целиком.
-RAW_TABLES = ("postings", "returns", "avito_orders")
+def raw_tables() -> tuple[str, ...]:
+    """Таблицы, у которых есть колонка raw с ответом площадки целиком."""
+    return tuple(table for market in _registry().all_markets() for table in market.raw_tables)
 
 
 def _ensure_owner(conn: sqlite3.Connection) -> None:
@@ -809,284 +525,6 @@ def _ensure_owner(conn: sqlite3.Connection) -> None:
     )
 
 
-def _drop_auto_return_acts(conn: sqlite3.Connection) -> None:
-    """Убрать акты возвратов, которые версия 1.17 составляла сама.
-
-    В 1.17 акт собирался при обновлении, как только возврат переходил в статус
-    «Получен». Вместе с этим статусом Ozon отдаёт весь архив полученных
-    возвратов, а момент получения панель ставила свой — «сейчас». В итоге
-    первое же обновление сваливало в один акт всю историю: на живом складе
-    вышел акт на 2446 позиций за одну минуту.
-
-    С 1.18 акт составляет человек за выбранное число, и такие акты не
-    создаются. Оставшиеся от 1.17 убираем: подтверждать разом тысячи возвратов
-    никто не станет, а висящий акт закрывает собой настоящие.
-
-    Отметки сборщика при этом не теряются — они лежат в строках возвратов, а не
-    в акте. Строку с отметкой из акта не освобождаем: по ней работа шла, и
-    решать её судьбу должен человек. Подтверждённые акты не трогаем вовсе:
-    работа по ним закрыта.
-    """
-    if not _table_exists(conn, "return_acts"):
-        return
-    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_AUTO_ACTS_CLEANED,)).fetchone()
-    if done:
-        return
-    rows = conn.execute(
-        "SELECT id FROM return_acts WHERE kind = 'received' AND confirmed_at IS NULL"
-    ).fetchall()
-    for row in rows:
-        # Возврат без отметки возвращается в работу, и вместе с ним сбрасывается
-        # выдуманный момент получения: следующее обновление возьмёт настоящий у
-        # площадки, и возврат встанет на своё число, а не на день обновления.
-        conn.execute(
-            "UPDATE returns SET act_id = NULL, received_at = NULL, received_day = NULL "
-            "WHERE act_id = ? AND mark IS NULL AND note IS NULL",
-            (row["id"],),
-        )
-        left = conn.execute(
-            "SELECT COUNT(*) AS c FROM returns WHERE act_id = ?", (row["id"],)
-        ).fetchone()["c"]
-        if not left:
-            conn.execute("DELETE FROM return_acts WHERE id = ?", (row["id"],))
-    if rows:
-        log.info("Убрано автоматических актов возвратов: %d", len(rows))
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (KV_AUTO_ACTS_CLEANED, now_iso()),
-    )
-
-
-def _repair_received_days(conn: sqlite3.Connection) -> None:
-    """Пересчитать число получения у возвратов, которые ещё ждут акта.
-
-    Число считалось из `visual.change_moment` — это последняя смена статуса.
-    Она бывает позже самого получения и уже в других сутках, а бывает и в
-    виде, который не разобрать: тогда в `received_day` оседала сама строка, а
-    такого «числа» нет ни в одном календаре. Возврат при этом уже ушёл из
-    «К выдаче»: получен — и в акт не попадает ни при каком выборе даты. Ровно
-    так один возврат из семи и пропал.
-
-    Теперь момент берётся из `final_moment` — «прибыл на фулфилмент или выдан
-    продавцу». Пересчитываем по нему всё, что ещё не в акте, — возвраты одной
-    поездки снова сходятся на одном числе. Если момент не разобрать совсем,
-    снимаем и его, и число: следующее обновление проставит их заново.
-
-    Строки с актом не трогаем: там работа уже идёт, и переносить её в другой
-    акт нельзя — это была бы вторая отметка на ту же работу.
-    """
-    if not _table_exists(conn, "returns"):
-        return
-    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_DAYS_FIXED,)).fetchone()
-    if done:
-        return
-    from .store import local_day
-
-    fixed = 0
-    rows = conn.execute(
-        "SELECT id, account_id, received_at, received_day, final_moment FROM returns "
-        "WHERE received_at IS NOT NULL AND act_id IS NULL"
-    ).fetchall()
-    for row in rows:
-        moment = _parsed_moment(row["final_moment"]) or _parsed_moment(row["received_at"])
-        day = local_day(moment) if moment else ""
-        if not _DAY_SHAPE.fullmatch(day):
-            conn.execute(
-                "UPDATE returns SET received_at = NULL, received_day = NULL "
-                "WHERE account_id = ? AND id = ?",
-                (row["account_id"], row["id"]),
-            )
-            fixed += 1
-            continue
-        if moment == row["received_at"] and day == row["received_day"]:
-            continue
-        conn.execute(
-            "UPDATE returns SET received_at = ?, received_day = ? WHERE account_id = ? AND id = ?",
-            (moment, day, row["account_id"], row["id"]),
-        )
-        fixed += 1
-    if fixed:
-        log.info("Пересчитано чисел получения у возвратов: %d", fixed)
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (KV_DAYS_FIXED, now_iso()),
-    )
-
-
-def _fill_status_changed(conn: sqlite3.Connection) -> None:
-    """Заполнить момент смены статуса у строк, записанных до этой колонки.
-
-    Он лежит в сохранённом ответе площадки (`raw`), просто раньше не выносился
-    отдельным полем. Достаём оттуда, а заодно проставляем число актам «без
-    статуса»: их заголовок берёт его вместо времени составления, иначе
-    «Возвраты за 16.09 11:42» читается как «получены 16.09 в 11:42», хотя
-    11:42 — это лишь когда панель завела акт.
-    """
-    if not _table_exists(conn, "returns"):
-        return
-    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_CHANGED_FILLED,)).fetchone()
-    if done:
-        return
-    from .store import local_day
-
-    filled = 0
-    for row in conn.execute(
-        "SELECT account_id, id, raw FROM returns WHERE status_changed_at IS NULL AND raw IS NOT NULL"
-    ).fetchall():
-        try:
-            visual = (json.loads(row["raw"]) or {}).get("visual") or {}
-        except (TypeError, ValueError):
-            continue
-        moment = _parsed_moment(visual.get("change_moment"))
-        if not moment:
-            continue
-        conn.execute(
-            "UPDATE returns SET status_changed_at = ? WHERE account_id = ? AND id = ?",
-            (moment, row["account_id"], row["id"]),
-        )
-        filled += 1
-
-    stamped = 0
-    if _table_exists(conn, "return_acts"):
-        for act in conn.execute(
-            "SELECT id, account_id FROM return_acts WHERE kind = 'nosheet' AND received_day IS NULL"
-        ).fetchall():
-            moment = conn.execute(
-                "SELECT MAX(status_changed_at) AS moment FROM returns WHERE act_id = ?", (act["id"],)
-            ).fetchone()["moment"]
-            day = local_day(moment) if moment else ""
-            if len(day) != 10:
-                continue
-            # Номер за число идёт вместе с числом: без него заголовок теряет «№N».
-            seq = conn.execute(
-                "SELECT COUNT(*) AS c FROM return_acts WHERE account_id = ? AND received_day = ?",
-                (act["account_id"], day),
-            ).fetchone()["c"] + 1
-            conn.execute(
-                "UPDATE return_acts SET received_day = ?, day_seq = ? WHERE id = ?",
-                (day, seq, act["id"]),
-            )
-            stamped += 1
-    if filled or stamped:
-        log.info("Момент смены статуса заполнен у %d возвратов, дат у актов: %d", filled, stamped)
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (KV_CHANGED_FILLED, now_iso()),
-    )
-
-
-def _fill_arrived(conn: sqlite3.Connection) -> None:
-    """Достать из сохранённого ответа дату готовности к выдаче и число получения.
-
-    Колонка arrived_at появилась позже, а данные для неё уже лежали в `raw`.
-    Заодно правим число получения: оно писалось один раз и залипало. Статус
-    сменился 18-го, а выдали 19-го — возврат так и оставался за 18-м, сколько
-    ни обновляй. Берём final_moment: это сам момент выдачи.
-
-    Строки из подтверждённых актов не трогаем — там работа закрыта.
-    """
-    if not _table_exists(conn, "returns"):
-        return
-    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_ARRIVED_FILLED,)).fetchone()
-    if done:
-        return
-    from .store import local_day
-
-    arrived = fixed = 0
-    # Строки без сохранённого ответа тоже нужны: даты готовности у них не
-    # будет, а залипшее число получения починить надо и им.
-    for row in conn.execute(
-        "SELECT account_id, id, raw, final_moment, received_at, received_day, act_id FROM returns"
-    ).fetchall():
-        try:
-            body = json.loads(row["raw"] or "{}") or {}
-        except (TypeError, ValueError):
-            body = {}
-        moment = _parsed_moment(((body.get("storage") or {}).get("arrived_moment")))
-        if moment:
-            conn.execute(
-                "UPDATE returns SET arrived_at = ? WHERE account_id = ? AND id = ?",
-                (moment, row["account_id"], row["id"]),
-            )
-            arrived += 1
-
-        if not row["received_at"]:
-            continue
-        handover = _parsed_moment(row["final_moment"])
-        if not handover or handover == row["received_at"]:
-            continue
-        locked = conn.execute(
-            "SELECT 1 FROM return_acts WHERE id = ? AND confirmed_at IS NOT NULL", (row["act_id"],)
-        ).fetchone() if row["act_id"] else None
-        if locked:
-            continue
-        day = local_day(handover)
-        if len(day) != 10:
-            continue
-        conn.execute(
-            "UPDATE returns SET received_at = ?, received_day = ? WHERE account_id = ? AND id = ?",
-            (handover, day, row["account_id"], row["id"]),
-        )
-        fixed += 1
-        # Число переехало — из акта за прежнее возврат надо отпустить, иначе
-        # в акт за своё число он не попадёт: место уже занято. Отмеченный
-        # остаётся: отметку ставил сборщик, держа возврат в руках.
-        conn.execute(
-            "UPDATE returns SET act_id = NULL WHERE account_id = ? AND id = ? AND mark IS NULL "
-            "AND act_id IN (SELECT id FROM return_acts WHERE confirmed_at IS NULL "
-            "AND received_day IS NOT NULL AND received_day <> ?)",
-            (row["account_id"], row["id"], day),
-        )
-    if fixed:
-        # Акт, из которого так забрали всё, остаётся пустой строкой на экране.
-        conn.execute(
-            "DELETE FROM return_acts WHERE confirmed_at IS NULL "
-            "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)"
-        )
-    if arrived or fixed:
-        log.info("Дата готовности к выдаче заполнена у %d возвратов, чисел получения поправлено: %d",
-                 arrived, fixed)
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (KV_ARRIVED_FILLED, now_iso()),
-    )
-
-
-def _release_unreceived(conn: sqlite3.Connection) -> None:
-    """Убрать из неподтверждённых актов то, что ещё не получено.
-
-    Версия 1.26.1 сметала в акт «без статуса» любой возврат, ушедший из выдачи
-    без статуса «Получен», — чтобы строка не исчезла с экрана молча. Но так в
-    акт приёмки попадал и возврат, который ещё едет к продавцу: удалишь акт, а
-    обновление кладёт его обратно. Принимать то, чего нет на складе, нельзя.
-
-    Освобождаем только строки без момента получения и без отметки сборщика:
-    по отмеченным работа уже шла, их судьбу решает человек. Подтверждённые
-    акты не трогаем вовсе — там работа закрыта.
-    """
-    if not (_table_exists(conn, "returns") and _table_exists(conn, "return_acts")):
-        return
-    done = conn.execute("SELECT value FROM kv WHERE key = ?", (KV_SPARES_RELEASED,)).fetchone()
-    if done:
-        return
-    freed = conn.execute(
-        "UPDATE returns SET act_id = NULL WHERE received_at IS NULL "
-        "AND mark IS NULL AND note IS NULL AND act_id IN "
-        "(SELECT id FROM return_acts WHERE kind = 'nosheet' AND confirmed_at IS NULL)"
-    ).rowcount or 0
-    dropped = conn.execute(
-        "DELETE FROM return_acts WHERE kind = 'nosheet' AND confirmed_at IS NULL "
-        "AND id NOT IN (SELECT DISTINCT act_id FROM returns WHERE act_id IS NOT NULL)"
-    ).rowcount or 0
-    if freed or dropped:
-        log.info("Из актов «без статуса» освобождено возвратов: %d, убрано пустых актов: %d",
-                 freed, dropped)
-    conn.execute(
-        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        (KV_SPARES_RELEASED, now_iso()),
-    )
-
-
 def _drop_generated_data(conn: sqlite3.Connection) -> None:
     """Убрать данные, оставшиеся от демо-режима.
 
@@ -1106,7 +544,7 @@ def _drop_generated_data(conn: sqlite3.Connection) -> None:
             has_keys = bool(settings.ozon_client_id and settings.ozon_api_key)
         if has_keys:
             continue
-        for table in DATA_TABLES:
+        for table in data_tables():
             if _table_exists(conn, table):
                 removed += conn.execute(f"DELETE FROM {table} WHERE account_id = ?", (row["id"],)).rowcount or 0
     conn.execute(
@@ -1162,7 +600,7 @@ def _drop_buyer_contacts(conn: sqlite3.Connection) -> None:
             "UPDATE avito_orders SET buyer_phone = NULL WHERE buyer_phone IS NOT NULL"
         ).rowcount or 0
 
-    for table in RAW_TABLES:
+    for table in raw_tables():
         if not _table_exists(conn, table) or "raw" not in _columns(conn, table):
             continue
         key = "posting_number" if table == "postings" else "id"
@@ -1199,17 +637,16 @@ def init_db() -> None:
             conn.execute("ROLLBACK")
             raise
         conn.execute("COMMIT")
-    conn.executescript(SCHEMA)
+    conn.executescript(full_schema())
     with _write_lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
             _drop_generated_data(conn)
             _drop_buyer_contacts(conn)
-            _drop_auto_return_acts(conn)
-            _repair_received_days(conn)
-            _fill_status_changed(conn)
-            _release_unreceived(conn)
-            _fill_arrived(conn)
+            # Разовые правки своих таблиц — у каждой площадки свои, в её порядке.
+            for market in _registry().all_markets():
+                if market.migrate:
+                    market.migrate(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

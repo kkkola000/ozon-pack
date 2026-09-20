@@ -10,9 +10,13 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, labels, store
+from app.core import accounts, db, labels
 from app.markets.avito import client as avito
 from app.main import app
+from app.markets.ozon import pack as ozon_pack
+from app.markets.avito import pack as avito_pack
+from app.markets.ozon import store as ozon_store
+from app.markets.avito import sync as avito_sync
 
 
 @pytest.fixture
@@ -39,7 +43,7 @@ def names_in(archive: bytes) -> list[str]:
 def test_only_postings_awaiting_shipment_are_counted(sample_data):
     """Считаем «Ожидает отгрузки»: там стикер есть и его ещё можно взять."""
     account = accounts.default_account()
-    pending = labels.pending_ozon(account["id"])
+    pending = ozon_pack.pending_labels(account["id"])
     assert pending, "нет отправлений, ждущих выгрузки"
 
     statuses = {
@@ -47,7 +51,7 @@ def test_only_postings_awaiting_shipment_are_counted(sample_data):
             f"SELECT status FROM postings WHERE posting_number IN ({','.join('?' for _ in pending)})",
             pending)
     }
-    assert statuses == {store.STATUS_AWAITING_DELIVER}
+    assert statuses == {ozon_store.STATUS_AWAITING_DELIVER}
 
 
 def test_a_shipped_posting_does_not_hold_the_lock(sample_data):
@@ -57,29 +61,29 @@ def test_a_shipped_posting_does_not_hold_the_lock(sample_data):
     выгрузить по ней нечего.
     """
     account = accounts.default_account()
-    target = labels.pending_ozon(account["id"])[0]
+    target = ozon_pack.pending_labels(account["id"])[0]
     db.execute("UPDATE postings SET status = 'delivering' WHERE posting_number = ?", (target,))
 
-    assert target not in labels.pending_ozon(account["id"])
+    assert target not in ozon_pack.pending_labels(account["id"])
 
 
 def test_a_saved_posting_leaves_the_queue(sample_data):
     """Стикер выгружен — отправление из очереди уходит, второй раз не тянем."""
     account = accounts.default_account()
-    before = labels.pending_ozon(account["id"])
+    before = ozon_pack.pending_labels(account["id"])
     labels.mark_saved("postings", account["id"], before[:1], "posting_number")
 
-    after = labels.pending_ozon(account["id"])
+    after = ozon_pack.pending_labels(account["id"])
     assert before[0] not in after
     assert len(after) == len(before) - 1
 
 
 def test_the_lock_opens_when_nothing_is_left(sample_data):
     account = accounts.default_account()
-    assert labels.ozon_state(account["id"])["locked"] is True
-    labels.mark_saved("postings", account["id"], labels.pending_ozon(account["id"]), "posting_number")
+    assert labels.state(ozon_pack.pending_labels(account["id"]))["locked"] is True
+    labels.mark_saved("postings", account["id"], ozon_pack.pending_labels(account["id"]), "posting_number")
 
-    state = labels.ozon_state(account["id"])
+    state = labels.state(ozon_pack.pending_labels(account["id"]))
     assert state == {"pending": 0, "locked": False}
 
 
@@ -88,7 +92,7 @@ def test_archive_has_a_file_per_posting(client):
     """В архиве по файлу на отправление — иначе нужный стикер потом не найти."""
     csrf = login(client)
     account = accounts.default_account()
-    expected = labels.pending_ozon(account["id"])
+    expected = ozon_pack.pending_labels(account["id"])
 
     response = client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200, response.text
@@ -103,8 +107,8 @@ def test_archive_marks_what_it_took(client):
     account = accounts.default_account()
     assert client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
 
-    assert labels.pending_ozon(account["id"]) == []
-    assert labels.ozon_state(account["id"])["locked"] is False
+    assert ozon_pack.pending_labels(account["id"]) == []
+    assert labels.state(ozon_pack.pending_labels(account["id"]))["locked"] is False
     saved = db.query_one(
         "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND label_saved_at IS NOT NULL",
         (account["id"],))["c"]
@@ -217,16 +221,15 @@ def test_a_failed_batch_does_not_lose_the_rest(monkeypatch):
 # -------------------------------------------------------------------- Avito
 @pytest.fixture
 def avito_cabinet(sample_data):
-    from app.core import sync
 
     cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(cabinet)
+    avito_sync.sync_avito(cabinet)
     return cabinet
 
 
 def test_avito_orders_awaiting_shipment_are_counted(avito_cabinet):
     account = avito_cabinet
-    pending = labels.pending_avito(account["id"])
+    pending = avito_pack.pending_labels(account["id"])
     assert pending
     statuses = {
         row["status"] for row in db.query(
@@ -243,12 +246,12 @@ def test_avito_archive_opens_the_lock(avito_cabinet):
             "/api/account/switch", json={"account_id": account["id"], "next": "/avito/pack"},
             headers={"X-CSRF-Token": csrf})
         assert switched.status_code == 200, switched.text
-        assert labels.avito_state(account["id"])["locked"] is True
+        assert labels.state(avito_pack.pending_labels(account["id"]))["locked"] is True
         response = client.post("/api/avito/labels/archive.zip", headers={"X-CSRF-Token": csrf})
         assert response.status_code == 200, response.text
 
     assert names_in(response.content), "архив Avito пустой"
-    assert labels.avito_state(account["id"]) == {"pending": 0, "locked": False}
+    assert labels.state(avito_pack.pending_labels(account["id"])) == {"pending": 0, "locked": False}
 
 
 def test_the_avito_pack_page_holds_the_gate(avito_cabinet):

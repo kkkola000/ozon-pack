@@ -16,11 +16,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
-from ...core import db, labels, return_acts, store, sync
+from ...core import db, labels, return_acts
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem
 from ...routes import returns as returns_routes
+from ...core import store as core_store
+from ...core import sync as core_sync
+from . import store, sync
 
 log = logging.getLogger("avito")
 
@@ -89,7 +92,7 @@ def avito_page(request: Request, tab: str = "confirm", q: str = "", user: dict =
             "counts": _counts(account),
             "orders": _list_orders(account, tab, q),
             "search": q,
-            "sync": sync.status(),
+            "sync": core_sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "avito",
         },
@@ -141,7 +144,7 @@ def api_avito_pack_state(user: dict = Depends(require_section("pack")),
     return {
         "state": avito_pack.load_state(account, user),
         "counters": _pack_counters(account),
-        "labels": labels.avito_state(account["id"]),
+        "labels": labels.state(avito_pack.pending_labels(account["id"])),
     }
 
 
@@ -325,7 +328,7 @@ def api_avito_labels_archive(request: Request, user: dict = Depends(require_sect
     не остаётся. В базе только отметка о выгрузке, по ней открывается сборка.
     """
     check_csrf(request)
-    ids = labels.pending_avito(account["id"])
+    ids = avito_pack.pending_labels(account["id"])
     if not ids:
         raise HTTPException(status_code=400, detail="Все этикетки уже выгружены")
     ids = ids[: labels.MAX_AT_ONCE]
@@ -354,7 +357,7 @@ def api_avito_labels_archive(request: Request, user: dict = Depends(require_sect
 
 
 def _avito_archive_name(account: dict) -> str:
-    stamp = store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
+    stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
     return safe_filename(f"avito-labels-{account.get('title') or account['id']}-{stamp}.zip")
 
 
@@ -482,7 +485,7 @@ def avito_returns_page(request: Request, q: str = "",
             "totals": _return_totals(account),
             "skipped": _returns_skipped(account),
             "q": q,
-            "sync": sync.status(),
+            "sync": core_sync.status(),
             # Лист по всем кабинетам общий для площадок и живёт в разделе возвратов
             "all_total": returns_routes.ready_everywhere(),
             "csrf": request.state.session.get("csrf"),

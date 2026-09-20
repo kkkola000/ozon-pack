@@ -19,11 +19,12 @@ import json
 import re
 from typing import Any
 
-from ...core import db, report, store
+from ...core import db, report
 from . import client as yandex
 from ...core.config import settings
 from ..ozon.pack import ScanResult, barcode_variants
 from .client import YandexError
+from . import store
 
 # Номер заказа Маркета — число. На ярлыке грузового места к нему дописан номер
 # места через дефис: «12345678-1».
@@ -618,3 +619,22 @@ def label_pdf(account: dict, user: dict, order_ids: list[str]) -> tuple[bytes, s
                 message="Ярлык отправлен на печать", conn=conn,
             )
     return pdf, f"yandex-label-{order_ids[0]}.pdf" if len(order_ids) == 1 else "yandex-labels.pdf"
+
+
+# ------------------------------------------------------------------- Яндекс Маркет
+def pending_labels(account_id: int) -> list[str]:
+    """Заказы Маркета в работе, чей ярлык ещё не выгружен.
+
+    У Маркета ярлык есть с момента подтверждения заказа, а сборка в панели
+    закрывается его сканом — значит, нужен он по каждому заказу в работе, и
+    «Ожидает сборки», и «Ожидает отгрузки». Собранное замок не держит.
+    """
+    from . import client as yandex
+
+    subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
+    rows = db.query(
+        f"SELECT id FROM yandex_orders WHERE account_id = ? AND substatus IN ({subs}) "
+        "AND local_state != 'packed' AND label_saved_at IS NULL ORDER BY id",
+        [account_id] + list(yandex.WORK_SUBSTATUSES),
+    )
+    return [row["id"] for row in rows]

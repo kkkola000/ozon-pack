@@ -8,11 +8,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, labels, options, return_acts, store, sync
+from ...core import access, db, labels, return_acts, sync
 from ...core.config import settings
-from ...core.deps import check_csrf, require_market, require_section, safe_filename, templates
+from ...core import store as core_store
+from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem
+from . import client as ozon
 from . import pack as packing
+from . import returns, store
 from .client import OzonError
 
 router = APIRouter()
@@ -43,8 +46,8 @@ def pack_page(request: Request, user: dict = Depends(require_section("pack")),
 
 def _counters(account: dict) -> dict:
     account_id = account["id"]
-    # «Возвраты к выдаче» — прямо по отмеченным статусам, см. options.pickup_sql.
-    ready_sql, ready_params = options.pickup_sql()
+    # «Возвраты к выдаче» — прямо по отмеченным статусам, см. returns.pickup_sql.
+    ready_sql, ready_params = returns.pickup_sql()
     return {
         "awaiting_packaging": db.query_one(
             "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND status = ?",
@@ -71,7 +74,7 @@ def api_state(user: dict = Depends(require_section("pack")), account: dict = Dep
     return {
         "state": packing.load_state(account, user),
         "counters": _counters(account),
-        "labels": labels.ozon_state(account["id"]),
+        "labels": labels.state(packing.pending_labels(account["id"])),
     }
 
 
@@ -141,7 +144,7 @@ def api_labels_archive(request: Request, user: dict = Depends(require_section("p
     открывается сканирование.
     """
     check_csrf(request)
-    numbers = labels.pending_ozon(account["id"])
+    numbers = packing.pending_labels(account["id"])
     if not numbers:
         raise HTTPException(status_code=400, detail="Все стикеры уже выгружены")
     numbers = numbers[: labels.MAX_AT_ONCE]
@@ -165,7 +168,7 @@ def api_labels_archive(request: Request, user: dict = Depends(require_section("p
 
 def _archive_name(account: dict) -> str:
     """Имя архива: по нему на компьютере видно, чьи это стикеры и за когда."""
-    stamp = store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
+    stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
     return safe_filename(f"stickers-{account.get('title') or account['id']}-{stamp}.zip")
 
 
@@ -306,7 +309,7 @@ def _count(sql: str, params: tuple) -> int:
 def nav_items(account: dict) -> list[NavItem]:
     """Меню кабинета Ozon. Значки — сколько работы осталось, собранное не в счёт."""
     aid = (account["id"],)
-    ready_sql, ready_params = options.pickup_sql()
+    ready_sql, ready_params = returns.pickup_sql()
     return [
         NavItem("/pack", "Сборка", "pack", "pack"),
         NavItem("/orders?tab=packaging", "Заказы FBS", "orders", "orders", (
@@ -334,4 +337,131 @@ def settings_stats(account_id: int) -> dict[str, int]:
         "Товаров": _count("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid),
         "Штрихкодов": _count("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid),
         "Возвратов": _count("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid),
+    }
+
+
+@router.get("/api/returns/giveout.pdf")
+def api_giveout(user: dict = Depends(require_section("returns")), account: dict = Depends(require_market("ozon"))):
+    """Штрихкод Ozon на выдачу возвратов (FBS)."""
+    try:
+        pdf = ozon.get_client(account).giveout_pdf()
+    except OzonError as exc:
+        raise HTTPException(status_code=502, detail=f"Ozon не отдал документ выдачи: {exc.message}") from exc
+    db.log_event(
+        "returns_giveout", account_id=account["id"], user=user, message="Запрошен штрихкод выдачи возвратов"
+    )
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'inline; filename="giveout.pdf"', "Cache-Control": "no-store"},
+    )
+
+
+@router.post("/api/returns/sync")
+def api_returns_sync(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("returns")),
+                     account: dict = Depends(require_market("ozon"))):
+    check_csrf(request)
+    full = bool(payload.get("full"))
+    try:
+        result = returns.sync_returns(account, full=full)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
+    return {"status": "ok", "message": _sync_message(result), "result": result}
+
+
+def _sync_message(result: dict) -> str:
+    """Что сделало обновление. Акт панель не составляет — это решение сборщика."""
+    parts = [f"Обновлено возвратов: {result.get('returns', 0)}"]
+    if result.get("returns_gone"):
+        parts.append(f"ушло из выдачи: {result['returns_gone']}")
+    return ". ".join(parts)
+
+
+@router.post("/api/postings/{posting_number}/reset")
+def api_reset_posting(posting_number: str, request: Request, admin: dict = Depends(require_manager),
+                      account: dict = Depends(require_market("ozon"))):
+    """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
+    check_csrf(request)
+    row = db.query_one(
+        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Отправление не найдено")
+    state = "cancelled" if row["status"] == "cancelled" else "new"
+    db.execute(
+        "UPDATE postings SET local_state = ?, packed_at = NULL, packed_by = NULL,"
+        " claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE account_id = ? AND posting_number = ?",
+        (state, account["id"], posting_number),
+    )
+    db.log_event(
+        "posting_reset", level="warn", account_id=account["id"], user=admin,
+        posting_number=posting_number, message="Сброшена отметка сборки",
+    )
+    return {"status": "ok", "message": f"{posting_number}: отметка сборки снята"}
+
+
+@router.post("/api/returns/statuses")
+def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
+                         account: dict = Depends(require_market("ozon"))):
+    """Какие статусы возвратов панель загружает и показывает как доступные."""
+    check_csrf(request)
+    raw = payload.get("statuses") or []
+    known = {code for code, _label, _hint in returns.RETURN_STATUS_CHOICES}
+    statuses = [str(s).strip() for s in raw if str(s).strip() in known]
+    if not statuses:
+        raise HTTPException(status_code=400, detail="Выберите хотя бы один статус")
+
+    returns.set_returns_statuses(statuses, user=admin)
+    try:
+        result = returns.sync_returns(account)
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
+    names = ", ".join(returns.status_label(code) for code in statuses)
+    return {
+        "status": "ok",
+        "message": f"Загружаются возвраты в статусах: {names}. Обновлено: {result.get('returns', 0)}.",
+        "result": result,
+    }
+
+
+@router.post("/api/returns/received-statuses")
+def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
+                          account: dict = Depends(require_market("ozon"))):
+    """В каких статусах возврат считается полученным — из них собирается акт.
+
+    Пустой список разрешён: это «акты не вести». Отказывать здесь, как в списке
+    к выдаче, нельзя — иначе выключить акты было бы невозможно.
+    """
+    check_csrf(request)
+    raw = payload.get("statuses") or []
+    known = {code for code, _label, _hint in returns.RETURN_STATUS_CHOICES}
+    unknown = [str(s).strip() for s in raw if str(s).strip() not in known]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Неизвестный статус: {', '.join(unknown)}")
+    statuses = [str(s).strip() for s in raw if str(s).strip()]
+
+    # Глубина окна сохраняется вместе со статусами: обе настройки про одно и то
+    # же — что панель считает полученным и за какой срок это забирает.
+    days = payload.get("days")
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Срок указывается числом дней") from None
+        returns.set_received_days(days, user=admin)
+
+    returns.set_received_statuses(statuses, user=admin)
+    try:
+        result = returns.sync_returns(account)
+    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+        raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
+    if not statuses:
+        return {"status": "ok", "result": result,
+                "message": "Акты больше не из чего составлять: полученные возвраты не загружаются."}
+    names = ", ".join(returns.status_label(code) for code in statuses)
+    return {
+        "status": "ok",
+        "message": f"Полученными считаются возвраты в статусах: {names}. "
+                   f"Обновлено возвратов: {result.get('returns', 0)}.",
+        "result": result,
     }

@@ -20,7 +20,19 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ..core import catalog, db, product_sets
-from ..core.deps import check_csrf, require_manager, require_market, require_section, templates
+from ..core.deps import check_csrf, require_account, require_manager, require_section, templates
+
+
+def require_catalog(request: Request) -> dict:
+    """Кабинет площадки, которая умеет наполнять каталог. Остальным раздел не показывается."""
+    from ..markets import registry
+
+    account = require_account(request)
+    market = registry.get(account["marketplace"])
+    if market is None or market.catalog is None:
+        title = market.title if market else account["marketplace"]
+        raise HTTPException(status_code=409, detail=f"Площадка «{title}» каталог товаров не отдаёт")
+    return account
 
 router = APIRouter()
 
@@ -68,7 +80,7 @@ def search(account_id: int, q: str = "", limit: int = PAGE_LIMIT) -> list[dict]:
 @router.get("/products", response_class=HTMLResponse)
 def products_page(request: Request, q: str = "", tab: str = "catalog",
                   user: dict = Depends(require_section("products")),
-                  account: dict = Depends(require_market("ozon"))):
+                  account: dict = Depends(require_catalog)):
     """Каталог кабинета и наборы."""
     aid = account["id"]
     items = search(aid, q)
@@ -103,7 +115,7 @@ def products_page(request: Request, q: str = "", tab: str = "catalog",
 
 @router.post("/api/products/catalog/refresh")
 def api_refresh_catalog(request: Request, admin: dict = Depends(require_manager),
-                        account: dict = Depends(require_market("ozon"))):
+                        account: dict = Depends(require_catalog)):
     """Перечитать каталог кабинета у Ozon целиком.
 
     Обычная синхронизация тянет только товары из заказов и возвратов — для
@@ -116,14 +128,14 @@ def api_refresh_catalog(request: Request, admin: dict = Depends(require_manager)
 
 @router.get("/api/products/catalog/status")
 def api_catalog_status(admin: dict = Depends(require_section("products")),
-                       account: dict = Depends(require_market("ozon"))):
+                       account: dict = Depends(require_catalog)):
     """Как идёт обход — кнопка спрашивает, пока он не закончится."""
     return catalog.job_status(account["id"])
 
 
 @router.get("/api/products/search")
 def api_search(q: str = "", limit: int = 20, admin: dict = Depends(require_section("products")),
-               account: dict = Depends(require_market("ozon"))):
+               account: dict = Depends(require_catalog)):
     """Подсказка при выборе товара: и для набора, и для его частей."""
     found = search(account["id"], q, limit=max(1, min(limit, 50)))
     return {
@@ -137,7 +149,7 @@ def api_search(q: str = "", limit: int = 20, admin: dict = Depends(require_secti
 
 @router.get("/api/products/{sku}")
 def api_product(sku: str, admin: dict = Depends(require_section("products")),
-                account: dict = Depends(require_market("ozon"))):
+                account: dict = Depends(require_catalog)):
     """Карточка товара вместе с тем, в какие наборы он входит."""
     row = db.query_one(
         "SELECT * FROM products WHERE account_id = ? AND sku = ?", (account["id"], sku)
@@ -154,7 +166,7 @@ def api_product(sku: str, admin: dict = Depends(require_section("products")),
 @router.post("/api/products/sets")
 def api_save_set(request: Request, payload: dict = Body(...),
                  admin: dict = Depends(require_manager),
-                 account: dict = Depends(require_market("ozon"))):
+                 account: dict = Depends(require_catalog)):
     """Создать набор или переписать его состав."""
     check_csrf(request)
     try:
@@ -176,7 +188,7 @@ def api_save_set(request: Request, payload: dict = Body(...),
 
 @router.delete("/api/products/sets/{sku}")
 def api_delete_set(sku: str, request: Request, admin: dict = Depends(require_manager),
-                   account: dict = Depends(require_market("ozon"))):
+                   account: dict = Depends(require_catalog)):
     """Убрать набор. Товар остаётся — просто собирается по своему штрихкоду."""
     check_csrf(request)
     if not product_sets.delete(account["id"], sku, user=admin):

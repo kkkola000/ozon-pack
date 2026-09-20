@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..base import Market
-from . import client, routes, sync
+from . import client, pack, routes, store, sync
 
 MARKET = Market(
     code="avito",
@@ -21,4 +21,7 @@ MARKET = Market(
     sync=sync.sync_account,
     nav=routes.nav_items,
     stats=routes.settings_stats,
+    schema=store.SCHEMA,
+    raw_tables=("avito_orders",),
+    pending_labels=pack.pending_labels,
 )

@@ -13,6 +13,8 @@ from fastapi.testclient import TestClient
 from app.core import accounts, db, returns_pdf, store
 from app.markets.avito import client as avito
 from app.main import app
+from app.markets.ozon import returns as ozon_returns
+from app.markets.avito import sync as avito_sync
 
 
 @pytest.fixture
@@ -71,12 +73,12 @@ def test_mark_and_comment_are_saved(client):
 def an_act_return() -> str:
     """Съездить за возвратами и свести их в акт — там и живут отметки."""
     from app.markets.ozon import client as ozon
-    from app.core import return_acts, store, sync
+    from app.core import return_acts, store
 
     account = accounts.default_account()
     ozon.get_client(account).receive()
-    sync.sync_returns(account)
-    result = return_acts.from_received(account["id"], store.local_day(), user={"login": "admin"})
+    ozon_returns.sync_returns(account)
+    result = ozon_returns.from_received(account["id"], store.local_day(), user={"login": "admin"})
     assert result["status"] == "ok", result["message"]
     return return_acts.detail(result["act_id"])["ozon"][0]["id"]
 
@@ -122,13 +124,12 @@ def test_mark_can_be_cleared(client):
 
 def test_sync_does_not_wipe_the_mark(client):
     """Главное свойство: обновление списка из Ozon отметку не трогает."""
-    from app.core import sync
 
     csrf = login(client)
     return_id = a_return()
     mark(client, csrf, marketplace="ozon", id=return_id, mark="bad", note="Не отдали, спор")
 
-    sync.sync_returns(accounts.default_account(), full=True)
+    ozon_returns.sync_returns(accounts.default_account(), full=True)
 
     row = stored(return_id)
     assert row["mark"] == "bad", "синхронизация стёрла отметку"
@@ -150,11 +151,10 @@ def test_unknown_return_is_refused(client):
 
 def test_mark_from_another_cabinet_is_refused(client):
     """Возврат чужого кабинета отметить нельзя — кабинеты не смешиваются."""
-    from app.core import sync
 
     csrf = login(client)
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
-    sync.sync_returns(second)
+    ozon_returns.sync_returns(second)
     foreign = db.query_one(
         "SELECT id FROM returns WHERE account_id = ? AND id NOT IN "
         "(SELECT id FROM returns WHERE account_id = ?) LIMIT 1",
@@ -214,14 +214,14 @@ def test_mark_window_saves_by_the_decision_itself(client):
 
 def test_marks_live_in_the_act(client):
     """Отмечают привезённое — во вкладке «Ждёт подтверждения», внутри акта."""
-    from app.core import accounts, return_acts, store, sync
+    from app.core import accounts, store
     from app.markets.ozon import client as ozon
 
     csrf = login(client)
     account = accounts.default_account()
     ozon.get_client(account).receive()
-    sync.sync_returns(account)
-    assert return_acts.from_received(
+    ozon_returns.sync_returns(account)
+    assert ozon_returns.from_received(
         account["id"], store.local_day(), user={"login": "admin"}
     )["status"] == "ok"
 
@@ -232,10 +232,9 @@ def test_marks_live_in_the_act(client):
 # ---------------------------------------------------------------- отметка у Avito
 @pytest.fixture
 def avito_cabinet(client):
-    from app.core import sync
 
     cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(cabinet)
+    avito_sync.sync_avito(cabinet)
     return cabinet
 
 
@@ -363,13 +362,12 @@ def test_sheet_pdf_keeps_the_scheme_visible(client):
 
 def test_sheet_pdf_covers_every_cabinet(client):
     """scope=all — тот же охват, что и у листа для печати: Ozon и Avito вместе."""
-    from app.core import sync
 
     login(client)
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
-    sync.sync_returns(second)
+    ozon_returns.sync_returns(second)
     avito_cabinet = accounts.get(accounts.create("avito", "Кабинет Avito", "test-client", "test-secret"))
-    sync.sync_avito(avito_cabinet)
+    avito_sync.sync_avito(avito_cabinet)
 
     text = pdf_text(client.get("/returns/sheet.pdf?scope=all").content)
     assert "все кабинеты" in text
