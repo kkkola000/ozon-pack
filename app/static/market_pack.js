@@ -58,7 +58,9 @@ function renderActive(state) {
 
 function pushHistory(code, result) {
   history.unshift({ code, status: result.status, message: result.message, at: new Date() });
-  if (history.length > 12) history.pop();
+  // Три строки, не больше: сборщик смотрит сюда, только чтобы убедиться, что
+  // предыдущий скан прошёл. Длинная лента отодвигала список заказов вниз.
+  if (history.length > 3) history.pop();
   historyBox.innerHTML = history.map((entry) => `
     <div style="padding:4px 0;border-bottom:1px solid var(--line)">
       <span class="mono">${entry.at.toLocaleTimeString('ru-RU')}</span> ·
@@ -259,3 +261,32 @@ async function refreshState() {
 
 refreshState();
 setInterval(() => { if (!busy) refreshState(); }, 30000);
+
+/* Список заказов всех кабинетов: фильтры работают на уже готовых строках.
+
+   Строки приходят с сервера вместе со страницей, поэтому «только в работе» и
+   поиск ничего не запрашивают — просто прячут лишнее. На складе это заметно:
+   ответ мгновенный, а сеть на рабочем месте бывает никакая. */
+const workBox = document.getElementById('only-work');
+const ordersSearch = document.getElementById('orders-search');
+const ordersBody = document.getElementById('orders-rows');
+
+function filterOrders() {
+  if (!ordersBody) return;
+  const onlyWork = !workBox || workBox.checked;
+  const needle = (ordersSearch?.value || '').trim().toLowerCase();
+  let shown = 0;
+
+  for (const row of ordersBody.rows) {
+    const fits = (!onlyWork || row.dataset.work === '1')
+      && (!needle || (row.dataset.text || '').includes(needle));
+    row.hidden = !fits;
+    if (fits) shown += 1;
+  }
+  const empty = document.getElementById('orders-empty');
+  if (empty) empty.hidden = shown > 0;
+}
+
+workBox?.addEventListener('change', filterOrders);
+ordersSearch?.addEventListener('input', filterOrders);
+filterOrders();

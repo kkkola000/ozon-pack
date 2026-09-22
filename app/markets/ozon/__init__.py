@@ -42,6 +42,7 @@ MARKET = Market(
     ),
     # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.
     returns=returns.SOURCE,
+    orders_feed=store.orders_feed,
     workspace=routes.WORKSPACE,
     settings_rows="ozon/settings_rows.html",
     settings_panel="ozon/settings_panel.html",

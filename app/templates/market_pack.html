@@ -48,8 +48,77 @@
 </div>
 
 <div class="panel">
-  <h2>Последние сканы</h2>
-  <div id="history" class="small muted">Пока пусто.</div>
+  <div class="row between">
+    <h2 style="margin:0">Последние сканы</h2>
+    <span class="muted small">показываются три последних</span>
+  </div>
+  <div id="history" class="small muted" style="margin-top:10px">Пока пусто.</div>
+</div>
+
+{# Заказы всех кабинетов сразу. Очередь выше — только текущего магазина, и это
+   верно: собирают по одному. Но видеть, что горит у соседнего, нужно, не
+   переключая кабинеты по очереди. Строки собирает ядро из объявлений площадок,
+   поэтому здесь нет ни одной развилки «если это Ozon». #}
+<div class="panel">
+  <div class="row between">
+    <div>
+      <h2 style="margin:0">Все заказы</h2>
+      <div class="muted small" style="margin-top:4px">
+        По всем кабинетам и площадкам. Заказы текущего магазина — сверху, дальше
+        остальные магазины по алфавиту; внутри магазина раньше тот, у кого срок ближе.
+      </div>
+    </div>
+    <div class="row">
+      <label class="muted small row" style="gap:8px">
+        <input type="checkbox" id="only-work" checked style="width:auto"> только в работе
+      </label>
+      <input type="search" id="orders-search" placeholder="Номер, товар, магазин…" style="width:220px">
+    </div>
+  </div>
+
+  {% if orders %}
+  <table style="margin-top:12px">
+    <thead>
+      <tr>
+        <th style="width:190px">Магазин</th>
+        <th style="width:185px">Заказ</th>
+        <th>Товары</th>
+        <th style="width:70px">Кол-во</th>
+        <th style="width:150px">Отгрузка до</th>
+        <th style="width:160px">Статус</th>
+      </tr>
+    </thead>
+    <tbody id="orders-rows">
+      {% for order in orders %}
+      <tr class="{{ 'own' if order.own }}" data-work="{{ 1 if order.in_work else 0 }}"
+          data-text="{{ (order.number ~ ' ' ~ order.goods ~ ' ' ~ order.shop ~ ' ' ~ order.market_title) | lower }}">
+        {# Название площадки не повторяем, если кабинет назвали так же. #}
+        <td style="white-space:nowrap">
+          <div style="font-weight:700">{{ order.shop }}</div>
+          <div class="muted small">
+            {%- if order.market_title != order.shop %}{{ order.market_title }}{% if order.own %} · {% endif %}{% endif -%}
+            {%- if order.own %}текущий{% endif -%}
+          </div>
+        </td>
+        <td class="mono">{{ order.number }}</td>
+        <td class="muted small">{{ order.goods or '—' }}</td>
+        <td style="font-weight:700">{{ order.quantity }}</td>
+        <td>
+          {% if order.deadline_local %}
+            <span class="tag {{ order.urgency }}">{{ order.deadline_local }}</span>
+          {% else %}<span class="muted">—</span>{% endif %}
+        </td>
+        <td class="small">{{ order.status_label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="empty" id="orders-empty" hidden>Заказов не найдено.</div>
+  {% else %}
+  <div class="empty" style="margin-top:12px">
+    Заказов нет ни в одном кабинете. Нажмите «{{ workspace.sync_label }}» — или проверьте ключи в «Настройках».
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
 

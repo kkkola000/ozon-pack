@@ -29,5 +29,6 @@ MARKET = Market(
     schema=store.SCHEMA,
     raw_tables=("yandex_orders",),
     pending_labels=pack.pending_labels,
+    orders_feed=store.orders_feed,
     workspace=routes.WORKSPACE,
 )

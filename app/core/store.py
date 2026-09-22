@@ -96,6 +96,25 @@ def hours_left(shipment_date: str | None) -> float | None:
     return (target - datetime.now(timezone.utc)).total_seconds() / 3600
 
 
+def urgency(deadline: str | None) -> str:
+    """Насколько горит срок: overdue / urgent / soon / ok; none — срока нет.
+
+    Мерка одна на все площадки: сборщик смотрит на цвет метки, а не на то,
+    чей это заказ. Пороги — шесть часов и сутки: за шесть часов ещё можно
+    успеть собрать и отгрузить, за сутки — спланировать день.
+    """
+    left = hours_left(deadline)
+    if left is None:
+        return "none"
+    if left < 0:
+        return "overdue"
+    if left < 6:
+        return "urgent"
+    if left < 24:
+        return "soon"
+    return "ok"
+
+
 def local_time(value: str | None, fmt: str = "%d.%m %H:%M") -> str:
     """ISO-UTC -> локальное время склада (TZ_OFFSET_HOURS)."""
     if not value:

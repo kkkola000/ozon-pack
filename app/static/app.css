@@ -98,6 +98,10 @@ th:last-child { border-top-right-radius: var(--radius-sm); border-bottom-right-r
 tbody tr:hover { background: #fbfcfd; }
 tbody tr:last-child td { border-bottom: none; }
 tr.done td { opacity: .5; }
+/* Строка своего кабинета в общем списке заказов: подсветкой видно, где своя
+   работа, а где соседний магазин, — без чтения колонки «Магазин». */
+tr.own { background: var(--accent-soft); }
+tr.own:hover { background: var(--accent-soft); }
 
 /* ---------- Кнопки и поля ---------- */
 .btn {

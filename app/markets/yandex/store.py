@@ -8,7 +8,8 @@ from typing import Any
 
 from ...core import db
 from ...core.catalog import offer_barcodes
-from ...core.store import (_dt, _num, _text, claim_is_active, hours_left, local_time)
+from ...core.store import (_dt, _num, _text, claim_is_active, hours_left, local_time,
+                           urgency as urgency_of)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS yandex_orders (
@@ -223,23 +224,55 @@ def yandex_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     # Срочность считаем по дате отгрузки: именно её нельзя пропустить.
     deadline = data.get("shipment_date")
     left = hours_left(deadline)
-    if left is None:
-        urgency = "none"
-    elif left < 0:
-        urgency = "overdue"
-    elif left < 6:
-        urgency = "urgent"
-    elif left < 24:
-        urgency = "soon"
-    else:
-        urgency = "ok"
     data["deadline"] = deadline
     data["deadline_local"] = local_time(deadline, "%d.%m") if deadline else ""
     data["hours_left"] = round(left, 1) if left is not None else None
-    data["urgency"] = urgency
+    data["urgency"] = urgency_of(deadline)
     data["created_local"] = local_time(data.get("created_at_api"))
     data["packed_at_local"] = local_time(data.get("packed_at"))
     data["claim_active"] = claim_is_active(data.get("claim_at"))
     if with_items:
         data["items"] = yandex_items(data["account_id"], data["id"])
     return data
+
+
+# ------------------------------------------------ общий список на рабочем месте
+FEED_SQL = """
+SELECT o.account_id, o.id, o.substatus, o.local_state, o.shipment_date, o.items_count,
+       (SELECT GROUP_CONCAT(CASE WHEN i.quantity > 1 THEN i.name || ' ×' || i.quantity ELSE i.name END, ' · ')
+          FROM yandex_order_items i
+         WHERE i.account_id = o.account_id AND i.order_id = o.id) AS goods
+  FROM yandex_orders o
+ WHERE o.account_id IN ({marks}) AND o.substatus IN (?, ?)
+ ORDER BY (o.shipment_date IS NULL), o.shipment_date
+ LIMIT ?
+"""
+
+
+def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
+    """Заказы кабинетов Маркета для общего списка на «Сборке»."""
+    if not account_ids:
+        return []
+    from .client import SUBSTATUS_LABELS, SUBSTATUS_READY_TO_SHIP, SUBSTATUS_STARTED
+
+    marks = ",".join("?" for _ in account_ids)
+    rows = db.query(
+        FEED_SQL.format(marks=marks),
+        list(account_ids) + [SUBSTATUS_STARTED, SUBSTATUS_READY_TO_SHIP, limit],
+    )
+    feed = []
+    for row in rows:
+        substatus = row["substatus"] or ""
+        packed = (row["local_state"] or "new") == "packed"
+        feed.append({
+            "account_id": row["account_id"],
+            "number": row["id"],
+            "goods": row["goods"] or "",
+            "quantity": row["items_count"] or 0,
+            "deadline": row["shipment_date"],
+            "deadline_local": local_time(row["shipment_date"]),
+            "urgency": urgency_of(row["shipment_date"]),
+            "status_label": "Собран" if packed else SUBSTATUS_LABELS.get(substatus, substatus),
+            "in_work": not packed,
+        })
+    return feed

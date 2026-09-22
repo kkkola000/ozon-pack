@@ -8,7 +8,8 @@ import json
 import sqlite3
 
 from ...core import db
-from ...core.store import (_dt, _num, _raw_json, _text, _with_mark, hours_left, local_time)
+from ...core.store import (_dt, _num, _raw_json, _text, _with_mark, hours_left, local_time,
+                           urgency as urgency_of)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS avito_orders (
@@ -229,20 +230,10 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     # Срок берём тот, который сейчас поджимает: подтверждение или отправка.
     deadline = data.get("confirm_till") if status == "on_confirmation" else data.get("ship_till")
     left = hours_left(deadline)
-    if left is None:
-        urgency = "none"
-    elif left < 0:
-        urgency = "overdue"
-    elif left < 6:
-        urgency = "urgent"
-    elif left < 24:
-        urgency = "soon"
-    else:
-        urgency = "ok"
     data["deadline"] = deadline
     data["deadline_local"] = local_time(deadline)
     data["hours_left"] = round(left, 1) if left is not None else None
-    data["urgency"] = urgency
+    data["urgency"] = urgency_of(deadline)
     data["created_local"] = local_time(data.get("created_at_api"))
     # Кто и когда собрал — во вкладке «Собранные» это главное, что нужно знать:
     # площадка о сборке не знает, и спросить, кроме панели, негде.
@@ -250,3 +241,52 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     if with_items:
         data["items"] = avito_items(data["account_id"], data["id"])
     return _with_mark(data)
+
+
+# ------------------------------------------------ общий список на рабочем месте
+# Те же колонки, что у других площадок: список на «Сборке» показывает заказы
+# всех кабинетов рядом и о площадках ничего не знает.
+FEED_SQL = """
+SELECT o.account_id, o.id, o.marketplace_id, o.status, o.local_state, o.confirm_till, o.ship_till,
+       o.items_count,
+       (SELECT GROUP_CONCAT(CASE WHEN i.quantity > 1 THEN i.title || ' ×' || i.quantity ELSE i.title END, ' · ')
+          FROM avito_order_items i
+         WHERE i.account_id = o.account_id AND i.order_id = o.id) AS goods
+  FROM avito_orders o
+ WHERE o.account_id IN ({marks}) AND o.status IN (?, ?, ?)
+ ORDER BY (COALESCE(o.confirm_till, o.ship_till) IS NULL), COALESCE(o.confirm_till, o.ship_till)
+ LIMIT ?
+"""
+
+
+def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
+    """Заказы кабинетов Avito для общего списка, вместе с возвратами."""
+    if not account_ids:
+        return []
+    from .client import (STATUS_LABELS, STATUS_ON_CONFIRMATION, STATUS_ON_RETURN,
+                         STATUS_READY_TO_SHIP)
+
+    marks = ",".join("?" for _ in account_ids)
+    rows = db.query(
+        FEED_SQL.format(marks=marks),
+        list(account_ids) + [STATUS_ON_CONFIRMATION, STATUS_READY_TO_SHIP, STATUS_ON_RETURN, limit],
+    )
+    feed = []
+    for row in rows:
+        status = row["status"] or ""
+        packed = (row["local_state"] or "new") == "packed"
+        # Срок берём тот, который сейчас поджимает, — как на странице заказов.
+        deadline = row["confirm_till"] if status == STATUS_ON_CONFIRMATION else row["ship_till"]
+        feed.append({
+            "account_id": row["account_id"],
+            "number": row["marketplace_id"] or row["id"],
+            "goods": row["goods"] or "",
+            "quantity": row["items_count"] or 0,
+            "deadline": deadline,
+            "deadline_local": local_time(deadline),
+            "urgency": urgency_of(deadline),
+            "status_label": "Собран" if packed else STATUS_LABELS.get(status, status),
+            # Возврат в работу сборщика по заказам не входит: он в своём разделе.
+            "in_work": not packed and status != STATUS_ON_RETURN,
+        })
+    return feed

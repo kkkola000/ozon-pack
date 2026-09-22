@@ -26,5 +26,6 @@ MARKET = Market(
     pending_labels=pack.pending_labels,
     # Возврат у Avito — состояние заказа, но в разделе он выглядит как у всех.
     returns=returns.SOURCE,
+    orders_feed=store.orders_feed,
     workspace=routes.WORKSPACE,
 )

@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ...core import access, db, labels, sync
+from ...core import orders as core_orders
 from . import client as yandex, pack as yandex_pack
 from ...core.config import settings
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
@@ -253,6 +254,7 @@ def yandex_pack_page(request: Request, user: dict = Depends(require_section("pac
             "account": account,
             "state": yandex_pack.load_state(account, user),
             "counters": _pack_counters(account),
+            "orders": core_orders.everywhere(account),
             "workspace": WORKSPACE,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "yandex_pack",

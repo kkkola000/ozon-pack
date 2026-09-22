@@ -7,7 +7,7 @@ from collections.abc import Iterable
 
 from ...core import db
 from ...core.store import (_dt, _raw_json, _text, claim_is_active,
-                           hours_left, local_time)
+                           hours_left, local_time, urgency as urgency_of)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS postings (
@@ -338,18 +338,8 @@ def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     data = dict(row)
     number = data["posting_number"]
     left = hours_left(data.get("shipment_date"))
-    if left is None:
-        urgency = "none"
-    elif left < 0:
-        urgency = "overdue"
-    elif left < 6:
-        urgency = "urgent"
-    elif left < 24:
-        urgency = "soon"
-    else:
-        urgency = "ok"
     data["hours_left"] = round(left, 1) if left is not None else None
-    data["urgency"] = urgency
+    data["urgency"] = urgency_of(data.get("shipment_date"))
     data["status_label"] = STATUS_LABELS.get(data.get("status") or "", data.get("status") or "")
     data["local_state_label"] = LOCAL_STATE_LABELS.get(data.get("local_state") or "new", data.get("local_state"))
     data["claim_active"] = claim_is_active(data.get("claim_at"))
@@ -359,3 +349,48 @@ def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
         data["items"] = posting_items(data["account_id"], number)
     data.pop("raw", None)
     return data
+
+
+# ------------------------------------------------ общий список на рабочем месте
+# Список показывает заказы всех кабинетов сразу, поэтому строки приводятся к
+# одному виду: сборщику всё равно, отправление это Ozon или заказ Avito, ему
+# важно — чей магазин, что собирать и когда истекает срок.
+FEED_SQL = """
+SELECT p.account_id, p.posting_number, p.status, p.local_state, p.shipment_date, p.items_count,
+       (SELECT GROUP_CONCAT(CASE WHEN i.quantity > 1 THEN i.name || ' ×' || i.quantity ELSE i.name END, ' · ')
+          FROM posting_items i
+         WHERE i.account_id = p.account_id AND i.posting_number = p.posting_number) AS goods
+  FROM postings p
+ WHERE p.account_id IN ({marks}) AND p.status IN (?, ?)
+ ORDER BY (p.shipment_date IS NULL), p.shipment_date
+ LIMIT ?
+"""
+
+
+def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
+    """Отправления кабинетов для общего списка: в работе и уже собранные."""
+    if not account_ids:
+        return []
+    marks = ",".join("?" for _ in account_ids)
+    rows = db.query(
+        FEED_SQL.format(marks=marks),
+        list(account_ids) + [STATUS_AWAITING_PACKAGING, STATUS_AWAITING_DELIVER, limit],
+    )
+    feed = []
+    for row in rows:
+        packed = (row["local_state"] or "new") == "packed"
+        feed.append({
+            "account_id": row["account_id"],
+            "number": row["posting_number"],
+            "goods": row["goods"] or "",
+            "quantity": row["items_count"] or 0,
+            "deadline": row["shipment_date"],
+            "deadline_local": local_time(row["shipment_date"]),
+            "urgency": urgency_of(row["shipment_date"]),
+            "status_label": ("Собрано" if packed
+                             else STATUS_LABELS.get(row["status"] or "", row["status"] or "")),
+            # «В работе» — то, с чем сборщику ещё что-то делать. Собранное
+            # остаётся в списке, но по умолчанию скрыто галочкой.
+            "in_work": not packed,
+        })
+    return feed

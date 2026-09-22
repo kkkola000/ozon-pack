@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
 from ...core import db, labels, return_acts
+from ...core import orders as core_orders
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -130,6 +131,7 @@ def avito_pack_page(request: Request, user: dict = Depends(require_section("pack
             "account": account,
             "state": avito_pack.load_state(account, user),
             "counters": _pack_counters(account),
+            "orders": core_orders.everywhere(account),
             "workspace": WORKSPACE,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "avito_pack",

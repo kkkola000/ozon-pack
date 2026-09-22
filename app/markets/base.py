@@ -141,6 +141,11 @@ class Market:
     settings_panel: str | None = None      # «ozon/settings_panel.html»
     # Возвраты: None — площадка их в панель не отдаёт, раздел ей не показывается.
     returns: ReturnsSource | None = None
+    # Заказы кабинетов для общего списка на рабочем месте: feed(account_ids, limit).
+    # Строка приводится к общему виду — {account_id, number, goods, quantity,
+    # deadline, deadline_local, urgency, status_label, in_work}, — чтобы список
+    # показывал рядом отправление Ozon и заказ Avito, не различая их.
+    orders_feed: Callable[..., list[dict]] | None = None
     # Рабочее место сборщика: слова и счётчики очереди.
     workspace: Workspace | None = None
     extra: dict[str, Any] = field(default_factory=dict)

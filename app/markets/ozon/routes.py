@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ...core import access, db, labels, return_acts, sync
+from ...core import orders as core_orders
 from ...core.config import settings
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
@@ -36,6 +37,7 @@ def pack_page(request: Request, user: dict = Depends(require_section("pack")),
             "user": user,
             "state": state,
             "counters": counters,
+            "orders": core_orders.everywhere(account),
             "workspace": WORKSPACE,
             "account": account,
             "csrf": request.state.session.get("csrf"),
