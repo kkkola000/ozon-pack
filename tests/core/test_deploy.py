@@ -349,8 +349,10 @@ def test_only_one_way_to_install():
     """
     for gone in ("Dockerfile", "docker-compose.yml", "deploy/nginx.conf"):
         assert not (BASE_DIR / gone).exists(), f"{gone} вернулся"
+    # update-libs.sh — не второй способ установки: он обновляет библиотеки уже
+    # поставленного сервера и сам ничего не разворачивает.
     assert sorted(p.name for p in (BASE_DIR / "deploy").iterdir()) == [
-        "install.sh", "ozon-pack.service", "setup.sh", "ssl.sh", "vpn-only.sh"
+        "install.sh", "ozon-pack.service", "setup.sh", "ssl.sh", "update-libs.sh", "vpn-only.sh"
     ]
 
 
@@ -755,3 +757,161 @@ def test_ssl_guard_lets_real_values_through():
     # Настоящие адреса в списке отсекаемых не значатся
     for real in ("shop.ru", "mail.ru", "ozon"):
         assert real not in guard, real
+
+
+# ------------------------------------------------- обновление библиотек сервера
+# Отдельная команда: обновляет то, на чём панель работает (python3, sqlite3,
+# шрифт для PDF и прочее), а код панели не трогает — это дело установщика.
+LIBS = DEPLOY / "update-libs.sh"
+
+
+@pytest.fixture
+def server(tmp_path):
+    """Подставные apt-get, dpkg-query, systemctl, curl и pip — с журналом вызовов."""
+    stub = tmp_path / "bin"
+    stub.mkdir(exist_ok=True)
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "upgradable").write_text("")
+
+    (stub / "dpkg-query").write_text(
+        '#!/bin/sh\n'
+        'if echo "$*" | grep -q Status; then echo "install ok installed"; exit 0; fi\n'
+        'for arg in "$@"; do\n'
+        '  case "$arg" in -*|*Package*) continue ;; esac\n'
+        '  printf "%s %s\\n" "$arg" "$(cat "$STATE/version-$arg" 2>/dev/null || echo 1.0)"\n'
+        'done\n'
+    )
+    (stub / "apt-get").write_text(
+        '#!/bin/sh\n'
+        'echo "apt-get $*" >> "$STATE/calls.log"\n'
+        'case "$*" in\n'
+        '  *--simulate*) cat "$STATE/upgradable" 2>/dev/null ;;\n'
+        '  *install*) while read -r line; do\n'
+        '        package=$(echo "$line" | awk "{print \\$2}")\n'
+        '        [ -n "$package" ] && echo "2.0" > "$STATE/version-$package"\n'
+        '      done < "$STATE/upgradable" 2>/dev/null ;;\n'
+        'esac\n'
+        'exit 0\n'
+    )
+    (stub / "systemctl").write_text('#!/bin/sh\necho "systemctl $*" >> "$STATE/calls.log"\nexit 0\n')
+    (stub / "curl").write_text("#!/bin/sh\nexit 0\n")
+    for name in ("dpkg-query", "apt-get", "systemctl", "curl"):
+        os.chmod(stub / name, 0o755)
+
+    app = tmp_path / "app"
+    (app / ".venv" / "bin").mkdir(parents=True)
+    (app / "requirements.txt").write_text("httpx\n")
+    (app / ".env").write_text("PORT=8080\n")
+    pip = app / ".venv" / "bin" / "pip"
+    pip.write_text('#!/bin/sh\necho "pip $*" >> "$STATE/calls.log"\nexit 0\n')
+    os.chmod(pip, 0o755)
+
+    env = dict(os.environ)
+    env.update(PATH=f"{stub}:{env['PATH']}", STATE=str(state), HEALTH_TRIES="1")
+    return {"env": env, "state": state, "app": app}
+
+
+def _outdated(server, *packages):
+    """Сказать подставному apt, что эти пакеты можно поднять."""
+    lines = "".join(f"Inst {name} [1.0] (2.0 Debian:stable)\n" for name in packages)
+    (server["state"] / "upgradable").write_text(lines)
+
+
+def _calls(server):
+    path = server["state"] / "calls.log"
+    return path.read_text() if path.exists() else ""
+
+
+def test_libs_help_explains_what_it_touches():
+    proc = subprocess.run(["bash", str(LIBS), "--help"], capture_output=True, text=True)
+    assert proc.returncode == 0
+    for flag in ("--check", "--all", "--yes", "--quiet"):
+        assert flag in proc.stdout, flag
+    # Главное разграничение: код панели обновляет установщик, а не эта команда
+    assert "install.sh" in proc.stdout
+    assert "requirements.txt" in proc.stdout
+
+
+def test_libs_check_says_everything_is_fresh(server):
+    proc = subprocess.run(
+        ["bash", str(LIBS), "--check", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "обновлять нечего" in proc.stdout
+    # «--simulate» apt только спрашивает, что можно поднять, и ничего не ставит.
+    real = [line for line in _calls(server).splitlines()
+            if "install" in line and "--simulate" not in line]
+    assert real == [], f"проверка что-то поставила: {real}"
+
+
+def test_libs_check_names_outdated_packages(server):
+    """Устаревшие пакеты названы поимённо, код возврата 10 — для расписания."""
+    _outdated(server, "python3", "sqlite3")
+    proc = subprocess.run(
+        ["bash", str(LIBS), "--check", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert proc.returncode == 10, proc.stdout + proc.stderr
+    assert "python3" in proc.stdout and "sqlite3" in proc.stdout
+    assert "Есть что обновить" in proc.stdout
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="установка пакетов требует root")
+def test_libs_upgrade_installs_and_restarts(server):
+    """Обновление: apt поднимает пакеты, pip чинит окружение, панель перезапущена.
+
+    Перезапуск обязателен: служба держит в памяти прежний интерпретатор, и без
+    него обновлённый python3 никак себя не проявит.
+    """
+    _outdated(server, "python3")
+    proc = subprocess.run(
+        ["bash", str(LIBS), "--yes", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    calls = _calls(server)
+    assert "--only-upgrade" in calls, "пакеты не обновлялись"
+    assert "pip install --quiet -r" in calls, "окружение панели не проверено"
+    assert "systemctl restart" in calls, "панель не перезапущена"
+    assert "python3 2.0" in proc.stdout, "не видно, что именно обновилось"
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="установка пакетов требует root")
+def test_libs_only_touches_its_list_by_default(server):
+    """Без «--all» весь сервер не обновляется: apt upgrade не зовётся."""
+    _outdated(server, "python3")
+    subprocess.run(
+        ["bash", str(LIBS), "--yes", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert "apt-get upgrade" not in _calls(server)
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="установка пакетов требует root")
+def test_libs_all_upgrades_the_whole_server(server):
+    """С «--all» обновляется сервер целиком — и об этом предупреждают."""
+    proc = subprocess.run(
+        ["bash", str(LIBS), "--all", "--yes", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "apt-get upgrade" in _calls(server)
+    assert "весь сервер" in proc.stderr
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="установка пакетов требует root")
+def test_libs_checks_the_panel_even_when_nothing_is_outdated(server):
+    """Пакеты свежие — окружение панели всё равно проверяется.
+
+    Библиотека могла отвалиться сама; узнавать об этом по упавшей службе — худший
+    из способов.
+    """
+    proc = subprocess.run(
+        ["bash", str(LIBS), "--yes", "--dir", str(server["app"])],
+        capture_output=True, text=True, env=server["env"],
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "pip install --quiet -r" in _calls(server)
+    assert "systemctl restart" not in _calls(server), "зря перезапустили панель"
