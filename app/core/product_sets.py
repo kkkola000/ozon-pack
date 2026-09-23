@@ -72,6 +72,38 @@ def all_sets(account_id: int) -> list[dict]:
     return result
 
 
+def all_sets_everywhere(account_ids: list[int] | None = None) -> list[dict]:
+    """Наборы всех кабинетов сразу — раздел «Товары» общий на всю панель.
+
+    Набор остаётся набором кабинета: состав задаётся для карточки площадки,
+    которая продаётся как набор. Но искать его по кабинетам, переключаясь между
+    ними, незачем — на складе они стоят на одной полке.
+    """
+    conditions = ["1 = 1"]
+    params: list = []
+    if account_ids:
+        marks = ",".join("?" for _ in account_ids)
+        conditions.append(f"s.account_id IN ({marks})")
+        params += list(account_ids)
+    rows = db.query(
+        f"SELECT s.*, p.name AS product_name, p.offer_id, p.image, "
+        f"       a.title AS shop, a.marketplace AS market "
+        f"  FROM product_sets s "
+        f"  JOIN accounts a ON a.id = s.account_id "
+        f"  LEFT JOIN products p ON p.account_id = s.account_id AND p.sku = s.sku "
+        f" WHERE {' AND '.join(conditions)} "
+        f" ORDER BY COALESCE(s.title, p.name, s.sku)",
+        params,
+    )
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["parts"] = parts_of(item["account_id"], item["sku"])
+        item["parts_total"] = sum(int(part["quantity"] or 1) for part in item["parts"])
+        result.append(item)
+    return result
+
+
 def set_skus(account_id: int) -> set[str]:
     """SKU, у которых есть рабочий состав. Пустой набор набором не считается."""
     rows = db.query(

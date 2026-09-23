@@ -1,51 +1,197 @@
 {% extends "base.html" %}
 {% block title %}Товары · Ozon Pack{% endblock %}
 
+{%- macro shop_tag(market, title) -%}
+<span class="shop"><i class="dot {{ market }}"></i>{{ title }}</span>
+{%- endmacro -%}
+
+{%- macro cab_link(tab, ids, q, view) -%}
+/products?tab={{ tab }}{% if ids %}&cab={{ ids | join(',') }}{% endif %}
+{%- if q %}&q={{ q | urlencode }}{% endif %}{% if view %}&view={{ view }}{% endif %}
+{%- endmacro -%}
+
 {% block content %}
+{# ------------------------------------------------ шапка раздела и фильтр #}
 <div class="panel">
   <div class="row between">
-    <h2 style="margin:0">Товары кабинета «{{ account.title }}»</h2>
-    <div class="row">
-      <span class="muted small">
-        {{ total }} в каталоге{% if archived %} · {{ archived }} в архиве{% endif %} ·
-        наборов: {{ sets | length }}
-      </span>
-      <button class="btn" id="catalog-refresh"
-              title="Перечитать каталог кабинета целиком. Архивные товары не загружаются.">
-        Обновить каталог
-      </button>
+    <div>
+      <h2 style="margin:0 0 4px">Товары — все кабинеты</h2>
+      <div class="muted small">
+        {{ total }} карточек в {{ shops | length }} кабинет{{ 'е' if shops | length == 1 else 'ах' }}
+        {%- if links.groups %} · сопоставлено {{ links.groups }} товаров{% endif %}
+        {%- if links.suggestions %} ·
+          <a href="{{ cab_link('match', picked, '', 'new') | trim }}" style="font-weight:700;color:var(--warn)">
+            {{ links.suggestions }} совпадений ждут подтверждения</a>
+        {%- endif %}
+      </div>
     </div>
+    {% if catalog_shops %}
+    <button class="btn" id="catalog-refresh"
+            title="Перечитать каталоги у площадок целиком. Архивные товары не загружаются.">
+      Обновить каталоги
+    </button>
+    {% endif %}
   </div>
+
   <div id="catalog-state" class="small muted" style="margin-top:8px"
-       data-running="{{ '1' if job.running else '' }}">
-    {%- if job.status == 'ok' %}
-      Каталог обновлён: {{ job.live }} товаров, архив пропущен — {{ job.archived_skipped }}.
-    {%- elif job.status == 'error' %}
-      <span style="color:var(--err)">Каталог не обновился: {{ job.error }}</span>
-    {%- elif job.running %}
-      Обновляем каталог…
+       data-running="{{ '1' if jobs.values() | selectattr('running') | list else '' }}">
+    {%- set failed = jobs.values() | selectattr('status', 'equalto', 'error') | list -%}
+    {%- set done = jobs.values() | selectattr('status', 'equalto', 'ok') | list -%}
+    {%- if jobs.values() | selectattr('running') | list %}
+      Обновляем каталоги…
+    {%- elif failed %}
+      <span style="color:var(--err)">Каталог не обновился: {{ failed[0].error }}</span>
+    {%- elif done %}
+      Каталог обновлён: {{ done | sum(attribute='live') }} товаров,
+      архив пропущен — {{ done | sum(attribute='archived_skipped') }}.
+    {%- elif not catalog_shops %}
+      Ни одна из площадок этой панели каталог не отдаёт — товары появятся, когда
+      заведёте кабинет Ozon или Яндекс Маркета.
     {%- else %}
-      Каталог наполняется сам по заказам и возвратам. Кнопка перечитывает его у
-      Ozon целиком — это нужно, чтобы собирать наборы из любого товара склада.
+      Каталог наполняется сам по заказам. Кнопка перечитывает его у площадок
+      целиком — это нужно, чтобы собирать наборы из любого товара склада.
     {%- endif %}
   </div>
 
-  <div class="tabs" style="margin-top:16px">
-    <a href="/products" class="{{ 'active' if tab == 'catalog' }}">Каталог</a>
-    <a href="/products?tab=sets" class="{{ 'active' if tab == 'sets' }}">
-      Наборы{% if sets %}<span class="badge">{{ sets | length }}</span>{% endif %}
+  <div class="filter-line">
+    <span class="muted small" style="font-weight:600">Кабинеты:</span>
+    <div class="chips">
+      <a class="chip {{ 'active' if not picked }}" href="{{ cab_link(tab, [], q, view) | trim }}">
+        Все <span class="badge">{{ total }}</span>
+      </a>
+      {% for shop in shops %}
+        {%- set ids = picked | reject('equalto', shop.id) | list if shop.id in picked
+                      else picked + [shop.id] -%}
+        <a class="chip {{ 'active' if shop.id in picked }}" href="{{ cab_link(tab, ids, q, view) | trim }}">
+          <i class="dot {{ shop.marketplace }}"></i>{{ shop.title }}
+          <span class="badge">{{ counts.get(shop.id, 0) }}</span>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="muted small" style="margin-top:8px">
+    Фильтр общий для всех вкладок: выбрали кабинет — он же останется в наборах и сопоставлении.
+  </div>
+</div>
+
+{# ------------------------------------------------ вкладки #}
+<div class="panel">
+  <div class="tabs">
+    <a href="{{ cab_link('catalog', picked, q, '') | trim }}" class="{{ 'active' if tab == 'catalog' }}">
+      Каталог <span class="badge">{{ total }}</span>
+    </a>
+    <a href="{{ cab_link('sets', picked, '', '') | trim }}" class="{{ 'active' if tab == 'sets' }}">
+      Наборы{% if sets %} <span class="badge">{{ sets | length }}</span>{% endif %}
+    </a>
+    <a href="{{ cab_link('match', picked, '', 'new') | trim }}" class="{{ 'active' if tab == 'match' }}">
+      Сопоставление
+      {%- if links.suggestions %} <span class="badge warn">{{ links.suggestions }}</span>
+      {%- elif links.groups %} <span class="badge">{{ links.groups }}</span>{% endif %}
     </a>
   </div>
 
-  {% if tab == 'sets' %}
-    <div class="small muted" style="margin-top:12px">
-      На Ozon набор — обычный товар: один SKU, один штрихкод. А на складе его
-      собирают из нескольких вещей, и сборщик сканирует именно их — наклейки
-      набора на полке нет. Состав задаётся здесь: по нему панель и засчитывает
-      сборку. Набор считается собранным, когда набраны <b>все</b> его части.
+  {# ============================================== 1. КАТАЛОГ #}
+  {% if tab == 'catalog' %}
+    <form class="row" method="get" action="/products">
+      <input type="hidden" name="cab" value="{{ picked | join(',') }}">
+      <input type="search" name="q" value="{{ q }}" placeholder="Название, артикул или штрихкод"
+             class="grow" autocomplete="off">
+      <button class="btn" type="submit">Найти</button>
+      {% if q %}<a class="btn" href="{{ cab_link('catalog', picked, '', '') | trim }}">Сбросить</a>{% endif %}
+    </form>
+
+    {% if items %}
+    <table style="margin-top:14px">
+      <thead>
+        <tr>
+          <th style="width:56px">Фото</th>
+          <th style="width:160px">Артикул</th>
+          <th>Название товара</th>
+          <th style="width:200px">Штрихкод</th>
+          <th style="width:250px">Магазин</th>
+          <th style="width:110px"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        {# Ключ строки нужен и ей самой, и карточкам под ней: в Jinja до
+           внешнего цикла изнутри не дотянуться, поэтому запоминаем здесь. #}
+        {%- set row_id = 'g' ~ loop.index -%}
+        <tr>
+          <td>
+            {% if item.image %}
+              <img src="{{ item.image }}" alt="" loading="lazy"
+                   style="width:44px;height:44px;object-fit:cover;border-radius:6px">
+            {% endif %}
+          </td>
+          <td class="small mono">{{ item.offer_id or '—' }}</td>
+          <td>
+            {{ item.name or 'Без названия' }}
+            {% if item.linked %}
+              <span class="badge ok" title="Карточки разных кабинетов сведены в один товар">
+                сопоставлен · {{ item.linked }}</span>
+              <button class="link-btn" data-toggle="{{ row_id }}">развернуть</button>
+            {% elif item.has_match %}
+              <span class="badge warn" title="Такой же артикул есть в другом кабинете">есть совпадение</span>
+            {% endif %}
+            {% if (item.account_id, item.sku) in taken %}
+              <span class="badge accent" title="У товара задан состав">набор</span>
+            {% endif %}
+          </td>
+          <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
+          <td class="small">
+            {% if item.cards %}
+              {% for card in item.cards %}{{ shop_tag(card.market, card.shop) }}{% endfor %}
+            {% else %}
+              {{ shop_tag(item.market, item.shop) }}
+            {% endif %}
+          </td>
+          <td>
+            {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}
+            <a class="btn small" href="/products?tab=sets&edit={{ item.account_id }}:{{ item.sku }}">
+              {{ 'Состав' if (item.account_id, item.sku) in taken else 'Сделать набором' }}
+            </a>
+          </td>
+        </tr>
+        {% for card in item.cards %}
+        <tr class="sub" data-sub="{{ row_id }}" hidden>
+          <td></td>
+          <td class="small mono muted">{{ card.offer_id or '—' }}</td>
+          <td class="muted">
+            {{ card.name or 'Без названия' }}
+            {% if card.is_main %}<span class="badge accent">основной</span>{% endif %}
+          </td>
+          <td class="small mono muted">{{ card.barcodes | join(', ') or '—' }}</td>
+          <td class="small">{{ shop_tag(card.market, card.shop) }}
+            {%- if card.sku != card.offer_id %}<span class="muted mono"> · {{ card.sku }}</span>{% endif %}</td>
+          <td></td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if truncated %}
+      <div class="muted small" style="margin-top:10px">
+        Показаны первые {{ items | length }} — уточните поиск или выберите кабинет.
+      </div>
+    {% endif %}
+    {% else %}
+      <div class="empty">
+        {% if q %}Ничего не нашлось по запросу «{{ q }}».
+        {% else %}Каталог пуст. Он наполняется сам при обновлении заказов.{% endif %}
+      </div>
+    {% endif %}
+
+  {# ============================================== 2. НАБОРЫ #}
+  {% elif tab == 'sets' %}
+    <div class="note">
+      Набор — товар площадки, который на складе собирают из нескольких вещей со
+      своими штрихкодами. Площадка о составе не знает: в заказе одна позиция, а
+      наклейки набора на полке нет. Состав задаётся здесь: по нему панель и
+      засчитывает сборку. Набор считается собранным, когда набраны <b>все</b> его части.
     </div>
 
-    <div class="row" style="margin-top:14px">
+    <div class="row">
       <button class="btn primary" id="set-new">Создать набор</button>
     </div>
 
@@ -67,8 +213,8 @@
 
         <h3 style="margin:18px 0 6px; font-size:16px">Состав</h3>
         <div class="muted small">
-          Часть можно выбрать из каталога или вписать штрихкодом — не всё, что
-          лежит в наборе, продаётся отдельно.
+          Часть можно выбрать из каталога любого кабинета или вписать штрихкодом —
+          не всё, что лежит в наборе, продаётся отдельно.
         </div>
 
         <table style="margin-top:10px" id="set-parts">
@@ -115,11 +261,12 @@
             <div class="act-title">{{ s.title or s.product_name or s.sku }}</div>
             <div class="act-sub">
               Артикул {{ s.offer_id or '—' }}{% if s.sku != s.offer_id %} · SKU {{ s.sku }}{% endif %} ·
+              {{ shop_tag(s.market, s.shop) }} ·
               частей {{ s.parts | length }}, всего {{ s.parts_total }} шт.
             </div>
           </div>
-          <button class="btn small" data-edit-set="{{ s.sku }}">Изменить</button>
-          <button class="btn small danger" data-del-set="{{ s.sku }}">Удалить</button>
+          <button class="btn small" data-edit-set="{{ s.account_id }}:{{ s.sku }}">Изменить</button>
+          <button class="btn small danger" data-del-set="{{ s.account_id }}:{{ s.sku }}">Удалить</button>
         </summary>
         <div class="act-body">
           <table>
@@ -144,68 +291,203 @@
     {% else %}
       <div class="empty">
         Наборов нет. Создайте набор, если какой-то товар на складе собирается из
-        нескольких вещей: иначе при сборке их скан будет «товар не из этого
-        отправления».
+        нескольких вещей: иначе при сборке их скан будет «товар не из этого заказа».
       </div>
     {% endif %}
 
+  {# ============================================== 3. СОПОСТАВЛЕНИЕ #}
   {% else %}
-    <form class="row" method="get" action="/products" style="margin-top:14px">
-      <input type="search" name="q" value="{{ q }}" placeholder="Название, артикул, SKU или штрихкод"
-             class="grow" autocomplete="off">
-      <button class="btn" type="submit">Найти</button>
-      {% if q %}<a class="btn" href="/products">Сбросить</a>{% endif %}
-    </form>
+    <div class="note">
+      Один и тот же товар лежит в кабинетах под разными карточками. Сопоставление
+      сводит их в один товар: в каталоге он занимает одну строку, и сразу видно,
+      где ещё он продаётся. Панель ничего не связывает сама — решение за вами.
+    </div>
 
-    {% if items %}
-    <table style="margin-top:14px">
-      <thead>
-        <tr>
-          <th style="width:56px"></th>
-          <th>Товар</th>
-          <th style="width:150px">Артикул</th>
-          <th style="width:130px">SKU</th>
-          <th style="width:230px">Штрихкоды</th>
-          <th style="width:110px"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in items %}
-        <tr>
-          <td>
-            {% if item.image %}
-              <img src="{{ item.image }}" alt="" loading="lazy"
-                   style="width:44px;height:44px;object-fit:cover;border-radius:6px">
-            {% endif %}
-          </td>
-          <td>
-            {{ item.name or 'Без названия' }}
-            {% if item.sku in taken %}<span class="badge accent" title="У товара задан состав">набор</span>{% endif %}
-          </td>
-          <td class="small mono">{{ item.offer_id or '—' }}</td>
-          {# У Маркета ключ товара и есть артикул продавца — второй раз его не повторяем. #}
-          <td class="small mono">{{ '—' if item.sku == item.offer_id else item.sku }}</td>
-          <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
-          <td>
-            {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}
-            <a class="btn small" href="/products?tab=sets&edit={{ item.sku }}">
-              {{ 'Состав' if item.sku in taken else 'Сделать набором' }}
-            </a>
-          </td>
-        </tr>
+    <div class="tabs sub-tabs">
+      <a href="{{ cab_link('match', picked, '', 'new') | trim }}" class="{{ 'active' if view == 'new' }}">
+        Ждут подтверждения{% if links.suggestions %} <span class="badge warn">{{ links.suggestions }}</span>{% endif %}
+      </a>
+      <a href="{{ cab_link('match', picked, '', 'linked') | trim }}" class="{{ 'active' if view == 'linked' }}">
+        Сопоставленные <span class="badge">{{ links.groups }}</span>
+      </a>
+      <a href="{{ cab_link('match', picked, '', 'skipped') | trim }}" class="{{ 'active' if view == 'skipped' }}">
+        Не сопоставлять <span class="badge">{{ links.skipped }}</span>
+      </a>
+    </div>
+
+    {# ---------------------------------- ждут подтверждения #}
+    {% if view == 'new' %}
+      {% if suggestions %}
+        <div class="row between" style="margin-bottom:12px">
+          <div class="muted small grow" style="min-width:280px">
+            Совпадения найдены по артикулу продавца. Пока не нажали «Подтвердить»,
+            карточки остаются отдельными.
+          </div>
+          <div class="row">
+            <button class="btn primary" data-confirm-all="1">Подтвердить все ({{ suggestions | length }})</button>
+            <button class="btn" id="link-manual">+ Сопоставить вручную</button>
+          </div>
+        </div>
+
+        {% for item in suggestions %}
+        <div class="match-card">
+          <div class="match-head">
+            <div>
+              <span class="mono">{{ item.article }}</span>
+              <b style="margin-left:8px">{{ item.title }}</b>
+              <span class="badge warn">совпал артикул</span>
+              {% if item.barcodes_differ %}
+                <span class="badge err" title="Штрихкоды у карточек разные — проверьте, тот ли это товар">
+                  штрихкоды разные</span>
+              {% endif %}
+            </div>
+            <div class="row">
+              <button class="btn ok small" data-confirm="{{ item.article }}">Подтвердить</button>
+              <button class="btn small" data-skip="{{ item.article }}">Не сопоставлять</button>
+            </div>
+          </div>
+          <table>
+            <tbody>
+              {% for card in item.cards %}
+              <tr>
+                <td style="width:56px">
+                  {% if card.image %}<img src="{{ card.image }}" alt="" loading="lazy"
+                       style="width:34px;height:34px;object-fit:cover;border-radius:6px">{% endif %}
+                </td>
+                <td>{{ card.name or 'Без названия' }}</td>
+                <td class="mono small" style="width:190px">{{ card.barcodes | join(', ') or '—' }}</td>
+                <td class="small" style="width:250px">{{ shop_tag(card.market, card.shop) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
         {% endfor %}
-      </tbody>
-    </table>
-    {% if truncated %}
-      <div class="muted small" style="margin-top:10px">
-        Показаны первые {{ items | length }} — уточните поиск.
+      {% else %}
+        <div class="empty">
+          Совпадений нет: одинаковых артикулов в разных кабинетах не нашлось или
+          все они уже разобраны. Разные артикулы сводятся вручную.
+          <div class="row" style="justify-content:center;margin-top:12px">
+            <button class="btn" id="link-manual">+ Сопоставить вручную</button>
+          </div>
+        </div>
+      {% endif %}
+
+      {# ---------------------------------- ручное сопоставление #}
+      <div class="panel inner" id="manual-link" style="margin-top:16px" hidden>
+        <div class="act-title" style="margin-bottom:4px">Сопоставить вручную</div>
+        <div class="muted small" style="margin-bottom:14px">
+          Когда артикулы у площадок разные — сводим руками. Сначала основной товар:
+          его название и фото панель показывает в каталоге.
+        </div>
+
+        <div class="row" style="align-items:flex-start;flex-wrap:wrap">
+          <label class="grow" style="min-width:280px; position:relative">
+            <div class="muted small">Основной товар</div>
+            <input type="search" id="main-product" placeholder="Название, артикул или штрихкод"
+                   autocomplete="off" style="width:100%">
+            <div id="main-found" class="picker" hidden></div>
+            <div id="main-chosen" class="small" style="margin-top:6px"></div>
+          </label>
+          <label class="grow" style="min-width:280px; position:relative">
+            <div class="muted small">Привязать карточки — из других кабинетов</div>
+            <input type="search" id="link-product" placeholder="Название, артикул или штрихкод"
+                   autocomplete="off" style="width:100%">
+            <div id="link-found" class="picker" hidden></div>
+          </label>
+        </div>
+
+        <table style="margin-top:12px" id="link-cards"><tbody></tbody></table>
+
+        <div class="row" style="margin-top:16px">
+          <button class="btn primary" id="link-save">Связать</button>
+          <button class="btn" id="link-cancel">Отмена</button>
+          <span class="grow"></span>
+          <span id="link-msg" class="small"></span>
+        </div>
       </div>
-    {% endif %}
+
+    {# ---------------------------------- сопоставленные #}
+    {% elif view == 'linked' %}
+      {% if groups %}
+        <div class="muted small" style="margin-bottom:12px">
+          «Отменить сопоставление» разводит карточки обратно: каждая снова станет
+          отдельным товаром, а совпадение по артикулу вернётся в предложения.
+        </div>
+        {% for group in groups %}
+        <div class="match-card">
+          <div class="match-head">
+            <div>
+              <span class="mono">{{ group.main.offer_id or '—' }}</span>
+              <b style="margin-left:8px">{{ group.title }}</b>
+              <span class="badge ok">карточек {{ group.cards | length }}</span>
+            </div>
+            <div class="row">
+              <button class="btn small danger" data-unlink="{{ group.group_id }}">
+                Отменить сопоставление
+              </button>
+            </div>
+          </div>
+          <table>
+            <tbody>
+              {% for card in group.cards %}
+              <tr>
+                <td style="width:56px">
+                  {% if card.image %}<img src="{{ card.image }}" alt="" loading="lazy"
+                       style="width:34px;height:34px;object-fit:cover;border-radius:6px">{% endif %}
+                </td>
+                <td>{{ card.name or 'Без названия' }}
+                  {% if card.archived %}<span class="badge">в архиве</span>{% endif %}</td>
+                <td class="mono small" style="width:170px">{{ card.barcodes | join(', ') or '—' }}</td>
+                <td class="small" style="width:230px">{{ shop_tag(card.market, card.shop) }}</td>
+                <td style="width:190px;text-align:right">
+                  {% if card.is_main %}
+                    <span class="badge accent">основной</span>
+                  {% else %}
+                    <button class="link-btn" data-main="{{ card.account_id }}:{{ card.sku }}">сделать основным</button>
+                    <button class="link-btn danger-link" data-unlink-card="{{ card.account_id }}:{{ card.sku }}"
+                            title="Убрать из сопоставления только эту карточку">отвязать</button>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">
+          Сопоставленных товаров нет. Подтвердите совпадения или сведите карточки вручную.
+        </div>
+      {% endif %}
+
+    {# ---------------------------------- не сопоставлять #}
     {% else %}
-      <div class="empty">
-        {% if q %}Ничего не нашлось по запросу «{{ q }}».
-        {% else %}Каталог пуст. Он наполняется сам при обновлении заказов и возвратов.{% endif %}
-      </div>
+      {% if skipped %}
+        <div class="muted small" style="margin-bottom:12px">
+          Эти артикулы панель больше не предлагает. Передумали — вернём в предложения.
+        </div>
+        <table>
+          <thead>
+            <tr><th style="width:180px">Артикул</th><th>Товар</th>
+                <th style="width:250px">Где встречается</th><th style="width:170px"></th></tr>
+          </thead>
+          <tbody>
+            {% for item in skipped %}
+            <tr>
+              <td class="mono small">{{ item.article }}</td>
+              <td>{{ item.title }}</td>
+              <td class="small">
+                {% for card in item.cards %}{{ shop_tag(card.market, card.shop) }}{% endfor %}
+              </td>
+              <td><button class="btn small" data-unskip="{{ item.article }}">Вернуть в предложения</button></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty">Отвергнутых совпадений нет.</div>
+      {% endif %}
     {% endif %}
   {% endif %}
 </div>

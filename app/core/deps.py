@@ -173,13 +173,21 @@ templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 
 
-def market_has_catalog(request: Request) -> bool:
-    """Показывать ли «Товары»: только площадкам, которые наполняют каталог."""
+def panel_has_catalog(request: Request = None) -> bool:  # noqa: ARG001 - зовётся из шаблона
+    """Показывать ли «Товары»: есть ли в панели хоть один кабинет с каталогом.
+
+    Раздел общий на все кабинеты, а не на текущий: сборщик Avito сканирует те же
+    коробки, и каталог ему нужен ровно так же, хотя своих карточек Avito не
+    отдаёт. Прятать раздел от него значило бы прятать склад.
+    """
+    from ..core import accounts
     from ..markets import registry
 
-    account = current_account(request)
-    market = registry.get(account["marketplace"]) if account else None
-    return bool(market and market.catalog)
+    for account in accounts.all_accounts():
+        market = registry.get(account["marketplace"])
+        if market is not None and market.catalog is not None:
+            return True
+    return False
 
 
 def market_nav(request: Request) -> list:
@@ -230,7 +238,7 @@ def account_switcher(request: Request) -> dict:
 
 templates.env.globals["build_label"] = build_label
 templates.env.globals["market_nav"] = market_nav
-templates.env.globals["market_has_catalog"] = market_has_catalog
+templates.env.globals["panel_has_catalog"] = panel_has_catalog
 templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version

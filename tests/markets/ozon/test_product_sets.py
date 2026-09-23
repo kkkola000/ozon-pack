@@ -362,11 +362,13 @@ def test_set_is_deleted_through_the_api(client):
     sku = pick_posting(positions=1)["items"][0]["sku"]
     product_sets.save(account_id(), sku, [{"barcode": "9990000000079"}], user={"login": "admin"})
 
-    response = client.request("DELETE", f"/api/products/sets/{sku}", headers={"X-CSRF-Token": csrf})
+    # Адрес набора — пара «кабинет и SKU»: раздел общий, и один SKU может
+    # встретиться в двух кабинетах.
+    where = f"/api/products/sets/{account_id()}/{sku}"
+    response = client.request("DELETE", where, headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200, response.text
     assert product_sets.get(account_id(), sku) is None
-    assert client.request("DELETE", f"/api/products/sets/{sku}",
-                          headers={"X-CSRF-Token": csrf}).status_code == 404
+    assert client.request("DELETE", where, headers={"X-CSRF-Token": csrf}).status_code == 404
 
 
 def test_sets_do_not_leak_between_cabinets(account, sample_data):

@@ -438,3 +438,56 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 /* Галочки разделов в строке сотрудника: в один ряд, чтобы строка не росла. */
 .sections { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .sections .check { font-size: 13px; }
+
+/* ---------- Раздел «Товары»: общий каталог, фильтр кабинетов, сопоставление ---------- */
+/* Фильтр по кабинетам стоит над вкладками и действует на все три: склад общий,
+   и переключаться между магазинами ради одного списка незачем. */
+.filter-line { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  background: var(--bg); color: var(--text); border: 1px solid var(--line-strong);
+  padding: 8px 14px; border-radius: 999px; font-weight: 600; font-size: 14px;
+}
+.chip:hover { border-color: var(--accent); text-decoration: none; }
+.chip.active { border-color: var(--accent); border-width: 2px; padding: 7px 13px; }
+.chip .badge { background: var(--surface-2); }
+
+/* Точка площадки: в списке из четырёх магазинов цвет читается быстрее слова. */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.dot.ozon { background: var(--accent); }
+.dot.avito { background: #00aaff; }
+.dot.yandex { background: #fc3f1d; }
+.shop { display: inline-flex; align-items: center; margin-right: 12px; font-size: 13px; white-space: nowrap; }
+
+/* Объяснение раздела: один абзац сверху вместо подписи под каждой кнопкой. */
+.note {
+  background: var(--accent-soft); border-radius: var(--radius-sm);
+  padding: 12px 16px; font-size: 13px; margin-bottom: 16px;
+}
+
+.sub-tabs { margin-bottom: 14px; }
+.sub-tabs a { font-size: 13px; padding: 7px 13px; }
+.sub-tabs a.active { padding: 6px 12px; }
+
+.panel.inner { background: var(--surface); box-shadow: none; }
+
+/* Карточка совпадения: шапка с решением и список карточек под ней. */
+.match-card { border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; margin-bottom: 12px; }
+.match-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 14px 16px; background: var(--surface); border-bottom: 1px solid var(--line); flex-wrap: wrap;
+}
+.match-card table th, .match-card table td { padding: 10px 16px; }
+
+/* Действие внутри строки таблицы: кнопка там выглядит тяжелее самой строки. */
+.link-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent); font-size: 13px; font-weight: 600; font-family: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
+.link-btn.danger-link { color: var(--err); margin-left: 10px; }
+
+/* Карточки площадок под сопоставленным товаром: видно, что это его части. */
+tr.sub td { background: var(--surface); }
+tr.sub td:first-child { border-left: 3px solid var(--accent-soft); }

@@ -202,11 +202,13 @@ def test_refresh_is_admin_only(client):
 
 
 def test_status_reports_the_outcome(account, client):
+    """Кабинетов с каталогом несколько — состояние отдаётся по каждому."""
     login(client)
     catalog._save_job(account["id"], status="ok", live=42, archived_skipped=7)
     data = client.get("/api/products/catalog/status").json()
-    assert data["status"] == "ok" and data["live"] == 42
-    assert data["running"] is False
+    job = data["jobs"][str(account["id"])]
+    assert job["status"] == "ok" and job["live"] == 42
+    assert data["running"] is False and data["errors"] == []
 
 
 def test_failed_refresh_is_reported_not_swallowed(account, client, monkeypatch):

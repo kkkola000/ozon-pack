@@ -80,6 +80,30 @@ CREATE TABLE IF NOT EXISTS product_barcodes (
 );
 CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
 
+-- Сопоставление: карточки разных кабинетов, за которыми стоит один и тот же
+-- товар склада. Связь per-карточка, поэтому ключ — (account_id, sku): карточка
+-- входит не более чем в одну группу. Главная карточка в группе одна — её
+-- название и фото панель показывает в каталоге.
+CREATE TABLE IF NOT EXISTS product_links (
+    group_id   TEXT NOT NULL,
+    account_id INTEGER NOT NULL,
+    sku        TEXT NOT NULL,
+    is_main    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT,
+    created_by TEXT,
+    PRIMARY KEY (account_id, sku)
+);
+CREATE INDEX IF NOT EXISTS idx_product_links_group ON product_links(group_id);
+
+-- Артикулы, которые панель предлагать больше не должна: одинаковый артикул на
+-- двух площадках не всегда один товар, и «не сопоставлять» — это ответ, а не
+-- откладывание. Кабинета здесь нет: решение принимается про артикул целиком.
+CREATE TABLE IF NOT EXISTS product_link_skips (
+    article    TEXT PRIMARY KEY,
+    created_at TEXT,
+    created_by TEXT
+);
+
 CREATE TABLE IF NOT EXISTS product_sets (
     account_id INTEGER NOT NULL,
     sku        TEXT NOT NULL,
@@ -223,6 +247,11 @@ def _restrict_access(db_path: str) -> None:
             log.warning("Не удалось закрыть доступ к %s: %s", path, exc)
 
 
+def _lower_ru(value: Any) -> Any:
+    """Регистр по-русски. Не строка — возвращаем как есть, чтобы не съесть NULL."""
+    return value.lower() if isinstance(value, str) else value
+
+
 def connect() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
@@ -233,6 +262,12 @@ def connect() -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=15000")
         conn.execute("PRAGMA foreign_keys=ON")
+        # LIKE в SQLite не различает регистр только у латиницы: «кофе» не нашло
+        # бы «Кофе», а панель русскоязычная, и в поиске это первое, что
+        # пробуют. Своя функция приводит регистр средствами Python — он знает
+        # про кириллицу. Индексу это не мешает: поиск по каталогу и так идёт
+        # перебором с LIKE.
+        conn.create_function("lower_ru", 1, _lower_ru, deterministic=True)
         # После journal_mode=WAL рядом появляются -wal и -shm: закрываем и их.
         _restrict_access(settings.db_path)
         _local.conn = conn
@@ -265,6 +300,17 @@ def query_one(sql: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
 def execute(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
     with write() as conn:
         return conn.execute(sql, tuple(params))
+
+
+def json_list(raw: Any) -> list:
+    """Колонка со списком в JSON — списком. Мусор в колонке не должен ронять страницу."""
+    if isinstance(raw, list):
+        return raw
+    try:
+        value = json.loads(raw or "[]")
+    except (TypeError, ValueError):
+        return []
+    return value if isinstance(value, list) else []
 
 
 def kv_get(key: str, default: str | None = None) -> str | None:
@@ -366,8 +412,8 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 # Полноту списка держит проверка в tests/test_migration.py.
 CORE_TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
-    "products", "product_barcodes", "product_sets", "product_set_items",
-    "return_acts", "shipped_items",
+    "products", "product_barcodes", "product_links", "product_link_skips",
+    "product_sets", "product_set_items", "return_acts", "shipped_items",
 )
 
 
@@ -496,7 +542,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_missing_columns(conn, table)
 
 
-CORE_DATA_TABLES = ("products", "product_barcodes", "product_sets", "product_set_items")
+# Таблицы с данными кабинета: чистятся вместе с ним. product_link_skips сюда
+# не входит — в ней решение про артикул, а не про кабинет.
+CORE_DATA_TABLES = ("products", "product_barcodes", "product_links",
+                    "product_sets", "product_set_items")
 
 
 def data_tables() -> tuple[str, ...]:
