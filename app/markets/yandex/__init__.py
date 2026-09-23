@@ -6,15 +6,16 @@
 """
 from __future__ import annotations
 
-from ..base import Market
-from . import client, pack, routes, store, sync
+from ..base import CatalogSource, Market
+from . import catalog, client, pack, routes, store, sync
 
 MARKET = Market(
     code="yandex",
     title="Яндекс Маркет",
     id_label="businessId",
     key_label="Api-Key",
-    hint="Кабинет Маркета → Настройки → API и модули → Токены авторизации",
+    hint="Кабинет Маркета → Настройки → API и модули → Токены авторизации. "
+         "Доступы: обработка заказов и, для раздела «Товары», управление товарами и карточками",
     home="/yandex/pack",
     prefixes=("/yandex",),
     tables=("yandex_orders", "yandex_order_items"),
@@ -29,6 +30,9 @@ MARKET = Market(
     schema=store.SCHEMA,
     raw_tables=("yandex_orders",),
     pending_labels=pack.pending_labels,
+    # Каталог со штрихкодами Маркет отдаёт одним методом — раздел «Товары»
+    # открывается и его кабинетам.
+    catalog=CatalogSource(pages=catalog.pages),
     orders_feed=store.orders_feed,
     workspace=routes.WORKSPACE,
 )

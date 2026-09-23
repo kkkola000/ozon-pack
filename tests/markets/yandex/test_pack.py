@@ -224,7 +224,9 @@ def test_unknown_code_goes_to_the_report(market, user):
     result = yandex_pack.scan(market, user, "НЕТ-ТАКОГО-КОДА")
     assert result["status"] == "error"
     assert result["action"] == "unknown"
-    assert "каталога Ozon" in result["message"]
+    # Сообщение обязано сказать, где чинить: каталог Маркета грузится в «Товарах».
+    assert "каталога по артикулу" in result["message"]
+    assert "Товары" in result["message"]
     errors = shipped("error")
     assert len(errors) == 1 and errors[0]["reason"] == "unknown_barcode"
 

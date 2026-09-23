@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ...core.config import settings
 from ..base import CatalogSource, Market
-from . import client, migrations, pack, returns, routes, store, sync
+from . import catalog, client, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="ozon",
@@ -19,7 +19,9 @@ MARKET = Market(
     home="/pack",
     # «/returns» тут нет намеренно: раздел возвратов общий, он в списке ядра.
     prefixes=("/pack", "/orders", "/api/"),
-    tables=("postings", "posting_items", "products", "product_barcodes", "returns"),
+    # Каталог (products, product_barcodes) здесь не числится: таблица общая,
+    # её чистит ядро вместе с кабинетом любой площадки.
+    tables=("postings", "posting_items", "returns"),
     router=routes.router,
     get_client=client.get_client,
     reset_client=client.reset_client,
@@ -34,12 +36,8 @@ MARKET = Market(
     raw_tables=("postings", "returns"),
     migrate=migrations.migrate,
     pending_labels=pack.pending_labels,
-    # Каталог со штрихкодами умеет наполнять только Ozon — им пользуются все площадки.
-    catalog=CatalogSource(
-        client=lambda account: client.get_client(account),
-        save=store.upsert_products,
-        key=store.product_key,
-    ),
+    # Каталог со штрихкодами: список артикулов, потом карточки пачками.
+    catalog=CatalogSource(pages=catalog.pages),
     # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.
     returns=returns.SOURCE,
     orders_feed=store.orders_feed,

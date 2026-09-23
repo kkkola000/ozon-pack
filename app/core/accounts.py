@@ -215,6 +215,10 @@ def delete(account_id: int, *, user: dict | None = None) -> None:
     # Таблицы площадки объявляет она сама; у кабинета неизвестной площадки
     # (запись из старой версии) чистим таблицы всех — лишнее ничего не найдёт.
     tables = market.tables if market else tuple(t for m in _registry().all_markets() for t in m.tables)
+    # Плюс общие таблицы кабинета: каталог, штрихкоды и наборы. Они не
+    # принадлежат площадке — наполнить каталог умеет и Ozon, и Маркет, — но
+    # уходят вместе с кабинетом: чужих данных в панели остаться не должно.
+    tables += db.CORE_DATA_TABLES
     with db.write() as conn:
         for table in tables:
             conn.execute(f"DELETE FROM {table} WHERE account_id = ?", (account_id,))

@@ -1,4 +1,4 @@
-"""Подделка Partner API Яндекс Маркета — только для тестов: заказы и ярлыки."""
+"""Подделка Partner API Яндекс Маркета — только для тестов: заказы, ярлыки, каталог."""
 from __future__ import annotations
 
 import json
@@ -12,7 +12,7 @@ from app.markets.yandex.client import (
     YandexError,
 )
 
-from tests.fakes.ozon import SAMPLE_PRODUCTS
+from tests.fakes.ozon import CATALOG_ARCHIVED, CATALOG_EXTRA, SAMPLE_PRODUCTS
 
 
 # Заказы Маркета собираются из тех же артикулов, что и каталог Ozon: именно так
@@ -25,7 +25,7 @@ YANDEX_DELIVERY = [
 
 
 class FakeYandexClient(YandexClient):
-    """Подделка Partner API Маркета: заказы в работе и ярлыки к ним."""
+    """Подделка Partner API Маркета: заказы в работе, ярлыки к ним и каталог товаров."""
 
     def __init__(self, seed: int = 0) -> None:  # noqa: D107 - без сетевого клиента
         self.business_id = str(9000000 + seed)
@@ -39,6 +39,11 @@ class FakeYandexClient(YandexClient):
         # Проверки включают это, чтобы изобразить Маркет, который отдал заказ
         # мимо фильтра по этапу: панель обязана отсеять такое сама.
         self.ignore_filter = False
+        # Каталог кабинета: те же товары, что у Ozon, — панель ищет штрихкоды
+        # по артикулу продавца, и он у магазина один на все площадки.
+        self.catalog = [(offer, name, barcode) for _sku, offer, name, barcode
+                        in SAMPLE_PRODUCTS + CATALOG_EXTRA]
+        self.archived = [(offer, name, barcode) for _sku, offer, name, barcode in CATALOG_ARCHIVED]
         self._generate()
 
     def _generate(self) -> None:
@@ -111,6 +116,34 @@ class FakeYandexClient(YandexClient):
         chunk = rows[start : start + limit]
         next_token = str(start + limit) if start + limit < len(rows) else None
         return [json.loads(json.dumps(o)) for o in chunk], next_token
+
+    def offer_mappings(self, *, page_token=None, limit=100, offer_ids=None, archived=None):  # type: ignore[override]
+        """Каталог страницами. Архив Маркет отдаёт только по отдельной просьбе."""
+        rows = self.archived if archived else self.catalog
+        if offer_ids:
+            wanted = {str(offer) for offer in offer_ids}
+            rows = [row for row in self.catalog + self.archived if row[0] in wanted]
+            return [self._mapping(*row, archived=bool(row in self.archived)) for row in rows], None
+        start = int(page_token or 0)
+        page = rows[start : start + limit]
+        next_token = str(start + limit) if start + limit < len(rows) else None
+        return [self._mapping(*row, archived=bool(archived)) for row in page], next_token
+
+    def _mapping(self, offer: str, name: str, barcode: str, *, archived: bool = False) -> dict:
+        """Карточка в том виде, в каком её отдаёт offer-mappings."""
+        return {
+            "offer": {
+                "offerId": offer,
+                "name": name,
+                "barcodes": [barcode],
+                "pictures": [f"fake://yandex/{offer}.jpg"],
+                "vendor": "Ozon Pack",
+                "vendorCode": offer,
+                "archived": archived,
+                "cardStatus": "HAS_CARD_CAN_UPDATE",
+            },
+            "mapping": {"marketSku": 100000 + sum(ord(c) for c in offer), "marketSkuName": name},
+        }
 
     def labels_task(self, order_ids, *, sorted_as_given=True):  # type: ignore[override]
         if not order_ids:

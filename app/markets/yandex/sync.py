@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import logging
 
+from ...core import catalog as core_catalog
 from ...core import db
 from ...core import sync as core_sync
+from . import catalog
 from . import client as yandex
 from . import store
 from .client import YandexError
@@ -13,7 +15,9 @@ log = logging.getLogger("yandex.sync")
 
 
 def sync_account(account: dict, *, returns_too: bool = True) -> dict:  # noqa: ARG001 - возвратов у Маркета в панели нет
-    return sync_yandex(account)
+    result = sync_yandex(account)
+    result.update(sync_products(account))
+    return result
 
 
 def sync_yandex(account: dict | None = None) -> dict:
@@ -86,3 +90,60 @@ def sync_yandex(account: dict | None = None) -> dict:
     if stale:
         result["yandex_gone"] = len(stale)
     return result
+
+
+def sync_products(account: dict | None = None, limit: int = 500) -> dict:
+    """Подтянуть карточки товаров из заказов: штрихкоды, название, картинку.
+
+    Полный каталог перечитывает кнопка в разделе «Товары» — это минуты. Здесь
+    только то, что встретилось в заказах и чего в каталоге ещё нет: сборщик
+    должен найти товар по штрихкоду, не дожидаясь обхода всего кабинета.
+    """
+    account = core_sync._account(account)
+    if account is None:
+        return {"yandex_products": 0}
+    account_id = account["id"]
+    rows = db.query(
+        """
+        SELECT DISTINCT i.offer_id FROM yandex_order_items i
+        LEFT JOIN products p ON p.sku = i.offer_id AND p.account_id = i.account_id
+        WHERE i.account_id = ? AND i.offer_id IS NOT NULL AND i.offer_id != '' AND p.sku IS NULL
+        LIMIT ?
+        """,
+        (account_id, limit),
+    )
+    offers = [row["offer_id"] for row in rows if row["offer_id"]]
+    if not offers:
+        return {"yandex_products": 0}
+
+    client = yandex.get_client(account)
+    total = 0
+    for start in range(0, len(offers), yandex.CATALOG_PAGE_LIMIT):
+        chunk = offers[start : start + yandex.CATALOG_PAGE_LIMIT]
+        try:
+            mappings, _token = client.offer_mappings(offer_ids=chunk)
+        except YandexError as exc:
+            log.warning("Карточки товаров Маркета недоступны: %s", exc)
+            break
+        cards = [card for card in (catalog.card(item) for item in mappings) if card]
+        if cards:
+            with db.write() as conn:
+                total += core_catalog.save(conn, account_id, cards)
+        # Артикул без карточки (товар в архиве или удалён из каталога) — заводим
+        # пустую строку с названием из заказа, чтобы не спрашивать о нём каждую
+        # минуту. Полный обход в «Товарах» заполнит её, когда товар вернётся.
+        found = {card["sku"] for card in cards}
+        missing = [offer for offer in chunk if offer not in found]
+        if missing:
+            with db.write() as conn:
+                for offer in missing:
+                    known = db.query_one(
+                        "SELECT name FROM yandex_order_items WHERE account_id = ? AND offer_id = ? LIMIT 1",
+                        (account_id, offer),
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO products(account_id, sku, offer_id, name, barcodes, updated_at) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (account_id, offer, offer, (known["name"] if known else None), "[]", db.now_iso()),
+                    )
+    return {"yandex_products": total}

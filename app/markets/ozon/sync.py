@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import logging
 
+from ...core import catalog as core_catalog
 from ...core import db
 from ...core import sync as core_sync
 from ...core.config import settings
+from . import catalog
 from . import client as ozon
 from . import returns, store
 from .client import OzonError
@@ -112,7 +114,7 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
             break
         if items:
             with db.write() as conn:
-                total += store.upsert_products(conn, account_id, items)
+                total += core_catalog.save(conn, account_id, [catalog.card(item) for item in items])
         # SKU без карточки (например, товар архивирован) — чтобы не спрашивать бесконечно.
         found = {str(item.get("sku") or item.get("id")) for item in items}
         missing = [sku for sku in chunk if sku not in found]

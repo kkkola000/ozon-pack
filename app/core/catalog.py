@@ -6,12 +6,16 @@
 каталог нужен полный.
 
 Поэтому отдельная кнопка, а не фоновая задача: полный обход — это тысячи
-карточек и десятки запросов к Ozon, гонять его каждые несколько минут незачем.
-Каталог меняется редко, и человек знает, когда завёл новый товар.
+карточек и десятки запросов к площадке, гонять его каждые несколько минут
+незачем. Каталог меняется редко, и человек знает, когда завёл новый товар.
 
 Архив не сохраняем как живой товар: архивный товар не продаётся, и в списке
 выбора он только мешает. Но и строку не удаляем — её штрихкоды могут
 понадобиться, если архивный товар остался в несобранном заказе.
+
+Как устроен обход — дело площадки: Ozon сначала отдаёт список артикулов и
+только потом карточки пачками, Маркет отдаёт всё сразу страницами. Ядро про это
+не знает: оно перебирает пачки карточек, сохраняет их и сводит итог.
 
 Идёт обход в отдельном потоке: запрос из браузера столько не ждёт, а обрывать
 загрузку на середине нельзя — каталог останется наполовину старым.
@@ -20,60 +24,54 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import threading
+from collections.abc import Iterable
 
 from . import db
+from .store import _text
 
 
 log = logging.getLogger("catalog")
 
-# Ozon отдаёт список страницами по last_id. Предел на всякий случай: без него
-# ошибка в курсоре крутила бы обход бесконечно.
-PAGE_LIMIT = 1000
-MAX_PAGES = 200
-# Карточки запрашиваются пачками — столько артикулов за раз принимает
-# /v3/product/info/list.
-INFO_CHUNK = 100
-
 KV_JOB = "catalog_job"
 
 
-def _is_archived(item: dict) -> bool:
-    """Архивный ли товар. Имя поля у Ozon в разных методах разное.
+def card_key(card: dict) -> str:
+    """SKU карточки так, как его сохраняет панель."""
+    return str(card.get("sku") or "").strip()
 
-    Неизвестное значение считаем «не архив»: спрятать живой товар хуже, чем
-    показать архивный — из-за первого набор не соберёшь.
+
+def save(conn: sqlite3.Connection, account_id: int, cards: Iterable[dict]) -> int:
+    """Сохранить пачку карточек: имя, фото и штрихкоды для сканирования.
+
+    Карточка приходит от площадки уже в общем виде — {sku, offer_id, name,
+    image, barcodes}: разбирать ответ площадки здесь нечего, этим занимается её
+    собственный модуль.
     """
-    for key in ("archived", "is_archived"):
-        value = item.get(key)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str) and value.strip().lower() in ("true", "1", "yes"):
-            return True
-    return False
-
-
-def offers_of(client, *, on_page=None) -> tuple[list[str], int]:
-    """Артикулы живых товаров кабинета и сколько отсеяно архивных."""
-    offers: list[str] = []
-    archived = 0
-    last_id = ""
-    for _page in range(MAX_PAGES):
-        items, last_id, _total = client.product_list(limit=PAGE_LIMIT, last_id=last_id)
-        if not items:
-            break
-        for item in items:
-            if _is_archived(item):
-                archived += 1
-                continue
-            offer = str(item.get("offer_id") or "").strip()
-            if offer:
-                offers.append(offer)
-        if on_page:
-            on_page(len(offers))
-        if not last_id:
-            break
-    return offers, archived
+    count = 0
+    for card in cards:
+        sku = card_key(card)
+        if not sku:
+            continue
+        barcodes = [str(code).strip() for code in (card.get("barcodes") or []) if str(code).strip()]
+        conn.execute(
+            """
+            INSERT INTO products(account_id, sku, offer_id, name, image, barcodes, updated_at) VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, sku) DO UPDATE SET offer_id = excluded.offer_id, name = excluded.name,
+                image = excluded.image, barcodes = excluded.barcodes, updated_at = excluded.updated_at
+            """,
+            (account_id, sku, _text(card.get("offer_id")), _text(card.get("name")), _text(card.get("image")),
+             json.dumps(barcodes, ensure_ascii=False), db.now_iso()),
+        )
+        for barcode in barcodes:
+            conn.execute(
+                "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, ?) "
+                "ON CONFLICT(account_id, barcode) DO UPDATE SET sku = excluded.sku",
+                (account_id, barcode, sku),
+            )
+        count += 1
+    return count
 
 
 def _source(account: dict):
@@ -92,33 +90,32 @@ def refresh(account: dict, *, progress=None) -> dict:
 
     progress(done, total) — чтобы кнопка показывала, сколько уже прошло: обход
     большого каталога идёт минуту и дольше, и молчащая кнопка выглядит как
-    зависшая панель.
+    зависшая панель. Сколько всего карточек, площадка может и не знать заранее —
+    тогда total равен нулю, и кнопка просто считает пройденные.
     """
     account_id = account["id"]
     source = _source(account)
-    client = source.client(account)
-    offers, archived_listed = offers_of(client, on_page=lambda found: progress and progress(0, found))
-    total = len(offers)
-    if progress:
-        progress(0, total)
 
     saved = 0
+    done = 0
+    total = 0
+    archived_listed = 0
     live: list[str] = []
-    for start in range(0, total, INFO_CHUNK):
-        chunk = offers[start : start + INFO_CHUNK]
-        items = client.product_info(offer_ids=chunk)
-        fresh = [item for item in items if not _is_archived(item)]
-        if fresh:
+    for page in source.pages(account):
+        total = page.total or total
+        archived_listed += page.skipped
+        if page.items:
             with db.write() as conn:
-                saved += source.save(conn, account_id, fresh)
-            live += [key for key in (source.key(item) for item in fresh) if key]
+                saved += save(conn, account_id, page.items)
+            live += [key for key in (card_key(card) for card in page.items) if key]
+            done += len(page.items)
         if progress:
-            progress(min(start + INFO_CHUNK, total), total)
+            progress(done, total)
 
     archived_here = _mark_archived(account_id, live)
 
     result = {
-        "offers": total,
+        "offers": total or done,
         "saved": saved,
         "archived_skipped": archived_listed,
         "archived_marked": archived_here,

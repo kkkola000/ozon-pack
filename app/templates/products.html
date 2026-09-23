@@ -11,7 +11,7 @@
         наборов: {{ sets | length }}
       </span>
       <button class="btn" id="catalog-refresh"
-              title="Перечитать каталог у Ozon целиком. Архивные товары не загружаются.">
+              title="Перечитать каталог кабинета целиком. Архивные товары не загружаются.">
         Обновить каталог
       </button>
     </div>
@@ -114,7 +114,7 @@
           <div class="grow">
             <div class="act-title">{{ s.title or s.product_name or s.sku }}</div>
             <div class="act-sub">
-              Артикул {{ s.offer_id or '—' }} · SKU {{ s.sku }} ·
+              Артикул {{ s.offer_id or '—' }}{% if s.sku != s.offer_id %} · SKU {{ s.sku }}{% endif %} ·
               частей {{ s.parts | length }}, всего {{ s.parts_total }} шт.
             </div>
           </div>
@@ -183,7 +183,8 @@
             {% if item.sku in taken %}<span class="badge accent" title="У товара задан состав">набор</span>{% endif %}
           </td>
           <td class="small mono">{{ item.offer_id or '—' }}</td>
-          <td class="small mono">{{ item.sku }}</td>
+          {# У Маркета ключ товара и есть артикул продавца — второй раз его не повторяем. #}
+          <td class="small mono">{{ '—' if item.sku == item.offer_id else item.sku }}</td>
           <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
           <td>
             {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}

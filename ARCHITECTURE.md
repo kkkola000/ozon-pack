@@ -41,7 +41,7 @@ ozon-pack/
 │   │   │                             Список «что ещё не выгружено» — у площадки
 │   │   ├── report.py               — отчёт об отгруженных товарах: запись строк, дни, CSV
 │   │   ├── catalog.py              — каталог товаров и штрихкоды как общий ресурс: таблицы, поиск по артикулу,
-│   │   │                             фоновая перезагрузка. Откуда брать карточки — у площадки (сегодня умеет только Ozon)
+│   │   │                             фоновая перезагрузка. Как обходить свой каталог — знает площадка (Ozon, Маркет)
 │   │   ├── product_sets.py         — наборы: из каких частей собирается товар (импортирует только db — проверено)
 │   │   ├── return_acts.py          — жизненный цикл акта: создать за день, подтвердить, вернуть в работу, удалить,
 │   │   │                             очистить пустой. Строки акта берёт из таблиц, объявленных площадками
@@ -65,7 +65,7 @@ ozon-pack/
 │   │                                 фрагмент настроек площадки — из реестра
 │   │
 │   ├── markets/                    — ПЛОЩАДКИ
-│   │   ├── base.py                 — dataclass Market и вложенные ReturnsSource, CatalogSource
+│   │   ├── base.py                 — dataclass Market и вложенные ReturnsSource, CatalogSource, CatalogPage
 │   │   ├── registry.py             — MARKETS = {...}. Единственный общий файл, который правится при новой площадке
 │   │   │
 │   │   ├── ozon/
@@ -146,7 +146,7 @@ MARKET = Market(
     hint="Настройки → Seller API → Сгенерировать ключ",
     env_keys=("OZON_CLIENT_ID", "OZON_API_KEY"),   # запасные ключи из .env; у остальных None
     home="/pack",
-    tables=("postings", "posting_items", "products", "product_barcodes", "returns"),
+    tables=("postings", "posting_items", "returns"),   # каталог общий, он в ядре
     schema=store.SCHEMA + returns.SCHEMA,
     migrate=returns.migrate,          # свои разовые миграции (arrived_at, received_day…)
     router=routes.router,
@@ -156,7 +156,7 @@ MARKET = Market(
     stats=routes.settings_stats,      # плитки в «Настройках»
     settings_panel="ozon/settings.html",
     pending_labels=pack.pending_labels,
-    catalog=CatalogSource(fetch_offers=client.product_list, fetch_cards=client.product_info),
+    catalog=CatalogSource(pages=catalog.pages),   # обход своего каталога страницами
     returns=ReturnsSource(
         table="returns", ready_sql=returns.pickup_sql, view=returns.return_view,
         giveout=client.giveout_pdf,       # штрихкод на выдачу — есть только у Ozon

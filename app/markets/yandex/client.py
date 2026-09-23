@@ -2,6 +2,7 @@
 
 Пути методов сверены с присланной документацией:
   POST /v1/businesses/{businessId}/orders        — заказы кабинета
+  POST /v2/businesses/{businessId}/offer-mappings — каталог товаров со штрихкодами
   POST /v2/reports/documents/labels/generate     — ярлыки пачкой (до 1000 заказов)
   GET  /v2/reports/info/{reportId}               — готов ли файл и где его взять
   GET  /v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels — ярлык одного заказа
@@ -33,6 +34,8 @@ RETRY_STATUSES = {420, 429, 500, 502, 503, 504}
 MAX_RETRIES = 4
 # Столько заказов Маркет отдаёт за одну страницу — больше он не примет.
 PAGE_LIMIT = 50
+# И столько товаров за страницу каталога: предел метода offer-mappings.
+CATALOG_PAGE_LIMIT = 100
 # Столько заказов принимает массовый запрос ярлыков.
 LABELS_MAX_ORDERS = 1000
 # Ярлык 75×120 мм — тот же размер, что панель печатает для Ozon.
@@ -178,6 +181,40 @@ class YandexClient:
         orders = list(data.get("orders") or [])
         next_token = ((data.get("paging") or {}).get("nextPageToken")) or None
         return orders, next_token
+
+    # ------------------------------------------------------------------ каталог
+    def offer_mappings(self, *, page_token: str | None = None, limit: int = CATALOG_PAGE_LIMIT,
+                       offer_ids: list[str] | None = None,
+                       archived: bool | None = None) -> tuple[list[dict], str | None]:
+        """Страница каталога кабинета и токен следующей страницы.
+
+        Один метод отдаёт сразу всё, что нужно панели: артикул продавца, имя,
+        картинку и штрихкоды. Второго запроса за карточками, как у Ozon, тут не
+        требуется.
+
+        Список по конкретным артикулам Маркет отдаёт целиком: с ним нельзя
+        передавать ни страницы, ни фильтры — поэтому ветка отдельная.
+        """
+        if not self.business_id:
+            raise YandexError("Не задан идентификатор кабинета (businessId)")
+        payload: dict[str, Any] = {}
+        params: dict[str, Any] = {}
+        if offer_ids:
+            payload["offerIds"] = [str(offer) for offer in offer_ids][:CATALOG_PAGE_LIMIT]
+        else:
+            if archived is not None:
+                payload["archived"] = bool(archived)
+            params["limit"] = max(1, min(limit, CATALOG_PAGE_LIMIT))
+            if page_token:
+                params["pageToken"] = page_token
+        data = self.request_json(
+            "POST", f"/v2/businesses/{self.business_id}/offer-mappings",
+            payload=payload, params=params,
+        )
+        result = data.get("result") or {}
+        mappings = [item for item in (result.get("offerMappings") or []) if isinstance(item, dict)]
+        next_token = ((result.get("paging") or {}).get("nextPageToken")) or None
+        return mappings, next_token
 
     # ------------------------------------------------------------------ ярлыки
     def labels_task(self, order_ids: list[int | str], *, sorted_as_given: bool = True) -> str:

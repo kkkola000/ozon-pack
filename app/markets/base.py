@@ -10,7 +10,7 @@ Market в своём пакете, а ядро спрашивает реестр
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,16 +43,32 @@ class NavItem:
 
 
 @dataclass(frozen=True)
-class CatalogSource:
-    """Откуда площадка наполняет общий каталог товаров и штрихкодов.
+class CatalogPage:
+    """Пачка карточек из обхода каталога: что сохранить и как идут дела.
 
-    client(account) — клиент с product_list/product_info; save(conn, account_id,
-    items) — сохранить карточки; key(item) — ключ карточки в ответе.
+    total — сколько карточек ожидается всего; ноль значит «площадка не знает»,
+    и кнопка тогда просто считает пройденные. skipped — сколько карточек
+    пропущено на этом шаге как архивные: в каталог они не попадают, но в итоге
+    их показываем, иначе «товаров меньше, чем в кабинете» выглядит как потеря.
     """
 
-    client: Callable[[dict], Any]
-    save: Callable[[Any, int, list[dict]], int]
-    key: Callable[[dict], str | None]
+    items: list[dict]           # карточки в общем виде: sku, offer_id, name, image, barcodes
+    total: int = 0
+    skipped: int = 0
+
+
+@dataclass(frozen=True)
+class CatalogSource:
+    """Как площадка обходит свой каталог товаров и штрихкодов.
+
+    pages(account) — перебор каталога кабинета: отдаёт CatalogPage, пока они не
+    кончатся. Как устроен обход, ядру знать незачем: Ozon сначала берёт список
+    артикулов и потом карточки пачками, Маркет отдаёт всё сразу страницами.
+    Сохраняет карточки и разводит живое с архивом ядро (core/catalog.py) —
+    таблица каталога одна на все площадки.
+    """
+
+    pages: Callable[[dict], Iterable[CatalogPage]]
 
 
 @dataclass(frozen=True)

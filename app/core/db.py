@@ -53,6 +53,33 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, sort, id);
 
+-- Каталог товаров кабинета. Таблица общая: наполняет её та площадка, которая
+-- умеет отдавать карточки (Ozon, Яндекс Маркет), а ищут по ней все — сборщик
+-- сканирует штрихкод с полки, не зная, чей это товар.
+CREATE TABLE IF NOT EXISTS products (
+    account_id INTEGER NOT NULL,
+    sku        TEXT NOT NULL,
+    offer_id   TEXT,
+    name       TEXT,
+    image      TEXT,
+    barcodes   TEXT,
+    -- Товар в архиве площадки: он не продаётся, и в разделе «Товары» его быть
+    -- не должно. Строку при этом не удаляем — её штрихкоды могут понадобиться,
+    -- если архивный товар остался в несобранном заказе.
+    archived   INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (account_id, sku)
+);
+CREATE INDEX IF NOT EXISTS idx_products_live ON products(account_id, archived);
+
+CREATE TABLE IF NOT EXISTS product_barcodes (
+    account_id INTEGER NOT NULL,
+    barcode    TEXT NOT NULL,
+    sku        TEXT NOT NULL,
+    PRIMARY KEY (account_id, barcode)
+);
+CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
+
 CREATE TABLE IF NOT EXISTS product_sets (
     account_id INTEGER NOT NULL,
     sku        TEXT NOT NULL,
@@ -339,7 +366,8 @@ ACCOUNT_TABLES = ("postings", "posting_items", "products", "product_barcodes", "
 # Полноту списка держит проверка в tests/test_migration.py.
 CORE_TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
-    "product_sets", "product_set_items", "return_acts", "shipped_items",
+    "products", "product_barcodes", "product_sets", "product_set_items",
+    "return_acts", "shipped_items",
 )
 
 
@@ -468,7 +496,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_missing_columns(conn, table)
 
 
-CORE_DATA_TABLES = ("product_sets", "product_set_items")
+CORE_DATA_TABLES = ("products", "product_barcodes", "product_sets", "product_set_items")
 
 
 def data_tables() -> tuple[str, ...]:

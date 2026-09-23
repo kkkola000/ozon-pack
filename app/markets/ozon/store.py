@@ -1,9 +1,11 @@
-"""Отправления и каталог Ozon: таблицы, разбор ответов, поля для шаблонов."""
+"""Отправления Ozon: таблицы, разбор ответов, поля для шаблонов.
+
+Каталог товаров живёт в ядре, обход каталога Ozon — в catalog.py рядом.
+"""
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
 
 from ...core import db
 from ...core.store import (_dt, _raw_json, _text, claim_is_active,
@@ -76,34 +78,8 @@ CREATE TABLE IF NOT EXISTS posting_items (
 CREATE INDEX IF NOT EXISTS idx_items_sku ON posting_items(account_id, sku);
 CREATE INDEX IF NOT EXISTS idx_items_offer ON posting_items(account_id, offer_id);
 
-CREATE TABLE IF NOT EXISTS products (
-    account_id INTEGER NOT NULL,
-    sku        TEXT NOT NULL,
-    offer_id   TEXT,
-    name       TEXT,
-    image      TEXT,
-    barcodes   TEXT,
-    -- Товар в архиве Ozon: он не продаётся, и в разделе «Товары» его быть не
-    -- должно. Строку при этом не удаляем — её штрихкоды могут понадобиться,
-    -- если архивный товар остался в несобранном заказе.
-    archived   INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT,
-    PRIMARY KEY (account_id, sku)
-);
-CREATE INDEX IF NOT EXISTS idx_products_live ON products(account_id, archived);
-
-CREATE TABLE IF NOT EXISTS product_barcodes (
-    account_id INTEGER NOT NULL,
-    barcode    TEXT NOT NULL,
-    sku        TEXT NOT NULL,
-    PRIMARY KEY (account_id, barcode)
-);
-CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
-
--- Набор: товар площадки, который физически собирается из нескольких разных
--- товаров со своими штрихкодами. Площадка о составе не знает — в отправлении
--- стоит одна позиция с одним SKU, а сборщик сканирует то, что лежит на полке.
--- Без состава такой скан был бы «товар не из этого отправления».
+-- Каталог товаров (products, product_barcodes) и наборы живут в ядре: каталог
+-- наполняет не только Ozon, а ищет по нему сборка всех площадок.
 """
 
 
@@ -274,45 +250,6 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             ),
         )
     return number
-
-
-def product_key(item: dict) -> str:
-    """SKU карточки так, как его сохраняет панель.
-
-    Вынесено, чтобы загрузка каталога сверялась по тому же ключу, по которому
-    идёт запись: разойдись они — и каждый обход отправлял бы живой товар в
-    архив.
-    """
-    return str(item.get("sku") or item.get("id") or "")
-
-
-def upsert_products(conn: sqlite3.Connection, account_id: int, items: Iterable[dict]) -> int:
-    """Карточки товаров: имя, фото и штрихкоды для сканирования."""
-    count = 0
-    for item in items:
-        sku = product_key(item)
-        if not sku:
-            continue
-        barcodes = [str(b).strip() for b in (item.get("barcodes") or []) if str(b).strip()]
-        primary = item.get("primary_image") or item.get("images") or []
-        image = primary[0] if isinstance(primary, list) and primary else _text(primary if isinstance(primary, str) else None)
-        conn.execute(
-            """
-            INSERT INTO products(account_id, sku, offer_id, name, image, barcodes, updated_at) VALUES(?,?,?,?,?,?,?)
-            ON CONFLICT(account_id, sku) DO UPDATE SET offer_id = excluded.offer_id, name = excluded.name,
-                image = excluded.image, barcodes = excluded.barcodes, updated_at = excluded.updated_at
-            """,
-            (account_id, sku, _text(item.get("offer_id")), _text(item.get("name")), image,
-             json.dumps(barcodes, ensure_ascii=False), db.now_iso()),
-        )
-        for barcode in barcodes:
-            conn.execute(
-                "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, ?) "
-                "ON CONFLICT(account_id, barcode) DO UPDATE SET sku = excluded.sku",
-                (account_id, barcode, sku),
-            )
-        count += 1
-    return count
 
 
 # ------------------------------------------------------------------ чтение для UI

@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import catalog, db, product_sets
+from app.markets.ozon import catalog as ozon_catalog
 from app.markets.ozon import client as ozon
 from app.main import app
 from app.markets.ozon.client import OzonError
@@ -100,10 +101,10 @@ def test_product_back_from_archive_is_live_again(account, sample_data):
 
 def test_unknown_archive_flag_keeps_the_product(account, sample_data):
     """Спрятать живой товар хуже, чем показать архивный: набор не соберёшь."""
-    assert catalog._is_archived({"offer_id": "X"}) is False
-    assert catalog._is_archived({"archived": None}) is False
-    assert catalog._is_archived({"archived": True}) is True
-    assert catalog._is_archived({"is_archived": "true"}) is True
+    assert ozon_catalog.is_archived({"offer_id": "X"}) is False
+    assert ozon_catalog.is_archived({"archived": None}) is False
+    assert ozon_catalog.is_archived({"archived": True}) is True
+    assert ozon_catalog.is_archived({"is_archived": "true"}) is True
 
 
 def test_refresh_survives_a_second_run(account, sample_data):
@@ -125,9 +126,9 @@ def test_catalog_walk_stops_on_the_last_page(account, sample_data):
         return original(limit=limit, last_id=last_id)
 
     client.product_list = counted
-    catalog.offers_of(client)
+    ozon_catalog.offers_of(client)
     client.product_list = original
-    assert len(calls) < catalog.MAX_PAGES
+    assert len(calls) < ozon_catalog.MAX_PAGES
 
 
 # ------------------------------------------------------------------ раздел
@@ -215,7 +216,7 @@ def test_failed_refresh_is_reported_not_swallowed(account, client, monkeypatch):
     def broken(_client, **kwargs):
         raise OzonError("Ozon отказал", status=403)
 
-    monkeypatch.setattr(catalog, "offers_of", broken)
+    monkeypatch.setattr(ozon_catalog, "offers_of", broken)
     with pytest.raises(OzonError):
         catalog.refresh(account)
 

@@ -88,7 +88,7 @@
             <div>
               <b>{{ item.quantity }} ×</b> {{ item.name or 'Без названия' }}
               <span class="muted small mono">({{ item.offer_id or item.item_id }})</span>
-              {% if not item.barcodes %}<span class="tag overdue" title="Штрихкод не найден в каталоге Ozon по этому артикулу">нет ШК</span>{% endif %}
+              {% if not item.barcodes %}<span class="tag overdue" title="Штрихкода нет в каталоге ни по одному кабинету — обновите каталог в разделе «Товары»">нет ШК</span>{% endif %}
             </div>
           {% endfor %}
         </td>

@@ -116,7 +116,7 @@ def products_page(request: Request, q: str = "", tab: str = "catalog",
 @router.post("/api/products/catalog/refresh")
 def api_refresh_catalog(request: Request, admin: dict = Depends(require_manager),
                         account: dict = Depends(require_catalog)):
-    """Перечитать каталог кабинета у Ozon целиком.
+    """Перечитать каталог кабинета у площадки целиком.
 
     Обычная синхронизация тянет только товары из заказов и возвратов — для
     набора этого мало. Обход идёт в фоне: тысячи карточек за один запрос
