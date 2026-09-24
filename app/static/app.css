@@ -98,10 +98,6 @@ th:last-child { border-top-right-radius: var(--radius-sm); border-bottom-right-r
 tbody tr:hover { background: #fbfcfd; }
 tbody tr:last-child td { border-bottom: none; }
 tr.done td { opacity: .5; }
-/* Строка своего кабинета в общем списке заказов: подсветкой видно, где своя
-   работа, а где соседний магазин, — без чтения колонки «Магазин». */
-tr.own { background: var(--accent-soft); }
-tr.own:hover { background: var(--accent-soft); }
 
 /* ---------- Кнопки и поля ---------- */
 .btn {
@@ -406,34 +402,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .set-part .check { color: var(--ok); font-weight: 800; }
 
 
-/* ---------- Подсказка под знаком «?» ----------
-   Объяснение нужно один раз — когда человек впервые видит экран. Дальше это
-   стена текста над рабочими кнопками, которую перестают читать. Поэтому текст
-   убран под знак и показывается по наведению.
-
-   Держится он и при наведении на сам текст: внутри бывают ссылки, и подсказка,
-   исчезающая по дороге к ссылке, — это подсказка, которой нельзя пользоваться.
-   По той же причине она остаётся открытой после щелчка (focus-within): с
-   телефона наведения нет вовсе. */
-.hint-wrap { position: relative; display: inline-flex; vertical-align: middle; }
-.hint {
-  width: 20px; height: 20px; padding: 0; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--line-strong); background: var(--surface);
-  color: var(--muted); font: 700 12px/1 inherit; font-family: inherit; cursor: help;
-}
-.hint:hover, .hint-wrap:focus-within .hint { border-color: var(--accent); color: var(--accent); }
-.hint-body {
-  display: none; position: absolute; z-index: 40; top: calc(100% + 8px); left: 0;
-  width: max(320px, min(560px, 70vw));
-  padding: 12px 14px; border-radius: 12px;
-  background: var(--surface); border: 1px solid var(--line-strong);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, .18);
-  font-size: 13px; line-height: 1.5; font-weight: 400; color: var(--text); text-align: left;
-}
-.hint-wrap:hover .hint-body, .hint-wrap:focus-within .hint-body { display: block; }
-/* У правого края экрана подсказка иначе уезжает за него. */
-.hint-wrap.to-left .hint-body { left: auto; right: 0; }
 
 /* Галочки разделов в строке сотрудника: в один ряд, чтобы строка не росла. */
 .sections { display: flex; flex-wrap: wrap; gap: 6px 14px; }

@@ -47,7 +47,8 @@ ozon-pack/
 │   │   │                             совпадения по артикулу, подтверждение, отмена, «не сопоставлять»
 │   │   ├── product_sets.py         — наборы: из каких частей физически собирается товар площадки
 │   │   ├── report.py               — отчёт об отгруженных товарах, выгрузка в CSV
-│   │   ├── orders.py               — общий список заказов: все кабинеты в одной таблице, свой магазин сверху
+│   │   ├── orders.py               — общий список заказов: все кабинеты в одной таблице, свой магазин
+│   │   │                             сверху; плюс помощники, из которых площадки собирают свои строки
 │   │   ├── return_acts.py          — акты получения возвратов: одна поездка в пункт выдачи, отметки, подтверждение
 │   │   ├── returns_pdf.py          — лист возвратов файлом PDF: рамка листа, таблицу секции рисует площадка
 │   │   └── version.py              — версия сборки и git-коммит для /healthz
@@ -67,24 +68,26 @@ ozon-pack/
 │   │   │   ├── returns.py          — возвраты целиком: таблица, статусы, загрузка, «к выдаче», акт из полученных
 │   │   │   ├── routes.py           — свои разделы: /pack, /orders, API сборки и стикеров; меню и плитки настроек
 │   │   │   ├── migrations.py       — разовые правки своих таблиц в старых базах
-│   │   │   ├── templates/          — свои куски страниц: orders.html, returns_list/sheet/act_rows/hint,
-│   │   │   │                         pack_gate, pack_help, settings_rows, settings_panel
+│   │   │   ├── templates/          — свои куски страниц: orders.html, returns_list/sheet/act_rows,
+│   │   │   │                         pack_gate, settings_rows, settings_panel
 │   │   │   └── static/             — orders.js (страница заказов), pack.js (карточка сборки на рабочем месте)
 │   │   │
 │   │   ├── avito/                  — Avito: заказы, сборка по этикетке, возвраты внутри заказа
 │   │   │   ├── __init__.py  client.py  store.py  sync.py  pack.py  returns.py  routes.py
 │   │   │   │                         (каталога у площадки нет — раздел «Товары» её кабинетам не виден)
-│   │   │   ├── templates/          — orders.html, returns_list/sheet/act_rows/hint, pack_gate, pack_help
+│   │   │   ├── templates/          — orders.html, returns_list/sheet/act_rows, pack_gate
 │   │   │   └── static/             — orders.js, pack.js
 │   │   │
 │   │   └── yandex/                 — Яндекс Маркет: заказы, ярлыки, каталог; возвраты площадка в панель не отдаёт
 │   │       ├── __init__.py  client.py  store.py  sync.py  pack.py  routes.py
 │   │       ├── catalog.py          — каталог одним методом (offer-mappings): ключ товара — артикул продавца
-│   │       ├── templates/          — orders.html, pack_gate, pack_help
+│   │       ├── templates/          — orders.html, pack_gate
 │   │       └── static/             — orders.js, pack.js
 │   │
 │   ├── routes/                     — разделы, общие для всех площадок
 │   │   ├── auth.py                 — вход, выход, переключение кабинета
+│   │   ├── pack.py                 — «Сборка»: одно рабочее место на все площадки, фильтр площадок;
+│   │   │                             адреса берутся из Workspace.url каждой площадки
 │   │   ├── returns.py              — раздел «Возвраты»: к выдаче, лист печати, лист PDF, акты, отметки
 │   │   ├── products.py             — «Товары»: общий каталог всех кабинетов, наборы, сопоставление;
 │   │   │                             фильтр по кабинетам один на все вкладки

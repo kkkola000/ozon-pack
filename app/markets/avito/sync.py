@@ -1,7 +1,6 @@
 """Загрузка данных кабинета Avito: заказы в рабочих статусах и возвраты к выдаче."""
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -74,7 +73,6 @@ def sync_avito(account: dict | None = None) -> dict:
             for raw in keep:
                 seen.add(store.upsert_avito_order(conn, account_id, raw))
                 saved += 1
-    db.kv_set(f"avito_returns_statuses:{account_id}", json.dumps(returns_seen, ensure_ascii=False))
 
     # Заказ ушёл из рабочих статусов — Avito его больше не отдаёт.
     #

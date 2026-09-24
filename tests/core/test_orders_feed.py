@@ -153,7 +153,13 @@ def test_the_list_is_the_same_on_every_workspace(client, cabinets):
         assert foreign["shop"] in page.text, where
 
 
-def test_history_keeps_three_scans(client):
-    """«Последние сканы» укорочены до трёх — список заказов важнее длинной ленты."""
-    page = client.get("/pack")
-    assert "показываются три последних" in page.text
+def test_history_keeps_three_scans():
+    """«Последние сканы» укорочены до трёх — список заказов важнее длинной ленты.
+
+    Обрезает ленту общее рабочее место, одно на все площадки, поэтому и
+    проверяем его: подписи на странице про это больше нет.
+    """
+    from app.core.config import BASE_DIR
+
+    script = (BASE_DIR / "app" / "static" / "market_pack.js").read_text(encoding="utf-8")
+    assert "if (history.length > 3) history.pop();" in script

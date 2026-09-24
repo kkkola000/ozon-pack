@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from ...core import db
@@ -64,19 +63,6 @@ def count_ready(account_ids: list[int]) -> int:
     )["c"]
 
 
-def skipped(account_id: int) -> list[tuple[str, int]]:
-    """Что Avito вернул по возвратам помимо готовых к выдаче — для пояснения."""
-    try:
-        histogram = json.loads(db.kv_get(f"avito_returns_statuses:{account_id}") or "{}")
-    except ValueError:
-        return []
-    return sorted(
-        (avito.RETURN_STATUS_LABELS.get(code, code), count)
-        for code, count in histogram.items()
-        if not avito.is_ready_for_pickup(code)
-    )
-
-
 def page(account: dict, params: dict) -> dict:
     """Контекст вкладки «К выдаче» для кабинета Avito."""
     q = str(params.get("q") or "")
@@ -84,7 +70,6 @@ def page(account: dict, params: dict) -> dict:
     return {
         "items": items,
         "stats": [("Заберите заказ", count_ready([account["id"]]))],
-        "skipped": skipped(account["id"]),
         "q": q,
         "sheet_subtitle": "",
     }
@@ -212,7 +197,6 @@ SOURCE = ReturnsSource(
     list_template="avito/returns_list.html",
     sheet_template="avito/returns_sheet.html",
     act_template="avito/returns_act_rows.html",
-    hint_template="avito/returns_hint.html",
     pdf_table=pdf_table,
     sync=sync,
     received=received,

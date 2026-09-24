@@ -14,7 +14,7 @@ from .core import accounts, db, deps, security, sync
 from .core.config import BASE_DIR
 from .core.version import get_commit, get_version
 from .markets import registry
-from .routes import admin, auth, products, reports, returns
+from .routes import admin, auth, pack, products, reports, returns
 
 logging.basicConfig(
     level=logging.INFO,
@@ -183,7 +183,9 @@ def index(request: Request):
 
 
 app.include_router(auth.router)
-# Разделы площадок — из реестра: новая площадка сюда ничего не дописывает.
+# Рабочее место одно на все площадки: адреса берутся из их объявлений.
+app.include_router(pack.register())
+# Остальные разделы площадок — из реестра: новая площадка сюда ничего не дописывает.
 for _market in registry.all_markets():
     app.include_router(_market.router)
 app.include_router(returns.router)

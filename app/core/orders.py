@@ -12,9 +12,50 @@
 from __future__ import annotations
 
 from . import accounts
+from .store import local_time, urgency
 
 # Порядок срочности: сначала то, что уже просрочено, потом то, что горит.
 URGENCY_ORDER = {"overdue": 0, "urgent": 1, "soon": 2, "ok": 3, "none": 4}
+
+
+# ------------------------------------------------------------------ для площадок
+def marks(values) -> str:
+    """Знаки вопроса под IN (...): «?,?,?» по числу кабинетов."""
+    return ",".join("?" for _ in values)
+
+
+def goods_column(items_table: str, *, on: str, name: str = "name") -> str:
+    """Подзапрос «товары строкой»: «Кофе зерновой ×2 · Чайник электрический».
+
+    У каждой площадки своя таблица позиций и своё имя колонки с названием, но
+    склеиваются они одинаково — иначе в общем списке одна строка выглядела бы
+    не так, как соседняя.
+    """
+    return (
+        f"(SELECT GROUP_CONCAT(CASE WHEN i.quantity > 1 "
+        f"THEN i.{name} || ' ×' || i.quantity ELSE i.{name} END, ' · ') "
+        f"FROM {items_table} i WHERE i.account_id = o.account_id AND {on}) AS goods"
+    )
+
+
+def row(account_id: int, number, *, goods: str | None, quantity, deadline: str | None,
+        status_label: str, in_work: bool) -> dict:
+    """Строка общего списка. Срок и срочность считаются здесь — одинаково для всех.
+
+    «В работе» — то, с чем сборщику ещё что-то делать. Собранное из списка не
+    исчезает, но по умолчанию скрыто галочкой.
+    """
+    return {
+        "account_id": account_id,
+        "number": number,
+        "goods": goods or "",
+        "quantity": quantity or 0,
+        "deadline": deadline,
+        "deadline_local": local_time(deadline),
+        "urgency": urgency(deadline),
+        "status_label": status_label,
+        "in_work": in_work,
+    }
 
 
 def _registry():

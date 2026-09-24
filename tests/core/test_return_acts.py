@@ -1231,28 +1231,12 @@ def test_act_pdf_of_unknown_act_is_404(client):
 
 
 # ------------------------------------------------- подсказки вместо стены текста
-def test_explanations_live_under_the_hint(client):
-    """Объяснение нужно один раз, а висит оно над рабочими кнопками всегда.
-
-    Текст не выброшен — он под знаком «?»: спрятать совсем значило бы оставить
-    новичка без ответа на «какие возвраты сюда попадают».
-    """
+def test_no_explanations_hang_over_the_buttons(client):
+    """Подсказок под знаком «?» в разделе больше нет: экран рабочий, не учебный."""
     login(client)
-    for url, marker in (("/returns", "Загружаются возвраты в статусе"),
-                        ("/returns?tab=acts", "задвоить возврат нельзя")):
+    for url in ("/returns", "/returns?tab=acts"):
         page = client.get(url).text
-        assert 'class="hint-body"' in page, f"{url}: подсказки нет"
-        assert marker in page, f"{url}: текст подсказки потерялся"
-        # Текст лежит внутри подсказки, а не отдельным абзацем над кнопками.
-        body = page.split('class="hint-body"', 1)[1]
-        assert marker in body.split("</span>", 1)[0] or marker in body[:2000]
-
-
-def test_status_link_stays_reachable(client):
-    """Внутри подсказки ссылка — иначе менять статусы стало бы негде."""
-    login(client)
-    page = client.get("/returns").text
-    assert "Изменить статусы" in page and '/settings' in page
+        assert "hint-wrap" not in page and "hint-body" not in page, url
 
 
 # ------------------------------------------------- окно загрузки полученных

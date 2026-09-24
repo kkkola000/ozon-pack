@@ -16,7 +16,6 @@ from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
 from ...core import db, labels, return_acts
-from ...core import orders as core_orders
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -117,26 +116,6 @@ def _pack_counters(account: dict) -> dict:
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
             (account["id"], avito.STATUS_ON_CONFIRMATION)),
     }
-
-
-@router.get("/avito/pack", response_class=HTMLResponse)
-def avito_pack_page(request: Request, user: dict = Depends(require_section("pack")),
-                    account: dict = Depends(require_market("avito"))):
-    return templates.TemplateResponse(
-        request,
-        "market_pack.html",
-        {
-            "request": request,
-            "user": user,
-            "account": account,
-            "state": avito_pack.load_state(account, user),
-            "counters": _pack_counters(account),
-            "orders": core_orders.everywhere(account),
-            "workspace": WORKSPACE,
-            "csrf": request.state.session.get("csrf"),
-            "active_tab": "avito_pack",
-        },
-    )
 
 
 @router.get("/api/avito/pack/state")
@@ -461,7 +440,10 @@ WORKSPACE = Workspace(
     gate_title="Скачайте этикетки",
     download="Скачать этикетки",
     gate_template="avito/pack_gate.html",
-    help_template="avito/pack_help.html",
+    url="/avito/pack",
+    tab="avito_pack",
+    load_state=avito_pack.load_state,
+    count_queue=lambda account: _pack_counters(account),
     counters=(
         ("c-to-pack", "to_pack", "К сборке", ""),
         ("c-packed", "packed_today", "Собрано сегодня", "ok"),

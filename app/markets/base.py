@@ -91,7 +91,6 @@ class ReturnsSource:
     list_template: str                          # «ozon/returns_list.html»: фильтры, кнопки, таблица
     sheet_template: str                         # «ozon/returns_sheet.html»: таблица на листе печати
     act_template: str                           # «ozon/returns_act_rows.html»: строки акта
-    hint_template: str                          # «ozon/returns_hint.html»: что под знаком «?» у вкладок
     pdf_table: Callable[[Any, list[dict], bool], None]   # таблица секции на листе PDF
     sync: Callable[..., dict]                   # sync(account, full=False) -> {..., "message": str}
     received: Callable[[int, str], list[str]] | None = None   # полученные за день, свободные для акта
@@ -103,10 +102,10 @@ class ReturnsSource:
 class Workspace:
     """Рабочее место сборщика: страница одна на все площадки, слова — свои.
 
-    Всё, что на складе одинаково (сканы, замок, история, счётчики, печать),
-    делает market_pack.html и market_pack.js. Здесь только то, чем площадки
-    отличаются: подписи, счётчики очереди и два куска текста — почему нужна
-    выгрузка и каков порядок работы. Как рисовать карточку открытой сборки,
+    Всё, что на складе одинаково (сканы, замок, история, счётчики, список
+    заказов, печать), делает routes/pack.py вместе с market_pack.html и
+    market_pack.js. Здесь только то, чем площадки отличаются: подписи, плитки
+    очереди и откуда взять два числа. Как рисовать карточку открытой сборки,
     площадка объявляет в своём markets/<код>/static/pack.js.
     """
 
@@ -116,9 +115,12 @@ class Workspace:
     gate_title: str                  # «Скачайте стикеры» — заголовок замка
     download: str                    # «Скачать стикеры» — надпись на его кнопке
     gate_template: str               # «ozon/pack_gate.html»: почему без выгрузки нельзя
-    help_template: str               # «ozon/pack_help.html»: порядок работы под очередью
     # Плитки очереди: (id элемента, ключ в counters, подпись, класс значения).
     counters: tuple[tuple[str, str, str, str], ...]
+    url: str                         # адрес рабочего места: «/pack», «/avito/pack»
+    tab: str                         # значение active_tab: по нему подсвечивается меню
+    load_state: Callable[[dict, dict], dict]   # состояние сборщика: (кабинет, человек)
+    count_queue: Callable[[dict], dict]        # числа для плиток очереди кабинета
 
 
 @dataclass(frozen=True)

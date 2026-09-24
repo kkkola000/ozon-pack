@@ -9,7 +9,6 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ...core import access, db, labels, return_acts, sync
-from ...core import orders as core_orders
 from ...core.config import settings
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
@@ -22,28 +21,6 @@ router = APIRouter()
 
 # Сколько стикеров печатается одним запросом.
 MAX_LABELS = 50
-
-
-@router.get("/pack", response_class=HTMLResponse)
-def pack_page(request: Request, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_market("ozon"))):
-    state = packing.load_state(account, user)
-    counters = _counters(account)
-    return templates.TemplateResponse(
-        request,
-        "market_pack.html",
-        {
-            "request": request,
-            "user": user,
-            "state": state,
-            "counters": counters,
-            "orders": core_orders.everywhere(account),
-            "workspace": WORKSPACE,
-            "account": account,
-            "csrf": request.state.session.get("csrf"),
-            "active_tab": "pack",
-        },
-    )
 
 
 def _counters(account: dict) -> dict:
@@ -311,7 +288,10 @@ WORKSPACE = Workspace(
     gate_title="Скачайте стикеры",
     download="Скачать стикеры",
     gate_template="ozon/pack_gate.html",
-    help_template="ozon/pack_help.html",
+    url="/pack",
+    tab="pack",
+    load_state=packing.load_state,
+    count_queue=lambda account: _counters(account),
     counters=(
         ("c-packaging", "awaiting_packaging", "Ожидает сборки", ""),
         ("c-deliver", "awaiting_deliver", "Ожидает отгрузки", ""),

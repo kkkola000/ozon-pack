@@ -9,6 +9,22 @@
 {# Замок: пока ярлыки не выгружены, поля сканирования нет вовсе. Площадка
    отдаёт ярлык, пока заказ в работе, — не забрали вовремя, и он пропал.
    Поэтому выгрузка идёт первой, а не «когда-нибудь потом». #}
+{# Фильтр площадок. Выбор площадки — это и переход к её сборке: панель
+   переключает кабинет, а список внизу показывает только её заказы. #}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Сборка</h2>
+    <div class="chips">
+      {% for chip in market_chips %}
+      <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}">
+        {%- if chip.code != 'all' %}<i class="dot {{ chip.code }}"></i>{% endif -%}
+        {{ chip.title }} <span class="badge">{{ chip.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
 <div class="panel" id="label-gate" hidden>
   <div class="gate">
     <div class="what" id="gate-title">{{ workspace.gate_title }}</div>
@@ -44,14 +60,10 @@
     </div>
     {% endfor %}
   </div>
-  <p class="muted small" style="margin:14px 0 0">{% include workspace.help_template %}</p>
 </div>
 
 <div class="panel">
-  <div class="row between">
-    <h2 style="margin:0">Последние сканы</h2>
-    <span class="muted small">показываются три последних</span>
-  </div>
+  <h2 style="margin:0">Последние сканы</h2>
   <div id="history" class="small muted" style="margin-top:10px">Пока пусто.</div>
 </div>
 
@@ -61,13 +73,7 @@
    поэтому здесь нет ни одной развилки «если это Ozon». #}
 <div class="panel">
   <div class="row between">
-    <div>
-      <h2 style="margin:0">Все заказы</h2>
-      <div class="muted small" style="margin-top:4px">
-        По всем кабинетам и площадкам. Заказы текущего магазина — сверху, дальше
-        остальные магазины по алфавиту; внутри магазина раньше тот, у кого срок ближе.
-      </div>
-    </div>
+    <h2 style="margin:0">Все заказы</h2>
     <div class="row">
       <label class="muted small row" style="gap:8px">
         <input type="checkbox" id="only-work" checked style="width:auto"> только в работе
@@ -90,15 +96,14 @@
     </thead>
     <tbody id="orders-rows">
       {% for order in orders %}
-      <tr class="{{ 'own' if order.own }}" data-work="{{ 1 if order.in_work else 0 }}"
+      <tr data-work="{{ 1 if order.in_work else 0 }}" data-market="{{ order.market }}"
           data-text="{{ (order.number ~ ' ' ~ order.goods ~ ' ' ~ order.shop ~ ' ' ~ order.market_title) | lower }}">
-        {# Название площадки не повторяем, если кабинет назвали так же. #}
         <td style="white-space:nowrap">
           <div style="font-weight:700">{{ order.shop }}</div>
-          <div class="muted small">
-            {%- if order.market_title != order.shop %}{{ order.market_title }}{% if order.own %} · {% endif %}{% endif -%}
-            {%- if order.own %}текущий{% endif -%}
-          </div>
+          {# Название площадки не повторяем, если кабинет назвали так же. #}
+          {%- if order.market_title != order.shop %}
+          <div class="muted small">{{ order.market_title }}</div>
+          {%- endif %}
         </td>
         <td class="mono">{{ order.number }}</td>
         <td class="muted small">{{ order.goods or '—' }}</td>

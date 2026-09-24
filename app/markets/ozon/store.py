@@ -8,6 +8,7 @@ import json
 import sqlite3
 
 from ...core import db
+from ...core import orders as core_orders
 from ...core.store import (_dt, _raw_json, _text, claim_is_active,
                            hours_left, local_time, urgency as urgency_of)
 
@@ -293,13 +294,11 @@ def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
 # одному виду: сборщику всё равно, отправление это Ozon или заказ Avito, ему
 # важно — чей магазин, что собирать и когда истекает срок.
 FEED_SQL = """
-SELECT p.account_id, p.posting_number, p.status, p.local_state, p.shipment_date, p.items_count,
-       (SELECT GROUP_CONCAT(CASE WHEN i.quantity > 1 THEN i.name || ' ×' || i.quantity ELSE i.name END, ' · ')
-          FROM posting_items i
-         WHERE i.account_id = p.account_id AND i.posting_number = p.posting_number) AS goods
-  FROM postings p
- WHERE p.account_id IN ({marks}) AND p.status IN (?, ?)
- ORDER BY (p.shipment_date IS NULL), p.shipment_date
+SELECT o.account_id, o.posting_number, o.status, o.local_state, o.shipment_date, o.items_count,
+       {goods}
+  FROM postings o
+ WHERE o.account_id IN ({marks}) AND o.status IN (?, ?)
+ ORDER BY (o.shipment_date IS NULL), o.shipment_date
  LIMIT ?
 """
 
@@ -308,26 +307,20 @@ def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
     """Отправления кабинетов для общего списка: в работе и уже собранные."""
     if not account_ids:
         return []
-    marks = ",".join("?" for _ in account_ids)
     rows = db.query(
-        FEED_SQL.format(marks=marks),
+        FEED_SQL.format(
+            goods=core_orders.goods_column("posting_items", on="i.posting_number = o.posting_number"),
+            marks=core_orders.marks(account_ids),
+        ),
         list(account_ids) + [STATUS_AWAITING_PACKAGING, STATUS_AWAITING_DELIVER, limit],
     )
-    feed = []
-    for row in rows:
-        packed = (row["local_state"] or "new") == "packed"
-        feed.append({
-            "account_id": row["account_id"],
-            "number": row["posting_number"],
-            "goods": row["goods"] or "",
-            "quantity": row["items_count"] or 0,
-            "deadline": row["shipment_date"],
-            "deadline_local": local_time(row["shipment_date"]),
-            "urgency": urgency_of(row["shipment_date"]),
-            "status_label": ("Собрано" if packed
-                             else STATUS_LABELS.get(row["status"] or "", row["status"] or "")),
-            # «В работе» — то, с чем сборщику ещё что-то делать. Собранное
-            # остаётся в списке, но по умолчанию скрыто галочкой.
-            "in_work": not packed,
-        })
-    return feed
+    return [
+        core_orders.row(
+            row["account_id"], row["posting_number"],
+            goods=row["goods"], quantity=row["items_count"], deadline=row["shipment_date"],
+            status_label=("Собрано" if (row["local_state"] or "new") == "packed"
+                          else STATUS_LABELS.get(row["status"] or "", row["status"] or "")),
+            in_work=(row["local_state"] or "new") != "packed",
+        )
+        for row in rows
+    ]

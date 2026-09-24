@@ -278,8 +278,8 @@ def test_only_returns_ready_for_pickup_are_stored(avito_account):
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND id = ?",
             (avito_account["id"], order["id"]),
         )["c"] == 0
-    histogram = json.loads(db.kv_get(f"avito_returns_statuses:{avito_account['id']}") or "{}")
-    assert histogram.get(avito.RETURN_IN_TRANSIT) == len(in_transit)
+    # Сколько отбросили — видно в итоге синхронизации, а не в отдельной памяти.
+    assert avito_sync.sync_avito(avito_account)["avito_returns_skipped"] >= len(in_transit)
 
 
 def test_return_that_left_pickup_point_counts_as_received(avito_account):
@@ -308,13 +308,6 @@ def test_page_shows_returns_ready_for_pickup(client, avito_account):
     assert "Заберите заказ" in page.text
     for row in returns_of(avito_account):
         assert (row["marketplace_id"] or row["id"]) in page.text
-
-
-def test_page_explains_what_was_skipped(client, avito_account):
-    """Отброшенные возвраты не исчезают молча — их количество видно на странице."""
-    page = client.get("/returns")
-    assert "Возврат в пути" in page.text
-    assert "в панель не попадают" in page.text
 
 
 def test_returns_page_is_read_only(client):

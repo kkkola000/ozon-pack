@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 
@@ -348,7 +347,6 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
     saved = 0
     skipped = 0
     seen: set[str] = set()
-    histogram: dict[str, int] = {}
     complete = True
     # Полнота обхода «к выдаче» считается отдельно: по ней список выдачи
     # пересобирается заново, и сбой на выборке полученных не должен этому
@@ -356,10 +354,9 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
     pickup_complete = True
 
     def remember(raw: dict) -> None:
-        """Учитываем, что именно вернул Ozon, — histogram виден в интерфейсе."""
+        """Считаем, сколько Ozon вернул не того, что мы просили, — это видно в итоге."""
         nonlocal skipped
         sys_name = (((raw.get("visual") or {}).get("status") or {}).get("sys_name")) or "—"
-        histogram[sys_name] = histogram.get(sys_name, 0) + 1
         if sys_name not in wanted_set:
             skipped += 1
 
@@ -496,8 +493,6 @@ def sync_returns(account: dict | None = None, *, full: bool = False,
     # остаётся пустой строкой на экране — убираем.
     return_acts.drop_empty(account_id)
 
-    db.kv_set("returns_last_statuses", json.dumps(histogram, ensure_ascii=False))
-    db.kv_set("returns_last_wanted", ",".join(wanted))
     result = {"returns": saved}
     if skipped:
         result["returns_skipped"] = skipped
@@ -811,13 +806,6 @@ def page(account: dict, params: dict) -> dict:
             "AND (type = 'FBS' OR scheme = 'FBS')", args
         )["c"],
     }
-    wanted = get_returns_statuses()
-    try:
-        histogram = json.loads(db.kv_get("returns_last_statuses") or "{}")
-    except ValueError:
-        histogram = {}
-    hidden = {code: count for code, count in histogram.items() if code not in set(wanted)}
-
     # Заголовок листа печати: по нему на бумаге видно, с каким фильтром его собрали.
     subtitle = ""
     if scheme != "all":
@@ -828,8 +816,6 @@ def page(account: dict, params: dict) -> dict:
         "items": items,
         "stats": [("Готовы к выдаче", totals["ready"]), ("FBO", totals["fbo"]), ("FBS", totals["fbs"])],
         "totals": totals,
-        "wanted_labels": [status_label(code) for code in wanted],
-        "hidden_statuses": [(status_label(code), count) for code, count in sorted(hidden.items())],
         "places": places(account["id"]),
         "scheme": scheme,
         "place": place,
@@ -926,7 +912,6 @@ SOURCE = ReturnsSource(
     list_template="ozon/returns_list.html",
     sheet_template="ozon/returns_sheet.html",
     act_template="ozon/returns_act_rows.html",
-    hint_template="ozon/returns_hint.html",
     pdf_table=pdf_table,
     sync=sync,
     received=received_returns,

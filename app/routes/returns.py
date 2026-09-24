@@ -102,7 +102,6 @@ def returns_page(
             "account": account,
             **page,
             "list_template": source.list_template,
-            "hint_template": source.hint_template,
             "ready_total": source.count_ready([account["id"]]),
             "query": params,
             "sync": core_sync.status(),
