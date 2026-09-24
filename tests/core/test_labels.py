@@ -31,10 +31,10 @@ def test_a_batch_with_extra_pages_stays_one_file():
     writer.write(buffer)
 
     assert labels._split(buffer.getvalue(), ["A-1", "B-2"]) is None
-    archive, saved = labels.build_archive(
+    files, saved = labels.collect(
         ["A-1", "B-2"], lambda batch: buffer.getvalue(), prefix="стикеры")
     assert saved == ["A-1", "B-2"]
-    assert names_in(archive) == ["стикеры-A-1-B-2.pdf"]
+    assert names_in(labels.zip_files(files)) == ["стикеры-A-1-B-2.pdf"]
 
 
 def test_a_failed_batch_does_not_lose_the_rest(monkeypatch):
@@ -57,7 +57,7 @@ def test_a_failed_batch_does_not_lose_the_rest(monkeypatch):
             raise RuntimeError("Ozon отказал")
         return buffer.getvalue()
 
-    archive, saved = labels.build_archive(
+    files, saved = labels.collect(
         ["A-1", "B-2", "C-3", "D-4"], fetch, prefix="стикеры")
     assert saved == ["A-1", "B-2"], "выгруженным отмечено то, чего не было"
-    assert names_in(archive) == ["A-1.pdf", "B-2.pdf"]
+    assert names_in(labels.zip_files(files)) == ["A-1.pdf", "B-2.pdf"]

@@ -16,14 +16,17 @@ Workspace: подписи, плитки очереди, откуда взять 
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from urllib.parse import quote
 
-from ..core import accounts
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from ..core import accounts, db
+from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import store as core_store
 from ..core import sync as core_sync
-from ..core.deps import ACCOUNT_COOKIE, require_account, require_section, templates
+from ..core.deps import (ACCOUNT_COOKIE, check_csrf, require_account, require_section,
+                         safe_filename, templates)
 
 router = APIRouter()
 
@@ -139,6 +142,21 @@ def page(request: Request, user: dict, account: dict, code: str, market: str = A
     )
 
 
+def _shops(picked: str) -> list[dict]:
+    """Кабинеты под фильтром: все включённые или только выбранной площадки."""
+    live = [account for account in accounts.all_accounts(active_only=True)
+            if accounts.is_configured(account)]
+    if picked == ALL:
+        return live
+    return [account for account in live if account["marketplace"] == picked]
+
+
+def _picked_of(request: Request) -> str:
+    """Какая площадка выбрана фильтром — по адресу страницы, с которой пришёл запрос."""
+    wanted = str(request.query_params.get("market") or ALL)
+    return wanted if wanted != ALL and _registry().get(wanted) else ALL
+
+
 def _endpoint(code: str):
     """Обработчик адреса одной площадки: тот же page(), своя площадка.
 
@@ -165,3 +183,54 @@ def register() -> APIRouter:
             response_class=HTMLResponse, name=f"pack_{market.code}",
         )
     return router
+
+
+# ------------------------------------------------------------------ наклейки
+@router.get("/api/pack/state")
+def api_state(request: Request, user: dict = Depends(require_section("pack")),
+              account: dict = Depends(require_account)):
+    """Состояние рабочего места: сборка, очередь и замок на наклейки.
+
+    Замок общий на кабинеты под фильтром: сборка объединена, и начинать её,
+    выгрузив наклейки одного магазина, нельзя — посреди смены окажется, что у
+    соседнего заказа наклейки нет и взять её уже негде.
+    """
+    market = _registry().get(account["marketplace"])
+    workspace = market.workspace if market else None
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="У этой площадки нет рабочего места")
+    waiting = core_labels.pending_everywhere(_shops(_picked_of(request)))
+    return {
+        "state": workspace.load_state(account, user),
+        "counters": workspace.count_queue(account),
+        "labels": core_labels.state_everywhere(waiting),
+    }
+
+
+@router.post("/api/pack/labels.zip")
+def api_labels(request: Request, user: dict = Depends(require_section("pack")),
+               account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """Наклейки всех кабинетов одним архивом — то, с чего начинается смена."""
+    check_csrf(request)
+    waiting = core_labels.pending_everywhere(_shops(_picked_of(request)))
+    if not waiting:
+        raise HTTPException(status_code=400, detail="Все наклейки уже выгружены")
+    archive, total, refused = core_labels.archive_everywhere(waiting, user)
+    if not total:
+        raise HTTPException(
+            status_code=502,
+            detail="Площадка не отдала ни одной наклейки: " + ", ".join(refused),
+        )
+    stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename(f"naklejki-{stamp}.zip")}"',
+            "Cache-Control": "no-store",
+            # Сколько выгружено и кто отказал. Названия кабинетов русские, а в
+            # заголовок HTTP кириллица не лезет — отдаём в процентах.
+            "X-Labels-Saved": str(total),
+            "X-Labels-Refused": quote(", ".join(refused)),
+        },
+    )

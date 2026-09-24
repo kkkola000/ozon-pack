@@ -378,3 +378,15 @@ def pending_labels(account_id: int) -> list[str]:
         (account_id, avito.STATUS_READY_TO_SHIP),
     )
     return [row["id"] for row in rows]
+
+
+def labels_pdf(account: dict, user: dict, ids: list[str]) -> bytes:  # noqa: ARG001 - человек нужен другим площадкам
+    """Этикетки пачкой. Avito знает заказ по номеру сделки, а ключ у нас свой."""
+    from . import client as avito
+
+    marks = ",".join("?" for _ in ids)
+    rows = {row["id"]: (row["marketplace_id"] or row["id"]) for row in db.query(
+        f"SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND id IN ({marks})",
+        [account["id"]] + list(ids),
+    )}
+    return avito.get_client(account).label_pdf([rows.get(key, key) for key in ids])[0]

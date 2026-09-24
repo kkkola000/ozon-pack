@@ -1,7 +1,7 @@
 """Avito — объявление площадки для реестра."""
 from __future__ import annotations
 
-from ..base import Market
+from ..base import LabelsSource, Market
 from . import client, pack, returns, routes, store, sync
 
 MARKET = Market(
@@ -23,7 +23,13 @@ MARKET = Market(
     stats=routes.settings_stats,
     schema=store.SCHEMA,
     raw_tables=("avito_orders",),
-    pending_labels=pack.pending_labels,
+    labels=LabelsSource(
+        word="этикетки",
+        pending=pack.pending_labels,
+        pdf=pack.labels_pdf,
+        table="avito_orders",
+        key="id",
+    ),
     # Возврат у Avito — состояние заказа, но в разделе он выглядит как у всех.
     returns=returns.SOURCE,
     orders_feed=store.orders_feed,

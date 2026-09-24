@@ -91,7 +91,7 @@ def test_archive_has_a_file_per_posting(client):
     account = accounts.default_account()
     expected = ozon_pack.pending_labels(account["id"])
 
-    response = client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
+    response = client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/zip"
     assert ".zip" in response.headers["content-disposition"]
@@ -102,7 +102,7 @@ def test_archive_marks_what_it_took(client):
     """После выгрузки сборка открывается, а очередь пустеет."""
     csrf = login(client)
     account = accounts.default_account()
-    assert client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
+    assert client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
 
     assert ozon_pack.pending_labels(account["id"]) == []
     assert labels.state(ozon_pack.pending_labels(account["id"]))["locked"] is False
@@ -114,20 +114,20 @@ def test_archive_marks_what_it_took(client):
 
 def test_nothing_to_download_is_refused(client):
     csrf = login(client)
-    client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
-    again = client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
+    client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
+    again = client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
     assert again.status_code == 400
     assert "уже выгружены" in again.json()["detail"]
 
 
 def test_archive_needs_csrf(client):
     login(client)
-    assert client.post("/api/labels/archive.zip").status_code == 403
+    assert client.post("/api/pack/labels.zip").status_code == 403
 
 
 def test_the_download_is_written_to_the_log(client):
     csrf = login(client)
-    client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
+    client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
     row = db.query_one("SELECT message FROM events WHERE kind = 'labels_archive' ORDER BY id DESC LIMIT 1")
     assert row and "Выгружены стикеры" in row["message"]
 
@@ -140,7 +140,7 @@ def test_nothing_is_stored_on_disk(client, tmp_path):
     data_dir = __import__("pathlib").Path(settings.db_path).parent
     before = {p.name for p in data_dir.iterdir()} if data_dir.exists() else set()
 
-    assert client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
+    assert client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
 
     after = {p.name for p in data_dir.iterdir()} if data_dir.exists() else set()
     assert not {name for name in after - before if name.endswith((".pdf", ".zip"))}
@@ -149,12 +149,13 @@ def test_nothing_is_stored_on_disk(client, tmp_path):
 # --------------------------------------------------------------- состояние
 def test_state_carries_the_lock(client):
     csrf = login(client)
-    state = client.get("/api/state").json()
+    state = client.get("/api/pack/state").json()
     assert state["labels"]["locked"] is True
     assert state["labels"]["pending"] > 0
 
-    client.post("/api/labels/archive.zip", headers={"X-CSRF-Token": csrf})
-    assert client.get("/api/state").json()["labels"] == {"pending": 0, "locked": False}
+    client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
+    opened = client.get("/api/pack/state").json()["labels"]
+    assert opened["pending"] == 0 and opened["locked"] is False and opened["shops"] == []
 
 
 def test_the_pack_page_holds_the_gate(client):

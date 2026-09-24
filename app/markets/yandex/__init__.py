@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from ..base import CatalogSource, Market
+from ..base import CatalogSource, LabelsSource, Market
 from . import catalog, client, pack, routes, store, sync
 
 MARKET = Market(
@@ -29,7 +29,13 @@ MARKET = Market(
     stats=routes.settings_stats,
     schema=store.SCHEMA,
     raw_tables=("yandex_orders",),
-    pending_labels=pack.pending_labels,
+    labels=LabelsSource(
+        word="ярлыки",
+        pending=pack.pending_labels,
+        pdf=pack.labels_pdf,
+        table="yandex_orders",
+        key="id",
+    ),
     # Каталог со штрихкодами Маркет отдаёт одним методом — раздел «Товары»
     # открывается и его кабинетам.
     catalog=CatalogSource(pages=catalog.pages),

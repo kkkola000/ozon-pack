@@ -99,6 +99,26 @@ class ReturnsSource:
 
 
 @dataclass(frozen=True)
+class LabelsSource:
+    """Наклейка заказа: стикер Ozon, этикетка Avito, ярлык Маркета.
+
+    Выгружаются до начала сборки — площадка отдаёт наклейку, пока заказ ждёт
+    отгрузки, и упущенную уже не вернуть. Выгрузка идёт одним архивом по всем
+    кабинетам сразу: склад один, и бегать за каждым магазином отдельно незачем.
+
+    pending(account_id) — ключи, которые ещё не выгружены; pdf(кабинет,
+    человек, ключи) — пачка PDF от площадки; table и key — где стоит отметка
+    label_saved_at, по которой запирается сборка.
+    """
+
+    word: str                                        # «стикеры»: в именах файлов и сообщениях
+    pending: Callable[[int], list[str]]
+    pdf: Callable[[dict, dict, list[str]], bytes]
+    table: str
+    key: str
+
+
+@dataclass(frozen=True)
 class Workspace:
     """Рабочее место сборщика: страница одна на все площадки, слова — свои.
 
@@ -111,9 +131,6 @@ class Workspace:
 
     placeholder: str                 # что написано в пустом поле сканирования
     banner: str                      # первая подсказка над полем
-    gate_title: str                  # «Скачайте стикеры» — заголовок замка
-    download: str                    # «Скачать стикеры» — надпись на его кнопке
-    gate_template: str               # «ozon/pack_gate.html»: почему без выгрузки нельзя
     # Плитки очереди: (id элемента, ключ в counters, подпись, класс значения).
     counters: tuple[tuple[str, str, str, str], ...]
     url: str                         # адрес рабочего места: «/pack», «/avito/pack»
@@ -147,8 +164,8 @@ class Market:
     raw_tables: tuple[str, ...] = ()
     # Разовые правки своих таблиц в старых базах; вызываются после создания схемы.
     migrate: Callable[[Any], None] | None = None
-    # Что ещё не выгружено из стикеров — для замка на «Сборке». None — стикеров нет.
-    pending_labels: Callable[[int], list[str]] | None = None
+    # Наклейки заказов: выгрузка до сборки и замок на неё. None — их нет.
+    labels: LabelsSource | None = None
     # Умеет ли площадка наполнять каталог товаров (штрихкоды для сборки).
     catalog: CatalogSource | None = None
     # Дополнительные переменные для страницы «Настройки» текущего кабинета.

@@ -25,7 +25,7 @@ def login(client) -> str:
 
 def test_anonymous_redirected(client):
     assert client.get("/pack").status_code == 303
-    assert client.get("/api/state").status_code == 401
+    assert client.get("/api/pack/state").status_code == 401
 
 
 def test_healthz_is_public(client):
@@ -297,7 +297,7 @@ def test_password_change_closes_old_sessions(client):
 
     # Кука осталась прежней, но панель её больше не принимает
     assert client.get("/pack").status_code == 303
-    assert client.get("/api/state").status_code == 401
+    assert client.get("/api/pack/state").status_code == 401
 
 
 def test_password_change_leaves_other_users_alone(client):
@@ -459,7 +459,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.38.0"
+    assert get_version() == "1.39.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

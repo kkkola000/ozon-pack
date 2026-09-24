@@ -15,7 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
-from ...core import db, labels, return_acts
+from ...core import db, return_acts
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -115,16 +115,6 @@ def _pack_counters(account: dict) -> dict:
         "confirm": count(
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
             (account["id"], avito.STATUS_ON_CONFIRMATION)),
-    }
-
-
-@router.get("/api/avito/pack/state")
-def api_avito_pack_state(user: dict = Depends(require_section("pack")),
-                         account: dict = Depends(require_market("avito"))):
-    return {
-        "state": avito_pack.load_state(account, user),
-        "counters": _pack_counters(account),
-        "labels": labels.state(avito_pack.pending_labels(account["id"])),
     }
 
 
@@ -299,43 +289,6 @@ def api_avito_reset_order(order_id: str, request: Request, admin: dict = Depends
     return {"status": "ok", "message": f"{order.get('marketplace_id') or order_id}: отметка сборки снята"}
 
 
-@router.post("/api/avito/labels/archive.zip")
-def api_avito_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                             account: dict = Depends(require_market("avito"))):
-    """Этикетки всех заказов, ждущих выгрузки, — архивом на компьютер.
-
-    Сам файл панель не хранит: архив уезжает в браузер, на диске сервера ничего
-    не остаётся. В базе только отметка о выгрузке, по ней открывается сборка.
-    """
-    check_csrf(request)
-    ids = avito_pack.pending_labels(account["id"])
-    if not ids:
-        raise HTTPException(status_code=400, detail="Все этикетки уже выгружены")
-    ids = ids[: labels.MAX_AT_ONCE]
-    # Avito выдаёт этикетку по номеру из сервиса сделок, а помечаем свой id.
-    rows = {row["id"]: (row["marketplace_id"] or row["id"]) for row in db.query(
-        f"SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? "
-        f"AND id IN ({','.join('?' for _ in ids)})", [account["id"]] + ids)}
-
-    def fetch(batch: list[str]) -> bytes:
-        return avito.get_client(account).label_pdf([rows.get(i, i) for i in batch])[0]
-
-    archive, saved = labels.build_archive(ids, fetch, prefix="этикетки")
-    if not saved:
-        raise HTTPException(status_code=502, detail="Avito не отдал ни одной этикетки")
-    labels.mark_saved("avito_orders", account["id"], saved, "id")
-    db.log_event(
-        "avito_labels_archive", account_id=account["id"], user=user,
-        message=f"Выгружены этикетки: {len(saved)} шт.",
-    )
-    return Response(
-        content=archive,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_avito_archive_name(account)}"',
-                 "Cache-Control": "no-store"},
-    )
-
-
 def _avito_archive_name(account: dict) -> str:
     stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
     return safe_filename(f"avito-labels-{account.get('title') or account['id']}-{stamp}.zip")
@@ -436,9 +389,6 @@ def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(
 WORKSPACE = Workspace(
     placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…",
     banner="Отсканируйте стикер отправления — откроется сборка заказа.",
-    gate_title="Скачайте этикетки",
-    download="Скачать этикетки",
-    gate_template="avito/pack_gate.html",
     url="/avito/pack",
     tab="avito_pack",
     load_state=avito_pack.load_state,

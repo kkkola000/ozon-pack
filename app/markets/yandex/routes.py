@@ -14,13 +14,12 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, labels, sync
-from . import client as yandex, pack as yandex_pack
+from ...core import access, db, sync
+from . import pack as yandex_pack
 from ...core.config import settings
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
 from .client import YandexError
-from ...core import store as core_store
 from . import store
 
 log = logging.getLogger("yandex")
@@ -189,37 +188,6 @@ def api_yandex_labels(request: Request, payload: dict = Body(...), user: dict = 
     return _pdf_response(pdf, filename)
 
 
-@router.post("/api/yandex/labels/archive.zip")
-def api_yandex_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                              account: dict = Depends(require_market("yandex"))):
-    """Ярлыки всех заказов в работе, ждущих выгрузки, — архивом на компьютер.
-
-    Файл панель у себя не оставляет: архив уходит в браузер. В базе только
-    отметка о выгрузке — по ней открывается сканирование.
-    """
-    check_csrf(request)
-    ids = yandex_pack.pending_labels(account["id"])
-    if not ids:
-        raise HTTPException(status_code=400, detail="Все ярлыки уже выгружены")
-    ids = ids[: labels.MAX_AT_ONCE]
-    client = yandex.get_client(account)
-    archive, saved = labels.build_archive(ids, lambda batch: client.labels_pdf(batch)[0], prefix="ярлыки")
-    if not saved:
-        raise HTTPException(status_code=502, detail="Маркет не отдал ни одного ярлыка")
-    labels.mark_saved("yandex_orders", account["id"], saved, "id")
-    db.log_event(
-        "yandex_labels_archive", account_id=account["id"], user=user,
-        message=f"Выгружены ярлыки: {len(saved)} шт.",
-    )
-    stamp = core_store.local_time(db.now_iso(), "%Y-%m-%d_%H-%M")
-    name = safe_filename(f"yandex-labels-{account.get('title') or account['id']}-{stamp}.zip")
-    return Response(
-        content=archive,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"},
-    )
-
-
 # ------------------------------------------------------------------ сборка
 def _pack_counters(account: dict) -> dict:
     aid = account["id"]
@@ -238,16 +206,6 @@ def _pack_counters(account: dict) -> dict:
         "packed_today": count(
             "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND local_state = 'packed' "
             "AND packed_at >= date('now')"),
-    }
-
-
-@router.get("/api/yandex/pack/state")
-def api_yandex_pack_state(user: dict = Depends(require_section("pack")),
-                          account: dict = Depends(require_market("yandex"))):
-    return {
-        "state": yandex_pack.load_state(account, user),
-        "counters": _pack_counters(account),
-        "labels": labels.state(yandex_pack.pending_labels(account["id"])),
     }
 
 
@@ -295,9 +253,6 @@ def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или ярлык заказа…",
     banner="Отсканируйте штрихкод товара — система сама найдёт заказ Маркета и отправит ярлык на печать.",
-    gate_title="Скачайте ярлыки",
-    download="Скачать ярлыки",
-    gate_template="yandex/pack_gate.html",
     url="/yandex/pack",
     tab="yandex_pack",
     load_state=yandex_pack.load_state,

@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, labels, return_acts, sync
+from ...core import access, db, return_acts, sync
 from ...core.config import settings
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
@@ -45,15 +45,6 @@ def _counters(account: dict) -> dict:
             f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}",
             [account_id] + list(ready_params),
         )["c"],
-    }
-
-
-@router.get("/api/state")
-def api_state(user: dict = Depends(require_section("pack")), account: dict = Depends(require_market("ozon"))):
-    return {
-        "state": packing.load_state(account, user),
-        "counters": _counters(account),
-        "labels": labels.state(packing.pending_labels(account["id"])),
     }
 
 
@@ -109,38 +100,6 @@ def api_label(posting_number: str, user: dict = Depends(require_section("pack"))
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
-    )
-
-
-@router.post("/api/labels/archive.zip")
-def api_labels_archive(request: Request, user: dict = Depends(require_section("pack")),
-                       account: dict = Depends(require_market("ozon"))):
-    """Стикеры всех отправлений, ждущих выгрузки, — архивом на компьютер.
-
-    Панель файл у себя не оставляет: архив уходит в браузер, на диске сервера
-    не остаётся ничего. В базе появляется только отметка о выгрузке — по ней
-    открывается сканирование.
-    """
-    check_csrf(request)
-    numbers = packing.pending_labels(account["id"])
-    if not numbers:
-        raise HTTPException(status_code=400, detail="Все стикеры уже выгружены")
-    numbers = numbers[: labels.MAX_AT_ONCE]
-    archive, saved = labels.build_archive(
-        numbers, lambda batch: packing.label_pdf(account, user, batch)[0], prefix="стикеры",
-    )
-    if not saved:
-        raise HTTPException(status_code=502, detail="Ozon не отдал ни одного стикера")
-    labels.mark_saved("postings", account["id"], saved, "posting_number")
-    db.log_event(
-        "labels_archive", account_id=account["id"], user=user,
-        message=f"Выгружены стикеры: {len(saved)} шт.",
-    )
-    return Response(
-        content=archive,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{_archive_name(account)}"',
                  "Cache-Control": "no-store"},
     )
 
@@ -284,9 +243,6 @@ def api_sync(request: Request, user: dict = Depends(require_section("orders")),
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или стикер отправления…",
     banner="Отсканируйте штрихкод товара — система сама найдёт отправление и отправит стикер на печать.",
-    gate_title="Скачайте стикеры",
-    download="Скачать стикеры",
-    gate_template="ozon/pack_gate.html",
     url="/pack",
     tab="pack",
     load_state=packing.load_state,

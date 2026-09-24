@@ -5,11 +5,9 @@
    нет в каталоге, — сканировать такую позицию нечем. */
 window.PACK = {
   api: {
-    state: '/api/yandex/pack/state',
     scan: '/api/yandex/pack/scan',
     release: '/api/yandex/pack/release',
     complete: '/api/yandex/pack/complete',
-    labels: '/api/yandex/labels/archive.zip',
     sync: '/api/yandex/sync',
   },
   print: {
@@ -17,14 +15,8 @@ window.PACK = {
     url: (id) => `/api/yandex/label/${encodeURIComponent(id)}.pdf`,
   },
   words: {
-    unit: ['заказ', 'заказа', 'заказов'],
+    // Слова замка на наклейки — общие: выгрузка идёт сразу по всем кабинетам.
     label: 'Ярлык',
-    gate: 'Скачайте ярлыки',
-    download: 'Скачать ярлыки',
-    archive: 'yandex-labels.zip',
-    downloaded: 'Ярлыки скачаны — можно начинать сборку',
-    arrived: (pending) =>
-      `Подъехали новые заказы (${pending}). Закройте текущий — дальше понадобится скачать ярлыки.`,
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить заказ без сканирования ярлыка? Действие попадёт в журнал.',

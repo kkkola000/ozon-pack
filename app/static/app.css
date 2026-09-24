@@ -179,6 +179,12 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   color: var(--muted); font-size: 14px; margin: 8px auto 20px; max-width: 600px; line-height: 1.5;
 }
 .gate .gate-why b { color: var(--text); }
+/* Разбивка замка по магазинам: чьи наклейки ждут и сколько. */
+.gate-shops { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
+.gate-shop {
+  display: flex; align-items: center; gap: 8px; font-size: 14px;
+  padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2);
+}
 
 .scanbar { display: flex; gap: 12px; align-items: stretch; }
 .scanbar input {

@@ -50,7 +50,7 @@ def test_russian_message_survives_the_trip(client):
 
 def test_successful_json_declares_utf8_too(client):
     login(client)
-    response = client.get("/api/state", headers=AS_SCRIPT)
+    response = client.get("/api/pack/state", headers=AS_SCRIPT)
     assert response.status_code == 200
     assert "charset=utf-8" in response.headers["content-type"].lower()
 

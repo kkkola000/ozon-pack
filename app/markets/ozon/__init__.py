@@ -7,7 +7,7 @@ Ozon умеет больше остальных: отдаёт каталог т�
 from __future__ import annotations
 
 from ...core.config import settings
-from ..base import CatalogSource, Market
+from ..base import CatalogSource, LabelsSource, Market
 from . import catalog, client, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
@@ -35,7 +35,14 @@ MARKET = Market(
     schema=store.SCHEMA + returns.SCHEMA,
     raw_tables=("postings", "returns"),
     migrate=migrations.migrate,
-    pending_labels=pack.pending_labels,
+    # Стикеры: выгружаются до сборки, вместе со стикерами других кабинетов.
+    labels=LabelsSource(
+        word="стикеры",
+        pending=pack.pending_labels,
+        pdf=lambda account, user, keys: pack.label_pdf(account, user, keys)[0],
+        table="postings",
+        key="posting_number",
+    ),
     # Каталог со штрихкодами: список артикулов, потом карточки пачками.
     catalog=CatalogSource(pages=catalog.pages),
     # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.

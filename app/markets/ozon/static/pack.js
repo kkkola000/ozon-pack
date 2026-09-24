@@ -5,11 +5,9 @@
    у Ozon в ней фото товара, наборы и «Честный знак». */
 window.PACK = {
   api: {
-    state: '/api/state',
     scan: '/api/scan',
     release: '/api/release',
     complete: '/api/complete',
-    labels: '/api/labels/archive.zip',
     sync: '/api/sync',
   },
   print: {
@@ -17,14 +15,9 @@ window.PACK = {
     url: (number) => `/api/label/${encodeURIComponent(number)}.pdf`,
   },
   words: {
-    unit: ['отправление', 'отправления', 'отправлений'],
+    // Слова замка на наклейки здесь не объявляются: выгрузка общая на все
+    // кабинеты, и говорить в ней «стикеры» про ярлыки Маркета было бы неверно.
     label: 'Стикер',
-    gate: 'Скачайте стикеры',
-    download: 'Скачать стикеры',
-    archive: 'stickers.zip',
-    downloaded: 'Стикеры скачаны — можно начинать сборку',
-    arrived: (pending) =>
-      `Подъехали новые отправления (${pending}). Закройте текущее — дальше понадобится скачать стикеры.`,
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить отправление без сканирования стикера? Действие попадёт в журнал.',

@@ -639,3 +639,10 @@ def pending_labels(account_id: int) -> list[str]:
         [account_id] + list(yandex.WORK_SUBSTATUSES),
     )
     return [row["id"] for row in rows]
+
+
+def labels_pdf(account: dict, user: dict, ids: list[str]) -> bytes:  # noqa: ARG001 - человек нужен другим площадкам
+    """Ярлыки пачкой: Маркет собирает их отчётом и отдаёт одним файлом."""
+    from . import client as yandex
+
+    return yandex.get_client(account).labels_pdf(ids)[0]

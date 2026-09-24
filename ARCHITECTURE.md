@@ -156,7 +156,12 @@ MARKET = Market(
     nav=routes.nav_items,             # пункты меню и счётчики на них
     stats=routes.settings_stats,      # плитки в «Настройках»
     settings_panel="ozon/settings.html",
-    pending_labels=pack.pending_labels,
+    labels=LabelsSource(                  # наклейка: стикер, этикетка, ярлык
+        word="стикеры",                   # как её зовут у этой площадки
+        pending=pack.pending_labels,      # что ждёт выгрузки
+        pdf=pack.labels_pdf,              # пачка номеров → один PDF
+        table="postings", key="posting_number",   # куда ставить отметку о выгрузке
+    ),
     catalog=CatalogSource(pages=catalog.pages),   # обход своего каталога страницами
     returns=ReturnsSource(
         table="returns", ready_sql=returns.pickup_sql, view=returns.return_view,
@@ -166,9 +171,14 @@ MARKET = Market(
 )
 ```
 
-Необязательные поля — `env_keys`, `migrate`, `settings_panel`, `pending_labels`,
+Необязательные поля — `env_keys`, `migrate`, `settings_panel`, `labels`,
 `catalog`, `returns` — у площадки без такой возможности равны `None`, и ядро
 просто не показывает соответствующую кнопку или раздел.
+
+Наклейки при этом выгружаются **сразу по всем кабинетам**: сборка объединена, и
+замок на «Сборке» держит, пока не скачано всё. Ядро обходит реестр, складывает
+пачки в один архив (папка на кабинет) и ставит отметку каждой площадке в её
+таблицу — `app/core/labels.py`, `pending_everywhere` / `archive_everywhere`.
 
 ## Карта переезда: каждый файл
 
@@ -239,7 +249,7 @@ MARKET = Market(
 | `admin._probe`, `api_test_account` | `market.ping()` |
 | `admin.settings_page` — плитки | `market.stats(account)` |
 | `settings.html` — блоки только для Ozon | `market.settings_panel` |
-| `labels.pending_ozon/avito/yandex` | `market.pending_labels` |
+| `labels.pending_ozon/avito/yandex` | `market.labels` (`LabelsSource`) |
 | `db.SCHEMA` — DDL всех площадок | конкатенация `market.schema` |
 | `db._migrate` — миграции площадок | `market.migrate(conn)` |
 | `returns.MARK_TABLES`, `_accounts_by_marketplace`, `return_acts.rows_of` | цикл по `market.returns` |

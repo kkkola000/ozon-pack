@@ -8,23 +8,15 @@
    товара, а панель записывает то, что отсканировали, без сверки. */
 window.PACK = {
   api: {
-    state: '/api/avito/pack/state',
     scan: '/api/avito/pack/scan',
     release: '/api/avito/pack/release',
     complete: null,
-    labels: '/api/avito/labels/archive.zip',
     sync: '/api/avito/sync',
   },
   print: null,
   words: {
-    unit: ['заказ', 'заказа', 'заказов'],
+    // Слова замка на наклейки — общие: выгрузка идёт сразу по всем кабинетам.
     label: 'Этикетка',
-    gate: 'Скачайте этикетки',
-    download: 'Скачать этикетки',
-    archive: 'avito-labels.zip',
-    downloaded: 'Этикетки скачаны — можно начинать сборку',
-    arrived: (pending) =>
-      `Подъехали новые заказы (${pending}). Закройте текущий — дальше понадобится скачать этикетки.`,
     released: 'Сборка отменена. Сканируйте этикетку следующего заказа.',
     confirmRelease: 'Отменить сборку этого заказа?',
     confirmComplete: '',

@@ -12,6 +12,13 @@ const PACK = window.PACK;
 const input = document.getElementById('scan');
 const banner = document.getElementById('banner');
 const activePanel = document.getElementById('active-panel');
+/* Состояние и выгрузка наклеек — общие на все площадки: сборка объединена, и
+   замок держит, пока не выгружено по всем кабинетам сразу. Фильтр площадки
+   уезжает в адрес, чтобы серверу было видно, чьи наклейки считать. */
+const MARKET_FILTER = new URLSearchParams(window.location.search).get('market') || 'all';
+const STATE_URL = `/api/pack/state?market=${encodeURIComponent(MARKET_FILTER)}`;
+const LABELS_URL = `/api/pack/labels.zip?market=${encodeURIComponent(MARKET_FILTER)}`;
+
 const historyBox = document.getElementById('history');
 
 let busy = false;
@@ -95,9 +102,13 @@ function applyResult(result, code, printWindow = null) {
   }
 }
 
-/* Замок: без выгруженных ярлыков сканировать нечего, поэтому поле прячется
-   целиком. Ярлык площадка отдаёт, пока заказ в работе, — не забрали вовремя,
-   и его уже не получить.
+/* Замок: без выгруженных наклеек сканировать нечего, поэтому поле прячется
+   целиком. Наклейку площадка отдаёт, пока заказ в работе, — не забрали вовремя,
+   и её уже не получить.
+
+   Замок общий на все кабинеты под фильтром: сборка объединена, и начинать её,
+   скачав наклейки одного магазина, значит наткнуться посреди смены на заказ,
+   наклейки которого уже не взять.
 
    Открытую сборку замок не трогает: товар у сборщика в руках, половина
    отсканирована, и убрать поле сейчас значит бросить его с коробкой. Дадим
@@ -111,18 +122,29 @@ function applyGate(state) {
   gate.hidden = !locked;
   scanPanel.hidden = locked;
   if (!locked) {
-    if (pending && hasActive) setBanner('warning', PACK.words.arrived(pending));
+    if (pending && hasActive) {
+      setBanner('warning', `Подъехали новые заказы (${pending}). Закройте текущий — `
+                         + 'дальше понадобится скачать наклейки.');
+    }
     return;
   }
-  document.getElementById('gate-title').textContent = `${PACK.words.gate} — ${unitWord(pending)}`;
-  document.getElementById('btn-labels').textContent = `${PACK.words.download} (${pending})`;
+  document.getElementById('gate-title').textContent = `Скачайте наклейки — ${unitWord(pending)}`;
+  /* Разбивка по магазинам: «9 заказов» не отвечает на вопрос «чьих», а у
+     каждой площадки наклейка называется по-своему — стикер, этикетка, ярлык. */
+  document.getElementById('gate-shops').innerHTML = (state.shops || []).map((shop) => `
+    <div class="gate-shop">
+      <i class="dot ${escapeHtml(shop.market)}"></i>
+      <b>${escapeHtml(shop.title)}</b>
+      <span class="muted">${escapeHtml(shop.word)} · ${shop.count}</span>
+    </div>`).join('');
+  document.getElementById('btn-labels').textContent = `Скачать наклейки (${pending})`;
 }
 
-/* «1 отправление», «2 заказа», «5 заказов» — формы слова даёт площадка. */
+/* «1 заказ», «2 заказа», «5 заказов». Слово общее: в замке заказы всех
+   площадок сразу, и назвать их отправлениями или ярлыками уже нельзя. */
 function unitWord(count) {
   const tail = count % 100 >= 11 && count % 100 <= 14 ? 0 : count % 10;
-  const [one, few, many] = PACK.words.unit;
-  return `${count} ${tail === 1 ? one : tail >= 2 && tail <= 4 ? few : many}`;
+  return `${count} ${tail === 1 ? 'заказ' : tail >= 2 && tail <= 4 ? 'заказа' : 'заказов'}`;
 }
 
 function applyCounters(counters) {
@@ -246,9 +268,16 @@ document.getElementById('btn-sync').onclick = async (event) => {
 };
 
 document.getElementById('btn-labels').onclick = async (event) => {
-  if (await downloadArchive(PACK.api.labels, event.target, PACK.words.archive)) {
-    toast(PACK.words.downloaded, 'ok');
-    await refreshState();
+  if (!await downloadArchive(LABELS_URL, event.target, 'naklejki.zip')) return;
+  /* Отказ одной площадки не отменяет выгрузку остальных: архив приедет, но её
+     заказы останутся в замке. Говорим об этом вслух — иначе «скачал, а сборка
+     не открылась» выглядит поломкой панели. */
+  const data = await refreshState();
+  if (data?.labels?.locked) {
+    toast('Часть наклеек площадка не отдала — они остались в списке. Попробуйте ещё раз.',
+          'error', 10000);
+  } else {
+    toast('Наклейки скачаны — можно начинать сборку', 'ok');
   }
 };
 
@@ -256,14 +285,16 @@ document.getElementById('btn-labels').onclick = async (event) => {
    без этого замок опускался бы только после ручного обновления страницы. */
 async function refreshState() {
   try {
-    const data = await api(PACK.api.state, undefined, 'GET');
+    const data = await api(STATE_URL, undefined, 'GET');
     renderActive(data.state);
     applyCounters(data.counters);
     applyGate(data.labels);
     /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
        панели. Опрос идёт каждые 30 секунд и к свежести данных площадки
        отношения не имеет. */
+    return data;
   } catch (error) { /* пересинхронизируемся на следующем цикле */ }
+  return null;
 }
 
 refreshState();
