@@ -97,14 +97,14 @@ def label_one(account: dict, user: dict, order_id: str) -> tuple[bytes, str]:
     return pdf, filename
 
 
-def owner(account_id: int, code: str) -> tuple[str, str] | None:
+def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:  # noqa: ARG001 - подпись общая
     """Чей это код: («label», номер заказа). None — код тут не наш.
 
     У Avito это всегда этикетка: справочника штрихкодов площадка не отдаёт, и
     по товару заказ не найти — сборка тут и начинается со скана этикетки.
     Спрашивается до скана и ничего не меняет.
     """
-    order = find_order(account_id, code)
+    order = find_order(account["id"], code)
     return ("label", str(order["id"])) if order else None
 
 

@@ -306,6 +306,26 @@ def candidates_for_sku(account: dict, sku: str, user: dict) -> list[dict]:
     return result
 
 
+def openable(account: dict, user: dict, sku: str | None, code: str) -> list[dict]:
+    """Отправления, которые откроет скан этого товара, — самые срочные первыми.
+
+    Товар может быть и сам по себе, и частью набора — тогда годятся
+    отправления обоих видов. Одна функция на скан и на вопрос «чей это код»:
+    ответ ядру обязан совпадать с тем, что потом сделает скан, иначе скан
+    уйдёт не в тот кабинет.
+    """
+    found = candidates_for_sku(account, sku, user) if sku else []
+    seen = {c["posting_number"] for c in found}
+    for parent in product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code)):
+        for candidate in candidates_for_sku(account, parent["set_sku"], user):
+            if candidate["posting_number"] not in seen:
+                seen.add(candidate["posting_number"])
+                # Помечаем, что отправление подошло не самим товаром, а набором:
+                # засчитывать по такому скану целый набор нельзя.
+                found.append({**candidate, "via_set": parent["set_sku"]})
+    return found
+
+
 def _sku_offer(account_id: int, sku: str) -> str | None:
     """Артикул продавца по SKU — в отчёте по нему опознают товар."""
     for table in ("products", "posting_items"):
@@ -655,19 +675,7 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
             state=new_state,
         )
 
-    # Свободное рабочее место: подбираем отправление под товар. Товар может
-    # быть и сам по себе, и частью набора — тогда годятся отправления обоих
-    # видов, и выбирает человек. Молча предпочесть одно значило бы увести
-    # сборщика не к той полке.
-    all_candidates = candidates_for_sku(account, sku, user)
-    seen = {c["posting_number"] for c in all_candidates}
-    for parent in product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code)):
-        for candidate in candidates_for_sku(account, parent["set_sku"], user):
-            if candidate["posting_number"] not in seen:
-                seen.add(candidate["posting_number"])
-                # Помечаем, что отправление подошло не самим товаром, а набором:
-                # засчитывать по такому скану целый набор нельзя.
-                all_candidates.append({**candidate, "via_set": parent["set_sku"]})
+    all_candidates = openable(account, user, sku, code)
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
@@ -1002,30 +1010,47 @@ def complete_active(account: dict, user: dict, reason: str = "ручное за�
     return complete(account, user, state["active"]["posting_number"], code=reason)
 
 
-def owner(account_id: int, code: str) -> tuple[str, str] | None:
-    """Чей это код: («label» или «product», номер отправления). None — не наш.
+def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
+    """Чей это код. None — не наш. Иначе (вид, номер отправления):
 
-    Спрашивается до скана и ничего не меняет: по ответам всех кабинетов ядро
-    решает, где сканировать. Ozon по штрихкоду стикера здесь не спрашиваем —
-    это поход в сеть, а вопрос задаётся каждому кабинету подряд.
+    * «label» — стикер отправления этого кабинета;
+    * «product» — товар, и вот какое отправление он откроет;
+    * «known» — товар наш, но открыть по нему сейчас нечего: отправление ещё
+      «Ожидает сборки», уже собрано или его собирает другой. Объяснить это
+      может только этот кабинет — иначе сборщик услышит «не нужен» от кабинета,
+      где товара и не было. Номер — отправление, о котором пойдёт речь, или
+      пусто, если товар есть только в каталоге.
+
+    Спрашивается до скана и ничего не меняет. Подбор тот же, что у скана
+    (`openable`), — ответ обязан совпасть с тем, что скан потом сделает. Ozon
+    по штрихкоду стикера здесь не спрашиваем: это поход в сеть, а вопрос
+    задаётся каждому кабинету подряд.
     """
-    kind, target = classify(account_id, code)
+    kind, target = classify(account["id"], code)
     if kind == "posting":
         return "label", str(target["posting_number"])
-    if kind == "product":
-        row = db.query_one(
-            """
-            SELECT p.posting_number FROM postings p
-            JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
-            WHERE p.account_id = ? AND i.sku = ? AND p.status = ? AND p.local_state = 'new'
-            ORDER BY (p.shipment_date IS NULL), p.shipment_date LIMIT 1
-            """,
-            (account_id, str(target), store.STATUS_AWAITING_DELIVER),
-        )
-        return ("product", row["posting_number"]) if row else None
-    # «Похоже на номер отправления, но его тут нет» — не наш: иначе кабинет
-    # забирал бы себе чужие номера и отвечал за них «не найдено».
-    return None
+    sku = str(target) if kind == "product" else None
+    if sku is None and not product_sets.parents_of(account["id"], sku=None, barcodes=barcode_variants(code)):
+        # Ни товар, ни часть набора. «Похоже на номер отправления, но его тут
+        # нет» — тоже не наш: иначе кабинет забирал бы себе чужие номера.
+        return None
+
+    found = openable(account, user, sku, code)
+    free = [c for c in found if not c.get("locked_by")]
+    if free:
+        return "product", str(free[0]["posting_number"])
+    if found:
+        return "known", str(found[0]["posting_number"])
+    row = db.query_one(
+        """
+        SELECT p.posting_number FROM postings p
+        JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
+        WHERE p.account_id = ? AND i.sku = ?
+        ORDER BY (p.status != ?), (p.shipment_date IS NULL), p.shipment_date LIMIT 1
+        """,
+        (account["id"], sku or "", store.STATUS_AWAITING_PACKAGING),
+    )
+    return "known", (str(row["posting_number"]) if row else "")
 
 
 # ------------------------------------------------------------------ сборка на стороне Ozon

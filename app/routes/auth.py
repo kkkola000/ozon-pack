@@ -90,15 +90,20 @@ def switch_account(request: Request, payload: dict = Body(...)):
         user=user,
         message=f"Переключение на кабинет «{account['title']}»",
     )
-    # Сборка идёт в конкретном кабинете: чужой раздел после переключения открывать незачем.
     target = security.safe_next(payload.get("next"), "/")
     # Разделы, общие для всех площадок, при переключении не сбрасываются;
     # свои адреса и домашнюю страницу площадка объявляет сама.
     shared = ("/logs", "/settings", "/products", "/reports", "/returns")
     market = registry.get(account["marketplace"])
     own = market.prefixes if market else ()
+    # «Сборка» от кабинета не зависит вовсе: границы задаёт её фильтр. Поэтому
+    # переключение оставляет человека там же, где он был, — на том же адресе и
+    # с тем же фильтром. Раньше его уводило на адрес площадки кабинета, и
+    # выбранный фильтр сбрасывался на «Все заказы».
+    path = target.split("?", 1)[0]
+    on_pack = any(other.workspace and path == other.workspace.url for other in registry.all_markets())
     # Корень сам ведёт на рабочее место площадки — его не трогаем.
-    if target != "/" and not target.startswith(shared + own):
+    if target != "/" and not on_pack and not target.startswith(shared + own):
         target = market.home if market else "/"
 
     response = JSONResponse({"status": "ok", "redirect": target, "account": account["title"]})

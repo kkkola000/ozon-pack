@@ -26,6 +26,14 @@ Avito в руках давала «такого отправления нет»,
    нескольких кабинетах — тогда берём тот заказ, что стоит первым в общем
    списке, то есть с самым близким сроком отгрузки.
 
+   Открыть по товару нечего ни в одном кабинете — скан уходит туда, где этот
+   товар есть в заказе: только тот кабинет честно скажет «ещё в статусе
+   «Ожидает сборки»» или «уже собран». Никто код не узнал — ответ «не найден»
+   даёт первый кабинет под фильтром, а не тот, что открыт в шапке.
+
+**Кабинет в шапке здесь не участвует ни в чём.** Один и тот же скан даёт один
+и тот же ответ, какой бы кабинет ни был выбран, — это проверяется тестами.
+
 Площадок по именам здесь нет: что значит «этот код мой», знает только сама
 площадка — она объявляет это в `Workspace.owner`.
 """
@@ -84,7 +92,7 @@ def started(user: dict) -> dict | None:
     return account if account and _workspace(account) else None
 
 
-def shop_of(code: str, order_id: str) -> dict | None:
+def shop_of(code: str, order_id: str, user: dict) -> dict | None:
     """Кабинет этой площадки, в котором лежит заказ. None — такого нет.
 
     Нужно для печати наклейки с рабочего места: заказ там может быть из любого
@@ -94,35 +102,34 @@ def shop_of(code: str, order_id: str) -> dict | None:
         workspace = _workspace(shop)
         if workspace is None:
             continue
-        answer = workspace.owner(shop["id"], order_id)
+        answer = workspace.owner(shop, user, order_id)
         if answer and answer[0] == "label":
             return shop
     return None
 
 
-def _home(where: list[dict], current: dict | None) -> dict | None:
-    """Кабинет, которому достанется нераспознанный код.
+def _home(where: list[dict]) -> dict | None:
+    """Кабинет, которому достанется код, не узнанный никем.
 
     Чей-то он всё равно должен быть: код нужно записать в журнал и в отчёт об
-    ошибках. Берём тот, что открыт в шапке, если он под фильтром, — его
-    площадка и объяснит оператору, что не так.
+    ошибках. Берём первый под фильтром — по порядку кабинетов в «Настройках».
+    Не тот, что открыт в шапке: иначе один и тот же скан отвечал бы по-разному
+    в зависимости от того, что выбрано наверху, а шапка тут ни при чём.
     """
-    if current and any(shop["id"] == current["id"] for shop in where):
-        return current
     return next((shop for shop in where if _workspace(shop)), None)
 
 
 # ------------------------------------------------------------------ чей это код
-def _claims(where: list[dict], code: str) -> list[tuple[dict, str, str]]:
-    """Кто узнал код: [(кабинет, «label»/«product», номер заказа)]."""
+def _claims(where: list[dict], user: dict, code: str) -> list[tuple[dict, str, str]]:
+    """Кто узнал код: [(кабинет, «label»/«product»/«known», номер заказа)]."""
     found = []
     for shop in where:
         workspace = _workspace(shop)
         if workspace is None:
             continue
-        answer = workspace.owner(shop["id"], code)
+        answer = workspace.owner(shop, user, code)
         if answer:
-            found.append((shop, answer[0], str(answer[1])))
+            found.append((shop, answer[0], str(answer[1] or "")))
     return found
 
 
@@ -133,6 +140,8 @@ def _first_in_list(claims: list[tuple[dict, str, str]]) -> dict:
     списку» — это и есть «горит раньше остальных». Заказа нет в списке (его
     унесла синхронизация между двумя запросами) — такой кабинет уходит в конец.
     """
+    if len(claims) == 1:
+        return claims[0][0]
     rank = {}
     for position, order in enumerate(core_orders.everywhere()):
         rank.setdefault((order["account_id"], str(order["number"])), position)
@@ -140,18 +149,29 @@ def _first_in_list(claims: list[tuple[dict, str, str]]) -> dict:
     return ranked[0][0]
 
 
-def owner_of(where: list[dict], code: str) -> dict | None:
-    """Кабинет, которому принадлежит код. None — не узнал никто."""
-    claims = _claims(where, code)
+def owner_of(where: list[dict], user: dict, code: str) -> dict | None:
+    """Кабинет, которому принадлежит код. None — не узнал никто.
+
+    Порядок: наклейка → товар, по которому есть что открыть → товар, по
+    которому открыть нечего. Последнее важно: «ещё в статусе «Ожидает сборки»»
+    может сказать только кабинет, где этот заказ лежит. Отдай скан другому —
+    и сборщик услышит «не нужен ни в одном отправлении» про товар, который
+    ждёт его в соседнем магазине.
+    """
+    claims = _claims(where, user, code)
     if not claims:
         return None
     labels = [claim for claim in claims if claim[1] == "label"]
     if labels:
         # Наклейка принадлежит одному заказу: спорить не о чем.
         return labels[0][0]
-    if len(claims) == 1:
-        return claims[0][0]
-    return _first_in_list(claims)
+    products = [claim for claim in claims if claim[1] == "product"]
+    if products:
+        return _first_in_list(products)
+    # Открыть нечего нигде. Сначала те, у кого товар лежит в заказе, потом те,
+    # у кого он только в каталоге.
+    with_order = [claim for claim in claims if claim[2]]
+    return _first_in_list(with_order or claims)
 
 
 def _stranger(user: dict, open_shop: dict, code: str):
@@ -164,7 +184,7 @@ def _stranger(user: dict, open_shop: dict, code: str):
     from . import report
 
     others = [shop for shop in shops(ALL) if shop["id"] != open_shop["id"]]
-    claim = next((item for item in _claims(others, code) if item[1] == "label"), None)
+    claim = next((item for item in _claims(others, user, code) if item[1] == "label"), None)
     if claim is None:
         return None
 
@@ -216,7 +236,7 @@ def _run(shop: dict, call, *args) -> dict:
     return result
 
 
-def scan(where: list[dict], user: dict, code: str, current: dict | None) -> dict:
+def scan(where: list[dict], user: dict, code: str) -> dict:
     """Один скан рабочего места. Кабинет выбирается по коду, а не по шапке."""
     code = (code or "").strip()
     open_shop = started(user)
@@ -226,7 +246,7 @@ def scan(where: list[dict], user: dict, code: str, current: dict | None) -> dict
             return stranger
         return _run(open_shop, _workspace(open_shop).scan, user, code)
 
-    target = owner_of(where, code) or _home(where, current)
+    target = owner_of(where, user, code) or _home(where)
     if target is None:
         return {
             "status": "error",

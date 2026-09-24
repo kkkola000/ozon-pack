@@ -225,6 +225,132 @@ def test_the_same_product_opens_the_first_order_in_the_list(client, cabinets, us
     assert result["state"]["active"]["posting_number"] == mine["posting_number"]
 
 
+# ------------------------------------- ответ не зависит от кабинета в шапке
+RUCKSACK = "8885020503531"
+
+
+@pytest.fixture
+def rucksack(cabinets):
+    """Сценарий со склада: товар есть в каталогах двух кабинетов Ozon.
+
+    В кабинете «МК» с ним лежит отправление, но оно ещё «Ожидает сборки». В
+    кабинете «Ozon» заказов с этим товаром нет вовсе. Правильный ответ — «ещё
+    в статусе «Ожидает сборки»», и он не должен зависеть от того, какой
+    кабинет открыт в шапке.
+    """
+    mk = accounts.get(accounts.create("ozon", "МК", "test-client", "test-key"))
+    for shop in (cabinets["ozon"], mk):
+        db.execute(
+            "INSERT INTO products(account_id, sku, offer_id, name) VALUES(?, 'SKU-ANEX', 'ANEX-1', ?)",
+            (shop["id"], "Эргорюкзак Anex Whiz-Hug Lownight"),
+        )
+        db.execute(
+            "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, 'SKU-ANEX')",
+            (shop["id"], RUCKSACK),
+        )
+    db.execute(
+        "INSERT INTO postings(account_id, posting_number, status, shipment_date, local_state, "
+        "label_saved_at, positions_count, items_count) VALUES(?, '49000000-7777-1', ?, ?, 'new', ?, 1, 1)",
+        (mk["id"], ozon_store.STATUS_AWAITING_PACKAGING, "2099-01-01T00:00:00+00:00", db.now_iso()),
+    )
+    db.execute(
+        "INSERT INTO posting_items(account_id, posting_number, sku, offer_id, name, quantity) "
+        "VALUES(?, '49000000-7777-1', 'SKU-ANEX', 'ANEX-1', 'Эргорюкзак Anex Whiz-Hug Lownight', 1)",
+        (mk["id"],),
+    )
+    return mk
+
+
+def test_the_answer_comes_from_the_cabinet_that_has_the_order(client, cabinets, rucksack):
+    """В шапке кабинет без заказа — ответ всё равно от того, где заказ есть.
+
+    Так было на складе: в шапке «ANEX», скан рюкзака — «не нужен ни в одном
+    отправлении», хотя в «МК» он лежит в «Ожидает сборки».
+    """
+    result = scan(client, RUCKSACK)
+    assert "не нужен ни в одном" not in result["message"], result["message"]
+    assert "Ожидает сборки" in result["message"], result["message"]
+    assert result["shop"] == "МК"
+
+
+def test_the_header_cabinet_does_not_change_the_answer(client, cabinets, rucksack):
+    """Один и тот же скан — один и тот же ответ, какой бы кабинет ни был в шапке."""
+    answers = set()
+    for shop in (cabinets["ozon"], rucksack, cabinets["avito"], cabinets["yandex"]):
+        client.post("/api/account/switch", json={"account_id": shop["id"], "next": "/pack"})
+        result = scan(client, RUCKSACK)
+        answers.add((result["message"], result["shop"]))
+    assert len(answers) == 1, answers
+
+
+def test_an_unknown_code_answers_the_same_from_any_cabinet(client, cabinets):
+    """Нераспознанный код не уходит в кабинет из шапки: ответ один на всех."""
+    answers = set()
+    for shop in (cabinets["ozon"], cabinets["avito"], cabinets["yandex"]):
+        client.post("/api/account/switch", json={"account_id": shop["id"], "next": "/pack"})
+        result = scan(client, "НЕТ-ТАКОГО-КОДА")
+        answers.add((result["message"], result.get("shop")))
+    assert len(answers) == 1, answers
+
+
+def test_switching_the_cabinet_keeps_the_pack_page_and_filter(client, cabinets):
+    """Переключили кабинет на «Сборке» — остались на ней же, фильтр на месте.
+
+    Раньше переключение уводило на адрес площадки кабинета и сбрасывало фильтр:
+    выбрали «Яндекс Маркет», сменили кабинет в шапке — снова «Все заказы».
+    """
+    for shop in (cabinets["avito"], cabinets["yandex"], cabinets["ozon"]):
+        answer = client.post(
+            "/api/account/switch", json={"account_id": shop["id"], "next": "/pack?market=yandex"})
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["redirect"] == "/pack?market=yandex", shop["title"]
+
+
+def test_owner_agrees_with_the_scan_on_every_barcode(cabinets, user):
+    """«Открою» от площадки — ровно тогда, когда её скан действительно открывает.
+
+    Вся ошибка с рюкзаком была в расхождении: ядро спрашивало «чей товар» по
+    одним правилам, а скан подбирал отправление по другим. Прогоняем весь
+    каталог и сверяем ответ с делом.
+    """
+    from app.markets.ozon import pack as ozon_pack
+
+    shop = cabinets["ozon"]
+    codes = [row["barcode"] for row in db.query(
+        "SELECT DISTINCT barcode FROM product_barcodes WHERE account_id = ? LIMIT 40", (shop["id"],))]
+    assert codes, "каталог пуст — сверять нечего"
+
+    def check() -> set:
+        seen = set()
+        for code in codes:
+            answer = ozon_pack.owner(shop, user, code)
+            result = ozon_pack.scan(shop, user, code)
+            opened = result["status"] == "ok" and result["state"]["active"] is not None
+            promised = bool(answer) and answer[0] == "product"
+            assert promised == opened, (code, answer, result["message"])
+            if opened:
+                assert result["state"]["active"]["posting_number"] == answer[1], code
+            ozon_pack.release(shop, user)
+            seen.add(answer[0] if answer else None)
+        return seen
+
+    kinds = check()
+    # Половину отправлений — назад в «Ожидает сборки», часть — в собранные: у
+    # товаров появляются ответы «мой, но открыть нечего». Договор обязан
+    # держаться при любом состоянии склада, а не только на свежих данных.
+    numbers = [row["posting_number"] for row in db.query(
+        "SELECT posting_number FROM postings WHERE account_id = ? ORDER BY posting_number", (shop["id"],))]
+    for index, number in enumerate(numbers):
+        if index % 2 == 0:
+            db.execute("UPDATE postings SET status = ? WHERE account_id = ? AND posting_number = ?",
+                       (ozon_store.STATUS_AWAITING_PACKAGING, shop["id"], number))
+        elif index % 3 == 0:
+            db.execute("UPDATE postings SET local_state = 'packed' WHERE account_id = ? AND posting_number = ?",
+                       (shop["id"], number))
+    kinds |= check()
+    assert {"product", "known"} <= kinds, f"проверка вышла пустой: {kinds}"
+
+
 # ------------------------------------------------------------------ остальное
 def test_release_finds_the_open_cabinet(client, cabinets, user):
     """«Отменить сборку» ищет её там, где она открыта, а не в шапке."""

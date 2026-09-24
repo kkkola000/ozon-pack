@@ -600,33 +600,44 @@ def complete_active(account: dict, user: dict, reason: str = "ручное за�
     return complete(account, user, state["active"]["id"], code=reason)
 
 
-def owner(account_id: int, code: str) -> tuple[str, str] | None:
-    """Чей это код: («label» или «product», номер заказа). None — не наш.
+def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
+    """Чей это код. None — не наш. Иначе (вид, номер заказа):
 
-    Спрашивается до скана и ничего не меняет: по ответам всех кабинетов ядро
-    решает, где сканировать.
+    * «label» — ярлык заказа этого кабинета;
+    * «product» — товар, и вот какой заказ он откроет;
+    * «known» — товар есть в заказах этого кабинета, но открыть сейчас нечего:
+      всё собрано или собирает другой. Объяснить это может только этот кабинет.
+
+    Штрихкод Маркет узнаёт по каталогу любого кабинета: артикул у продавца
+    один на все площадки. Поэтому «товар знаком» здесь значит одно — он есть в
+    заказах именно этого кабинета, иначе ответ «мой» давал бы каждый.
+
+    Подбор тот же, что у скана (`candidates_for_offers`): ответ обязан
+    совпасть с тем, что скан потом сделает.
     """
-    kind, target = classify(account_id, code)
+    kind, target = classify(account["id"], code)
     if kind == "order":
         return "label", str(target["id"])
-    if kind == "product":
-        offers = list(target)
-        marks = ",".join("?" for _ in offers)
-        subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
-        row = db.query_one(
-            f"""
-            SELECT o.id FROM yandex_orders o
-            JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
-            WHERE o.account_id = ? AND i.offer_id IN ({marks})
-              AND o.substatus IN ({subs}) AND o.local_state != 'packed'
-            ORDER BY (o.shipment_date IS NULL), o.shipment_date, o.id LIMIT 1
-            """,
-            [account_id] + offers + list(yandex.WORK_SUBSTATUSES),
-        )
-        return ("product", str(row["id"])) if row else None
-    # «Похоже на номер заказа, но его тут нет» — не наш: иначе кабинет забирал
-    # бы себе чужие номера и отвечал за них «не найдено».
-    return None
+    if kind != "product":
+        # «Похоже на номер заказа, но его тут нет» — не наш: иначе кабинет
+        # забирал бы себе чужие номера и отвечал за них «не найдено».
+        return None
+
+    offers = list(target)
+    found = candidates_for_offers(account, offers, user)
+    free = [c for c in found if not c.get("locked_by")]
+    if free:
+        return "product", str(free[0]["id"])
+    if found:
+        return "known", str(found[0]["id"])
+    marks = ",".join("?" for _ in offers)
+    row = db.query_one(
+        f"SELECT o.id FROM yandex_orders o "
+        f"JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id "
+        f"WHERE o.account_id = ? AND i.offer_id IN ({marks}) LIMIT 1",
+        [account["id"]] + offers,
+    )
+    return ("known", str(row["id"])) if row else None
 
 
 # ------------------------------------------------------------------ ярлыки

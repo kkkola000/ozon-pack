@@ -190,11 +190,11 @@ def _answer(request: Request, result: dict) -> dict:
 @router.post("/api/pack/scan")
 def api_scan(request: Request, payload: dict = Body(...),
              user: dict = Depends(require_section("pack")),
-             account: dict = Depends(require_account)):
+             account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
     """Один скан. В каком кабинете искать код — решает packing, а не шапка."""
     check_csrf(request)
     picked = _picked(request)
-    result = core_packing.scan(core_packing.shops(picked), user, str(payload.get("code") or ""), account)
+    result = core_packing.scan(core_packing.shops(picked), user, str(payload.get("code") or ""))
     return _answer(request, result)
 
 
@@ -272,7 +272,7 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
     Кабинет в шапке тут ни при чём: сборщик печатает наклейку того заказа, что
     у него открыт, а открыть он мог заказ любого магазина.
     """
-    shop = core_packing.shop_of(code, order_id)
+    shop = core_packing.shop_of(code, order_id, user)
     workspace = core_packing.workspace_of(shop) if shop else None
     if workspace is None or workspace.label is None:
         raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден ни в одном кабинете")
