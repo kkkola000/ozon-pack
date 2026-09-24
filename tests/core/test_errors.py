@@ -34,7 +34,7 @@ def login(client) -> str:
 # ---------------------------------------------------------------- кодировка
 def test_json_errors_declare_utf8(client):
     """Без charset браузер угадывает кодировку по системе — и угадывает CP1251."""
-    response = client.post("/api/scan", json={"code": "1"}, headers=AS_SCRIPT)
+    response = client.post("/api/pack/scan", json={"code": "1"}, headers=AS_SCRIPT)
     assert response.status_code == 401
     assert "charset=utf-8" in response.headers["content-type"].lower()
     assert response.json()["detail"] == "Требуется вход"
@@ -42,7 +42,7 @@ def test_json_errors_declare_utf8(client):
 
 def test_russian_message_survives_the_trip(client):
     """Проверка «в лоб»: байты ответа читаются как UTF-8 и совпадают с текстом."""
-    response = client.post("/api/scan", json={"code": "1"}, headers=AS_SCRIPT)
+    response = client.post("/api/pack/scan", json={"code": "1"}, headers=AS_SCRIPT)
     assert "Требуется вход" in response.content.decode("utf-8")
     # Так это выглядело у оператора, когда кодировка не была указана
     assert "РўСЂРµР±СѓРµС‚СЃСЏ" not in response.text

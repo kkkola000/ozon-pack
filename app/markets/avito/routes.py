@@ -118,24 +118,6 @@ def _pack_counters(account: dict) -> dict:
     }
 
 
-@router.post("/api/avito/pack/scan")
-def api_avito_pack_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                        account: dict = Depends(require_market("avito"))):
-    check_csrf(request)
-    result = avito_pack.scan(account, user, str(payload.get("code") or ""))
-    result["counters"] = _pack_counters(account)
-    return result
-
-
-@router.post("/api/avito/pack/release")
-def api_avito_pack_release(request: Request, user: dict = Depends(require_section("pack")),
-                           account: dict = Depends(require_market("avito"))):
-    check_csrf(request)
-    result = avito_pack.release(account, user)
-    result["counters"] = _pack_counters(account)
-    return result
-
-
 @router.post("/api/avito/pack/open")
 def api_avito_pack_open(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
                         account: dict = Depends(require_market("avito"))):
@@ -398,6 +380,12 @@ WORKSPACE = Workspace(
         ("c-packed", "packed_today", "Собрано сегодня", "ok"),
         ("c-confirm", "confirm", "Ждут подтверждения", ""),
     ),
+    owner=avito_pack.owner,
+    label=avito_pack.label_one,
+    scan=avito_pack.scan,
+    release=avito_pack.release,
+    # «Завершить без скана» у Avito нет: заказ закрывает последняя единица товара.
+    complete=None,
 )
 
 def _count(sql: str, params: tuple) -> int:

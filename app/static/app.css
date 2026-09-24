@@ -314,6 +314,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .stat { min-width: 120px; }
 .stat .value { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
 .stat .value.ok { color: var(--ok); }
+/* «Горит сегодня» — то, что сегодня уже поздно откладывать. */
+.stat .value.warn { color: #b06a00; }
 
 /* ---------- Всплывающие сообщения ---------- */
 #toasts { position: fixed; right: 20px; bottom: 20px; display: grid; gap: 10px; z-index: 100; max-width: 460px; }

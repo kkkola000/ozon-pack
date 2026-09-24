@@ -3,16 +3,12 @@
    Общее — в /static/market_pack.js. Здесь адреса запросов, слова и карточка
    открытой сборки: у Маркета нет фото и наборов, зато видно, когда штрихкода
    нет в каталоге, — сканировать такую позицию нечем. */
-window.PACK = {
-  api: {
-    scan: '/api/yandex/pack/scan',
-    release: '/api/yandex/pack/release',
-    complete: '/api/yandex/pack/complete',
-    sync: '/api/yandex/sync',
-  },
+window.PACKS = window.PACKS || {};
+window.PACKS.yandex = {
   print: {
     key: 'order_id',
-    url: (id) => `/api/yandex/label/${encodeURIComponent(id)}.pdf`,
+    // Адрес общий: кабинет заказа ищет ядро, а тот, что в шапке, тут ни при чём.
+    url: (id) => `/api/pack/label/yandex/${encodeURIComponent(id)}.pdf`,
   },
   words: {
     // Слова замка на наклейки — общие: выгрузка идёт сразу по всем кабинетам.
@@ -20,11 +16,6 @@ window.PACK = {
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить заказ без сканирования ярлыка? Действие попадёт в журнал.',
-  },
-  counters: {
-    'c-packaging': 'awaiting_packaging',
-    'c-deliver': 'awaiting_deliver',
-    'c-packed': 'packed_today',
   },
   activeId: (active) => active.id,
 
@@ -68,7 +59,7 @@ window.PACK = {
           </div>
           <div class="row">
             <button class="btn" id="btn-print">Печать ярлыка</button>
-            <a class="btn" id="btn-open-label" href="/api/yandex/label/${encodeURIComponent(order.id)}.pdf"
+            <a class="btn" id="btn-open-label" href="/api/pack/label/yandex/${encodeURIComponent(order.id)}.pdf"
                target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>
             <button class="btn danger" id="btn-release">Отменить сборку</button>
           </div>

@@ -10,18 +10,17 @@
    отдаёт наклейку, пока заказ ждёт отгрузки, — не забрали вовремя, и её уже
    не вернуть. Поэтому выгрузка идёт первой, а не «когда-нибудь потом», и сразу
    по всем кабинетам: сборка у них общая. #}
-{# Фильтр площадок. Выбор площадки — это и переход к её сборке: панель
-   переключает кабинет, а список внизу показывает только её заказы. #}
+{# Фильтр площадок — он же границы сборки. «Все заказы»: сканируется всё, в
+   каком бы кабинете заказ ни лежал. Выбрана площадка: сборка в её границах, и
+   наклейка чужого кабинета не откроется. Кабинет в шапке ничего не решает. #}
 <div class="panel">
-  <div class="row" style="justify-content:flex-end">
-    <div class="chips">
-      {% for chip in market_chips %}
-      <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}">
-        {%- if chip.code != 'all' %}<i class="dot {{ chip.code }}"></i>{% endif -%}
-        {{ chip.title }} <span class="badge">{{ chip.count }}</span>
-      </a>
-      {% endfor %}
-    </div>
+  <div class="chips">
+    {% for chip in market_chips %}
+    <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}">
+      {%- if chip.code != 'all' %}<i class="dot {{ chip.code }}"></i>{% endif -%}
+      {{ chip.title }} <span class="badge">{{ chip.count }}</span>
+    </a>
+    {% endfor %}
   </div>
 </div>
 
@@ -41,10 +40,10 @@
 <div class="panel" id="scan-panel">
   <div class="scanbar">
     <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="{{ workspace.placeholder }}" autofocus>
+           placeholder="{{ placeholder }}" autofocus>
     <button class="btn big" id="btn-clear" title="Очистить поле">Очистить</button>
   </div>
-  <div id="banner" class="banner idle">{{ workspace.banner }}</div>
+  <div id="banner" class="banner idle">{{ banner }}</div>
 </div>
 
 <div id="active-panel"></div>
@@ -58,10 +57,10 @@
     </div>
   </div>
   <div class="row" style="margin-top:12px; gap:22px">
-    {% for element_id, key, label, css in workspace.counters %}
+    {% for element_id, key, label, css in tiles %}
     <div class="stat">
       <div class="muted small">{{ label }}</div>
-      <div class="value {{ css }}" id="{{ element_id }}">{{ counters[key] }}</div>
+      <div class="value {{ css }}" id="{{ element_id }}" data-key="{{ key }}">{{ counters.get(key, 0) }}</div>
     </div>
     {% endfor %}
   </div>
@@ -133,7 +132,11 @@
 {% endblock %}
 
 {% block scripts %}
-{# Сначала настройки площадки, потом общее рабочее место: оно их читает. #}
-<script src="/static/{{ account.marketplace }}/pack.js?v={{ static_version() }}"></script>
+{# Сначала карточки сборки всех площадок, потом общее рабочее место: оно их
+   читает. Всех — потому что открытый заказ может быть из любого кабинета, и
+   какой площадки он окажется, до скана неизвестно. #}
+{% for code in pack_markets %}
+<script src="/static/{{ code }}/pack.js?v={{ static_version() }}"></script>
+{% endfor %}
 <script src="/static/market_pack.js?v={{ static_version() }}"></script>
 {% endblock %}

@@ -1,8 +1,9 @@
-"""Общий список заказов на «Сборке»: все кабинеты сразу, свой — сверху.
+"""Общий список заказов на «Сборке»: все кабинеты одной очередью.
 
-Очередь на рабочем месте показывает только текущий кабинет, и это правильно:
-собирают по одному. Но видеть, что горит у соседнего магазина, сборщику нужно
-постоянно — раньше для этого переключали кабинеты по очереди.
+Это очередь склада, а не выписка по кабинету: сборщик стоит у одного стола и
+берёт заказы всех площадок подряд. Порядок сквозной — сначала просроченное,
+потом горящее. Магазин в сортировке не участвует: кабинет в шапке ничего не
+решает, и делить список на «мою работу» и «чужую» больше не по чему.
 """
 import re
 
@@ -55,42 +56,41 @@ def shops_of(rows):
 
 def test_every_cabinet_is_in_the_list(cabinets):
     """В списке заказы всех кабинетов, а не только текущего."""
-    rows = orders.everywhere(cabinets["first"])
+    rows = orders.everywhere()
     assert {row["shop"] for row in rows} == {
         cabinets["first"]["title"], "Второй склад", "Магазин Avito", "Маркет",
     }
     assert {row["market"] for row in rows} == {"ozon", "avito", "yandex"}
 
 
-def test_current_cabinet_goes_first(cabinets):
-    """Свои заказы сверху — переключились на другой кабинет, поднялись его."""
-    for key in ("first", "second", "avito", "yandex"):
-        account = cabinets[key]
-        rows = orders.everywhere(account)
-        assert rows, "список пуст"
-        own = [row for row in rows if row["own"]]
-        assert own, f"у кабинета «{account['title']}» нет своих заказов"
-        assert rows[: len(own)] == own, "свои заказы не сверху"
-        assert shops_of(rows)[0] == account["title"]
-
-
-def test_other_shops_go_in_order(cabinets):
-    """Остальные магазины — по алфавиту: список не должен прыгать между обновлениями."""
-    rows = orders.everywhere(cabinets["first"])
-    others = shops_of([row for row in rows if not row["own"]])
-    assert others == sorted(others, key=str.lower)
-
-
-def test_inside_a_shop_the_nearest_deadline_is_first(cabinets):
-    """Внутри магазина раньше тот, у кого срок ближе."""
-    rows = [row for row in orders.everywhere(cabinets["first"]) if row["own"]]
+def test_the_list_is_one_queue_by_urgency(cabinets):
+    """Сначала просроченное, потом горящее — независимо от магазина."""
+    rows = orders.everywhere()
     ranks = [orders.URGENCY_ORDER.get(row["urgency"], 9) for row in rows]
     assert ranks == sorted(ranks), f"порядок срочности: {ranks}"
+    deadlines = [(r["urgency"], r["deadline"] or "") for r in rows]
+    assert deadlines == sorted(deadlines, key=lambda d: (orders.URGENCY_ORDER.get(d[0], 9), d[1]))
+
+
+def test_shops_are_mixed_together(cabinets):
+    """Магазины идут вперемешку: очередь одна, и кабинет в ней ничего не значит.
+
+    Раньше список был сгруппирован — свой кабинет сверху, остальные по
+    алфавиту. Это осталось от времён, когда сборка шла в одном кабинете.
+    """
+    rows = orders.everywhere()
+    assert len(shops_of(rows)) > len({row["shop"] for row in rows}), \
+        "список всё ещё сгруппирован по магазинам"
+
+
+def test_the_list_does_not_depend_on_the_open_cabinet(cabinets):
+    """Список один и тот же, какой бы кабинет ни был открыт в шапке."""
+    assert "own" not in orders.everywhere()[0], "признак «свой кабинет» больше не нужен"
 
 
 def test_a_row_says_what_to_collect(cabinets):
     """Строка отвечает на вопросы сборщика: чей заказ, что в нём, к какому сроку."""
-    rows = orders.everywhere(cabinets["first"])
+    rows = orders.everywhere()
     row = next(row for row in rows if row["market"] == "ozon" and row["in_work"])
     assert row["number"] and row["goods"], row
     assert row["quantity"] >= 1
@@ -109,7 +109,7 @@ def test_packed_orders_stay_but_leave_the_work(cabinets):
         "UPDATE postings SET local_state = 'packed' WHERE account_id = ? AND posting_number = ?",
         (account["id"], number),
     )
-    row = next(row for row in orders.everywhere(account) if row["number"] == number)
+    row = next(row for row in orders.everywhere() if row["number"] == number)
     assert row["in_work"] is False
     assert row["status_label"] == "Собрано"
 
@@ -124,7 +124,7 @@ def test_avito_return_is_not_work_for_the_packer(cabinets):
     if not order:
         pytest.skip("в подделке Avito нет возвратов")
     row = next(
-        row for row in orders.everywhere(account)
+        row for row in orders.everywhere()
         if row["number"] == (order["marketplace_id"] or order["id"])
     )
     assert row["in_work"] is False
@@ -148,7 +148,7 @@ def test_the_list_is_the_same_on_every_workspace(client, cabinets):
         assert page.status_code == 200, page.text
         assert "Все заказы" in page.text
         # На странице есть заказы чужих кабинетов — ради этого список и заведён.
-        foreign = next(row for row in orders.everywhere(account) if not row["own"])
+        foreign = next(row for row in orders.everywhere() if row["account_id"] != account["id"])
         assert str(foreign["number"]) in page.text, where
         assert foreign["shop"] in page.text, where
 

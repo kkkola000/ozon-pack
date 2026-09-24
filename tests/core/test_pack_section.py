@@ -1,10 +1,12 @@
 """«Сборка» — один раздел на все площадки: фильтр площадок и общий обработчик.
 
-Рабочее место у каждой площадки открывается по своему адресу, но страница одна:
-её собирает routes/pack.py, а площадка объявляет только слова, плитки очереди и
-откуда взять состояние сборщика. Фильтр вверху не просто прячет строки: выбрали
-площадку — панель переводит рабочее место на её кабинет, иначе список показывал
-бы одно, а сканирование искало другое.
+Рабочее место открывается по адресу любой площадки, но страница одна: её
+собирает routes/pack.py, а площадка объявляет только слова, плитки очереди,
+как сканировать и чей это код.
+
+Кабинет в шапке тут ничего не решает. Решает фильтр: «Все заказы» — сборка по
+всем кабинетам, выбрана площадка — в её границах. Кабинет при этом не
+переключается: страница про это больше не знает.
 """
 import re
 
@@ -50,36 +52,36 @@ def forget_sync():
     )
 
 
+def cabinet_of(client) -> str | None:
+    """Какой кабинет сейчас открыт в шапке — по куке переключателя."""
+    from app.core.deps import ACCOUNT_COOKIE
+
+    return client.cookies.get(ACCOUNT_COOKIE)
+
+
 def rows_of(page: str) -> list[str]:
     """Площадки строк списка «Все заказы»."""
     return re.findall(r'<tr data-work="\d" data-market="([^"]+)"', page)
 
 
 # ------------------------------------------------------------------ один обработчик
-def test_a_market_url_takes_you_to_its_cabinet(client, cabinets):
-    """Адрес площадки — просто дверь в общий раздел: кабинет переключится сам.
+def test_a_market_url_opens_without_switching_cabinets(client, cabinets):
+    """Адрес площадки — просто дверь: кабинет в шапке он не трогает.
 
-    Раньше открытая из чужого кабинета ссылка отвечала отказом, и человек
-    упирался в ошибку вместо рабочего места.
+    Раньше такая ссылка либо отказывала, либо молча переводила кабинет. Теперь
+    ни того, ни другого: страница одна, а границы сборки задаёт фильтр.
     """
     client.post("/api/account/switch", json={"account_id": cabinets["ozon"]["id"], "next": "/pack"})
-    moved = client.get("/yandex/pack")
-    assert moved.status_code == 303, moved.text
-    assert moved.headers["location"] == "/yandex/pack"
-
+    before = cabinet_of(client)
     page = client.get("/yandex/pack")
-    assert page.status_code == 200
-    assert cabinets["yandex"]["title"] in page.text
-    # Фильтр при этом остаётся общим: переехал только кабинет.
-    assert len(set(rows_of(page.text))) > 1
+    assert page.status_code == 200, page.text[:300]
+    assert len(set(rows_of(page.text))) > 1, "фильтр по умолчанию — «Все заказы»"
+    assert cabinet_of(client) == before, "кабинет всё-таки переключился"
 
 
 def test_every_market_opens_the_same_page(client, cabinets):
-    """Три адреса — одна страница. Отдельных обработчиков у площадок больше нет."""
-    for code, where in (("ozon", "/pack"), ("avito", "/avito/pack"), ("yandex", "/yandex/pack")):
-        switched = client.post(
-            "/api/account/switch", json={"account_id": cabinets[code]["id"], "next": where})
-        assert switched.status_code == 200, switched.text
+    """Три адреса — одна страница, в любом кабинете. Дверей много, комната одна."""
+    for where in ("/pack", "/avito/pack", "/yandex/pack"):
         page = client.get(where)
         assert page.status_code == 200, page.text[:300]
         assert 'id="scan"' in page.text, where
@@ -93,6 +95,9 @@ def test_market_declares_its_workspace(client):
         assert workspace is not None, market.code
         assert workspace.url and workspace.tab
         assert callable(workspace.load_state) and callable(workspace.count_queue)
+        # Скан площадка тоже объявляет: ядро не ходит в её ручки напрямую.
+        assert callable(workspace.owner) and callable(workspace.scan)
+        assert callable(workspace.release)
 
 
 # ------------------------------------------------------------------ фильтр площадок
@@ -114,23 +119,20 @@ def test_filter_leaves_only_its_market(client):
     assert len(only_ozon) < len(everything)
 
 
-def test_filter_switches_the_workspace_to_that_market(client, cabinets):
-    """Выбрали площадку — собираются её заказы: панель переводит кабинет на неё.
+def test_filter_narrows_without_touching_the_cabinet(client, cabinets):
+    """Выбрали площадку — список её, а кабинет в шапке остался прежним.
 
-    Иначе фильтр обманывал бы: список показывал бы Avito, а сканирование
-    продолжало искать товар в кабинете Ozon.
+    Фильтр задаёт границы сборки напрямую, поэтому переключать кабинет ради
+    него больше не нужно — и не надо: человек не просил менять шапку.
     """
     assert client.get("/pack").status_code == 200        # начинаем в кабинете Ozon
-    # Чип Avito — ссылка на этой же странице: адрес чужой площадки отказал бы
-    # раньше, чем панель успела переключить кабинет.
-    moved = client.get("/pack?market=avito")
-    assert moved.status_code == 303, moved.text
-    assert moved.headers["location"] == "/avito/pack?market=avito"
-
-    page = client.get("/avito/pack?market=avito")
+    before = cabinet_of(client)
+    page = client.get("/pack?market=avito")
     assert page.status_code == 200, page.text[:300]
-    assert cabinets["avito"]["title"] in page.text
     assert set(rows_of(page.text)) == {"avito"}
+    assert cabinet_of(client) == before, "кабинет всё-таки переключился"
+    # И чип ведёт на текущий адрес, а не на адрес чужой площадки.
+    assert '"/pack?market=avito"' in page.text
 
 
 def test_all_orders_is_the_default(client):
@@ -173,8 +175,12 @@ def test_own_cabinet_is_not_highlighted(client):
     assert 'class="own"' not in page and "текущий" not in page
 
 # ------------------------------------------------------------------ свежесть
-def test_opening_the_page_asks_the_marketplace(client, cabinets, monkeypatch):
-    """Открыли «Сборку» — панель сходила на площадку: сборщик сразу видит новое."""
+def test_opening_the_page_asks_every_marketplace(client, cabinets, monkeypatch):
+    """Открыли «Сборку» — панель сходила во все кабинеты под фильтром.
+
+    Список общий, значит и свежесть общая: обновить один кабинет и показать
+    рядом вчерашние заказы соседнего — это и есть «панель врёт».
+    """
     from app.core import sync as core_sync
 
     calls = []
@@ -183,7 +189,7 @@ def test_opening_the_page_asks_the_marketplace(client, cabinets, monkeypatch):
     forget_sync()
 
     assert client.get("/pack").status_code == 200
-    assert calls == [cabinets["ozon"]["id"]], "кабинет не обновился при открытии"
+    assert sorted(calls) == sorted(shop["id"] for shop in cabinets.values())
 
 
 def test_reloading_does_not_hammer_the_api(client, monkeypatch):
@@ -196,13 +202,14 @@ def test_reloading_does_not_hammer_the_api(client, monkeypatch):
     forget_sync()
 
     client.get("/pack")
+    first = len(calls)
     client.get("/pack")
     client.get("/pack")
-    assert len(calls) == 1, f"походов на площадку: {len(calls)}"
+    assert len(calls) == first, f"лишние походы на площадку: {len(calls) - first}"
 
 
-def test_switching_the_cabinet_refreshes_it(client, cabinets, monkeypatch):
-    """Переключили кабинет — обновляется он, а не тот, что был открыт."""
+def test_the_filter_narrows_the_refresh_too(client, cabinets, monkeypatch):
+    """Стоит фильтр — ходим только в его кабинеты, чужие не трогаем."""
     from app.core import sync as core_sync
 
     calls = []
@@ -210,10 +217,8 @@ def test_switching_the_cabinet_refreshes_it(client, cabinets, monkeypatch):
                         lambda account, **kw: calls.append(account["id"]) or {})
     forget_sync()
 
-    client.get("/pack")
-    client.get("/pack?market=yandex")          # переключение через фильтр
-    client.get("/yandex/pack?market=yandex")
-    assert calls == [cabinets["ozon"]["id"], cabinets["yandex"]["id"]]
+    client.get("/pack?market=yandex")
+    assert calls == [cabinets["yandex"]["id"]]
 
 
 def test_a_broken_marketplace_does_not_break_the_page(client, monkeypatch):
@@ -242,18 +247,17 @@ def test_updated_at_is_the_marketplace_time(client):
 
 
 # ------------------------------------------------------------------ шапка
-def test_header_has_no_title_and_chips_go_right(client):
-    """В шапке раздела только фильтр, прижатый вправо."""
+def test_header_has_no_title_and_chips_go_left(client):
+    """В шапке раздела только фильтр, прижатый к левому краю."""
     page = client.get("/pack").text
     head = page.split('id="label-gate"', 1)[0]
     assert "<h2" not in head.split('<div class="panel">', 1)[-1], "заголовок «Сборка» остался"
-    assert "justify-content:flex-end" in head
+    assert "justify-content:flex-end" not in head, "чипы всё ещё прижаты вправо"
 
 
 def test_refresh_button_says_orders(client, cabinets):
     """Кнопка обновляет заказы — про площадку в надписи ни слова."""
-    for code, where in (("ozon", "/pack"), ("avito", "/avito/pack"), ("yandex", "/yandex/pack")):
-        client.post("/api/account/switch", json={"account_id": cabinets[code]["id"], "next": where})
+    for where in ("/pack", "/avito/pack", "/yandex/pack"):
         page = client.get(where).text
         assert "Обновить заказы" in page, where
         assert "Обновить из" not in page, where

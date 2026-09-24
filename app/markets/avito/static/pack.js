@@ -6,13 +6,8 @@
 
    Справочника штрихкодов Avito не отдаёт, поэтому позиция — это единица
    товара, а панель записывает то, что отсканировали, без сверки. */
-window.PACK = {
-  api: {
-    scan: '/api/avito/pack/scan',
-    release: '/api/avito/pack/release',
-    complete: null,
-    sync: '/api/avito/sync',
-  },
+window.PACKS = window.PACKS || {};
+window.PACKS.avito = {
   print: null,
   words: {
     // Слова замка на наклейки — общие: выгрузка идёт сразу по всем кабинетам.
@@ -20,11 +15,6 @@ window.PACK = {
     released: 'Сборка отменена. Сканируйте этикетку следующего заказа.',
     confirmRelease: 'Отменить сборку этого заказа?',
     confirmComplete: '',
-  },
-  counters: {
-    'c-to-pack': 'to_pack',
-    'c-packed': 'packed_today',
-    'c-confirm': 'confirm',
   },
   activeId: (active) => active.id,
 
@@ -51,7 +41,8 @@ window.PACK = {
             <div class="muted small">${escapeHtml(order.service_name || order.service_label || '')}</div>
           </div>
           <div class="row">
-            <a class="btn" href="/api/avito/label/${encodeURIComponent(order.id)}.pdf" target="_blank">Стикер</a>
+            <a class="btn" href="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf"
+               target="_blank" rel="noopener">Этикетка</a>
             <button class="btn danger" id="btn-release">Отменить сборку</button>
           </div>
         </div>

@@ -14,9 +14,8 @@ import logging
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, sync
+from ...core import db, sync
 from . import pack as yandex_pack
-from ...core.config import settings
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
 from .client import YandexError
@@ -209,45 +208,6 @@ def _pack_counters(account: dict) -> dict:
     }
 
 
-@router.post("/api/yandex/pack/scan")
-def api_yandex_pack_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                         account: dict = Depends(require_market("yandex"))):
-    check_csrf(request)
-    result = yandex_pack.scan(account, user, str(payload.get("code") or ""))
-    result["counters"] = _pack_counters(account)
-    return result
-
-
-@router.post("/api/yandex/pack/release")
-def api_yandex_pack_release(request: Request, user: dict = Depends(require_section("pack")),
-                            account: dict = Depends(require_market("yandex"))):
-    check_csrf(request)
-    result = yandex_pack.release(account, user)
-    result["counters"] = _pack_counters(account)
-    return result
-
-
-@router.post("/api/yandex/pack/complete")
-def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
-                             user: dict = Depends(require_section("pack")),
-                             account: dict = Depends(require_market("yandex"))):
-    """Ручное завершение — например, если ярлык не читается сканером."""
-    check_csrf(request)
-    state = yandex_pack.load_state(account, user)
-    if not state["active"]:
-        raise HTTPException(status_code=400, detail="Нет активного заказа")
-    if settings.require_all_items and not state["complete"] and not access.is_manager(user):
-        raise HTTPException(
-            status_code=400,
-            detail="Сначала отсканируйте все товары. Осталось: " + "; ".join(yandex_pack.missing_items(state)),
-        )
-    result = yandex_pack.complete(
-        account, user, state["active"]["id"], code=payload.get("reason") or "ручное завершение"
-    )
-    result["counters"] = _pack_counters(account)
-    return result
-
-
 # ------------------------------------------------------------------ для реестра площадок
 # Рабочее место сборщика: страница одна на все площадки, слова — свои.
 WORKSPACE = Workspace(
@@ -262,6 +222,11 @@ WORKSPACE = Workspace(
         ("c-deliver", "awaiting_deliver", "Ожидает отгрузки", ""),
         ("c-packed", "packed_today", "Собрано сегодня", "ok"),
     ),
+    owner=yandex_pack.owner,
+    label=lambda account, user, order_id: yandex_pack.label_pdf(account, user, [order_id]),
+    scan=yandex_pack.scan,
+    release=yandex_pack.release,
+    complete=yandex_pack.complete_active,
 )
 
 def _count(sql: str, params: tuple) -> int:

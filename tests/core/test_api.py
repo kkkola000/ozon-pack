@@ -41,7 +41,7 @@ def test_login_and_pages(client):
 
 def test_csrf_required(client):
     login(client)
-    assert client.post("/api/scan", json={"code": "1"}).status_code == 403
+    assert client.post("/api/pack/scan", json={"code": "1"}).status_code == 403
 
 
 def test_scan_endpoint(client):
@@ -52,7 +52,7 @@ def test_scan_endpoint(client):
            JOIN postings p ON p.posting_number = i.posting_number AND p.account_id = i.account_id
            WHERE p.status = 'awaiting_deliver' LIMIT 1"""
     )
-    response = client.post("/api/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
+    response = client.post("/api/pack/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200
     assert response.json()["action"] == "posting_selected"
 
@@ -182,11 +182,9 @@ def test_switching_cabinet_changes_section(client):
     assert response.json()["redirect"] == "/avito"
     assert client.get("/avito").status_code == 200
     assert client.get("/orders").status_code == 409
-    # «Сборка» одна на все площадки: её адрес переводит на кабинет Ozon, а не
-    # отказывает — кабинет Ozon в панели есть.
-    moved = client.get("/pack")
-    assert moved.status_code == 303
-    assert moved.headers["location"] == "/pack"
+    # «Сборка» одна на все площадки: её адрес открывается в любом кабинете и
+    # кабинет не переключает — сборка идёт по фильтру, а не по шапке.
+    assert client.get("/pack").status_code == 200
 
 
 def test_returns_statuses_endpoint(client):
@@ -331,7 +329,7 @@ def test_public_paths_match_exactly(client):
 
 def test_csrf_rejects_token_with_right_prefix(client):
     csrf = login(client)
-    response = client.post("/api/scan", json={"code": "1"}, headers={"X-CSRF-Token": csrf[:-1] + "x"})
+    response = client.post("/api/pack/scan", json={"code": "1"}, headers={"X-CSRF-Token": csrf[:-1] + "x"})
     assert response.status_code == 403
 
 
@@ -459,7 +457,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.39.0"
+    assert get_version() == "1.40.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

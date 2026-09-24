@@ -1,18 +1,17 @@
 /* Сборка Ozon: чем её рабочее место отличается от общего.
 
    Общее — в /static/market_pack.js: сканы, замок, история, счётчики, печать.
-   Здесь только своё: адреса запросов, слова и карточка открытой сборки —
-   у Ozon в ней фото товара, наборы и «Честный знак». */
-window.PACK = {
-  api: {
-    scan: '/api/scan',
-    release: '/api/release',
-    complete: '/api/complete',
-    sync: '/api/sync',
-  },
+   Здесь только своё: печать стикера, слова и карточка открытой сборки — у Ozon
+   в ней фото товара, наборы и «Честный знак».
+
+   Карточки всех площадок подключены к странице сразу: открытый заказ может
+   оказаться из любого кабинета, и рисует его та площадка, чей он. */
+window.PACKS = window.PACKS || {};
+window.PACKS.ozon = {
   print: {
     key: 'posting_number',
-    url: (number) => `/api/label/${encodeURIComponent(number)}.pdf`,
+    // Адрес общий: кабинет заказа ищет ядро, а тот, что в шапке, тут ни при чём.
+    url: (number) => `/api/pack/label/ozon/${encodeURIComponent(number)}.pdf`,
   },
   words: {
     // Слова замка на наклейки здесь не объявляются: выгрузка общая на все
@@ -21,12 +20,6 @@ window.PACK = {
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить отправление без сканирования стикера? Действие попадёт в журнал.',
-  },
-  counters: {
-    'c-packaging': 'awaiting_packaging',
-    'c-deliver': 'awaiting_deliver',
-    'c-packed': 'packed_today',
-    'c-returns': 'returns_ready',
   },
   activeId: (active) => active.posting_number,
 
@@ -93,7 +86,7 @@ window.PACK = {
           </div>
           <div class="row">
             <button class="btn" id="btn-print">Печать стикера</button>
-            <a class="btn" id="btn-open-label" href="/api/label/${encodeURIComponent(posting.posting_number)}.pdf"
+            <a class="btn" id="btn-open-label" href="/api/pack/label/ozon/${encodeURIComponent(posting.posting_number)}.pdf"
                target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>
             <button class="btn danger" id="btn-release">Отменить сборку</button>
           </div>

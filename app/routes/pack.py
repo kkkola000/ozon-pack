@@ -1,37 +1,44 @@
-"""Рабочее место сборщика — один маршрут на все площадки.
+"""Рабочее место сборщика — один раздел на все площадки.
 
 Страница «Сборка» одна: поле сканирования, очередь со счётчиками, последние
-сканы и список заказов всех кабинетов. Площадка отличается только словами и
-двумя числами, поэтому обработчик здесь общий, а площадка объявляет своё в
-Workspace: подписи, плитки очереди, откуда взять состояние сборщика и счётчики.
+сканы и список заказов всех кабинетов. Обработчик общий, а площадка объявляет
+своё в Workspace: подписи, плитки очереди, как сканировать и чей это код.
 
-Адрес у каждой площадки свой (`/pack`, `/avito/pack`, `/yandex/pack`) — она
-объявляет его в `Workspace.url`, и по нему маршрут регистрируется. Адрес требует
-кабинета своей площадки: рабочее место всегда про конкретный магазин, собирают в
-нём по одному.
+Кабинет в шапке тут ничего не решает. Решает **фильтр площадок** вверху:
 
-Фильтр площадок вверху страницы переводит рабочее место на выбранную площадку:
-выбрали «Avito» — панель переключает кабинет на её и собирает её заказы. «Все
-заказы» ничего не переключает и показывает список целиком.
+* «Все заказы» — сборка идёт по всем кабинетам сразу. Стоите в Ozon, в руках
+  этикетка Avito — панель сама найдёт её кабинет и откроет заказ.
+* выбрана площадка — сборка в её границах, и наклейка чужого кабинета честно
+  не откроется.
+
+Кто и как выбирает кабинет под скан — в `core/packing.py`. Адреса `/pack`,
+`/avito/pack`, `/yandex/pack` — просто разные двери в один и тот же раздел:
+каждая площадка объявляет свой в `Workspace.url`, и по нему регистрируется
+маршрут.
 """
 from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
-from ..core import accounts, db
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
+from ..core import db
 from ..core import labels as core_labels
 from ..core import orders as core_orders
+from ..core import packing as core_packing
 from ..core import store as core_store
 from ..core import sync as core_sync
-from ..core.deps import (ACCOUNT_COOKIE, check_csrf, require_account, require_section,
-                         safe_filename, templates)
+from ..core.deps import check_csrf, require_account, require_section, safe_filename, templates
+from ..markets.base import MarketError
 
 router = APIRouter()
 
-# «Все заказы»: фильтр не выбран, список показывается целиком.
-ALL = "all"
+# «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
+ALL = core_packing.ALL
+
+# Подписи поля сканирования, когда фильтра нет: площадка заранее неизвестна.
+ALL_PLACEHOLDER = "Сканируйте штрихкод товара или наклейку заказа…"
+ALL_BANNER = "Отсканируйте штрихкод товара или наклейку — панель найдёт заказ в любом кабинете."
 
 
 def _registry():
@@ -40,87 +47,86 @@ def _registry():
     return registry
 
 
-def markets_filter(current: dict, orders: list[dict], picked: str) -> list[dict]:
+def _picked(request: Request) -> str:
+    """Какая площадка выбрана фильтром. Неизвестную считаем за «Все заказы»."""
+    wanted = str(request.query_params.get("market") or ALL)
+    return wanted if wanted != ALL and _registry().get(wanted) else ALL
+
+
+def markets_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
     """Чипы фильтра: площадка, сколько у неё заказов и куда ведёт выбор.
 
     Считаем по тому же списку, что показан на странице, — иначе число на чипе
     и число строк под ним разойдутся, и это первое, что заметят.
+
+    Ссылка остаётся на текущем адресе: кабинет фильтр больше не переключает,
+    он только сужает — и список, и наклейки, и сборку.
     """
     counts: dict[str, int] = {}
     for order in orders:
         counts[order["market"]] = counts.get(order["market"], 0) + 1
-    live = {account["marketplace"] for account in accounts.all_accounts(active_only=True)}
+    live = {shop["marketplace"] for shop in core_packing.shops(ALL)}
     chips = [{
         "code": ALL, "title": "Все заказы", "count": len(orders),
-        "href": _home_of(current) + f"?market={ALL}", "active": picked == ALL,
+        "href": f"{path}?market={ALL}", "active": picked == ALL,
     }]
     for market in _registry().all_markets():
-        # Площадка без кабинета никуда не ведёт: её рабочее место откажет.
+        # Площадка без настроенного кабинета никуда не ведёт: собирать нечего.
         if market.workspace is None or market.code not in live:
             continue
         chips.append({
             "code": market.code,
             "title": market.title,
             "count": counts.get(market.code, 0),
-            # Ссылка остаётся на текущей странице: адрес чужой площадки
-            # отказал бы раньше, чем панель успела переключить кабинет.
-            # Переключит и уведёт куда надо обработчик — см. _switch().
-            "href": _home_of(current) + f"?market={market.code}",
+            "href": f"{path}?market={market.code}",
             "active": picked == market.code,
         })
     return chips
 
 
-def _home_of(account: dict | None) -> str:
-    """Адрес рабочего места кабинета."""
-    market = _registry().get((account or {}).get("marketplace"))
-    return market.workspace.url if market and market.workspace else "/pack"
+def _words(picked: str, where: list[dict]) -> tuple[str, str]:
+    """Подписи поля сканирования: под фильтром — слова площадки, иначе общие."""
+    if picked == ALL:
+        return ALL_PLACEHOLDER, ALL_BANNER
+    market = _registry().get(picked)
+    workspace = market.workspace if market else None
+    if workspace is None or not where:
+        return ALL_PLACEHOLDER, ALL_BANNER
+    return workspace.placeholder, workspace.banner
 
 
-def _switch(code: str, current: dict, *, keep: str = ALL) -> RedirectResponse | None:
-    """Нужна площадка, а кабинет другой — переключаем на её первый кабинет.
+def _freshened(where: list[dict]) -> str | None:
+    """Сходить за свежими заказами во все кабинеты под фильтром.
 
-    Без этого фильтр обманывал бы: список показывал бы заказы Avito, а
-    сканирование продолжало искать их в кабинете Ozon. Тем же путём открывается
-    и адрес чужой площадки: «Сборка» одна, и её адреса — просто разные двери.
+    Не чаще раза в SYNC_INTERVAL на кабинет — F5 не должен становиться запросом
+    к API, а отказавшая площадка не должна задерживать страницу. «Обновлено» —
+    самый старый из успешных заходов: список свежий ровно настолько, насколько
+    свеж самый отставший кабинет.
     """
-    if code == ALL or code == current.get("marketplace"):
+    stamps = []
+    for shop in where:
+        core_sync.freshen(shop)
+        stamps.append(core_sync.synced_at(shop["id"]))
+    if not stamps or any(stamp is None for stamp in stamps):
         return None
-    theirs = [account for account in accounts.all_accounts(active_only=True)
-              if account["marketplace"] == code]
-    if not theirs:
-        return None
-    market = _registry().get(code)
-    # Фильтр сохраняем как есть: открыли адрес площадки со списком «Все заказы»
-    # — список и останется общим, переехал только кабинет.
-    where = market.workspace.url + (f"?market={keep}" if keep != ALL else "")
-    answer = RedirectResponse(where, status_code=303)
-    answer.set_cookie(ACCOUNT_COOKIE, str(theirs[0]["id"]), httponly=True, samesite="lax")
-    return answer
+    return min(stamps)
 
 
-def page(request: Request, user: dict, account: dict, code: str, market: str = ALL):
-    """Собрать страницу рабочего места кабинета."""
-    declared = _registry().get(code)
-    # Куда нужно попасть: выбранная фильтром площадка, иначе — площадка адреса.
-    wanted = market if market != ALL else code
-    moved = _switch(wanted, account, keep=market)
-    if moved is not None:
-        return moved
-    if account["marketplace"] != code:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Кабинета площадки «{declared.title}» в панели нет — заведите его в «Настройках»",
-        )
-    workspace = declared.workspace
-    # Открыли рабочее место — сходили на площадку за свежими заказами. Не чаще
-    # раза в SYNC_INTERVAL: F5 не должен становиться запросом к API.
-    core_sync.freshen(account)
-    orders = core_orders.everywhere(account)
-    picked = market if market != ALL and _registry().get(market) else ALL
-    # Список идёт под фильтром, а счётчики на чипах — по всему списку: иначе
-    # выбранная площадка показывала бы сама себе ноль у соседей.
+def _tabs(account: dict) -> str:
+    """Какой пункт меню подсветить: «Сборка» той площадки, чей кабинет в шапке."""
+    market = _registry().get(account.get("marketplace"))
+    return market.workspace.tab if market and market.workspace else "pack"
+
+
+def page(request: Request, user: dict, account: dict):
+    """Собрать страницу рабочего места. Площадка адреса роли не играет."""
+    picked = _picked(request)
+    where = core_packing.shops(picked)
+    synced_at = _freshened(where)
+    orders = core_orders.everywhere()
     shown = [order for order in orders if picked == ALL or order["market"] == picked]
+    tiles, counters = core_packing.tiles(picked, where)
+    placeholder, banner = _words(picked, where)
     return templates.TemplateResponse(
         request,
         "market_pack.html",
@@ -128,47 +134,34 @@ def page(request: Request, user: dict, account: dict, code: str, market: str = A
             "request": request,
             "user": user,
             "account": account,
-            "state": workspace.load_state(account, user),
-            "counters": workspace.count_queue(account),
+            "placeholder": placeholder,
+            "banner": banner,
+            "tiles": tiles,
+            "counters": counters,
             "orders": shown,
-            "market_chips": markets_filter(account, orders, picked),
+            # Список идёт под фильтром, а счётчики на чипах — по всему списку:
+            # иначе выбранная площадка показывала бы сама себе ноль у соседей.
+            "market_chips": markets_filter(request.url.path, orders, picked),
             "picked_market": picked,
-            "workspace": workspace,
+            # Карточку открытой сборки рисует площадка её заказа, а он может
+            # быть из любого кабинета — подключаем все.
+            "pack_markets": [market.code for market in _registry().all_markets() if market.workspace],
             # «Обновлено» — время последнего похода на площадку, а не опроса панели.
-            "synced_at": core_store.local_time(core_sync.synced_at(account["id"])),
+            "synced_at": core_store.local_time(synced_at),
             "csrf": request.state.session.get("csrf"),
-            "active_tab": workspace.tab,
+            "active_tab": _tabs(account),
         },
     )
 
 
-def _shops(picked: str) -> list[dict]:
-    """Кабинеты под фильтром: все включённые или только выбранной площадки."""
-    live = [account for account in accounts.all_accounts(active_only=True)
-            if accounts.is_configured(account)]
-    if picked == ALL:
-        return live
-    return [account for account in live if account["marketplace"] == picked]
+def _endpoint():
+    """Обработчик адреса площадки: страница одна, площадка адреса роли не играет."""
 
-
-def _picked_of(request: Request) -> str:
-    """Какая площадка выбрана фильтром — по адресу страницы, с которой пришёл запрос."""
-    wanted = str(request.query_params.get("market") or ALL)
-    return wanted if wanted != ALL and _registry().get(wanted) else ALL
-
-
-def _endpoint(code: str):
-    """Обработчик адреса одной площадки: тот же page(), своя площадка.
-
-    Кабинет специально не требуем жёстко: открыли адрес чужой площадки —
-    панель переключит кабинет сама, как это делает чип фильтра. Отказ остаётся
-    только там, где кабинета такой площадки нет вовсе.
-    """
-
-    def pack_page(request: Request, market: str = ALL,
+    def pack_page(request: Request,
+                  market: str = ALL,  # noqa: ARG001 - читается из query_params, нужен для /docs
                   user: dict = Depends(require_section("pack")),
                   account: dict = Depends(require_account)):
-        return page(request, user, account, code, market)
+        return page(request, user, account)
 
     return pack_page
 
@@ -179,32 +172,120 @@ def register() -> APIRouter:
         if market.workspace is None:
             continue
         router.add_api_route(
-            market.workspace.url, _endpoint(market.code), methods=["GET"],
+            market.workspace.url, _endpoint(), methods=["GET"],
             response_class=HTMLResponse, name=f"pack_{market.code}",
         )
     return router
 
 
-# ------------------------------------------------------------------ наклейки
+# ------------------------------------------------------------------ сканирование
+def _answer(request: Request, result: dict) -> dict:
+    """Дописать к ответу плитки очереди — они считаются по фильтру."""
+    picked = _picked(request)
+    _tiles, counters = core_packing.tiles(picked, core_packing.shops(picked))
+    result["counters"] = counters
+    return result
+
+
+@router.post("/api/pack/scan")
+def api_scan(request: Request, payload: dict = Body(...),
+             user: dict = Depends(require_section("pack")),
+             account: dict = Depends(require_account)):
+    """Один скан. В каком кабинете искать код — решает packing, а не шапка."""
+    check_csrf(request)
+    picked = _picked(request)
+    result = core_packing.scan(core_packing.shops(picked), user, str(payload.get("code") or ""), account)
+    return _answer(request, result)
+
+
+@router.post("/api/pack/release")
+def api_release(request: Request, user: dict = Depends(require_section("pack")),
+                account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """Отменить начатую сборку — в том кабинете, где она открыта."""
+    check_csrf(request)
+    return _answer(request, core_packing.release(user))
+
+
+@router.post("/api/pack/complete")
+def api_complete(request: Request, payload: dict = Body(default={}),
+                 user: dict = Depends(require_section("pack")),
+                 account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """«Завершить без скана наклейки» — например, если она не читается."""
+    check_csrf(request)
+    try:
+        result = core_packing.complete(user, str(payload.get("reason") or "ручное завершение"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _answer(request, result)
+
+
+@router.post("/api/pack/sync")
+def api_sync(request: Request, user: dict = Depends(require_section("pack")),
+             account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """«Обновить заказы» — все кабинеты под фильтром, как и всё остальное здесь."""
+    check_csrf(request)
+    where = core_packing.shops(_picked(request))
+    if not where:
+        raise HTTPException(status_code=400, detail="Нет ни одного кабинета с ключами")
+    done, failed = [], []
+    for shop in where:
+        try:
+            core_sync.sync_account(shop, returns=False)
+            done.append(shop["title"])
+        except Exception as exc:  # noqa: BLE001 - отказ одного кабинета не отменяет остальных
+            failed.append(f"{shop['title']}: {exc}")
+    if not done:
+        raise HTTPException(status_code=502, detail="; ".join(failed))
+    message = f"Обновлено кабинетов: {len(done)}"
+    if failed:
+        message += f". Не ответили: {', '.join(name.split(':')[0] for name in failed)}"
+    return {"status": "ok", "message": message, "updated": done, "failed": failed}
+
+
+# ------------------------------------------------------------------ состояние
 @router.get("/api/pack/state")
 def api_state(request: Request, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_account)):
-    """Состояние рабочего места: сборка, очередь и замок на наклейки.
+              account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """Состояние рабочего места: начатая сборка, очередь и замок на наклейки.
 
     Замок общий на кабинеты под фильтром: сборка объединена, и начинать её,
     выгрузив наклейки одного магазина, нельзя — посреди смены окажется, что у
     соседнего заказа наклейки нет и взять её уже негде.
     """
-    market = _registry().get(account["marketplace"])
-    workspace = market.workspace if market else None
-    if workspace is None:
-        raise HTTPException(status_code=409, detail="У этой площадки нет рабочего места")
-    waiting = core_labels.pending_everywhere(_shops(_picked_of(request)))
+    picked = _picked(request)
+    where = core_packing.shops(picked)
+    _tiles, counters = core_packing.tiles(picked, where)
+    waiting = core_labels.pending_everywhere(where)
     return {
-        "state": workspace.load_state(account, user),
-        "counters": workspace.count_queue(account),
+        "state": core_packing.state(user),
+        "counters": counters,
         "labels": core_labels.state_everywhere(waiting),
     }
+
+
+# ------------------------------------------------------------------ наклейки
+@router.get("/api/pack/label/{code}/{order_id}.pdf")
+def api_label(code: str, order_id: str, user: dict = Depends(require_section("pack")),
+              account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+    """Наклейка одного заказа на печать — из того кабинета, где заказ лежит.
+
+    Кабинет в шапке тут ни при чём: сборщик печатает наклейку того заказа, что
+    у него открыт, а открыть он мог заказ любого магазина.
+    """
+    shop = core_packing.shop_of(code, order_id)
+    workspace = core_packing.workspace_of(shop) if shop else None
+    if workspace is None or workspace.label is None:
+        raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден ни в одном кабинете")
+    try:
+        pdf, filename = workspace.label(shop, user, order_id)
+    except MarketError as exc:
+        raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейку: {exc.message}") from exc
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
+                 "Cache-Control": "no-store"},
+    )
 
 
 @router.post("/api/pack/labels.zip")
@@ -212,7 +293,7 @@ def api_labels(request: Request, user: dict = Depends(require_section("pack")),
                account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
     """Наклейки всех кабинетов одним архивом — то, с чего начинается смена."""
     check_csrf(request)
-    waiting = core_labels.pending_everywhere(_shops(_picked_of(request)))
+    waiting = core_labels.pending_everywhere(core_packing.shops(_picked(request)))
     if not waiting:
         raise HTTPException(status_code=400, detail="Все наклейки уже выгружены")
     archive, total, refused = core_labels.archive_everywhere(waiting, user)

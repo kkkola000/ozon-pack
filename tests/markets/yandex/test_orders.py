@@ -180,13 +180,13 @@ def test_pages_open_and_nav_shows_market(client):
 def test_ozon_sections_refuse_a_market_cabinet(client):
     """Разделы Ozon в кабинете Маркета не открываются.
 
-    «Сборка» — исключение: раздел общий на все площадки, и её адрес не
-    отказывает, а переводит на кабинет своей площадки.
+    «Сборка» — исключение: раздел общий на все площадки, и все три адреса
+    открывают одно и то же. Кабинет в шапке он не трогает: сборка идёт по
+    фильтру, а не по кабинету.
     """
     assert client.get("/orders").status_code == 409
     assert client.get("/avito").status_code == 409
-    moved = client.get("/pack")
-    assert moved.status_code == 303 and moved.headers["location"] == "/pack"
+    assert client.get("/pack").status_code == 200
 
 
 def test_switch_lands_on_market_pack_page(client, market):

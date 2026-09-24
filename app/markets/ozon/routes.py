@@ -8,8 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ...core import access, db, return_acts, sync
-from ...core.config import settings
+from ...core import db, return_acts, sync
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -46,47 +45,6 @@ def _counters(account: dict) -> dict:
             [account_id] + list(ready_params),
         )["c"],
     }
-
-
-@router.post("/api/scan")
-def api_scan(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-             account: dict = Depends(require_market("ozon"))):
-    check_csrf(request)
-    result = packing.scan(account, user, str(payload.get("code") or ""))
-    result["counters"] = _counters(account)
-    return result
-
-
-@router.post("/api/release")
-def api_release(request: Request, user: dict = Depends(require_section("pack")),
-                account: dict = Depends(require_market("ozon"))):
-    check_csrf(request)
-    result = packing.release(account, user)
-    result["counters"] = _counters(account)
-    return result
-
-
-@router.post("/api/complete")
-def api_complete(request: Request, payload: dict = Body(default={}), user: dict = Depends(require_section("pack")),
-                 account: dict = Depends(require_market("ozon"))):
-    """Ручное завершение — например, если стикер не читается сканером."""
-    check_csrf(request)
-    state = packing.load_state(account, user)
-    if not state["active"]:
-        raise HTTPException(status_code=400, detail="Нет активного отправления")
-    if settings.require_all_items and not state["complete"] and not access.is_manager(user):
-        # Говорим, чего именно не хватает: у набора — недостающие части, а не
-        # его название. К полке с названием набора не пойдёшь.
-        raise HTTPException(
-            status_code=400,
-            detail="Сначала отсканируйте все товары. Осталось: "
-                   + "; ".join(packing.missing_items(state)),
-        )
-    result = packing.complete(
-        account, user, state["active"]["posting_number"], code=payload.get("reason") or "ручное завершение"
-    )
-    result["counters"] = _counters(account)
-    return result
 
 
 @router.get("/api/label/{posting_number}.pdf")
@@ -253,6 +211,11 @@ WORKSPACE = Workspace(
         ("c-packed", "packed_today", "Собрано сегодня", "ok"),
         ("c-returns", "returns_ready", "Возвраты к выдаче", ""),
     ),
+    owner=packing.owner,
+    label=lambda account, user, number: packing.label_pdf(account, user, [number]),
+    scan=packing.scan,
+    release=packing.release,
+    complete=packing.complete_active,
 )
 
 def _count(sql: str, params: tuple) -> int:

@@ -443,7 +443,7 @@ def test_manual_completion_also_names_the_parts(account, set_posting, user):
         csrf = re.search(r'name="csrf-token" content="([^"]*)"', http.get("/pack").text).group(1)
         # Администратору панель завершить разрешает, поэтому проверяем сборщиком.
         db.execute("UPDATE users SET role = 'packer' WHERE login = 'admin'")
-        response = http.post("/api/complete", json={}, headers={"X-CSRF-Token": csrf})
+        response = http.post("/api/pack/complete", json={}, headers={"X-CSRF-Token": csrf})
     db.execute("UPDATE users SET role = 'admin' WHERE login = 'admin'")
     assert response.status_code == 400
     assert parts[1]["name"] in response.json()["detail"], response.json()["detail"]

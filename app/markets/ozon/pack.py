@@ -15,7 +15,7 @@ import json
 import re
 from typing import Any
 
-from ...core import db, product_sets, report
+from ...core import access, db, product_sets, report
 from ...core.config import settings
 from . import client as ozon
 from .client import OzonError
@@ -983,6 +983,49 @@ def complete(account: dict, user: dict, posting_number: str, code: str | None = 
         completed_posting=posting_number,
         state=load_state(account, user),
     )
+
+
+def complete_active(account: dict, user: dict, reason: str = "ручное завершение") -> ScanResult:
+    """«Завершить без скана стикера» — когда стикер не читается сканером.
+
+    Проверки здесь, а не в маршруте: рабочее место одно на все площадки, и что
+    считать «рано завершать», знает только площадка. Отказ — ValueError с
+    готовым текстом для оператора.
+    """
+    state = load_state(account, user)
+    if not state["active"]:
+        raise ValueError("Нет активного отправления")
+    if settings.require_all_items and not state["complete"] and not access.is_manager(user):
+        # Говорим, чего именно не хватает: у набора — недостающие части, а не
+        # его название. К полке с названием набора не пойдёшь.
+        raise ValueError("Сначала отсканируйте все товары. Осталось: " + "; ".join(missing_items(state)))
+    return complete(account, user, state["active"]["posting_number"], code=reason)
+
+
+def owner(account_id: int, code: str) -> tuple[str, str] | None:
+    """Чей это код: («label» или «product», номер отправления). None — не наш.
+
+    Спрашивается до скана и ничего не меняет: по ответам всех кабинетов ядро
+    решает, где сканировать. Ozon по штрихкоду стикера здесь не спрашиваем —
+    это поход в сеть, а вопрос задаётся каждому кабинету подряд.
+    """
+    kind, target = classify(account_id, code)
+    if kind == "posting":
+        return "label", str(target["posting_number"])
+    if kind == "product":
+        row = db.query_one(
+            """
+            SELECT p.posting_number FROM postings p
+            JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
+            WHERE p.account_id = ? AND i.sku = ? AND p.status = ? AND p.local_state = 'new'
+            ORDER BY (p.shipment_date IS NULL), p.shipment_date LIMIT 1
+            """,
+            (account_id, str(target), store.STATUS_AWAITING_DELIVER),
+        )
+        return ("product", row["posting_number"]) if row else None
+    # «Похоже на номер отправления, но его тут нет» — не наш: иначе кабинет
+    # забирал бы себе чужие номера и отвечал за них «не найдено».
+    return None
 
 
 # ------------------------------------------------------------------ сборка на стороне Ozon

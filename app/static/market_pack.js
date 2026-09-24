@@ -1,28 +1,35 @@
 /* Рабочее место сборщика — одно на все площадки.
 
    Здесь всё, что на складе одинаково: один поток сканов, замок на выгрузку
-   ярлыков, история сканов, счётчики очереди, печать и опрос сервера.
+   наклеек, история сканов, счётчики очереди, печать и опрос сервера. Адреса
+   запросов тоже общие: кабинет в шапке больше ничего не решает, а какому
+   кабинету принадлежит отсканированный код, разбирается сервер.
 
-   Чем площадки отличаются — адресами запросов, словами и тем, как выглядит
-   карточка открытой сборки. Это площадка объявляет сама в своём файле
-   markets/<код>/static/pack.js: он подключается раньше и кладёт настройки в
-   window.PACK. Ничего «если это Ozon» здесь быть не должно. */
-const PACK = window.PACK;
+   Площадки отличаются словами и тем, как выглядит карточка открытой сборки.
+   Каждая объявляет своё в markets/<код>/static/pack.js и кладёт в
+   window.PACKS[код]; подключены сразу все, потому что открытый заказ может
+   оказаться из любого кабинета. Ничего «если это Ozon» здесь быть не должно. */
+const PACKS = window.PACKS || {};
 
 const input = document.getElementById('scan');
 const banner = document.getElementById('banner');
 const activePanel = document.getElementById('active-panel');
-/* Состояние и выгрузка наклеек — общие на все площадки: сборка объединена, и
-   замок держит, пока не выгружено по всем кабинетам сразу. Фильтр площадки
-   уезжает в адрес, чтобы серверу было видно, чьи наклейки считать. */
+/* Фильтр площадки уезжает в адрес запроса: он задаёт границы сборки — и какие
+   заказы сканируются, и чьи наклейки считать. */
 const MARKET_FILTER = new URLSearchParams(window.location.search).get('market') || 'all';
-const STATE_URL = `/api/pack/state?market=${encodeURIComponent(MARKET_FILTER)}`;
-const LABELS_URL = `/api/pack/labels.zip?market=${encodeURIComponent(MARKET_FILTER)}`;
+const at = (path) => `${path}?market=${encodeURIComponent(MARKET_FILTER)}`;
+const STATE_URL = at('/api/pack/state');
+const LABELS_URL = at('/api/pack/labels.zip');
+const SCAN_URL = at('/api/pack/scan');
+const RELEASE_URL = at('/api/pack/release');
+const COMPLETE_URL = at('/api/pack/complete');
+const SYNC_URL = at('/api/pack/sync');
 
 const historyBox = document.getElementById('history');
 
 let busy = false;
-let hasActive = false;   // открыта ли сборка — при открытой ярлык не печатается
+let hasActive = false;   // открыта ли сборка — при открытой наклейка не печатается
+let pack = null;         // площадка открытого заказа: её слова и её карточка
 const history = [];
 
 function keepFocus() {
@@ -41,10 +48,15 @@ function setBanner(kind, message) {
   setTimeout(() => banner.classList.remove('flash'), 500);
 }
 
-/* Карточку сборки рисует площадка, кнопки на ней — общие: печать, отмена,
-   завершение без скана. Каких кнопок у площадки нет, те она просто не рисует. */
+/* Карточку сборки рисует площадка открытого заказа, кнопки на ней — общие:
+   печать, отмена, завершение без скана. Каких кнопок у площадки нет, те она
+   просто не рисует.
+
+   Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
+   открыться в любом кабинете, и гадать по шапке нельзя. */
 function renderActive(state) {
-  hasActive = Boolean(state?.active);
+  pack = PACKS[state?.market] || null;
+  hasActive = Boolean(state?.active) && pack !== null;
   const idle = document.getElementById('idle-panel');
   if (!hasActive) {
     activePanel.innerHTML = '';
@@ -52,11 +64,11 @@ function renderActive(state) {
     return;
   }
   idle.style.display = 'none';
-  activePanel.innerHTML = PACK.renderActive(state);
+  activePanel.innerHTML = pack.renderActive(state);
 
   const active = state.active;
   const print = document.getElementById('btn-print');
-  if (print) print.onclick = () => printLabel(PACK.activeId(active), reservePrintWindow());
+  if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
   const release = document.getElementById('btn-release');
   if (release) release.onclick = releaseActive;
   const force = document.getElementById('btn-force');
@@ -85,7 +97,10 @@ function applyResult(result, code, printWindow = null) {
   renderActive(result.state || { active: null });
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(code, result);
-  const toPrint = PACK.print && result.print?.[PACK.print.key];
+  /* Печатать наклейку умеет не всякая площадка, и ключ у каждой свой. Берём
+     ту, чей заказ только что открылся: renderActive уже поставил её выше. */
+  const printer = PACKS[result.market]?.print;
+  const toPrint = printer && result.print?.[printer.key];
   if (toPrint) {
     printLabel(toPrint, printWindow);
   } else if (printWindow) {
@@ -147,10 +162,12 @@ function unitWord(count) {
   return `${count} ${tail === 1 ? 'заказ' : tail >= 2 && tail <= 4 ? 'заказа' : 'заказов'}`;
 }
 
+/* Плитки очереди рисует сервер по фильтру: у каждой в data-key лежит имя
+   числа, которое в неё идёт. Так JS не знает, чьи это плитки и сколько их. */
 function applyCounters(counters) {
-  for (const [id, key] of Object.entries(PACK.counters)) {
-    const element = document.getElementById(id);
-    if (element && counters[key] !== undefined) element.textContent = counters[key];
+  for (const element of document.querySelectorAll('#idle-panel .value[data-key]')) {
+    const value = counters[element.dataset.key];
+    if (value !== undefined) element.textContent = value;
   }
 }
 
@@ -161,7 +178,7 @@ async function submitScan(code, printWindow = null) {
   }
   busy = true;
   try {
-    const result = await api(PACK.api.scan, { code });
+    const result = await api(SCAN_URL, { code });
     applyResult(result, code, printWindow);
   } catch (error) {
     printWindow?.close();
@@ -176,21 +193,21 @@ async function submitScan(code, printWindow = null) {
 }
 
 async function releaseActive() {
-  if (PACK.words.confirmRelease && !confirm(PACK.words.confirmRelease)) return;
+  const words = pack?.words || {};
+  if (words.confirmRelease && !confirm(words.confirmRelease)) return;
   try {
-    const result = await api(PACK.api.release, {});
+    const result = await api(RELEASE_URL, {});
     applyResult(result);
-    setBanner('idle', PACK.words.released);
+    setBanner('idle', words.released || 'Сборка отменена.');
   } catch (error) {
     toast(error.message, 'error');
   }
 }
 
 async function forceComplete() {
-  if (!PACK.api.complete) return;
-  if (!confirm(PACK.words.confirmComplete)) return;
+  if (!confirm(pack?.words?.confirmComplete || 'Завершить заказ без сканирования наклейки?')) return;
   try {
-    const result = await api(PACK.api.complete, { reason: 'ручное завершение' });
+    const result = await api(COMPLETE_URL, { reason: 'ручное завершение' });
     applyResult(result);
   } catch (error) {
     toast(error.message, 'error');
@@ -198,13 +215,13 @@ async function forceComplete() {
 }
 
 async function printLabel(id, printWindow = null) {
-  if (!PACK.print) return;
+  if (!pack?.print) return;
   const ok = await printLabelDocument({
-    pdfUrl: PACK.print.url(id),
-    name: `${PACK.words.label} ${id}`,
+    pdfUrl: pack.print.url(id),
+    name: `${pack.words.label} ${id}`,
     window: printWindow,
   });
-  if (ok) toast(`${PACK.words.label} ${id} отправлен на печать`, 'ok', 3500);
+  if (ok) toast(`${pack.words.label} ${id} отправлен на печать`, 'ok', 3500);
 }
 
 input.addEventListener('keydown', (event) => {
@@ -216,7 +233,11 @@ input.addEventListener('keydown', (event) => {
        При открытой сборке вкладку не трогаем вовсе: ярлык тогда не печатается,
        а window.open по имени поднимает поверх панели вкладку с прошлым ярлыком,
        и сборщик принимает это за повторную печать. */
-    const reserve = PACK.print && !hasActive ? reservePrintWindow() : null;
+    /* Сборки нет — заказ ещё не открыт, и какой он будет площадки, неизвестно.
+       Вкладку резервируем, если печать есть хоть у одной: не пригодится —
+       закроем. */
+    const reserve = !hasActive && Object.values(PACKS).some((one) => one.print)
+      ? reservePrintWindow() : null;
     submitScan(input.value.trim(), reserve);
   }
 });
@@ -251,7 +272,7 @@ document.getElementById('btn-clear').onclick = () => { input.value = ''; input.f
 document.getElementById('btn-sync').onclick = async (event) => {
   event.target.disabled = true;
   try {
-    const result = await api(PACK.api.sync, {});
+    const result = await api(SYNC_URL, {});
     toast(result.message || 'Обновлено', 'ok');
     const stamp = document.getElementById('sync-time');
     if (stamp) stamp.textContent = new Date().toLocaleTimeString('ru-RU');

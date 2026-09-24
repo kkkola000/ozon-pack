@@ -87,7 +87,7 @@ def test_full_flow_label_then_items(avito_account, avito_data, user):
 def test_item_scan_without_open_order_is_refused(avito_account, avito_data, user):
     result = avito_pack.scan(avito_account, user, "ПРОСТО-ШТРИХКОД")
     assert result["status"] == "error"
-    assert "стикер отправления" in result["message"]
+    assert "наклейку заказа" in result["message"]
     assert shipped() == []
 
 

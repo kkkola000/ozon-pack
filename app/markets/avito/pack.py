@@ -69,6 +69,45 @@ def find_order(account_id: int, code: str) -> dict | None:
     return dict(row) if row else None
 
 
+def label_one(account: dict, user: dict, order_id: str) -> tuple[bytes, str]:
+    """Этикетка одного заказа на печать: файл Avito как есть, плюс отметка.
+
+    Avito знает заказ по номеру сделки, а ключ у нас свой — отсюда подстановка.
+    """
+    from . import client as avito
+
+    row = db.query_one(
+        "SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND id = ?",
+        (account["id"], order_id),
+    )
+    if not row:
+        raise LookupError(f"Заказ {order_id} не найден")
+    pdf, filename = avito.get_client(account).label_pdf([row["marketplace_id"] or row["id"]])
+    with db.write() as conn:
+        conn.execute(
+            "UPDATE avito_orders SET printed_at = ?, print_count = print_count + 1 "
+            "WHERE account_id = ? AND id = ?",
+            (db.now_iso(), account["id"], order_id),
+        )
+        db.log_event(
+            "avito_label_print", account_id=account["id"], user=user,
+            posting_number=row["marketplace_id"] or row["id"],
+            message="Этикетка отправлена на печать", conn=conn,
+        )
+    return pdf, filename
+
+
+def owner(account_id: int, code: str) -> tuple[str, str] | None:
+    """Чей это код: («label», номер заказа). None — код тут не наш.
+
+    У Avito это всегда этикетка: справочника штрихкодов площадка не отдаёт, и
+    по товару заказ не найти — сборка тут и начинается со скана этикетки.
+    Спрашивается до скана и ничего не меняет.
+    """
+    order = find_order(account_id, code)
+    return ("label", str(order["id"])) if order else None
+
+
 # ------------------------------------------------------------------ состояние сборки
 def load_state(account: dict, user: dict) -> dict:
     empty = {"active": None, "items": [], "done": 0, "total": 0, "complete": False, "scanned": []}
@@ -181,7 +220,7 @@ def scan(account: dict, user: dict, code: str) -> ScanResult:
                      barcode=code, message="Стикер не опознан")
         return ScanResult(
             "error",
-            f"Код «{code}» не найден среди заказов Avito. Сначала отсканируйте стикер отправления.",
+            f"Код «{code}» не найден среди заказов. Сначала отсканируйте наклейку заказа.",
             action="unknown",
             state=state,
         )

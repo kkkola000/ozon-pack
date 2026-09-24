@@ -19,7 +19,7 @@ import json
 import re
 from typing import Any
 
-from ...core import db, report
+from ...core import access, db, report
 from . import client as yandex
 from ...core.config import settings
 from ..ozon.pack import ScanResult, barcode_variants
@@ -299,7 +299,7 @@ def _dispatch_scan(account: dict, user: dict, code: str) -> ScanResult:
             report.record_error(conn, account, user, "unknown_barcode", barcode=code)
     return ScanResult(
         "error",
-        f"Код «{code}» не найден: это не товар из заказов Маркета и не ярлык заказа. "
+        f"Код «{code}» не найден: это не товар из заказов и не наклейка заказа. "
         "Штрихкоды берутся из каталога по артикулу продавца — обновите каталог "
         "в разделе «Товары» и проверьте, что товар там есть.",
         action="unknown", state=state,
@@ -583,6 +583,50 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None) 
         "ok", f"Готово: заказ {order_id} собран.", action="completed", sound="done",
         completed_order=order_id, state=load_state(account, user),
     )
+
+
+def complete_active(account: dict, user: dict, reason: str = "ручное завершение") -> ScanResult:
+    """«Завершить без скана ярлыка» — когда ярлык не читается сканером.
+
+    Проверки здесь, а не в маршруте: рабочее место одно на все площадки, и что
+    считать «рано завершать», знает только площадка. Отказ — ValueError с
+    готовым текстом для оператора.
+    """
+    state = load_state(account, user)
+    if not state["active"]:
+        raise ValueError("Нет активного заказа")
+    if settings.require_all_items and not state["complete"] and not access.is_manager(user):
+        raise ValueError("Сначала отсканируйте все товары. Осталось: " + "; ".join(missing_items(state)))
+    return complete(account, user, state["active"]["id"], code=reason)
+
+
+def owner(account_id: int, code: str) -> tuple[str, str] | None:
+    """Чей это код: («label» или «product», номер заказа). None — не наш.
+
+    Спрашивается до скана и ничего не меняет: по ответам всех кабинетов ядро
+    решает, где сканировать.
+    """
+    kind, target = classify(account_id, code)
+    if kind == "order":
+        return "label", str(target["id"])
+    if kind == "product":
+        offers = list(target)
+        marks = ",".join("?" for _ in offers)
+        subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
+        row = db.query_one(
+            f"""
+            SELECT o.id FROM yandex_orders o
+            JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
+            WHERE o.account_id = ? AND i.offer_id IN ({marks})
+              AND o.substatus IN ({subs}) AND o.local_state != 'packed'
+            ORDER BY (o.shipment_date IS NULL), o.shipment_date, o.id LIMIT 1
+            """,
+            [account_id] + offers + list(yandex.WORK_SUBSTATUSES),
+        )
+        return ("product", str(row["id"])) if row else None
+    # «Похоже на номер заказа, но его тут нет» — не наш: иначе кабинет забирал
+    # бы себе чужие номера и отвечал за них «не найдено».
+    return None
 
 
 # ------------------------------------------------------------------ ярлыки
