@@ -182,7 +182,11 @@ def test_switching_cabinet_changes_section(client):
     assert response.json()["redirect"] == "/avito"
     assert client.get("/avito").status_code == 200
     assert client.get("/orders").status_code == 409
-    assert client.get("/pack").status_code == 409
+    # «Сборка» одна на все площадки: её адрес переводит на кабинет Ozon, а не
+    # отказывает — кабинет Ozon в панели есть.
+    moved = client.get("/pack")
+    assert moved.status_code == 303
+    assert moved.headers["location"] == "/pack"
 
 
 def test_returns_statuses_endpoint(client):
@@ -455,7 +459,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.37.0"
+    assert get_version() == "1.38.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

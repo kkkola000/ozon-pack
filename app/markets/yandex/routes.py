@@ -295,7 +295,6 @@ def api_yandex_pack_complete(request: Request, payload: dict = Body(default={}),
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или ярлык заказа…",
     banner="Отсканируйте штрихкод товара — система сама найдёт заказ Маркета и отправит ярлык на печать.",
-    sync_label="Обновить из Маркета",
     gate_title="Скачайте ярлыки",
     download="Скачать ярлыки",
     gate_template="yandex/pack_gate.html",

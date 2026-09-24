@@ -11,7 +11,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, sync
+from app.core import accounts, db, sync
 from app.main import app
 from app.markets import registry
 from app.markets.avito import sync as avito_sync
@@ -40,12 +40,40 @@ def client(cabinets):
         yield test_client
 
 
+def forget_sync():
+    """Забыть, когда кабинеты ходили на площадку: иначе сработает защита от частых походов."""
+    from app.core import sync as core_sync
+
+    db.execute(
+        "DELETE FROM kv WHERE key LIKE ? OR key LIKE ?",
+        (f"{core_sync.KV_ACCOUNT_SYNC}:%", f"{core_sync.KV_ACCOUNT_TRIED}:%"),
+    )
+
+
 def rows_of(page: str) -> list[str]:
     """Площадки строк списка «Все заказы»."""
     return re.findall(r'<tr data-work="\d" data-market="([^"]+)"', page)
 
 
 # ------------------------------------------------------------------ один обработчик
+def test_a_market_url_takes_you_to_its_cabinet(client, cabinets):
+    """Адрес площадки — просто дверь в общий раздел: кабинет переключится сам.
+
+    Раньше открытая из чужого кабинета ссылка отвечала отказом, и человек
+    упирался в ошибку вместо рабочего места.
+    """
+    client.post("/api/account/switch", json={"account_id": cabinets["ozon"]["id"], "next": "/pack"})
+    moved = client.get("/yandex/pack")
+    assert moved.status_code == 303, moved.text
+    assert moved.headers["location"] == "/yandex/pack"
+
+    page = client.get("/yandex/pack")
+    assert page.status_code == 200
+    assert cabinets["yandex"]["title"] in page.text
+    # Фильтр при этом остаётся общим: переехал только кабинет.
+    assert len(set(rows_of(page.text))) > 1
+
+
 def test_every_market_opens_the_same_page(client, cabinets):
     """Три адреса — одна страница. Отдельных обработчиков у площадок больше нет."""
     for code, where in (("ozon", "/pack"), ("avito", "/avito/pack"), ("yandex", "/yandex/pack")):
@@ -143,3 +171,89 @@ def test_own_cabinet_is_not_highlighted(client):
     """Строку своего кабинета больше не подсвечиваем и не подписываем."""
     page = client.get("/pack").text
     assert 'class="own"' not in page and "текущий" not in page
+
+# ------------------------------------------------------------------ свежесть
+def test_opening_the_page_asks_the_marketplace(client, cabinets, monkeypatch):
+    """Открыли «Сборку» — панель сходила на площадку: сборщик сразу видит новое."""
+    from app.core import sync as core_sync
+
+    calls = []
+    monkeypatch.setattr(core_sync, "sync_account",
+                        lambda account, **kw: calls.append(account["id"]) or {})
+    forget_sync()
+
+    assert client.get("/pack").status_code == 200
+    assert calls == [cabinets["ozon"]["id"]], "кабинет не обновился при открытии"
+
+
+def test_reloading_does_not_hammer_the_api(client, monkeypatch):
+    """F5 не должен становиться запросом к площадке: обновляем не чаще интервала."""
+    from app.core import sync as core_sync
+
+    calls = []
+    monkeypatch.setattr(core_sync, "sync_account",
+                        lambda account, **kw: calls.append(account["id"]) or {})
+    forget_sync()
+
+    client.get("/pack")
+    client.get("/pack")
+    client.get("/pack")
+    assert len(calls) == 1, f"походов на площадку: {len(calls)}"
+
+
+def test_switching_the_cabinet_refreshes_it(client, cabinets, monkeypatch):
+    """Переключили кабинет — обновляется он, а не тот, что был открыт."""
+    from app.core import sync as core_sync
+
+    calls = []
+    monkeypatch.setattr(core_sync, "sync_account",
+                        lambda account, **kw: calls.append(account["id"]) or {})
+    forget_sync()
+
+    client.get("/pack")
+    client.get("/pack?market=yandex")          # переключение через фильтр
+    client.get("/yandex/pack?market=yandex")
+    assert calls == [cabinets["ozon"]["id"], cabinets["yandex"]["id"]]
+
+
+def test_a_broken_marketplace_does_not_break_the_page(client, monkeypatch):
+    """Площадка отказала — рабочее место всё равно открывается."""
+    from app.core import sync as core_sync
+
+    def boom(account, **kw):
+        raise RuntimeError("Ozon недоступен")
+
+    monkeypatch.setattr(core_sync, "sync_account", boom)
+    forget_sync()
+    page = client.get("/pack")
+    assert page.status_code == 200
+    assert 'id="scan"' in page.text
+
+
+def test_updated_at_is_the_marketplace_time(client):
+    """«Обновлено» — время похода на площадку, а не опроса панели."""
+    from app.core import sync as core_sync
+
+    page = client.get("/pack").text
+    stamp = core_sync.synced_at(1)
+    assert stamp, "время синхронизации кабинета не записано"
+    assert "Обновлено:" in page
+    assert 'id="sync-time"' in page
+
+
+# ------------------------------------------------------------------ шапка
+def test_header_has_no_title_and_chips_go_right(client):
+    """В шапке раздела только фильтр, прижатый вправо."""
+    page = client.get("/pack").text
+    head = page.split('id="label-gate"', 1)[0]
+    assert "<h2" not in head.split('<div class="panel">', 1)[-1], "заголовок «Сборка» остался"
+    assert "justify-content:flex-end" in head
+
+
+def test_refresh_button_says_orders(client, cabinets):
+    """Кнопка обновляет заказы — про площадку в надписи ни слова."""
+    for code, where in (("ozon", "/pack"), ("avito", "/avito/pack"), ("yandex", "/yandex/pack")):
+        client.post("/api/account/switch", json={"account_id": cabinets[code]["id"], "next": where})
+        page = client.get(where).text
+        assert "Обновить заказы" in page, where
+        assert "Обновить из" not in page, where

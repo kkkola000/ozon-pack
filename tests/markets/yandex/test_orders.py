@@ -178,9 +178,15 @@ def test_pages_open_and_nav_shows_market(client):
 
 
 def test_ozon_sections_refuse_a_market_cabinet(client):
-    assert client.get("/pack").status_code == 409
+    """Разделы Ozon в кабинете Маркета не открываются.
+
+    «Сборка» — исключение: раздел общий на все площадки, и её адрес не
+    отказывает, а переводит на кабинет своей площадки.
+    """
     assert client.get("/orders").status_code == 409
     assert client.get("/avito").status_code == 409
+    moved = client.get("/pack")
+    assert moved.status_code == 303 and moved.headers["location"] == "/pack"
 
 
 def test_switch_lands_on_market_pack_page(client, market):

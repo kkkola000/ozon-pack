@@ -16,6 +16,13 @@ from .config import settings
 
 log = logging.getLogger("sync")
 
+# Когда кабинет последний раз успешно сходил на площадку: «sync_account_at:<id>».
+# Это и есть «Обновлено» на экране.
+KV_ACCOUNT_SYNC = "sync_account_at"
+# Когда в последний раз пробовали обновить его при открытии рабочего места —
+# считая неудачи. Без этого отказавшая площадка тормозила бы каждый F5.
+KV_ACCOUNT_TRIED = "sync_tried_at"
+
 PAGE_LIMIT = 500
 RETURNS_PAGE_LIMIT = 500
 RETURNS_MAX_PAGES = 40
@@ -37,7 +44,56 @@ def sync_account(account: dict, *, returns: bool = True) -> dict:
     market = registry.get(account["marketplace"])
     if market is None:
         raise RuntimeError(f"Кабинет «{account.get('title')}»: неизвестная площадка {account['marketplace']!r}")
-    return market.sync(account, returns_too=returns)
+    result = market.sync(account, returns_too=returns)
+    db.kv_set(f"{KV_ACCOUNT_SYNC}:{account['id']}", db.now_iso())
+    return result
+
+
+def synced_at(account_id: int) -> str | None:
+    """Когда кабинет последний раз ходил на площадку. Неважно, кто его отправил."""
+    return db.kv_get(f"{KV_ACCOUNT_SYNC}:{int(account_id)}") or None
+
+
+def freshen(account: dict | None, *, max_age: int | None = None, returns: bool = False) -> bool:
+    """Обновить кабинет, если его давно не обновляли. Для открытия рабочего места.
+
+    Сборщик открывает «Сборку» и сразу сканирует — данные к этому моменту
+    должны быть свежими, а не такими, какими их оставил прошлый обход. Но
+    ходить на площадку при каждом нажатии F5 нельзя: у API есть пределы, а
+    страница ждала бы ответа. Поэтому обновляем не чаще, чем раз в
+    SYNC_INTERVAL, — как если бы это сделал фоновый поток.
+
+    Возвраты не трогаем: они тяжелее, меняются медленнее и на сканирование не
+    влияют. Их ведёт фоновая синхронизация и кнопка в разделе возвратов.
+
+    Ошибка площадки страницу не роняет: рабочее место важнее свежести, и в
+    худшем случае сборщик увидит прошлые данные и нажмёт «Обновить заказы».
+    """
+    if not account or not accounts.is_configured(account):
+        return False
+    limit = settings.sync_interval if max_age is None else max_age
+    if not _older_than(db.kv_get(f"{KV_ACCOUNT_TRIED}:{account['id']}"), limit):
+        return False
+    # Отметку ставим до похода: площадка может и отказать, и тогда повторять
+    # отказ на каждое открытие страницы — худшее, что можно сделать.
+    db.kv_set(f"{KV_ACCOUNT_TRIED}:{account['id']}", db.now_iso())
+    try:
+        sync_account(account, returns=returns)
+    except Exception as exc:  # noqa: BLE001 - страница должна открыться в любом случае
+        log.warning("Кабинет «%s» не обновился при открытии: %s", account.get("title"), exc)
+        return False
+    return True
+
+
+def _older_than(stamp: str | None, limit: int) -> bool:
+    """Прошло ли с момента stamp больше limit секунд. Нет отметки — считаем, что да."""
+    if not stamp:
+        return True
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds()
+    except ValueError:
+        return True
+    return age >= limit
 
 
 def sync_all(*, returns: bool = True) -> dict:

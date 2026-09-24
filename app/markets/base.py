@@ -111,7 +111,6 @@ class Workspace:
 
     placeholder: str                 # что написано в пустом поле сканирования
     banner: str                      # первая подсказка над полем
-    sync_label: str                  # надпись на кнопке обновления очереди
     gate_title: str                  # «Скачайте стикеры» — заголовок замка
     download: str                    # «Скачать стикеры» — надпись на его кнопке
     gate_template: str               # «ozon/pack_gate.html»: почему без выгрузки нельзя

@@ -12,8 +12,7 @@
 {# Фильтр площадок. Выбор площадки — это и переход к её сборке: панель
    переключает кабинет, а список внизу показывает только её заказы. #}
 <div class="panel">
-  <div class="row between">
-    <h2 style="margin:0">Сборка</h2>
+  <div class="row" style="justify-content:flex-end">
     <div class="chips">
       {% for chip in market_chips %}
       <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}">
@@ -48,8 +47,8 @@
   <div class="row between">
     <h2 style="margin:0">Очередь</h2>
     <div class="row small muted">
-      <span>Обновлено: <span id="sync-time">—</span></span>
-      <button class="btn small" id="btn-sync">{{ workspace.sync_label }}</button>
+      <span>Обновлено: <span id="sync-time">{{ synced_at or "—" }}</span></span>
+      <button class="btn small" id="btn-sync">Обновить заказы</button>
     </div>
   </div>
   <div class="row" style="margin-top:12px; gap:22px">
@@ -121,7 +120,7 @@
   <div class="empty" id="orders-empty" hidden>Заказов не найдено.</div>
   {% else %}
   <div class="empty" style="margin-top:12px">
-    Заказов нет ни в одном кабинете. Нажмите «{{ workspace.sync_label }}» — или проверьте ключи в «Настройках».
+    Заказов нет ни в одном кабинете. Нажмите «Обновить заказы» — или проверьте ключи в «Настройках».
   </div>
   {% endif %}
 </div>

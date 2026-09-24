@@ -16,12 +16,14 @@ Workspace: подписи, плитки очереди, откуда взять 
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..core import accounts
 from ..core import orders as core_orders
-from ..core.deps import ACCOUNT_COOKIE, require_market, require_section, templates
+from ..core import store as core_store
+from ..core import sync as core_sync
+from ..core.deps import ACCOUNT_COOKIE, require_account, require_section, templates
 
 router = APIRouter()
 
@@ -72,11 +74,12 @@ def _home_of(account: dict | None) -> str:
     return market.workspace.url if market and market.workspace else "/pack"
 
 
-def _switch(code: str, current: dict) -> RedirectResponse | None:
-    """Выбрали площадку, а кабинет другой — переключаем на её первый кабинет.
+def _switch(code: str, current: dict, *, keep: str = ALL) -> RedirectResponse | None:
+    """Нужна площадка, а кабинет другой — переключаем на её первый кабинет.
 
     Без этого фильтр обманывал бы: список показывал бы заказы Avito, а
-    сканирование продолжало искать их в кабинете Ozon.
+    сканирование продолжало искать их в кабинете Ozon. Тем же путём открывается
+    и адрес чужой площадки: «Сборка» одна, и её адреса — просто разные двери.
     """
     if code == ALL or code == current.get("marketplace"):
         return None
@@ -85,18 +88,31 @@ def _switch(code: str, current: dict) -> RedirectResponse | None:
     if not theirs:
         return None
     market = _registry().get(code)
-    answer = RedirectResponse(f"{market.workspace.url}?market={code}", status_code=303)
+    # Фильтр сохраняем как есть: открыли адрес площадки со списком «Все заказы»
+    # — список и останется общим, переехал только кабинет.
+    where = market.workspace.url + (f"?market={keep}" if keep != ALL else "")
+    answer = RedirectResponse(where, status_code=303)
     answer.set_cookie(ACCOUNT_COOKIE, str(theirs[0]["id"]), httponly=True, samesite="lax")
     return answer
 
 
 def page(request: Request, user: dict, account: dict, code: str, market: str = ALL):
     """Собрать страницу рабочего места кабинета."""
-    moved = _switch(market, account)
+    declared = _registry().get(code)
+    # Куда нужно попасть: выбранная фильтром площадка, иначе — площадка адреса.
+    wanted = market if market != ALL else code
+    moved = _switch(wanted, account, keep=market)
     if moved is not None:
         return moved
-    declared = _registry().get(code)
+    if account["marketplace"] != code:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Кабинета площадки «{declared.title}» в панели нет — заведите его в «Настройках»",
+        )
     workspace = declared.workspace
+    # Открыли рабочее место — сходили на площадку за свежими заказами. Не чаще
+    # раза в SYNC_INTERVAL: F5 не должен становиться запросом к API.
+    core_sync.freshen(account)
     orders = core_orders.everywhere(account)
     picked = market if market != ALL and _registry().get(market) else ALL
     # Список идёт под фильтром, а счётчики на чипах — по всему списку: иначе
@@ -115,6 +131,8 @@ def page(request: Request, user: dict, account: dict, code: str, market: str = A
             "market_chips": markets_filter(account, orders, picked),
             "picked_market": picked,
             "workspace": workspace,
+            # «Обновлено» — время последнего похода на площадку, а не опроса панели.
+            "synced_at": core_store.local_time(core_sync.synced_at(account["id"])),
             "csrf": request.state.session.get("csrf"),
             "active_tab": workspace.tab,
         },
@@ -122,11 +140,16 @@ def page(request: Request, user: dict, account: dict, code: str, market: str = A
 
 
 def _endpoint(code: str):
-    """Обработчик адреса одной площадки: тот же page(), свой кабинет."""
+    """Обработчик адреса одной площадки: тот же page(), своя площадка.
+
+    Кабинет специально не требуем жёстко: открыли адрес чужой площадки —
+    панель переключит кабинет сама, как это делает чип фильтра. Отказ остаётся
+    только там, где кабинета такой площадки нет вовсе.
+    """
 
     def pack_page(request: Request, market: str = ALL,
                   user: dict = Depends(require_section("pack")),
-                  account: dict = Depends(require_market(code))):
+                  account: dict = Depends(require_account)):
         return page(request, user, account, code, market)
 
     return pack_page

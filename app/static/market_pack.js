@@ -231,7 +231,13 @@ document.getElementById('btn-sync').onclick = async (event) => {
   try {
     const result = await api(PACK.api.sync, {});
     toast(result.message || 'Обновлено', 'ok');
+    const stamp = document.getElementById('sync-time');
+    if (stamp) stamp.textContent = new Date().toLocaleTimeString('ru-RU');
     await refreshState();
+    /* Список заказов приходит вместе со страницей — после похода на площадку
+       он уже старый. Перечитываем страницу: иначе «обновил, а ничего не
+       поменялось» — и человек жмёт кнопку второй раз. */
+    setTimeout(() => window.location.reload(), 600);
   } catch (error) {
     toast(error.message, 'error');
   } finally {
@@ -254,8 +260,9 @@ async function refreshState() {
     renderActive(data.state);
     applyCounters(data.counters);
     applyGate(data.labels);
-    const stamp = document.getElementById('sync-time');
-    if (stamp) stamp.textContent = new Date().toLocaleTimeString('ru-RU');
+    /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
+       панели. Опрос идёт каждые 30 секунд и к свежести данных площадки
+       отношения не имеет. */
   } catch (error) { /* пересинхронизируемся на следующем цикле */ }
 }
 

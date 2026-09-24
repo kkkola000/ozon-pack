@@ -284,7 +284,6 @@ def api_sync(request: Request, user: dict = Depends(require_section("orders")),
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или стикер отправления…",
     banner="Отсканируйте штрихкод товара — система сама найдёт отправление и отправит стикер на печать.",
-    sync_label="Обновить из Ozon",
     gate_title="Скачайте стикеры",
     download="Скачать стикеры",
     gate_template="ozon/pack_gate.html",

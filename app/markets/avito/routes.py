@@ -436,7 +436,6 @@ def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(
 WORKSPACE = Workspace(
     placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…",
     banner="Отсканируйте стикер отправления — откроется сборка заказа.",
-    sync_label="Обновить из Avito",
     gate_title="Скачайте этикетки",
     download="Скачать этикетки",
     gate_template="avito/pack_gate.html",
