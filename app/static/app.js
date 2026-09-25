@@ -114,12 +114,12 @@ function releasePrintBlob() {
   }
 }
 
-function offerManualPrint(url, name) {
+function offerManualPrint(url, name, reason = 'окно печати не открылось.') {
   const box = document.getElementById('toasts');
   if (!box) { window.open(url, '_blank'); return; }
   const element = document.createElement('div');
   element.className = 'toast warning';
-  element.innerHTML = `<div>${name}: окно печати не открылось.</div>`;
+  element.innerHTML = `<div>${escapeHtml(name)}: ${escapeHtml(reason)}</div>`;
   const link = document.createElement('a');
   link.href = url;
   link.target = '_blank';
@@ -140,7 +140,7 @@ const IS_SAFARI = /^((?!chrome|chromium|crios|edg|android|fxios).)*safari/i.test
 
 /* Печать стикера: на принтер уходит файл, который отдал Ozon, без изменений. */
 async function printLabelDocument({ pdfUrl, name = 'Стикер', window: preopened = null }) {
-  return printPdf(pdfUrl, { name, window: preopened });
+  return printPdf(pdfUrl, { name, window: preopened, size: 'label' });
 }
 
 /* Вкладку под стикер надо открыть, пока Safari видит нажатие клавиши.
@@ -150,10 +150,31 @@ const LABEL_WINDOW_NAME = 'ozp-label';
 
 function reservePrintWindow() {
   if (!IS_SAFARI) return null;
+  /* Наклейку печатает QZ Tray — вкладка не нужна, и мигать ею незачем. Если
+     QZ Tray откажет, браузер предложит открыть файл ссылкой. */
+  if (typeof QZ !== 'undefined' && QZ.printerFor('label')) return null;
   try { return window.open('', LABEL_WINDOW_NAME); } catch (error) { return null; }
 }
 
-async function printPdf(url, { name = 'Стикер', asBlob = true, window: preopened = null } = {}) {
+async function printPdf(url, { name = 'Стикер', asBlob = true, window: preopened = null, size = 'label' } = {}) {
+  /* Сначала QZ Tray, если владелец выбрал для этого размера листа принтер.
+     Не вышло — печатаем через браузер, как раньше: из-за настройки печать не
+     должна пропасть. Вкладка, заготовленная под Safari, при этом не нужна. */
+  if (typeof QZ !== 'undefined' && QZ.printerFor(size)) {
+    try {
+      await QZ.printPdf(url, size);
+      preopened?.close();
+      return true;
+    } catch (error) {
+      if (error.fromServer) {
+        preopened?.close();
+        toast(`${name}: ${error.message}`, 'error', 15000);
+        return false;
+      }
+      toast(`QZ Tray: ${error.message} — печатаю через браузер`, 'warning', 8000);
+    }
+  }
+
   /* Safari не печатает PDF из скрытого фрейма — выходит пустой лист. Открываем
      файл в отдельной вкладке: печатается именно то, что отдал Ozon. Вкладку
      заготавливает вызывающий код в момент нажатия клавиши, иначе Safari сочтёт

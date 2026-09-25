@@ -93,7 +93,8 @@
       {% endif %}
       <span class="grow"></span>
       <a class="btn" href="/returns/acts/{{ act.id }}.pdf">Скачать акт PDF</a>
-      <a class="btn" href="/returns/acts/{{ act.id }}/print" target="_blank">Печать акта</a>
+      <a class="btn" href="/returns/acts/{{ act.id }}/print" target="_blank"
+         data-print-pdf="/returns/acts/{{ act.id }}.pdf" data-print-size="a4" data-print-name="Акт">Печать акта</a>
     </div>
   </div>
 </details>

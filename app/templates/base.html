@@ -57,7 +57,10 @@
 </main>
 
 <div id="toasts"></div>
+{# Какой принтер QZ Tray на какой размер листа. Пусто — печать через браузер. #}
+{% if user %}<script>window.PRINTERS = {{ print_setup() | tojson }};</script>{% endif %}
 <script src="/static/app.js?v={{ static_version() }}"></script>
+<script src="/static/qz.js?v={{ static_version() }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

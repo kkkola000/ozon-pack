@@ -242,6 +242,16 @@ templates.env.globals["panel_has_catalog"] = panel_has_catalog
 templates.env.globals["account_ready"] = account_ready
 templates.env.globals["account_switcher"] = account_switcher
 templates.env.globals["static_version"] = static_version
+
+
+def print_setup() -> dict:
+    """Какой принтер QZ Tray на какой размер листа. Пусто — печать через браузер."""
+    from . import printers
+
+    return printers.printers()
+
+
+templates.env.globals["print_setup"] = print_setup
 # Шапка рисуется по разделам, а не по роли: иначе сборщик с выданными
 # «Отчётами» просто не увидит на них ссылки.
 templates.env.globals["can_see"] = access.can

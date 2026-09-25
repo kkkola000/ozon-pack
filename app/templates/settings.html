@@ -111,6 +111,8 @@
   </div>
 </div>
 
+{% if is_owner and printer_sizes %}{% include "_printers.html" %}{% endif %}
+
 <div class="panel">
   <div class="row between">
     <h2 style="margin:0">Сотрудники и доступы</h2>
@@ -197,6 +199,7 @@
 {% endblock %}
 
 {% block scripts %}
+{% if is_owner and printer_sizes %}<script src="/static/printers.js?v={{ static_version() }}"></script>{% endif %}
 <script>
 const MANAGER_ONLY = {{ manager_only | list | tojson }};
 

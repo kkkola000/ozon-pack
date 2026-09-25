@@ -1,0 +1,60 @@
+{# «Настройка принтеров» — только владельцу. Для каждого размера листа: через
+   браузер, как было всегда, или сразу на принтер через QZ Tray. Список
+   принтеров приходит из QZ Tray того компьютера, где открыта страница. #}
+<div class="panel" id="printers-panel">
+  <div class="row between">
+    <h2 style="margin:0">Настройка принтеров</h2>
+    <div class="row small" style="gap:10px">
+      <span id="qz-status" class="muted">QZ Tray: проверяю…</span>
+      <button class="btn small" id="btn-qz-check">Проверить</button>
+    </div>
+  </div>
+  <p class="muted small" style="margin:8px 0 12px">
+    Для каждого размера листа — печать через браузер, как сейчас, или сразу на принтер через
+    QZ Tray, без окна печати. Список принтеров берётся из QZ Tray этого компьютера, поэтому
+    настраивайте за упаковочным столом. Если на каком-то компьютере QZ Tray не запущен или
+    принтера с таким именем там нет, лист напечатается через браузер.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:200px">Размер листа</th>
+        <th>Что печатается</th>
+        <th style="width:340px">Печатать</th>
+        <th style="width:160px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for size in printer_sizes %}
+      <tr data-size="{{ size.code }}" data-title="{{ size.title }}">
+        <td><b>{{ size.title }}</b></td>
+        <td class="muted small">{{ size.what }}</td>
+        <td>
+          <select class="printer-select" data-saved="{{ size.printer }}">
+            <option value="">Через браузер (как сейчас)</option>
+            {% if size.printer %}<option value="{{ size.printer }}" selected>{{ size.printer }}</option>{% endif %}
+          </select>
+        </td>
+        <td><button class="btn small btn-test" {{ 'disabled' if not size.printer }}>Пробная печать</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="row" style="margin-top:12px">
+    <button class="btn primary" id="btn-save-printers">Сохранить</button>
+  </div>
+
+  <h3 style="margin:22px 0 6px">Сертификат для QZ Tray</h3>
+  <p class="muted small" style="margin:0 0 8px">
+    Без него QZ Tray на каждое подключение спрашивает, можно ли панели печатать. Ставится один
+    раз на каждый компьютер, где печатают:
+  </p>
+  <ol class="small" style="margin:0; padding-left:20px; line-height:1.7">
+    <li><a class="btn small" href="/api/printers/qz/certificate?download=1">Скачать сертификат</a></li>
+    <li>Положите скачанный файл <b>override.crt</b> в папку установки QZ Tray — туда, где лежит
+        qz-tray.jar (в Windows обычно <b>C:\Program Files\QZ Tray</b>).</li>
+    <li>Перезапустите QZ Tray и нажмите здесь «Проверить». В окне QZ Tray отметьте
+        «Remember this decision» и нажмите «Allow» — больше он не спросит.</li>
+  </ol>
+</div>
