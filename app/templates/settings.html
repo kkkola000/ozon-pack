@@ -111,7 +111,17 @@
   </div>
 </div>
 
-{% if is_owner and printer_sizes %}{% include "_printers.html" %}{% endif %}
+{# Принтеры — отдельная страница: её открывают все, включая сборщика. #}
+<div class="panel">
+  <div class="row between">
+    <h2 style="margin:0">Настройка принтеров</h2>
+    <a class="btn" href="/printers">Открыть</a>
+  </div>
+  <p class="muted small" style="margin:8px 0 0">
+    Куда и на какой лист печатается каждый документ: через браузер или через QZ Tray.
+    Страница доступна всем сотрудникам, включая сборщиков, — ссылка «Принтеры» есть в шапке.
+  </p>
+</div>
 
 <div class="panel">
   <div class="row between">
@@ -199,7 +209,6 @@
 {% endblock %}
 
 {% block scripts %}
-{% if is_owner and printer_sizes %}<script src="/static/printers.js?v={{ static_version() }}"></script>{% endif %}
 <script>
 const MANAGER_ONLY = {{ manager_only | list | tojson }};
 

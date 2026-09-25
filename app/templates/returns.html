@@ -45,7 +45,7 @@
   <div class="row no-print" style="margin-top:12px">
     <span class="grow"></span>
     <a class="btn" href="/returns/print?scope=all" target="_blank"
-       data-print-pdf="/returns/sheet.pdf?scope=all" data-print-size="a4" data-print-name="Лист возвратов"
+       data-print-pdf="/returns/sheet.pdf?scope=all" data-print-kind="returns:sheet" data-print-name="Лист возвратов"
        title="Один лист со всеми возвратами, готовыми к выдаче: все кабинеты и площадки, без фильтров">
       Печать по всем кабинетам ({{ all_total }})
     </a>
@@ -56,7 +56,7 @@
     <a class="btn primary" id="btn-print" target="_blank"
        href="/returns/print{% if query %}?{{ query | urlencode }}{% endif %}"
        data-print-pdf="/returns/sheet.pdf{% if query %}?{{ query | urlencode }}{% endif %}"
-       data-print-size="a4" data-print-name="Лист возвратов">
+       data-print-kind="returns:sheet" data-print-name="Лист возвратов">
       Печать листа ({{ items | length }})
     </a>
   </div>

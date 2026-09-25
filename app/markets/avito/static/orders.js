@@ -90,8 +90,10 @@ async function printLabels(ids, button) {
       const data = await response.json().catch(() => ({}));
       throw new Error(data.detail || `Ошибка ${response.status}`);
     }
+    // Размер листа читаем до blob-адреса: по нему выбирается принтер («Принтеры»).
+    const pageSize = response.headers.get('X-Page-Size');
     const url = URL.createObjectURL(await response.blob());
-    await printPdf(url, { name, asBlob: false });
+    await printPdf(url, { name, asBlob: false, kind: 'avito:label', pageSize });
     toast(`${name}: отправлено на печать`, 'ok');
   } catch (error) {
     toast(error.message, 'error', 10000);

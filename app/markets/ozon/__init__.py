@@ -42,6 +42,7 @@ MARKET = Market(
         pdf=lambda account, user, keys: pack.label_pdf(account, user, keys)[0],
         table="postings",
         key="posting_number",
+        size_hint="Размер стикера задаётся в личном кабинете Ozon — панель печатает файл как есть.",
     ),
     # Каталог со штрихкодами: список артикулов, потом карточки пачками.
     catalog=CatalogSource(pages=catalog.pages),

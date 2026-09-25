@@ -139,8 +139,8 @@ function offerManualPrint(url, name, reason = 'окно печати не отк
 const IS_SAFARI = /^((?!chrome|chromium|crios|edg|android|fxios).)*safari/i.test(navigator.userAgent);
 
 /* Печать стикера: на принтер уходит файл, который отдал Ozon, без изменений. */
-async function printLabelDocument({ pdfUrl, name = 'Стикер', window: preopened = null }) {
-  return printPdf(pdfUrl, { name, window: preopened, size: 'label' });
+async function printLabelDocument({ pdfUrl, name = 'Стикер', window: preopened = null, kind = '' }) {
+  return printPdf(pdfUrl, { name, window: preopened, kind });
 }
 
 /* Вкладку под стикер надо открыть, пока Safari видит нажатие клавиши.
@@ -150,21 +150,27 @@ const LABEL_WINDOW_NAME = 'ozp-label';
 
 function reservePrintWindow() {
   if (!IS_SAFARI) return null;
-  /* Наклейку печатает QZ Tray — вкладка не нужна, и мигать ею незачем. Если
-     QZ Tray откажет, браузер предложит открыть файл ссылкой. */
-  if (typeof QZ !== 'undefined' && QZ.printerFor('label')) return null;
+  /* Наклейки всех площадок рабочего места печатает QZ Tray — вкладка не нужна,
+     и мигать ею незачем. Если QZ Tray откажет, браузер предложит открыть файл
+     ссылкой. */
+  const kinds = Object.values(window.PACKS || {}).filter((one) => one.print).map((one) => one.print.kind);
+  if (typeof QZ !== 'undefined' && kinds.length && kinds.every((kind) => QZ.onlyQz(kind))) return null;
   try { return window.open('', LABEL_WINDOW_NAME); } catch (error) { return null; }
 }
 
-async function printPdf(url, { name = 'Стикер', asBlob = true, window: preopened = null, size = 'label' } = {}) {
-  /* Сначала QZ Tray, если владелец выбрал для этого размера листа принтер.
+async function printPdf(url, {
+  name = 'Стикер', asBlob = true, window: preopened = null, kind = '', pageSize = null,
+} = {}) {
+  /* Сначала QZ Tray, если для этого документа выбран принтер (см. «Принтеры»).
      Не вышло — печатаем через браузер, как раньше: из-за настройки печать не
      должна пропасть. Вкладка, заготовленная под Safari, при этом не нужна. */
-  if (typeof QZ !== 'undefined' && QZ.printerFor(size)) {
+  if (kind && typeof QZ !== 'undefined' && QZ.hasPrinter(kind)) {
     try {
-      await QZ.printPdf(url, size);
-      preopened?.close();
-      return true;
+      const printer = await QZ.printPdf(url, kind, pageSize);
+      if (printer) {
+        preopened?.close();
+        return true;
+      }
     } catch (error) {
       if (error.fromServer) {
         preopened?.close();

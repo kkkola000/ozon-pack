@@ -1,10 +1,15 @@
 /* Печать через QZ Tray — второй путь рядом с браузерным.
 
    QZ Tray — программа на компьютере склада. Она принимает PDF и отправляет его
-   на названный принтер сразу, без окна печати браузера. Какой принтер на какой
-   размер листа, выбирает владелец в «Настройки → Настройка принтеров»; выбор
-   приходит в страницу как window.PRINTERS. Пусто — печать через браузер, как
+   на названный принтер сразу, без окна печати браузера. Настройка — на странице
+   «Принтеры»: для каждого документа (стикеры Ozon, ярлыки Маркета, этикетки
+   Avito, лист и акт возвратов) — размер листа и принтер. Она приходит в
+   страницу как window.PRINTERS. Пустой принтер — печать через браузер, как
    было всегда.
+
+   У документа бывает несколько размеров: этикетка Avito приходит то 58×40, то
+   100×150. Сервер пишет настоящий размер листа в заголовок X-Page-Size, и по
+   нему выбирается строка; не совпала ни одна — берётся первая.
 
    Главное правило: из-за QZ Tray печать не должна пропасть. Не запущена
    программа, нет на компьютере принтера с таким именем, отказал сам принтер —
@@ -18,21 +23,51 @@
 const QZ = (() => {
   const LIBRARY = '/static/vendor/qz-tray.js?v=2.3.0';
 
-  /* Параметры бумаги для каждого размера листа. Код размера — тот же, что в
-     core/printers.py. Наклейке задаём размер явно: без него драйвер термо-
-     принтера берёт свой лист по умолчанию. A4 печатается на то, что стоит в
-     принтере, — офисный принтер и так знает свой лист. */
-  const PAPER = {
-    label: { size: { width: 75, height: 120 }, units: 'mm', margins: 0, scaleContent: true },
-    a4: { scaleContent: true },
-  };
-
   let library = null;     // обещание загрузки qz-tray.js
   let prepared = false;   // подпись настроена
   let connecting = null;  // обещание подключения — одно на все одновременные печати
 
-  function printerFor(size) {
-    return ((window.PRINTERS || {})[size] || '').trim();
+  const setup = () => window.PRINTERS || {};
+  const rowsOf = (kind) => (setup().rows || []).filter((row) => row.kind === kind);
+
+  /* Есть ли у документа хоть один принтер QZ Tray — стоит ли вообще пробовать. */
+  function hasPrinter(kind) {
+    return rowsOf(kind).some((row) => row.printer);
+  }
+
+  /* Все размеры документа печатаются через QZ Tray — окно браузера не нужно. */
+  function onlyQz(kind) {
+    const rows = rowsOf(kind);
+    return rows.length > 0 && rows.every((row) => row.printer);
+  }
+
+  /* Строка настройки под файл: документ и размер листа («58x40» из заголовка
+     X-Page-Size). Размер сравниваем с допуском и без учёта поворота: 58×40 и
+     40×58 — одна и та же лента. */
+  function pick(kind, measured) {
+    const rows = rowsOf(kind);
+    if (!rows.length) return null;
+    const [width, height] = String(measured || '').split('x').map(Number);
+    if (width && height) {
+      const paper = setup().paper || {};
+      const slack = setup().match_mm || 5;
+      const near = (a, b) => Math.abs(a - b) <= slack;
+      const fits = rows.find((row) => {
+        const [w, h] = paper[row.size] || [];
+        return (near(w, width) && near(h, height)) || (near(w, height) && near(h, width));
+      });
+      if (fits) return fits;
+    }
+    return rows[0];
+  }
+
+  /* Параметры бумаги для QZ Tray. Наклейке размер задаём явно: без него драйвер
+     термопринтера берёт свой лист по умолчанию. A4 — на то, что стоит в
+     принтере: офисный принтер и так знает свой лист. */
+  function paperFor(size) {
+    const mm = (setup().paper || {})[size];
+    if (size === 'a4' || !mm) return { scaleContent: true };
+    return { size: { width: mm[0], height: mm[1] }, units: 'mm', margins: 0, scaleContent: true };
   }
 
   function load() {
@@ -135,22 +170,27 @@ const QZ = (() => {
       failure.fromServer = true;
       throw failure;
     }
-    return toBase64(await response.blob());
+    return { data: await toBase64(await response.blob()), size: response.headers.get('X-Page-Size') };
   }
 
-  /* Напечатать PDF на принтер своего размера. false — для этого размера
-     принтер не выбран, печатать через браузер. Ошибка — QZ Tray не смог. */
-  async function printPdf(url, size, printer = printerFor(size)) {
-    if (!printer) return false;
-    const data = await fetchPdf(url);
+  /* Напечатать документ. Возвращает имя принтера, false — этот документ (или
+     этот его размер) печатается через браузер. Ошибка — QZ Tray не смог.
+
+     pageSize передают те, кто скачал файл сам (пачка стикеров в «Заказах»):
+     из blob-адреса заголовок уже не прочитать. */
+  async function printPdf(url, kind, pageSize = null) {
+    if (!hasPrinter(kind)) return false;
+    const file = await fetchPdf(url);
+    const row = pick(kind, pageSize || file.size);
+    if (!row || !row.printer) return false;
     const qz = await connect();
-    const config = qz.configs.create(printer, PAPER[size] || {});
+    const config = qz.configs.create(row.printer, paperFor(row.size));
     try {
-      await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data }]);
+      await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data: file.data }]);
     } catch (error) {
-      throw plain(error, printer);
+      throw plain(error, row.printer);
     }
-    return true;
+    return row.printer;
   }
 
   /* QZ Tray отвечает по-английски. Самый частый отказ — принтера с таким
@@ -163,10 +203,10 @@ const QZ = (() => {
     return error instanceof Error ? error : new Error(text);
   }
 
-  /* Пробная страница из настроек: принтер ещё не сохранён — берём выбранный. */
+  /* Пробная страница со страницы «Принтеры»: принтер ещё не сохранён — берём выбранный. */
   async function printTest(printer, size, title) {
     const qz = await connect();
-    const config = qz.configs.create(printer, PAPER[size] || {});
+    const config = qz.configs.create(printer, paperFor(size));
     const stamp = new Date().toLocaleString('ru-RU');
     const html = `<div style="font:14px sans-serif;padding:4mm">
       <b style="font-size:18px">Ozon Pack</b><br>Пробная печать через QZ Tray<br>
@@ -178,23 +218,27 @@ const QZ = (() => {
     }
   }
 
-  return { printerFor, connect, version, printers, printPdf, printTest };
+  return { hasPrinter, onlyQz, pick, connect, version, printers, printPdf, printTest };
 })();
 
 /* Листы A4 в «Возвратах»: ссылка «Печать листа» открывает страницу печати в
-   браузере. Если владелец выбрал для A4 принтер QZ Tray, тот же лист уходит на
+   браузере. Если для документа выбран принтер QZ Tray, тот же лист уходит на
    него PDF-файлом, а ссылка не открывается. Не вышло — даём открыть страницу
    печати как раньше. */
 document.addEventListener('click', async (event) => {
   const link = event.target.closest('a[data-print-pdf]');
   if (!link) return;
-  const size = link.dataset.printSize || 'a4';
-  if (!QZ.printerFor(size)) return;
+  const kind = link.dataset.printKind;
+  if (!kind || !QZ.hasPrinter(kind)) return;
   event.preventDefault();
   const name = link.dataset.printName || 'Лист';
   try {
-    await QZ.printPdf(link.dataset.printPdf, size);
-    toast(`${name}: отправлен на принтер «${QZ.printerFor(size)}»`, 'ok', 4000);
+    const printer = await QZ.printPdf(link.dataset.printPdf, kind);
+    if (printer) {
+      toast(`${name}: отправлен на принтер «${printer}»`, 'ok', 4000);
+    } else {
+      offerManualPrint(link.href, name, 'этот размер печатается через браузер.');
+    }
   } catch (error) {
     if (error.fromServer) {
       toast(`${name}: ${error.message}`, 'error', 15000);

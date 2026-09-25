@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ...core import db, return_acts, sync
+from ...core import printers as core_printers
 from ...core import store as core_store
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -58,7 +59,9 @@ def api_label(posting_number: str, user: dict = Depends(require_section("pack"))
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
+                 "Cache-Control": "no-store",
+                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
+                 **core_printers.size_header(pdf)},
     )
 
 
@@ -90,7 +93,9 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
+                 "Cache-Control": "no-store",
+                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
+                 **core_printers.size_header(pdf)},
     )
 
 

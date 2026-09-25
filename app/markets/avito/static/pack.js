@@ -42,7 +42,9 @@ window.PACKS.avito = {
           </div>
           <div class="row">
             <a class="btn" href="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf"
-               target="_blank" rel="noopener">Этикетка</a>
+               target="_blank" rel="noopener"
+               data-print-pdf="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf"
+               data-print-kind="avito:label" data-print-name="Этикетка">Этикетка</a>
             <button class="btn danger" id="btn-release">Отменить сборку</button>
           </div>
         </div>

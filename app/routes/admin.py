@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from ..core import access, accounts, db, printers, report, security, sync
+from ..core import access, accounts, db, report, security, sync
 from ..core.deps import check_csrf, current_account, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
@@ -163,8 +163,6 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "manager_only": access.MANAGER_ONLY,
             "can_manage_users": access.is_manager(user),
             "is_owner": access.is_owner(user),
-            # Настройку принтеров видит и меняет только владелец.
-            "printer_sizes": printers.sizes() if access.is_owner(user) else [],
             # Что ещё показать в настройках — знает площадка (у Ozon: статусы возвратов).
             # Её значения и её же куски страницы; у кого их нет, у того раздел пуст.
             **(market.settings_context(account) if market and market.settings_context else {}),

@@ -38,8 +38,19 @@ PAGE_LIMIT = 50
 CATALOG_PAGE_LIMIT = 100
 # Столько заказов принимает массовый запрос ярлыков.
 LABELS_MAX_ORDERS = 1000
-# Ярлык 75×120 мм — тот же размер, что панель печатает для Ozon.
+# Формат ярлыка у Маркета задаётся в запросе. Какой нужен, решает размер листа,
+# выбранный для ярлыков Маркета на странице «Принтеры»: лента 58×40 — ярлык без
+# полей того же размера, иначе — A7 (75×120), как было всегда. Сделать ярлык
+# 100×150 Маркет не умеет: для такой ленты берём A7, принтер растянет.
 LABEL_FORMAT = "A7"
+LABEL_FORMATS = {"58x40": "A9_HORIZONTALLY", "75x120": "A7", "100x150": "A7", "a4": "A4"}
+
+
+def label_format() -> str:
+    """Формат ярлыка для запроса к Маркету — по настройке принтеров."""
+    from ...core import printers
+
+    return LABEL_FORMATS.get(printers.size_of("yandex:label") or "", LABEL_FORMAT)
 
 # Статус и этап обработки, по которым заказ попадает на склад.
 STATUS_PROCESSING = "PROCESSING"
@@ -228,7 +239,7 @@ class YandexClient:
         }
         data = self.request_json(
             "POST", "/v2/reports/documents/labels/generate",
-            payload=payload, params={"format": LABEL_FORMAT},
+            payload=payload, params={"format": label_format()},
         )
         report_id = ((data.get("result") or {}).get("reportId")) or ""
         if not report_id:
@@ -288,7 +299,7 @@ class YandexClient:
         """Ярлыки одного заказа. Нужен полный доступ, поэтому путь запасной."""
         response = self._request(
             "GET", f"/v2/campaigns/{campaign_id}/orders/{order_id}/delivery/labels",
-            params={"format": LABEL_FORMAT},
+            params={"format": label_format()},
         )
         if response.status_code >= 400:
             message, code = self._extract_error(response)

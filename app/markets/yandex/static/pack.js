@@ -7,6 +7,7 @@ window.PACKS = window.PACKS || {};
 window.PACKS.yandex = {
   print: {
     key: 'order_id',
+    kind: 'yandex:label',     // строка на странице «Принтеры»
     // Адрес общий: кабинет заказа ищет ядро, а тот, что в шапке, тут ни при чём.
     url: (id) => `/api/pack/label/yandex/${encodeURIComponent(id)}.pdf`,
   },

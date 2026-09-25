@@ -27,6 +27,7 @@ from ..core import db
 from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import packing as core_packing
+from ..core import printers as core_printers
 from ..core import store as core_store
 from ..core import sync as core_sync
 from ..core.deps import check_csrf, require_account, require_section, safe_filename, templates
@@ -289,7 +290,9 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
+                 "Cache-Control": "no-store",
+                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
+                 **core_printers.size_header(pdf)},
     )
 
 

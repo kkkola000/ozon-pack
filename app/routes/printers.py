@@ -1,32 +1,59 @@
-"""«Настройки → Настройка принтеров» и служебные ручки для QZ Tray.
+"""«Принтеры»: куда и на какой лист печатается каждый документ, и QZ Tray.
 
-Выбор принтеров меняет только владелец. Сертификат и подпись нужны каждому,
-кто печатает: браузер сборщика подписывает ими запросы к QZ Tray на своём
-компьютере. Как это устроено и почему так — в core/printers.py.
+Страница доступна всем, кто работает в панели, включая сборщика, — и только
+она: остальные «Настройки» по-прежнему по ролям. Сборщик у стола сам знает,
+куда воткнут какой принтер, и поправить это должен уметь без владельца. Кто
+что поменял, пишется в журнал.
+
+Сертификат и подпись нужны каждому, кто печатает: браузер подписывает ими
+запросы к QZ Tray на своём компьютере. Как это устроено — в core/printers.py.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..core import db
 from ..core import printers as core_printers
-from ..core.deps import check_csrf, current_user, require_owner
+from ..core.deps import check_csrf, current_user, templates
 
 router = APIRouter()
 
 
+@router.get("/printers", response_class=HTMLResponse)
+def printers_page(request: Request, user: dict = Depends(current_user)):
+    """Страница настройки принтеров — для всех вошедших."""
+    return templates.TemplateResponse(
+        request,
+        "printers.html",
+        {
+            "request": request,
+            "user": user,
+            "documents": core_printers.page(),
+            "paper": [(code, title) for code, (title, _w, _h) in core_printers.PAPER.items()],
+            "limit": core_printers.ROWS_PER_KIND,
+            "csrf": request.state.session.get("csrf"),
+            "active_tab": "printers",
+        },
+    )
+
+
 @router.post("/api/printers")
-def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(require_owner)):
-    """Сохранить принтер для каждого размера листа. Пусто — «через браузер»."""
+def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
+    """Сохранить строки «документ — размер листа — принтер». Пусто — «через браузер»."""
     check_csrf(request)
     try:
-        chosen = core_printers.save(payload.get("printers"))
+        saved = core_printers.save(payload.get("rows"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    summary = ", ".join(f"{code}: {name or 'браузер'}" for code, name in chosen.items())
+    titles = {doc["kind"]: doc["title"] for doc in core_printers.documents()}
+    summary = "; ".join(
+        f"{titles.get(row['kind'], row['kind'])}, {core_printers.PAPER[row['size']][0]}: "
+        f"{row['printer'] or 'браузер'}"
+        for row in saved
+    )
     db.log_event("printers_saved", user=user, message=summary)
-    return {"status": "ok", "printers": chosen}
+    return {"status": "ok", "printers": core_printers.setup()}
 
 
 @router.get("/api/printers/qz/certificate", response_class=PlainTextResponse)

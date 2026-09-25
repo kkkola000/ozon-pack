@@ -10,6 +10,7 @@ window.PACKS = window.PACKS || {};
 window.PACKS.ozon = {
   print: {
     key: 'posting_number',
+    kind: 'ozon:label',       // строка на странице «Принтеры»
     // Адрес общий: кабинет заказа ищет ядро, а тот, что в шапке, тут ни при чём.
     url: (number) => `/api/pack/label/ozon/${encodeURIComponent(number)}.pdf`,
   },

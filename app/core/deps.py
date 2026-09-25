@@ -245,10 +245,10 @@ templates.env.globals["static_version"] = static_version
 
 
 def print_setup() -> dict:
-    """Какой принтер QZ Tray на какой размер листа. Пусто — печать через браузер."""
+    """Какой документ на какой принтер QZ Tray и лист. Пусто — печать через браузер."""
     from . import printers
 
-    return printers.printers()
+    return printers.setup()
 
 
 templates.env.globals["print_setup"] = print_setup

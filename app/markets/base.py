@@ -116,6 +116,9 @@ class LabelsSource:
     pdf: Callable[[dict, dict, list[str]], bytes]
     table: str
     key: str
+    # Подсказка к размеру листа на странице «Принтеры»: откуда берётся размер
+    # наклейки у этой площадки и что от выбора зависит.
+    size_hint: str = ""
 
 
 @dataclass(frozen=True)

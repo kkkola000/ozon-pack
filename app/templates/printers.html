@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Принтеры{% endblock %}
+
+{# Куда и на какой лист печатается каждый документ. Страница — для всех, кто
+   работает в панели, включая сборщика: он у стола и знает, куда воткнут какой
+   принтер. Строки рисует сервер, добавление и удаление размеров — printers.js. #}
+{% block content %}
+<div class="panel" id="printers-panel">
+  <div class="row between">
+    <h2 style="margin:0">Принтеры</h2>
+    <div class="row small" style="gap:10px">
+      <span id="qz-status" class="muted">QZ Tray: проверяю…</span>
+      <button class="btn small" id="btn-qz-check">Проверить</button>
+    </div>
+  </div>
+  <p class="muted small" style="margin:8px 0 12px">
+    Для каждого документа — размер листа и принтер. «Через браузер» — печать как сейчас, с окном
+    печати. Принтер из списка QZ Tray — лист уходит на него сразу. Список принтеров берётся из
+    QZ Tray этого компьютера. Если на каком-то компьютере QZ Tray не запущен или принтера с таким
+    именем там нет, лист напечатается через браузер. Если у документа несколько размеров, панель
+    смотрит, какого размера пришёл файл, и печатает на принтер этого размера.
+  </p>
+
+  <table id="printer-table">
+    <thead>
+      <tr>
+        <th>Документ</th>
+        <th style="width:160px">Размер листа</th>
+        <th style="width:320px">Принтер</th>
+        <th style="width:150px"></th>
+        <th style="width:44px"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for doc in documents %}
+      {% if loop.first or doc.section != documents[loop.index0 - 1].section %}
+      <tr class="printer-section"><td colspan="5"><b>{{ doc.section }}</b></td></tr>
+      {% endif %}
+      {% for row in doc.rows %}
+      <tr class="printer-row" data-kind="{{ doc.kind }}" data-title="{{ doc.title }}">
+        <td>
+          {%- if loop.first %}
+          <b>{{ doc.title }}</b>
+          {%- if doc.hint %}<div class="muted small">{{ doc.hint }}</div>{% endif %}
+          {%- endif %}
+        </td>
+        <td>
+          <select class="size-select">
+            {% for code, title in paper %}
+            <option value="{{ code }}" {{ 'selected' if code == row.size }}>{{ title }}</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td>
+          <select class="printer-select" data-saved="{{ row.printer }}">
+            <option value="">Через браузер (как сейчас)</option>
+            {% if row.printer %}<option value="{{ row.printer }}" selected>{{ row.printer }}</option>{% endif %}
+          </select>
+        </td>
+        <td><button class="btn small btn-test" style="white-space:nowrap" {{ 'disabled' if not row.printer }}>Пробная печать</button></td>
+        <td>{% if not loop.first %}<button class="btn small btn-remove" title="Убрать этот размер">×</button>{% endif %}</td>
+      </tr>
+      {% endfor %}
+      <tr class="printer-add" data-kind="{{ doc.kind }}">
+        <td></td>
+        <td colspan="4">
+          <button class="btn small btn-add" {{ 'hidden' if doc.rows | length >= limit }}>+ ещё размер</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="row" style="margin-top:12px">
+    <button class="btn primary" id="btn-save-printers">Сохранить</button>
+  </div>
+
+  <h3 style="margin:22px 0 6px">Сертификат для QZ Tray</h3>
+  <p class="muted small" style="margin:0 0 8px">
+    Без него QZ Tray на каждое подключение спрашивает, можно ли панели печатать. Ставится один
+    раз на каждый компьютер, где печатают:
+  </p>
+  <ol class="small" style="margin:0; padding-left:20px; line-height:1.7">
+    <li><a class="btn small" href="/api/printers/qz/certificate?download=1">Скачать сертификат</a></li>
+    <li>Положите скачанный файл <b>override.crt</b> в папку установки QZ Tray — туда, где лежит
+        qz-tray.jar (в Windows обычно <b>C:\Program Files\QZ Tray</b>).</li>
+    <li>Перезапустите QZ Tray и нажмите здесь «Проверить». В окне QZ Tray отметьте
+        «Remember this decision» и нажмите «Allow» — больше он не спросит.</li>
+  </ol>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>window.PRINTER_LIMIT = {{ limit }};</script>
+<script src="/static/printers.js?v={{ static_version() }}"></script>
+{% endblock %}

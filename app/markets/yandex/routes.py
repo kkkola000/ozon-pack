@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from ...core import db, sync
+from ...core import printers as core_printers
 from . import pack as yandex_pack
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -152,7 +153,9 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
+                 "Cache-Control": "no-store",
+                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
+                 **core_printers.size_header(pdf)},
     )
 
 

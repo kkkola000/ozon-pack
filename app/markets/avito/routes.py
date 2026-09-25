@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from . import client as avito, pack as avito_pack
 from ...core import db, return_acts
+from ...core import printers as core_printers
 from .client import AvitoError
 from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
 from ..base import NavItem, Workspace
@@ -321,7 +322,9 @@ def _label_response(account: dict, user: dict, orders: list[dict]) -> Response:
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store"},
+                 "Cache-Control": "no-store",
+                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
+                 **core_printers.size_header(pdf)},
     )
 
 

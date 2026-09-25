@@ -49,7 +49,10 @@
     <a class="badge warn" href="/settings" title="Панель не загружает заказы, пока не заданы ключи площадки">НЕТ КЛЮЧЕЙ</a>
   {% endif %}
   <div class="user">{% if user %}<b>{{ user.login }}</b>
-    <span class="muted small">{{ role_label(user.role) }}</span> · <a href="/logout">выход</a>{% endif %}</div>
+    <span class="muted small">{{ role_label(user.role) }}</span>
+    · <a href="/printers" class="{{ 'active' if active_tab == 'printers' }}"
+         title="Куда и на какой лист печатается каждый документ">Принтеры</a>
+    · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 
 <main class="wrap {% block wrap_class %}{% endblock %}">

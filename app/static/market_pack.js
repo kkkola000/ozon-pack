@@ -220,6 +220,7 @@ async function printLabel(id, printWindow = null) {
     pdfUrl: pack.print.url(id),
     name: `${pack.words.label} ${id}`,
     window: printWindow,
+    kind: pack.print.kind,
   });
   if (ok) toast(`${pack.words.label} ${id} отправлен на печать`, 'ok', 3500);
 }
