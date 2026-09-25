@@ -244,6 +244,64 @@ def avito_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     return _with_mark(data)
 
 
+# ------------------------------------------------ раздел «Заказы»
+# Статусы склада. «Подтвердите заказ» — ещё до сборки: сначала подтверждение
+# на Avito, как у Ozon сначала «Собрать». «Отправьте заказ» — Avito ждёт
+# посылку, и собирают её в панели именно в этом статусе; собранный — «Собран».
+BOARD_STATUS_SQL = """CASE
+    WHEN o.status = 'on_confirmation' THEN 'packaging'
+    WHEN o.status = 'ready_to_ship' AND o.local_state = 'packed' THEN 'packed'
+    WHEN o.status = 'ready_to_ship' THEN 'deliver'
+END"""
+# Срок — тот, что поджимает сейчас: подтверждение или отправка.
+BOARD_DEADLINE_SQL = "CASE WHEN o.status = 'on_confirmation' THEN o.confirm_till ELSE o.ship_till END"
+BOARD_SEARCH_SQL = """(o.id LIKE ? OR o.marketplace_id LIKE ? OR o.tracking_number LIKE ? OR o.buyer_name LIKE ?
+    OR EXISTS (SELECT 1 FROM avito_order_items i
+               WHERE i.account_id = o.account_id AND i.order_id = o.id
+               AND (i.title LIKE ? OR i.avito_id LIKE ? OR i.seller_id LIKE ?)))"""
+
+
+def board_card(row) -> dict:
+    """Заказ Avito -> строка раздела «Заказы»."""
+    order = avito_view(row)
+    board = dict(row).get("board")
+    actions = []
+    if "confirm" in order["actions"]:
+        actions.append("confirm")
+    if "perform" in order["actions"]:
+        actions.append("ship")
+    note = ""
+    if board != "packaging" and "ship" not in actions:
+        note = "Отправку отметит Avito при приёме посылки"
+    return {
+        "id": order["id"],
+        "number": order.get("marketplace_id") or order["id"],
+        "sub": order.get("created_local") or "",
+        "tags": [("", f"{order.get('positions_count') or 0} поз. · {order.get('items_count') or 0} шт")],
+        "deadline": order.get("deadline"),
+        "deadline_local": order.get("deadline_local"),
+        "urgency": order.get("urgency"),
+        "items": [{"quantity": item["quantity"], "name": item.get("title") or "Без названия",
+                   "code": item.get("seller_id") or item.get("avito_id"), "warn": ""}
+                  for item in order.get("items") or []],
+        "image": None,
+        # Имя покупателя — как и раньше: по нему находят посылку в пункте выдачи.
+        "delivery": [order.get("service_label"), order.get("service_name"), order.get("terminal_address"),
+                     order.get("buyer_name"), order.get("tracking_number")],
+        # Свой статус Avito рядом с общим: «Подтвердите заказ» говорит, что делать.
+        "own_status": order["status_label"] if board != "packed" else "",
+        "note": note,
+        "printed": order.get("print_count") or 0,
+        "packed_by": order.get("packed_by"),
+        "packed_at": order.get("packed_at"),
+        "packed_at_local": order.get("packed_at_local"),
+        "claim": "",
+        # Этикетку Avito отдаёт только подтверждённому заказу.
+        "label": board != "packaging",
+        "actions": actions,
+    }
+
+
 # ------------------------------------------------ общий список на рабочем месте
 # Те же колонки, что у других площадок: список на «Сборке» показывает заказы
 # всех кабинетов рядом и о площадках ничего не знает.

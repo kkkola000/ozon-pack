@@ -1,7 +1,7 @@
-"""Разделы Яндекс Маркета: заказы и рабочее место сборщика.
+"""Яндекс Маркет: рабочее место сборщика и своя часть общих «Заказов».
 
-Устроено как у Ozon: вкладки «Ожидает сборки» / «Ожидает отгрузки» / «Собранные»,
-сборка по скану товара, ярлыки выгружаются архивом до начала сборки.
+Устроено как у Ozon: в «Заказах» статусы «Ожидает сборки» / «Ожидает отгрузки» /
+«Собран», сборка по скану товара, ярлыки выгружаются архивом до начала сборки.
 
 Чего здесь нет — переводов статуса на стороне Маркета. Панель только читает
 заказы и берёт ярлыки; «Готов к отгрузке» продавец отмечает в кабинете Маркета,
@@ -11,15 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter
+from fastapi.responses import RedirectResponse
 
-from ...core import db, sync
-from ...core import printers as core_printers
+from ...core import db
 from . import pack as yandex_pack
-from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename, templates
-from ..base import NavItem, Workspace
-from .client import YandexError
+from ..base import NavItem, OrdersBoard, Workspace
 from . import store
 
 log = logging.getLogger("yandex")
@@ -29,73 +26,14 @@ router = APIRouter()
 # Сколько ярлыков печатается одним запросом с вкладки заказов.
 MAX_LABELS = 50
 
-# «Собранные» — очередь на отгрузку, а не архив: как только заказ уходит из
-# рабочих этапов Маркета, синхронизация убирает его из панели. Кто и когда
-# собрал, остаётся в журнале.
-TABS = {
-    "pack": ("Ожидает сборки", "o.substatus = 'STARTED' AND o.local_state != 'packed'"),
-    "ship": ("Ожидает отгрузки", "o.substatus = 'READY_TO_SHIP' AND o.local_state != 'packed'"),
-    "packed": ("Собранные", "o.local_state = 'packed'"),
-}
+# Раздел «Заказы» общий на все кабинеты (core/board.py). Старый адрес со
+# вкладками ведёт туда же, в тот же статус склада.
+OLD_TABS = {"pack": "packaging", "ship": "deliver", "packed": "packed"}
 
 
-def _list_orders(account: dict, tab: str, search: str = "", limit: int = 300) -> list[dict]:
-    _title, condition = TABS.get(tab, TABS["pack"])
-    params: list = [account["id"]]
-    sql = f"SELECT o.* FROM yandex_orders o WHERE o.account_id = ? AND {condition}"
-    if search:
-        like = f"%{search.strip()}%"
-        sql += """
-            AND (o.id LIKE ? OR o.external_id LIKE ? OR o.service_name LIKE ?
-                 OR EXISTS (SELECT 1 FROM yandex_order_items i
-                            WHERE i.account_id = o.account_id AND i.order_id = o.id
-                            AND (i.name LIKE ? OR i.offer_id LIKE ?)))
-        """
-        params += [like] * 5
-    order = "o.packed_at DESC" if tab == "packed" else "(o.shipment_date IS NULL), o.shipment_date, o.id"
-    sql += f" ORDER BY {order} LIMIT ?"
-    params.append(limit)
-    return [store.yandex_view(row) for row in db.query(sql, params)]
-
-
-def _counts(account: dict) -> dict:
-    return {
-        key: db.query_one(
-            f"SELECT COUNT(*) AS c FROM yandex_orders o WHERE o.account_id = ? AND {condition}",
-            (account["id"],),
-        )["c"]
-        for key, (_title, condition) in TABS.items()
-    }
-
-
-@router.get("/yandex", response_class=HTMLResponse)
-def yandex_page(request: Request, tab: str = "pack", q: str = "", user: dict = Depends(require_section("orders")),
-                account: dict = Depends(require_market("yandex"))):
-    if tab not in TABS:
-        tab = "pack"
-    return templates.TemplateResponse(
-        request,
-        "yandex/orders.html",
-        {
-            "request": request,
-            "user": user,
-            "account": account,
-            "tab": tab,
-            "tabs": TABS,
-            "counts": _counts(account),
-            "orders": _list_orders(account, tab, q),
-            "search": q,
-            "sync": sync.status(),
-            "csrf": request.state.session.get("csrf"),
-            "active_tab": "yandex",
-        },
-    )
-
-
-@router.get("/api/yandex/orders")
-def api_yandex_orders(tab: str = "pack", q: str = "", user: dict = Depends(require_section("orders")),
-                      account: dict = Depends(require_market("yandex"))):
-    return {"orders": _list_orders(account, tab, q), "counts": _counts(account)}
+@router.get("/yandex")
+def yandex_page(tab: str = "pack"):
+    return RedirectResponse(f"/orders?status={OLD_TABS.get(tab, 'packaging')}", status_code=303)
 
 
 def _order_row(account: dict, order_id: str) -> dict:
@@ -103,19 +41,16 @@ def _order_row(account: dict, order_id: str) -> dict:
         "SELECT * FROM yandex_orders WHERE account_id = ? AND id = ?", (account["id"], order_id)
     )
     if not row:
-        raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден в этом кабинете")
+        raise LookupError(f"Заказ {order_id} не найден в кабинете «{account['title']}»")
     return dict(row)
 
 
-@router.post("/api/yandex/orders/{order_id}/reset")
-def api_yandex_reset_order(order_id: str, request: Request, admin: dict = Depends(require_manager),
-                           account: dict = Depends(require_market("yandex"))):
+def reset_mark(account: dict, user: dict, order_id: str) -> str:
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке.
 
-    Только админу и владельцу: отметка — результат работы сборщика, и снимать
-    её должен тот, кто отвечает за склад.
+    Только админу и владельцу — это проверяет ядро: отметка — результат работы
+    сборщика, и снимать её должен тот, кто отвечает за склад.
     """
-    check_csrf(request)
     _order_row(account, order_id)
     db.execute(
         "UPDATE yandex_orders SET local_state = 'new', packed_at = NULL, packed_by = NULL, "
@@ -124,70 +59,32 @@ def api_yandex_reset_order(order_id: str, request: Request, admin: dict = Depend
         (account["id"], order_id),
     )
     db.log_event(
-        "yandex_order_reset", level="warn", account_id=account["id"], user=admin,
+        "yandex_order_reset", level="warn", account_id=account["id"], user=user,
         posting_number=order_id, message="Сброшена отметка сборки",
     )
-    return {"status": "ok", "message": f"{order_id}: отметка сборки снята"}
+    return f"{order_id}: отметка сборки снята"
 
 
-@router.post("/api/yandex/sync")
-def api_yandex_sync(request: Request, user: dict = Depends(require_section("orders")),
-                    account: dict = Depends(require_market("yandex"))):
-    check_csrf(request)
-    try:
-        result = sync.run_once(account=account)
-    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
-        raise HTTPException(status_code=502, detail=f"Маркет недоступен: {exc}") from exc
-    return {
-        "status": "ok",
-        "message": f"Загружено заказов: {result.get('yandex', 0)}",
-        "result": result,
-        "counts": _counts(account),
-        "sync": sync.status(),
-    }
-
-
-# ------------------------------------------------------------------ ярлыки
-def _pdf_response(pdf: bytes, filename: str) -> Response:
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store",
-                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
-                 **core_printers.size_header(pdf)},
-    )
-
-
-@router.get("/api/yandex/label/{order_id}.pdf")
-def api_yandex_label(order_id: str, user: dict = Depends(require_section("pack")),
-                     account: dict = Depends(require_market("yandex"))):
-    """Ярлык одного заказа — файл Маркета как есть."""
-    _order_row(account, order_id)
-    try:
-        pdf, filename = yandex_pack.label_pdf(account, user, [order_id])
-    except YandexError as exc:
-        raise HTTPException(status_code=502, detail=f"Маркет не отдал ярлык: {exc.message}") from exc
-    return _pdf_response(pdf, filename)
-
-
-@router.post("/api/yandex/labels.pdf")
-def api_yandex_labels(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("orders")),
-                      account: dict = Depends(require_market("yandex"))):
-    """Пачка ярлыков — для печати нескольких заказов сразу."""
-    check_csrf(request)
-    ids = [str(i) for i in (payload.get("order_ids") or []) if i]
-    if not ids:
-        raise HTTPException(status_code=400, detail="Не выбрано ни одного заказа")
-    if len(ids) > MAX_LABELS:
-        raise HTTPException(status_code=400, detail=f"За один раз печатается не больше {MAX_LABELS} ярлыков")
+def print_labels(account: dict, user: dict, ids: list[str]) -> tuple[bytes, str]:
+    """Ярлыки заказов — файл Маркета как есть."""
     for order_id in ids:
         _order_row(account, order_id)
-    try:
-        pdf, filename = yandex_pack.label_pdf(account, user, ids)
-    except YandexError as exc:
-        raise HTTPException(status_code=502, detail=f"Маркет не отдал ярлыки: {exc.message}") from exc
-    return _pdf_response(pdf, filename)
+    return yandex_pack.label_pdf(account, user, ids)
+
+
+# Переводов статуса на стороне Маркета панель не делает — действий нет.
+ORDERS = OrdersBoard(
+    table="yandex_orders",
+    status_sql=store.BOARD_STATUS_SQL,
+    deadline_sql="o.shipment_date",
+    search_sql=store.BOARD_SEARCH_SQL,
+    card=store.board_card,
+    label="Ярлык",
+    printed="Ярлык печатался",
+    labels=print_labels,
+    reset=reset_mark,
+    max_labels=MAX_LABELS,
+)
 
 
 # ------------------------------------------------------------------ сборка
@@ -238,18 +135,11 @@ def _count(sql: str, params: tuple) -> int:
 
 
 def nav_items(account: dict) -> list[NavItem]:
-    """Меню кабинета Маркета. Как у Ozon: значок — сколько работы осталось."""
-    aid = (account["id"],)
+    """Меню кабинета Маркета: своё у него — только рабочее место."""
     return [
         NavItem("/yandex/pack", "Сборка", "yandex_pack", "pack"),
-        NavItem("/yandex?tab=pack", "Заказы Маркета", "yandex", "orders", (
-            (_count("SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
-                    "AND substatus = 'STARTED' AND local_state != 'packed'", aid),
-             "warn", "Ожидает сборки"),
-            (_count("SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? "
-                    "AND substatus = 'READY_TO_SHIP' AND local_state != 'packed'", aid),
-             "accent", "Ожидает отгрузки"),
-        )),
+        # «Заказов» здесь нет: пункт общий, со счётчиками по всем кабинетам, —
+        # его ставит ядро (core/deps.market_nav).
     ]
 
 

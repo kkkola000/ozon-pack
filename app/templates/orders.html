@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% block title %}Заказы{% endblock %}
+
+{#- Ссылка с фильтрами: кабинет, статус и поиск живут в адресе — его можно
+    обновить, отправить другому или вернуться к нему кнопкой «Назад». -#}
+{%- macro link(shop, status, q) -%}
+/orders?shop={{ shop }}&status={{ status }}{% if q %}&q={{ q | urlencode }}{% endif %}
+{%- endmacro -%}
+
+{% block content %}
+{# Раздел один на все кабинеты. Кабинет в шапке ни на что здесь не влияет:
+   что показывать, решают фильтры, а действие уходит в кабинет своего заказа.
+   Числа перекрёстные: на кабинете — сколько у него в выбранном статусе, на
+   статусе — сколько в выбранном кабинете. #}
+<div class="panel">
+  <div class="filter-line" style="margin-top:0">
+    <span class="muted small filter-label">Кабинеты:</span>
+    <div class="chips" id="shop-chips">
+      {% for chip in chips %}
+      <a class="chip {{ 'active' if chip.active }}" href="{{ link(chip.id, status, search) | trim }}"
+         {%- if chip.market %} title="{{ chip.market_title }}"{% endif %}>
+        {%- if chip.market %}<i class="dot {{ chip.market }}"></i>{% endif -%}
+        {{ chip.title }} <span class="badge">{{ chip.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="filter-line">
+    <span class="muted small filter-label">Статус:</span>
+    <div class="tabs status-tabs" id="status-tabs">
+      {% for tab in tabs %}
+      <a href="{{ link(picked, tab.key, search) | trim }}" class="{{ 'active' if tab.active }}">
+        {{ tab.title }} <span class="badge">{{ tab.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="row between no-print">
+    <form class="row" method="get" action="/orders">
+      <input type="hidden" name="shop" value="{{ picked }}">
+      <input type="hidden" name="status" value="{{ status }}">
+      <input type="search" name="q" value="{{ search }}" placeholder="Номер, товар, артикул, город…" style="width:300px">
+      <button class="btn" type="submit">Найти</button>
+      {% if search %}<a class="btn" href="{{ link(picked, status, '') | trim }}">Сбросить</a>{% endif %}
+    </form>
+    <div class="row">
+      <span class="small muted">Обновлено: {{ synced_at or '—' }}</span>
+      <button class="btn" id="btn-sync" data-shop="{{ picked }}">Обновить заказы</button>
+    </div>
+  </div>
+
+  {# Кнопки над списком — только те, что подходят заказам на экране. В скобках —
+     сколько выбранных заказов они возьмут: «Собрать в Ozon» заказы Avito не трогает. #}
+  <div class="row no-print" style="margin:14px 0 6px">
+    <label class="check"><input type="checkbox" id="check-all"> Выбрать все</label>
+    <span class="muted small" id="selected-count">выбрано: 0</span>
+    <span class="grow"></span>
+    {% for action in actions %}
+    <button class="btn primary" data-bulk="{{ action.id }}" data-ask="{{ action.ask }}" disabled>
+      {{ action.title }} <span data-n></span>
+    </button>
+    {% endfor %}
+    {% if orders | selectattr('label') | list %}
+    <button class="btn" data-bulk="labels" disabled>Печать наклеек <span data-n></span></button>
+    {% endif %}
+  </div>
+
+  {% if orders %}
+  <table>
+    <thead>
+      <tr>
+        <th style="width:34px"></th>
+        <th style="width:150px">Магазин</th>
+        <th style="width:190px">Заказ</th>
+        <th style="width:140px">Отгрузка до</th>
+        <th>Состав</th>
+        <th style="width:190px">Доставка</th>
+        <th style="width:170px">Статус</th>
+        <th style="width:175px"></th>
+      </tr>
+    </thead>
+    <tbody id="order-rows">
+      {% for o in orders %}
+      <tr data-shop="{{ o.account_id }}" data-shop-title="{{ o.shop }}" data-market="{{ o.market }}"
+          data-id="{{ o.id }}" data-number="{{ o.number }}" data-label="{{ 1 if o.label else 0 }}"
+          data-label-word="{{ o.label_word }}" data-max="{{ o.max_labels }}"
+          data-actions="{% for key in o.actions %}{{ o.market }}:{{ key }} {% endfor %}">
+        <td><input type="checkbox" class="pick" value="{{ o.id }}"></td>
+        <td style="white-space:nowrap">
+          <div style="font-weight:700"><i class="dot {{ o.market }}"></i>{{ o.shop }}</div>
+          {% if o.market_title != o.shop %}<div class="muted small">{{ o.market_title }}</div>{% endif %}
+        </td>
+        <td>
+          <div class="mono" style="font-weight:700">{{ o.number }}</div>
+          {% if o.sub %}<div class="muted small mono">{{ o.sub }}</div>{% endif %}
+          <div class="tags" style="margin-top:4px">
+            {% for css, text in o.tags %}<span class="tag {{ css }}">{{ text }}</span>{% endfor %}
+            {% if o.claim %}<span class="tag urgent">Собирает {{ o.claim }}</span>{% endif %}
+          </div>
+        </td>
+        <td>
+          <div>{{ o.deadline_local or '—' }}</div>
+          {% if o.status != 'packed' %}
+            {% if o.urgency == 'overdue' %}<span class="tag overdue">Просрочено</span>
+            {% elif o.urgency == 'urgent' %}<span class="tag urgent">≤ 6 ч</span>
+            {% elif o.urgency == 'soon' %}<span class="tag soon">сегодня</span>{% endif %}
+          {% endif %}
+        </td>
+        <td class="order-items">
+          {#- Фото — у площадок, которые их отдают: image пустой — фото нет у
+              этого товара, None — у площадки их не бывает вовсе. -#}
+          {% if o.image is not none %}
+            {% if o.image %}<img class="thumb" src="{{ o.image }}" alt="" loading="lazy">
+            {% else %}<div class="thumb blank">🖼</div>{% endif %}
+          {% endif %}
+          {% for item in o['items'] %}
+            <div>
+              <b>{{ item.quantity }} ×</b> {{ item.name }}
+              {% if item.code %}<span class="muted small mono">({{ item.code }})</span>{% endif %}
+              {% if item.warn %}<span class="tag overdue" title="Штрихкода нет в каталоге ни по одному кабинету — обновите каталог в разделе «Товары»">{{ item.warn }}</span>{% endif %}
+            </div>
+          {% endfor %}
+        </td>
+        <td class="small">
+          {% for line in o.delivery | select | unique %}<div class="{{ 'muted' if not loop.first }}">{{ line }}</div>{% endfor %}
+        </td>
+        <td class="small">
+          {% if o.status == 'packed' %}
+            <span class="tag success">Собран</span>
+            <div class="muted">Собрал: {{ o.packed_by or '—' }}<br>{{ o.packed_at_local }}</div>
+          {% elif o.status == 'packaging' %}
+            <span class="tag urgent">Ожидает сборки</span>
+          {% else %}
+            <span class="tag soon">Ожидает отгрузки</span>
+          {% endif %}
+          {% if o.own_status %}<div class="muted" style="margin-top:4px">{{ o.market_title }}: «{{ o.own_status }}»</div>{% endif %}
+          {% if o.printed %}<div class="muted">{{ o.printed_word }} ({{ o.printed }})</div>{% endif %}
+        </td>
+        <td class="small no-print">
+          <div class="row-actions">
+            {% for key in o.actions %}
+              {% set name = o.market ~ ':' ~ key %}
+              <button class="btn primary small" data-act="{{ name }}">{{ shorts.get(name, key) }}</button>
+            {% endfor %}
+            {% if o.label %}<button class="btn small" data-print>{{ o.label_word }}</button>{% endif %}
+            {# Снять отметку «Собран» — только администратор и владелец. #}
+            {% if o.status == 'packed' and is_manager(user) %}
+              <button class="btn small" data-reset>Снять отметку</button>
+            {% endif %}
+            {% if o.note %}<span class="muted">{{ o.note }}</span>{% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if total > orders | length %}
+    <div class="muted small" style="margin-top:10px">
+      Показаны первые {{ orders | length }} из {{ total }} — уточните поиск или выберите кабинет.
+    </div>
+  {% endif %}
+  {% else %}
+    <div class="empty">
+      Ничего не найдено.
+      {% if not search %}
+        {% if status == 'packed' %}Собранные появятся здесь после сканирования на «Сборке».
+        {% else %}Нажмите «Обновить заказы», если ждёте новые.{% endif %}
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/orders.js?v={{ static_version() }}"></script>
+{% endblock %}

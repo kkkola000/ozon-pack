@@ -18,7 +18,8 @@ MARKET = Market(
     hint="Личный кабинет Ozon → Настройки → Seller API",
     home="/pack",
     # «/returns» тут нет намеренно: раздел возвратов общий, он в списке ядра.
-    prefixes=("/pack", "/orders", "/api/"),
+    # «/orders» тут тоже нет: раздел «Заказы» общий на все кабинеты.
+    prefixes=("/pack", "/api/"),
     # Каталог (products, product_barcodes) здесь не числится: таблица общая,
     # её чистит ядро вместе с кабинетом любой площадки.
     tables=("postings", "posting_items", "returns"),
@@ -49,6 +50,8 @@ MARKET = Market(
     # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.
     returns=returns.SOURCE,
     orders_feed=store.orders_feed,
+    # «Заказы»: какие отправления в каком статусе склада и что с ними можно сделать.
+    orders=routes.ORDERS,
     workspace=routes.WORKSPACE,
     settings_rows="ozon/settings_rows.html",
     settings_panel="ozon/settings_panel.html",

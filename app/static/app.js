@@ -158,8 +158,11 @@ function reservePrintWindow() {
   try { return window.open('', LABEL_WINDOW_NAME); } catch (error) { return null; }
 }
 
+/* wait — дождаться, пока окно печати браузера закроют. Нужно, когда файлов
+   несколько подряд (наклейки разных кабинетов в «Заказах»): рамка печати одна,
+   и следующий файл иначе убрал бы предыдущий раньше, чем тот напечатается. */
 async function printPdf(url, {
-  name = 'Стикер', asBlob = true, window: preopened = null, kind = '', pageSize = null,
+  name = 'Стикер', asBlob = true, window: preopened = null, kind = '', pageSize = null, wait = false,
 } = {}) {
   /* Сначала QZ Tray, если для этого документа выбран принтер (см. «Принтеры»).
      Не вышло — печатаем через браузер, как раньше: из-за настройки печать не
@@ -226,26 +229,32 @@ async function printPdf(url, {
     'position:fixed;inset:0;width:100vw;height:100vh;opacity:0;pointer-events:none;border:0;z-index:-1';
 
   let printed = false;
+  let finish;
+  const finished = new Promise((resolve) => { finish = resolve; });
   frame.onload = () => {
     /* Плагину PDF нужно время на отрисовку, иначе печатается пустая страница. */
     setTimeout(() => {
       try {
         frame.contentWindow.focus();
+        // Окно печати модальное: print() возвращается, когда его закрыли.
         frame.contentWindow.print();
         printed = true;
       } catch (error) {
         offerManualPrint(printUrl, name);
       }
+      finish();
     }, 500);
   };
-  frame.onerror = () => offerManualPrint(printUrl, name);
+  frame.onerror = () => { offerManualPrint(printUrl, name); finish(); };
   document.body.appendChild(frame);
   frame.src = printUrl;
 
   clearTimeout(printFallbackTimer);
   printFallbackTimer = setTimeout(() => {
     if (!printed) offerManualPrint(printUrl, name);
+    finish();
   }, 8000);
+  if (wait) await finished;
   return true;
 }
 

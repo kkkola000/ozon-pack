@@ -49,6 +49,22 @@ def sync_account(account: dict, *, returns: bool = True) -> dict:
     return result
 
 
+def sync_many(shops: list[dict], *, returns: bool = False) -> tuple[list[str], list[str]]:
+    """«Обновить заказы» по нескольким кабинетам: (обновлённые, «кабинет: причина»).
+
+    Отказ одного кабинета не отменяет остальных — склад общий, и из-за одной
+    упавшей площадки не должны устаревать заказы других.
+    """
+    done, failed = [], []
+    for shop in shops:
+        try:
+            sync_account(shop, returns=returns)
+            done.append(shop["title"])
+        except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+            failed.append(f"{shop['title']}: {exc}")
+    return done, failed
+
+
 def synced_at(account_id: int) -> str | None:
     """Когда кабинет последний раз ходил на площадку. Неважно, кто его отправил."""
     return db.kv_get(f"{KV_ACCOUNT_SYNC}:{int(account_id)}") or None

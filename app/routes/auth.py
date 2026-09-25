@@ -93,7 +93,7 @@ def switch_account(request: Request, payload: dict = Body(...)):
     target = security.safe_next(payload.get("next"), "/")
     # Разделы, общие для всех площадок, при переключении не сбрасываются;
     # свои адреса и домашнюю страницу площадка объявляет сама.
-    shared = ("/logs", "/settings", "/products", "/reports", "/returns")
+    shared = ("/logs", "/settings", "/products", "/reports", "/returns", "/orders", "/printers")
     market = registry.get(account["marketplace"])
     own = market.prefixes if market else ()
     # «Сборка» от кабинета не зависит вовсе: границы задаёт её фильтр. Поэтому

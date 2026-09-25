@@ -178,10 +178,11 @@ def test_switching_cabinet_changes_section(client):
         "/api/account/switch", json={"account_id": avito_id, "next": "/orders"}, headers={"X-CSRF-Token": csrf}
     )
     assert response.status_code == 200, response.text
-    # Раздел FBS в кабинете Avito не открывается — панель ведёт в свой раздел.
-    assert response.json()["redirect"] == "/avito"
-    assert client.get("/avito").status_code == 200
-    assert client.get("/orders").status_code == 409
+    # «Заказы» — один раздел на все кабинеты: переключение оставляет на месте,
+    # а старый адрес «Заказов Avito» ведёт туда же.
+    assert response.json()["redirect"] == "/orders"
+    assert client.get("/orders").status_code == 200
+    assert client.get("/avito").headers["location"] == "/orders?status=packaging"
     # «Сборка» одна на все площадки: её адрес открывается в любом кабинете и
     # кабинет не переключает — сборка идёт по фильтру, а не по шапке.
     assert client.get("/pack").status_code == 200
@@ -457,7 +458,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.43.0"
+    assert get_version() == "1.44.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

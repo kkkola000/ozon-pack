@@ -191,12 +191,25 @@ def panel_has_catalog(request: Request = None) -> bool:  # noqa: ARG001 - зов
 
 
 def market_nav(request: Request) -> list:
-    """Пункты меню текущего кабинета — их объявляет площадка."""
+    """Пункты меню: свои у площадки текущего кабинета и общие «Заказы».
+
+    «Заказы» — раздел на все кабинеты сразу, поэтому пункт ставит ядро, и
+    значки на нём считаются по всем кабинетам, а не по выбранному в шапке.
+    Место — сразу за «Сборкой», как раньше стояли «Заказы» площадок.
+    """
     from ..markets import registry
+    from ..markets.base import NavItem
+    from . import board
 
     account = current_account(request)
     market = registry.get(account["marketplace"]) if account else None
-    return market.nav(account) if market else []
+    items = list(market.nav(account)) if market else []
+    if not items:
+        return items
+    orders = NavItem("/orders", "Заказы", "orders", "orders", board.badges())
+    at = next((index + 1 for index, item in enumerate(items) if item.section == "pack"), 0)
+    items.insert(at, orders)
+    return items
 
 
 def static_version() -> str:

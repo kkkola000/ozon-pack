@@ -42,5 +42,7 @@ MARKET = Market(
     # открывается и его кабинетам.
     catalog=CatalogSource(pages=catalog.pages),
     orders_feed=store.orders_feed,
+    # «Заказы»: ярлыки и снятие отметки — в общем разделе.
+    orders=routes.ORDERS,
     workspace=routes.WORKSPACE,
 )

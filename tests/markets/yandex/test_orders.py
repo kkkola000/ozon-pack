@@ -10,7 +10,7 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, labels
+from app.core import accounts, board, db, labels
 from app.markets import yandex as yandex_market
 from app.markets.yandex import client as yandex
 from app.main import app
@@ -147,24 +147,28 @@ def test_tabs_split_work_and_packed(client, market, user):
         "UPDATE yandex_orders SET local_state = 'packed', packed_by = ?, packed_at = ? WHERE account_id = ? AND id = ?",
         (user["login"], db.now_iso(), market["id"], started["id"]),
     )
-    pack = client.get("/api/yandex/orders?tab=pack").json()
-    packed = client.get("/api/yandex/orders?tab=packed").json()
-    ship = client.get("/api/yandex/orders?tab=ship").json()
-    assert started["id"] not in {o["id"] for o in pack["orders"]}
-    assert [o["id"] for o in packed["orders"]] == [started["id"]]
-    assert all(o["substatus"] == yandex.SUBSTATUS_READY_TO_SHIP for o in ship["orders"])
-    assert pack["counts"]["packed"] == 1
+    waiting = board.rows([market], "packaging")
+    packed = board.rows([market], "packed")
+    ship = board.rows([market], "deliver")
+    ready = {r["id"] for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP)}
+    assert started["id"] not in {o["id"] for o in waiting}
+    assert [o["id"] for o in packed] == [started["id"]]
+    assert ship and {o["id"] for o in ship} <= ready
+    assert board.counts([market])[(market["id"], "packed")] == 1
 
-    page = client.get("/yandex?tab=packed")
+    page = client.get(f"/orders?shop={market['id']}&status=packed")
     assert page.status_code == 200
     assert "Собрал: admin" in page.text
-    assert 'data-reset="' in page.text
+    assert "data-reset" in page.text
 
 
 def test_pages_open_and_nav_shows_market(client):
-    page = client.get("/yandex")
+    """В шапке — общие «Заказы», а не «Заказы Маркета» или «Заказы FBS»."""
+    assert client.get("/yandex").headers["location"] == "/orders?status=packaging"
+    page = client.get("/orders")
     assert page.status_code == 200
-    assert "Заказы Маркета" in page.text
+    assert 'href="/orders"' in page.text
+    assert "Заказы Маркета" not in page.text
     assert "Заказы FBS" not in page.text
     pack = client.get("/yandex/pack")
     assert pack.status_code == 200
@@ -177,21 +181,22 @@ def test_pages_open_and_nav_shows_market(client):
     assert client.get("/reports").status_code == 200
 
 
-def test_ozon_sections_refuse_a_market_cabinet(client):
-    """Разделы Ozon в кабинете Маркета не открываются.
+def test_shared_sections_open_in_a_market_cabinet(client):
+    """«Сборка» и «Заказы» — общие на все площадки и открываются в любом кабинете.
 
-    «Сборка» — исключение: раздел общий на все площадки, и все три адреса
-    открывают одно и то же. Кабинет в шапке он не трогает: сборка идёт по
-    фильтру, а не по кабинету.
+    Кабинет в шапке их не трогает: что показывать, решают их фильтры.
     """
-    assert client.get("/orders").status_code == 409
-    assert client.get("/avito").status_code == 409
+    assert client.get("/orders").status_code == 200
+    assert client.get("/avito").status_code == 303
     assert client.get("/pack").status_code == 200
 
 
 def test_switch_lands_on_market_pack_page(client, market):
-    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/orders"})
+    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/avito"})
     assert response.json()["redirect"] == "/yandex/pack"
+    # «Заказы» общие — переключение оставляет на месте.
+    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/orders"})
+    assert response.json()["redirect"] == "/orders"
     response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/reports"})
     assert response.json()["redirect"] == "/reports"
 
@@ -208,7 +213,7 @@ def test_only_a_manager_can_unmark_a_packed_order(client, market, user, other_us
         "UPDATE yandex_orders SET local_state = 'packed', packed_by = ?, packed_at = ? WHERE account_id = ? AND id = ?",
         (user["login"], db.now_iso(), market["id"], order["id"]),
     )
-    response = client.post(f"/api/yandex/orders/{order['id']}/reset")
+    response = client.post("/api/orders/reset", json={"account_id": market["id"], "id": order["id"]})
     assert response.status_code == 200, response.text
     row = db.query_one("SELECT local_state, packed_by FROM yandex_orders WHERE id = ?", (order["id"],))
     assert row["local_state"] == "new" and row["packed_by"] is None
@@ -219,14 +224,16 @@ def test_only_a_manager_can_unmark_a_packed_order(client, market, user, other_us
         page = packer.get("/pack")
         packer.headers["X-CSRF-Token"] = re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
         packer.post("/api/account/switch", json={"account_id": market["id"], "next": "/yandex"})
-        denied = packer.post(f"/api/yandex/orders/{order['id']}/reset")
+        denied = packer.post("/api/orders/reset", json={"account_id": market["id"], "id": order["id"]})
         assert denied.status_code == 403
 
 
-def test_sync_button_reports_count(client):
-    response = client.post("/api/yandex/sync")
+def test_sync_button_updates_the_filtered_cabinet(client, market):
+    """«Обновить заказы» в «Заказах» — кабинеты под фильтром, а не тот, что в шапке."""
+    response = client.post(f"/api/orders/sync?shop={market['id']}")
     assert response.status_code == 200, response.text
-    assert response.json()["result"]["yandex"] > 0
+    assert response.json()["updated"] == [market["title"]]
+    assert orders_in(market)
 
 
 # ------------------------------------------------------------------ ярлыки
@@ -272,18 +279,21 @@ def test_new_order_locks_the_scanner_again(client, market):
 
 def test_single_label_and_batch_print(client, market):
     order = orders_in(market)[0]
-    one = client.get(f"/api/yandex/label/{order['id']}.pdf")
-    assert one.status_code == 200
+    def labels(ids):
+        return client.post("/api/orders/labels.pdf", json={"account_id": market["id"], "ids": ids})
+
+    one = labels([order["id"]])
+    assert one.status_code == 200, one.text
     assert one.content.startswith(b"%PDF")
     row = db.query_one("SELECT print_count, printed_at FROM yandex_orders WHERE id = ?", (order["id"],))
     assert row["print_count"] == 1 and row["printed_at"]
 
     ids = [r["id"] for r in orders_in(market)[:2]]
-    batch = client.post("/api/yandex/labels.pdf", json={"order_ids": ids})
+    batch = labels(ids)
     assert batch.status_code == 200
     assert batch.content.startswith(b"%PDF")
-    assert client.post("/api/yandex/labels.pdf", json={"order_ids": []}).status_code == 400
-    assert client.get("/api/yandex/label/000.pdf").status_code == 404
+    assert labels([]).status_code == 400
+    assert labels(["000"]).status_code == 404
 
 
 def test_settings_probe_and_test_keys(client, market):

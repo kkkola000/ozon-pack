@@ -204,8 +204,8 @@ def test_switching_posting_releases_previous(account, sample_data, user, other_u
 
 
 def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
-    """Отгруженное отправление не должно оставаться во вкладке «Собранные»."""
-    from app.markets.ozon.routes import _list_postings
+    """Отгруженное отправление не должно оставаться в статусе «Собран» раздела «Заказы»."""
+    from app.core import board
 
     posting = pick_posting(positions=1)
     number = posting["posting_number"]
@@ -213,7 +213,7 @@ def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
     scan_all_items(account, user, posting)
     packing.scan(account, user, number)
 
-    packed = [p["posting_number"] for p in _list_postings(account, "packed")]
+    packed = [p["number"] for p in board.rows([account], "packed")]
     assert number in packed, "сразу после сборки отправление должно быть в списке"
 
     # Ozon отгрузил отправление — статус ушёл из «Ожидает отгрузки»
@@ -221,7 +221,7 @@ def test_packed_posting_leaves_list_after_shipment(account, sample_data, user):
     ozon_sync.sync_postings()
 
     assert db.query_one("SELECT status FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], number))["status"] == "delivering"
-    packed_after = [p["posting_number"] for p in _list_postings(account, "packed")]
+    packed_after = [p["number"] for p in board.rows([account], "packed")]
     assert number not in packed_after, "после отгрузки отправление должно уйти из списка"
 
     # Отметка о сборке и её автор сохраняются: это нужно для разбора спорных случаев
@@ -233,7 +233,7 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     """Отменённое отправление тоже не место в очереди на отгрузку."""
     import json
 
-    from app.markets.ozon.routes import _list_postings
+    from app.core import board
 
     posting = pick_posting(positions=1)
     number = posting["posting_number"]
@@ -246,7 +246,7 @@ def test_cancelled_posting_leaves_packed_list(account, sample_data, user):
     with db.write() as conn:
         ozon_store.upsert_posting(conn, account["id"], raw)
 
-    assert number not in [p["posting_number"] for p in _list_postings(account, "packed")]
+    assert number not in [p["number"] for p in board.rows([account], "packed")]
 
 
 def test_switching_cabinet_frees_the_claim(account, sample_data, user, other_user):

@@ -233,13 +233,7 @@ def api_sync(request: Request, user: dict = Depends(require_section("pack")),
     where = core_packing.shops(_picked(request))
     if not where:
         raise HTTPException(status_code=400, detail="Нет ни одного кабинета с ключами")
-    done, failed = [], []
-    for shop in where:
-        try:
-            core_sync.sync_account(shop, returns=False)
-            done.append(shop["title"])
-        except Exception as exc:  # noqa: BLE001 - отказ одного кабинета не отменяет остальных
-            failed.append(f"{shop['title']}: {exc}")
+    done, failed = core_sync.sync_many(where)
     if not done:
         raise HTTPException(status_code=502, detail="; ".join(failed))
     message = f"Обновлено кабинетов: {len(done)}"

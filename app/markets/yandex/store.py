@@ -237,6 +237,52 @@ def yandex_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     return data
 
 
+# ------------------------------------------------ раздел «Заказы»
+# Статусы склада. Маркет о нашей сборке не знает: собранный в панели заказ —
+# «Собран», в каком бы подстатусе Маркета он ни был.
+BOARD_STATUS_SQL = """CASE
+    WHEN o.local_state = 'packed' THEN 'packed'
+    WHEN o.substatus = 'STARTED' THEN 'packaging'
+    WHEN o.substatus = 'READY_TO_SHIP' THEN 'deliver'
+END"""
+BOARD_SEARCH_SQL = """(o.id LIKE ? OR o.external_id LIKE ? OR o.service_name LIKE ?
+    OR EXISTS (SELECT 1 FROM yandex_order_items i
+               WHERE i.account_id = o.account_id AND i.order_id = o.id
+               AND (i.name LIKE ? OR i.offer_id LIKE ?)))"""
+
+
+def board_card(row) -> dict:
+    """Заказ Маркета -> строка раздела «Заказы»."""
+    order = yandex_view(row)
+    tags = [("", f"{order.get('positions_count') or 0} поз. · {order.get('items_count') or 0} шт")]
+    return {
+        "id": order["id"],
+        "number": order["id"],
+        "sub": order.get("external_id") or "",
+        "tags": tags,
+        "deadline": order.get("deadline"),
+        "deadline_local": order.get("deadline_local"),
+        "urgency": order.get("urgency"),
+        # Штрихкода нет в каталоге ни по одному кабинету — сканировать нечем.
+        "items": [{"quantity": item["quantity"], "name": item.get("name") or "Без названия",
+                   "code": item.get("offer_id") or item.get("item_id"),
+                   "warn": "" if item.get("barcodes") else "нет ШК"}
+                  for item in order.get("items") or []],
+        "image": None,
+        "delivery": [order.get("delivery_label"), order.get("service_name"), order.get("notes")],
+        "own_status": "",
+        "note": "",
+        "printed": order.get("print_count") or 0,
+        "packed_by": order.get("packed_by"),
+        "packed_at": order.get("packed_at"),
+        "packed_at_local": order.get("packed_at_local"),
+        "claim": order.get("claim_login") if order.get("claim_active") else "",
+        # Ярлык у Маркета есть с подтверждения заказа — в любом из статусов.
+        "label": True,
+        "actions": [],
+    }
+
+
 # ------------------------------------------------ общий список на рабочем месте
 FEED_SQL = """
 SELECT o.account_id, o.id, o.substatus, o.local_state, o.shipment_date, o.items_count,

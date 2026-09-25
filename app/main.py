@@ -14,7 +14,7 @@ from .core import accounts, db, deps, security, sync
 from .core.config import BASE_DIR
 from .core.version import get_commit, get_version
 from .markets import registry
-from .routes import admin, auth, pack, printers, products, reports, returns
+from .routes import admin, auth, orders, pack, printers, products, reports, returns
 
 logging.basicConfig(
     level=logging.INFO,
@@ -188,6 +188,8 @@ app.include_router(pack.register())
 # Остальные разделы площадок — из реестра: новая площадка сюда ничего не дописывает.
 for _market in registry.all_markets():
     app.include_router(_market.router)
+# «Заказы» — один раздел на все кабинеты; площадки объявляют в нём своё.
+app.include_router(orders.router)
 app.include_router(returns.router)
 app.include_router(products.router)
 app.include_router(reports.router)

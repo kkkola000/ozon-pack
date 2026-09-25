@@ -289,6 +289,59 @@ def posting_view(row: sqlite3.Row | dict, *, with_items: bool = True) -> dict:
     return data
 
 
+# ------------------------------------------------ раздел «Заказы»
+# В какой из трёх статусов склада попадает отправление. «Ожидает отгрузки» —
+# собрано в Ozon, но ещё не собрано у нас: сборка в панели идёт именно по нему.
+BOARD_STATUS_SQL = f"""CASE
+    WHEN o.status = '{STATUS_AWAITING_PACKAGING}' THEN 'packaging'
+    WHEN o.status = '{STATUS_AWAITING_DELIVER}' AND o.local_state = 'packed' THEN 'packed'
+    WHEN o.status = '{STATUS_AWAITING_DELIVER}' AND o.local_state = 'new' THEN 'deliver'
+END"""
+
+BOARD_SEARCH_SQL = """(o.posting_number LIKE ? OR o.order_number LIKE ? OR o.city LIKE ?
+    OR EXISTS (SELECT 1 FROM posting_items i WHERE i.posting_number = o.posting_number
+               AND i.account_id = o.account_id
+               AND (i.name LIKE ? OR i.offer_id LIKE ? OR i.sku LIKE ?)))"""
+
+
+def board_card(row) -> dict:
+    """Отправление -> строка раздела «Заказы»."""
+    posting = posting_view(row)
+    board = dict(row).get("board")
+    tags = []
+    if posting.get("is_express"):
+        tags.append(("express", "Express"))
+    if posting.get("requires_mark"):
+        tags.append(("mark", "Маркировка"))
+    if posting.get("is_multibox"):
+        tags.append(("", f"Мест: {posting.get('multi_box_qty')}"))
+    items = posting.get("items") or []
+    return {
+        "id": posting["posting_number"],
+        "number": posting["posting_number"],
+        "sub": posting.get("order_number") or "",
+        "tags": tags,
+        "deadline": posting.get("shipment_date"),
+        "deadline_local": posting.get("shipment_date_local"),
+        "urgency": posting.get("urgency"),
+        "items": [{"quantity": item["quantity"], "name": item.get("name") or "Без названия",
+                   "code": item.get("offer_id") or item.get("sku"), "warn": ""} for item in items],
+        # Пустая строка — фото у товара нет; None значило бы «у площадки их не бывает».
+        "image": next((item.get("image") for item in items if item.get("image")), ""),
+        "delivery": [posting.get("city"), posting.get("delivery_method"), posting.get("tpl_provider")],
+        "own_status": "",
+        "note": "",
+        "printed": posting.get("print_count") or 0,
+        "packed_by": posting.get("packed_by"),
+        "packed_at": posting.get("packed_at"),
+        "packed_at_local": posting.get("packed_at_local"),
+        "claim": posting.get("claim_login") if posting.get("claim_active") else "",
+        # В «Ожидает сборки» стикера у Ozon ещё нет — печатать нечего.
+        "label": board != "packaging",
+        "actions": ["ship"] if board == "packaging" else [],
+    }
+
+
 # ------------------------------------------------ общий список на рабочем месте
 # Список показывает заказы всех кабинетов сразу, поэтому строки приводятся к
 # одному виду: сборщику всё равно, отправление это Ozon или заказ Avito, ему

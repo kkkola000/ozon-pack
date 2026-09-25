@@ -174,6 +174,59 @@ class Workspace:
 
 
 @dataclass(frozen=True)
+class OrderAction:
+    """Действие над заказами площадки в разделе «Заказы»: «Собрать в Ozon», «Подтвердить».
+
+    Кнопка стоит в строке заказа (short) и над списком (title) — там она берёт
+    выбранные заказы этой площадки. Какой строке она положена, строка говорит
+    сама — ключом в своём списке actions.
+    """
+
+    key: str                     # «ship»: так действие зовётся в запросе и в actions строки
+    title: str                   # над списком: «Собрать в Ozon → «Ожидает отгрузки»»
+    short: str                   # в строке: «Собрать в Ozon»
+    # run(кабинет, человек, номера) -> {status, message, results}. Заказа нет в
+    # этом кабинете — LookupError с текстом: чужой заказ не трогаем.
+    run: Callable[[dict, dict, list[str]], dict]
+    ask: str = ""                # вопрос перед массовым действием; {n} — сколько заказов
+
+
+@dataclass(frozen=True)
+class OrdersBoard:
+    """Заказы площадки в общем разделе «Заказы».
+
+    Раздел один на все кабинеты: сверху фильтр кабинетов, под ним три статуса
+    склада — «Ожидает сборки», «Ожидает отгрузки», «Собран». Статусы у площадок
+    свои, и в какой из трёх попадает заказ, площадка говорит сама — выражением
+    status_sql. Остальное делает ядро (core/board.py): считает, ищет, сортирует
+    и рисует. Кабинет в шапке тут не участвует: каждый запрос несёт кабинет
+    своего заказа.
+
+    Таблица заказов в запросах идёт под псевдонимом «o».
+    """
+
+    table: str                   # «postings»
+    # CASE … END → 'packaging' / 'deliver' / 'packed'; NULL — заказа в разделе нет.
+    status_sql: str
+    deadline_sql: str            # срок отгрузки: по нему сортируется список
+    # Условие поиска; каждый «?» получает одну и ту же строку «%запрос%».
+    search_sql: str
+    # Строка базы (с колонкой board — её статус) → строка общего списка:
+    # id, number, sub, tags, deadline, deadline_local, urgency, items, image,
+    # delivery, own_status, printed, packed_by, packed_at, packed_at_local,
+    # claim, actions. Как её рисовать, решает ядро — одинаково для всех.
+    card: Callable[[Any], dict]
+    label: str                   # «Стикер»: кнопка печати в строке
+    printed: str                 # «Стикер печатался»: подпись в строке
+    # Наклейки на печать: labels(кабинет, человек, номера) -> (PDF, имя файла).
+    labels: Callable[[dict, dict, list[str]], tuple[bytes, str]]
+    # Снять отметку «Собран»: reset(кабинет, человек, номер) -> сообщение.
+    reset: Callable[[dict, dict, str], str]
+    actions: tuple[OrderAction, ...] = ()
+    max_labels: int = 50         # сколько наклеек площадка отдаёт за один запрос
+
+
+@dataclass(frozen=True)
 class Market:
     code: str                    # "ozon" — так площадка записана в accounts.marketplace
     title: str                   # «Яндекс Маркет» — как показать человеку
@@ -214,6 +267,8 @@ class Market:
     # deadline, deadline_local, urgency, status_label, in_work}, — чтобы список
     # показывал рядом отправление Ozon и заказ Avito, не различая их.
     orders_feed: Callable[..., list[dict]] | None = None
+    # Заказы кабинетов в общем разделе «Заказы». None — раздела у площадки нет.
+    orders: OrdersBoard | None = None
     # Рабочее место сборщика: слова и счётчики очереди.
     workspace: Workspace | None = None
     extra: dict[str, Any] = field(default_factory=dict)

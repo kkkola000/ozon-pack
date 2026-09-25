@@ -10,7 +10,8 @@ MARKET = Market(
     id_label="client_id",
     key_label="client_secret",
     hint="Личный кабинет Avito → Настройки → Профиль → API",
-    home="/avito",
+    # Заказы — в общем разделе «/orders»; своё у Avito — рабочее место.
+    home="/avito/pack",
     prefixes=("/avito",),
     tables=("avito_orders", "avito_order_items"),
     router=routes.router,
@@ -35,5 +36,7 @@ MARKET = Market(
     # Возврат у Avito — состояние заказа, но в разделе он выглядит как у всех.
     returns=returns.SOURCE,
     orders_feed=store.orders_feed,
+    # «Заказы»: подтвердить, отправить, этикетки — в общем разделе.
+    orders=routes.ORDERS,
     workspace=routes.WORKSPACE,
 )

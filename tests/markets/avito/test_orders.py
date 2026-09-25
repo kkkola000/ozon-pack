@@ -46,6 +46,21 @@ def orders_in(account, status):
     )
 
 
+def act(client, account, action, ids):
+    """Действие из общего раздела «Заказы»: кабинет называет запрос, а не шапка."""
+    return client.post("/api/orders/action", json={"account_id": account["id"], "action": action, "ids": ids})
+
+
+def orders_page(client, account, status="packaging"):
+    return client.get(f"/orders?shop={account['id']}&status={status}")
+
+
+def row_html(page: str, order_id: str) -> str:
+    """Строка заказа на странице — от его <tr> до закрывающего."""
+    start = page.index(f'data-id="{order_id}"')
+    return page[start:page.index("</tr>", start)]
+
+
 # ------------------------------------------------------------------ синхронизация
 def test_only_work_statuses_are_stored(avito_account):
     """В панель попадают только заказы, с которыми сборщику надо что-то сделать."""
@@ -100,7 +115,7 @@ def test_order_leaving_work_status_disappears(avito_account):
 # ------------------------------------------------------------------ действия
 def test_confirm_moves_order_to_ship_tab(client, avito_account):
     order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]
-    response = client.post("/api/avito/confirm", json={"order_ids": [order["id"]]})
+    response = act(client, avito_account, "confirm", [order["id"]])
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "ok"
 
@@ -120,7 +135,7 @@ def test_ship_removes_order_from_panel(client, avito_account):
         row for row in orders_in(avito_account, avito.STATUS_READY_TO_SHIP)
         if "perform" in (row["actions"] or "")
     )
-    response = client.post("/api/avito/ship", json={"order_ids": [order["id"]]})
+    response = act(client, avito_account, "ship", [order["id"]])
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "ok"
 
@@ -136,14 +151,14 @@ def test_ship_removes_order_from_panel(client, avito_account):
 def test_double_confirm_is_reported_not_silent(client, avito_account):
     """Повторное подтверждение — ошибка Avito, и её видно оператору."""
     order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]
-    client.post("/api/avito/confirm", json={"order_ids": [order["id"]]})
+    act(client, avito_account, "confirm", [order["id"]])
 
     # Возвращаем локальный статус, как будто список ещё не обновился.
     db.execute(
         "UPDATE avito_orders SET status = ? WHERE account_id = ? AND id = ?",
         (avito.STATUS_ON_CONFIRMATION, avito_account["id"], order["id"]),
     )
-    response = client.post("/api/avito/confirm", json={"order_ids": [order["id"]]})
+    response = act(client, avito_account, "confirm", [order["id"]])
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "error"
@@ -159,16 +174,18 @@ def test_order_from_another_cabinet_is_not_touched(client, avito_account):
         "SELECT id FROM avito_orders WHERE account_id = ? LIMIT 1", (other["id"],)
     )["id"]
 
-    response = client.post("/api/avito/confirm", json={"order_ids": [foreign]})
+    response = act(client, avito_account, "confirm", [foreign])
     assert response.status_code == 404
 
 
 # ------------------------------------------------------------------ этикетки
 def test_label_returns_pdf_and_counts_print(client, avito_account):
     order = orders_in(avito_account, avito.STATUS_READY_TO_SHIP)[0]
-    response = client.get(f"/api/avito/label/{order['id']}.pdf")
-    assert response.status_code == 200
+    response = client.post("/api/orders/labels.pdf", json={"account_id": avito_account["id"], "ids": [order["id"]]})
+    assert response.status_code == 200, response.text
     assert response.content[:4] == b"%PDF"
+    # Размер листа — по нему браузер выбирает принтер этикеток Avito.
+    assert response.headers["X-Page-Size"]
 
     row = db.query_one(
         "SELECT printed_at, print_count FROM avito_orders WHERE account_id = ? AND id = ?",
@@ -178,28 +195,42 @@ def test_label_returns_pdf_and_counts_print(client, avito_account):
 
 
 def test_labels_batch_is_limited(client, avito_account):
-    response = client.post("/api/avito/labels.pdf", json={"order_ids": [str(i) for i in range(51)]})
+    response = client.post("/api/orders/labels.pdf",
+                           json={"account_id": avito_account["id"], "ids": [str(i) for i in range(51)]})
     assert response.status_code == 400
 
 
 # ------------------------------------------------------------------ страница
-def test_page_shows_only_two_tabs(client):
-    page = client.get("/avito")
-    assert page.status_code == 200
-    assert "Подтвердите заказ" in page.text
-    assert "Отправьте заказ" in page.text
-    for hidden in ("Отменить заказ", "Честный знак", "Трек-номер", "интервал курьера"):
-        assert hidden not in page.text, f"в интерфейсе не должно быть «{hidden}»"
+def test_orders_show_avito_work_statuses(client, avito_account):
+    """В «Заказах» — только то, с чем сборщику работать, и своим словом Avito.
+
+    «Подтвердите заказ» лежит в «Ожидает сборки», «Отправьте заказ» — в
+    «Ожидает отгрузки». Остальные возможности Avito в интерфейс не выводятся.
+    """
+    waiting = orders_page(client, avito_account, "packaging")
+    assert waiting.status_code == 200
+    assert "Avito: «Подтвердите заказ»" in waiting.text
+    shipping = orders_page(client, avito_account, "deliver")
+    assert "Avito: «Отправьте заказ»" in shipping.text
+    for page in (waiting, shipping):
+        for hidden in ("Отменить заказ", "Честный знак", "Трек-номер", "интервал курьера"):
+            assert hidden not in page.text, f"в интерфейсе не должно быть «{hidden}»"
 
 
-def test_avito_sections_are_closed_for_ozon_cabinet(client):
-    """В кабинете Ozon раздел Avito недоступен — и наоборот."""
+def test_old_avito_address_leads_to_shared_orders(client, avito_account):
+    """«Заказы Avito» больше нет: старый адрес ведёт в общий раздел, в тот же статус.
+
+    И раздел не зависит от кабинета в шапке: стоим в Ozon — заказы Avito видны.
+    """
     ozon_account = accounts.all_accounts()[0]
     assert ozon_account["marketplace"] == "ozon"
     switched = client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/avito"})
     assert switched.status_code == 200
     assert switched.json()["redirect"] == "/pack"
-    assert client.get("/avito").status_code == 409
+    for tab, status in (("confirm", "packaging"), ("ship", "deliver"), ("packed", "packed")):
+        assert client.get(f"/avito?tab={tab}").headers["location"] == f"/orders?status={status}"
+    order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]
+    assert (order["marketplace_id"] or order["id"]) in orders_page(client, avito_account).text
 
 
 # ------------------------------------------------------------------ клиент
@@ -600,9 +631,9 @@ def test_raw_answer_is_available_to_admin(client, avito_account):
     assert "pickup_address" in body
 
 
-# ------------------------------------------------- вкладка «Собранные»
+# ------------------------------------------------- статус «Собран» в «Заказах»
 def test_packed_orders_move_to_their_own_tab(client, avito_account):
-    """Собранный заказ уходит из «Отправьте заказ» во вкладку «Собранные».
+    """Собранный заказ уходит из «Ожидает отгрузки» в «Собран».
 
     Avito о сборке не знает: для площадки заказ всё ещё «Отправьте заказ».
     Собрали мы у себя, и без деления собранное лежало бы вперемешку с
@@ -613,22 +644,22 @@ def test_packed_orders_move_to_their_own_tab(client, avito_account):
         (avito_account["id"], avito.STATUS_READY_TO_SHIP),
     )["id"]
 
-    ship = client.get("/avito?tab=ship")
+    ship = orders_page(client, avito_account, "deliver")
     assert target in ship.text
-    assert client.get("/avito?tab=packed").text.count(target) == 0
+    assert orders_page(client, avito_account, "packed").text.count(target) == 0
 
     db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
 
-    assert target not in client.get("/avito?tab=ship").text, "собранный остался в «Отправьте заказ»"
-    assert target in client.get("/avito?tab=packed").text, "собранного нет во вкладке «Собранные»"
+    assert target not in orders_page(client, avito_account, "deliver").text, "собранный остался в «Ожидает отгрузки»"
+    assert target in orders_page(client, avito_account, "packed").text, "собранного нет в статусе «Собран»"
 
 
-def test_the_packed_tab_is_offered(client):
-    """Вкладка есть на экране — иначе о ней никто не узнает."""
-    page = client.get("/avito")
+def test_the_packed_tab_is_offered(client, avito_account):
+    """Статус «Собран» есть на экране — иначе о нём никто не узнает."""
+    page = orders_page(client, avito_account)
     assert page.status_code == 200
-    assert "Собранные" in page.text
-    assert "/avito?tab=packed" in page.text
+    assert "Собран" in page.text
+    assert f"/orders?shop={avito_account['id']}&status=packed" in page.text
 
 
 def tab_badge(page: str, title: str) -> int:
@@ -648,28 +679,29 @@ def test_packed_orders_leave_the_shipping_count(client, avito_account):
         "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
         (avito_account["id"], avito.STATUS_READY_TO_SHIP),
     )["id"]
-    before = client.get("/avito").text
-    ship_before = tab_badge(before, "Отправьте заказ")
-    assert tab_badge(before, "Собранные") == 0
+    before = orders_page(client, avito_account).text
+    ship_before = tab_badge(before, "Ожидает отгрузки")
+    assert tab_badge(before, "Собран") == 0
 
     db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
-    after = client.get("/avito").text
+    after = orders_page(client, avito_account).text
 
-    assert tab_badge(after, "Отправьте заказ") == ship_before - 1
-    assert tab_badge(after, "Собранные") == 1
+    assert tab_badge(after, "Ожидает отгрузки") == ship_before - 1
+    assert tab_badge(after, "Собран") == 1
 
 
 def test_shipping_still_works_from_the_packed_tab(client, avito_account):
-    """Отправку подтверждают из «Собранных» — кнопка там та же."""
-    target = db.query_one(
-        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
-        (avito_account["id"], avito.STATUS_READY_TO_SHIP),
-    )["id"]
+    """Отправку подтверждают из «Собран» — кнопка там та же, в строке и над списком."""
+    target = next(
+        row["id"] for row in orders_in(avito_account, avito.STATUS_READY_TO_SHIP)
+        if "perform" in (row["actions"] or "")
+    )
     db.execute("UPDATE avito_orders SET local_state = 'packed' WHERE id = ?", (target,))
 
-    page = client.get("/avito?tab=packed")
-    assert 'id="btn-ship"' in page.text, "во вкладке «Собранные» нечем отправить"
-    assert 'id="btn-confirm"' not in page.text
+    page = orders_page(client, avito_account, "packed").text
+    assert 'data-bulk="avito:ship"' in page, "в статусе «Собран» нечем отправить"
+    assert 'data-act="avito:ship"' in row_html(page, target)
+    assert 'data-bulk="avito:confirm"' not in page
 
 
 def test_only_a_manager_can_unmark_a_packed_order(client, avito_account):
@@ -688,9 +720,9 @@ def test_only_a_manager_can_unmark_a_packed_order(client, avito_account):
         "UPDATE avito_orders SET local_state = 'packed', packed_by = 'sborshik' WHERE id = ?", (target,))
 
     # Владелец видит кнопку и снимает отметку.
-    page = client.get("/avito?tab=packed")
-    assert f'data-reset="{target}"' in page.text, "владельцу не показали «Снять отметку»"
-    done = client.post(f"/api/avito/orders/{target}/reset", json={})
+    page = orders_page(client, avito_account, "packed")
+    assert "data-reset" in row_html(page.text, target), "владельцу не показали «Снять отметку»"
+    done = client.post("/api/orders/reset", json={"account_id": avito_account["id"], "id": target})
     assert done.status_code == 200, done.text
     row = db.query_one("SELECT local_state, packed_by FROM avito_orders WHERE id = ?", (target,))
     assert row["local_state"] == "new" and row["packed_by"] is None
@@ -708,11 +740,12 @@ def test_only_a_manager_can_unmark_a_packed_order(client, avito_account):
             r'name="csrf-token" content="([^"]*)"', packer.get("/pack").text).group(1)
         packer.post("/api/account/switch", json={"account_id": avito_account["id"], "next": "/avito"},
                     headers={"X-CSRF-Token": csrf})
-        page = packer.get("/avito?tab=packed")
+        page = orders_page(packer, avito_account, "packed")
         assert page.status_code == 200, page.text
-        assert "data-reset=" not in page.text, "сборщику показали «Снять отметку»"
+        assert target in page.text
+        assert "data-reset" not in page.text, "сборщику показали «Снять отметку»"
         csrf = re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1)
-        refused = packer.post(f"/api/avito/orders/{target}/reset", json={},
+        refused = packer.post("/api/orders/reset", json={"account_id": avito_account["id"], "id": target},
                               headers={"X-CSRF-Token": csrf})
         assert refused.status_code == 403, refused.text
 
@@ -729,7 +762,7 @@ def test_the_packed_tab_shows_who_packed_and_when(client, avito_account):
         "UPDATE avito_orders SET local_state = 'packed', packed_by = 'sborshik', packed_at = ? "
         "WHERE id = ?", (db.now_iso(), target))
 
-    page = client.get("/avito?tab=packed")
-    assert "Собрано" in page.text
+    page = orders_page(client, avito_account, "packed")
+    assert "Собран" in page.text
     assert "Собрал: sborshik" in page.text
     assert "Статус" in page.text, "в таблице нет колонки статуса"

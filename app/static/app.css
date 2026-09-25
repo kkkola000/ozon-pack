@@ -436,6 +436,14 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .dot.yandex { background: #fc3f1d; }
 .shop { display: inline-flex; align-items: center; margin-right: 12px; font-size: 13px; white-space: nowrap; }
 
+/* ---------- Раздел «Заказы»: кабинеты сверху, статусы склада под ними ---------- */
+.filter-label { font-weight: 600; min-width: 74px; }
+.filter-line + .filter-line { margin-top: 12px; }
+.status-tabs { margin: 0; }
+.order-items .thumb { float: left; margin: 0 10px 4px 0; }
+.row-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.row-actions .btn { white-space: nowrap; }
+
 /* Объяснение раздела: один абзац сверху вместо подписи под каждой кнопкой. */
 .note {
   background: var(--accent-soft); border-radius: var(--radius-sm);
