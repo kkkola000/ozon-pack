@@ -10,14 +10,16 @@
    отдаёт наклейку, пока заказ ждёт отгрузки, — не забрали вовремя, и её уже
    не вернуть. Поэтому выгрузка идёт первой, а не «когда-нибудь потом», и сразу
    по всем кабинетам: сборка у них общая. #}
-{# Фильтр площадок — он же границы сборки. «Все заказы»: сканируется всё, в
-   каком бы кабинете заказ ни лежал. Выбрана площадка: сборка в её границах, и
-   наклейка чужого кабинета не откроется. Кабинет в шапке ничего не решает. #}
+{# Фильтр кабинетов — он же границы сборки. «Все заказы»: сканируется всё, в
+   каком бы кабинете заказ ни лежал. Выбран кабинет: сборка в его границах, и
+   наклейка другого кабинета не откроется, даже той же площадки. Точка — цвет
+   площадки кабинета. Кабинет в шапке ничего не решает. #}
 <div class="panel">
   <div class="chips">
-    {% for chip in market_chips %}
-    <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}">
-      {%- if chip.code != 'all' %}<i class="dot {{ chip.code }}"></i>{% endif -%}
+    {% for chip in shop_chips %}
+    <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}"
+       {%- if chip.market %} title="{{ chip.market_title }}"{% endif %}>
+      {%- if chip.market %}<i class="dot {{ chip.market }}"></i>{% endif -%}
       {{ chip.title }} <span class="badge">{{ chip.count }}</span>
     </a>
     {% endfor %}
@@ -100,7 +102,7 @@
     </thead>
     <tbody id="orders-rows">
       {% for order in orders %}
-      <tr data-work="{{ 1 if order.in_work else 0 }}" data-market="{{ order.market }}"
+      <tr data-work="{{ 1 if order.in_work else 0 }}" data-market="{{ order.market }}" data-shop="{{ order.account_id }}"
           data-text="{{ (order.number ~ ' ' ~ order.goods ~ ' ' ~ order.shop ~ ' ' ~ order.market_title) | lower }}">
         <td style="white-space:nowrap">
           <div style="font-weight:700">{{ order.shop }}</div>

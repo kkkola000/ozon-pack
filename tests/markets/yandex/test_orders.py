@@ -246,7 +246,7 @@ def test_a_packed_order_does_not_hold_the_lock(market, user):
 
 
 def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
-    response = client.post("/api/pack/labels.zip?market=yandex")
+    response = client.post(f"/api/pack/labels.zip?shop={market['id']}")
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("application/zip")
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -255,18 +255,18 @@ def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
     assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
     assert db.query_one("SELECT 1 FROM events WHERE kind = 'labels_archive'")
 
-    again = client.post("/api/pack/labels.zip?market=yandex")
+    again = client.post(f"/api/pack/labels.zip?shop={market['id']}")
     assert again.status_code == 400
 
 
 def test_new_order_locks_the_scanner_again(client, market):
-    client.post("/api/pack/labels.zip?market=yandex")
+    client.post(f"/api/pack/labels.zip?shop={market['id']}")
     fake = yandex.get_client(market)
     fresh = fake._make_order(20, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
     fresh["status"], fresh["substatus"] = "PROCESSING", yandex.SUBSTATUS_STARTED
     fake._orders[str(fresh["orderId"])] = fresh
     yandex_sync.sync_yandex(market)
-    state = client.get("/api/pack/state?market=yandex").json()["labels"]
+    state = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
     assert state["pending"] == 1 and state["locked"] is True
 
 

@@ -14,10 +14,10 @@ const PACKS = window.PACKS || {};
 const input = document.getElementById('scan');
 const banner = document.getElementById('banner');
 const activePanel = document.getElementById('active-panel');
-/* Фильтр площадки уезжает в адрес запроса: он задаёт границы сборки — и какие
+/* Фильтр кабинета уезжает в адрес запроса: он задаёт границы сборки — и какие
    заказы сканируются, и чьи наклейки считать. */
-const MARKET_FILTER = new URLSearchParams(window.location.search).get('market') || 'all';
-const at = (path) => `${path}?market=${encodeURIComponent(MARKET_FILTER)}`;
+const SHOP_FILTER = new URLSearchParams(window.location.search).get('shop') || 'all';
+const at = (path) => `${path}?shop=${encodeURIComponent(SHOP_FILTER)}`;
 const STATE_URL = at('/api/pack/state');
 const LABELS_URL = at('/api/pack/labels.zip');
 const SCAN_URL = at('/api/pack/scan');

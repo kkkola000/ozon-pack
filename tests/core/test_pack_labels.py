@@ -85,7 +85,7 @@ def test_the_gate_says_whose_labels_are_waiting(client, warehouse):
 
 def test_a_cabinet_with_nothing_to_download_is_not_shown(client, warehouse):
     """Выгруженный кабинет из замка уходит: работы по нему нет — строки нет."""
-    assert client.post("/api/pack/labels.zip?market=avito").status_code == 200
+    assert client.post(f"/api/pack/labels.zip?shop={warehouse['avito']['id']}").status_code == 200
 
     shops = client.get("/api/pack/state").json()["labels"]["shops"]
     assert {shop["title"] for shop in shops} == {"Ozon", "Маркет"}
@@ -127,16 +127,16 @@ def test_the_archive_needs_csrf(client, warehouse):
 
 # --------------------------------------------------------------------- фильтр
 def test_the_filter_narrows_the_gate(client, warehouse):
-    """Стоит фильтр «Маркет» — замок считает его заказы, а не все подряд."""
-    labels = client.get("/api/pack/state?market=yandex").json()["labels"]
+    """Выбран кабинет «Маркет» — замок считает его заказы, а не все подряд."""
+    labels = client.get(f"/api/pack/state?shop={warehouse['yandex']['id']}").json()["labels"]
     assert [shop["title"] for shop in labels["shops"]] == ["Маркет"]
     assert labels["pending"] == len(pending(warehouse)["yandex"])
 
 
 def test_the_filter_narrows_the_archive(client, warehouse):
-    """Под фильтром качаются наклейки выбранной площадки — остальные ждут."""
+    """Под фильтром качаются наклейки выбранного кабинета — остальные ждут."""
     before = pending(warehouse)
-    response = client.post("/api/pack/labels.zip?market=yandex")
+    response = client.post(f"/api/pack/labels.zip?shop={warehouse['yandex']['id']}")
     assert response.status_code == 200, response.text
 
     # Одна площадка — папки не нужно: лишний клик там ничего не объясняет.
@@ -179,6 +179,6 @@ def test_everyone_refusing_is_an_error(client, warehouse, monkeypatch):
     """Ни одной наклейки — это отказ, а не пустой архив в браузере."""
     break_yandex(monkeypatch, warehouse["yandex"])
 
-    response = client.post("/api/pack/labels.zip?market=yandex")
+    response = client.post(f"/api/pack/labels.zip?shop={warehouse['yandex']['id']}")
     assert response.status_code == 502
     assert "Маркет" in response.json()["detail"]

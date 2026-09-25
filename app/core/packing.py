@@ -4,13 +4,17 @@
 Avito в руках давала «такого отправления нет», хотя заказ есть и горит. На
 складе кабинета не существует: там один стол, одна коробка и один сканер.
 
-Теперь решает фильтр площадок на «Сборке»:
+Теперь решает фильтр кабинетов на «Сборке»:
 
 * **«Все заказы»** — сборка идёт по всем кабинетам. Отсканировали этикетку
   Avito, стоя в Ozon, — панель сама найдёт кабинет и откроет заказ. Кабинет в
   шапке при этом не меняется: он больше ни за что тут не отвечает.
-* **выбрана площадка** — сборка в её границах. Наклейка чужого кабинета не
-  откроется, и это правильный ответ, а не поломка.
+* **выбран кабинет** — сборка в его границах. Наклейка другого кабинета не
+  откроется — даже если это кабинет той же площадки, — и это правильный
+  ответ, а не поломка.
+
+Фильтр именно по кабинетам, а не по площадкам: у одной площадки их бывает
+несколько (два магазина на Ozon), и склад собирает их раздельно.
 
 Три правила, в таком порядке:
 
@@ -67,12 +71,28 @@ def workspace_of(account: dict):
 
 # ------------------------------------------------------------------ кабинеты
 def shops(picked: str = ALL) -> list[dict]:
-    """Кабинеты под фильтром: все настроенные или только выбранной площадки."""
+    """Кабинеты под фильтром: все настроенные или один выбранный.
+
+    Порядок — как в «Настройках»: в нём же идут чипы фильтра и переключатель
+    в шапке, и он же решает, чей ответ «не найден».
+    """
     live = [account for account in accounts.all_accounts(active_only=True)
             if accounts.is_configured(account)]
     if picked == ALL:
         return live
-    return [account for account in live if account["marketplace"] == picked]
+    return [account for account in live if str(account["id"]) == str(picked)]
+
+
+def filter_of(value) -> str:
+    """Значение фильтра из адреса: номер кабинета или «все».
+
+    Незнакомый номер, выключенный кабинет или кабинет без ключей — это «Все
+    заказы»: кривая ссылка не должна оставлять сборщика с пустым экраном.
+    """
+    wanted = str(value or ALL).strip()
+    if wanted != ALL and shops(wanted):
+        return wanted
+    return ALL
 
 
 def started(user: dict) -> dict | None:
@@ -98,7 +118,9 @@ def shop_of(code: str, order_id: str, user: dict) -> dict | None:
     Нужно для печати наклейки с рабочего места: заказ там может быть из любого
     кабинета, а какого именно — знает только площадка.
     """
-    for shop in shops(code):
+    for shop in shops(ALL):
+        if shop["marketplace"] != code:
+            continue
         workspace = _workspace(shop)
         if workspace is None:
             continue
@@ -304,18 +326,15 @@ URGENT = ("overdue", "urgent", "soon")
 def tiles(picked: str, where: list[dict]) -> tuple[tuple, dict]:
     """Плитки очереди и числа к ним — по фильтру, а не по кабинету в шапке.
 
-    Выбрана площадка — её плитки, сложенные по всем её кабинетам. «Все заказы»
-    — общие: в работе, горит сегодня, собрано сегодня.
+    Выбран кабинет — плитки его площадки с его же числами. «Все заказы» —
+    общие: в работе, горит сегодня, собрано сегодня.
     """
     if picked != ALL:
-        workspace = next((_workspace(shop) for shop in where if _workspace(shop)), None)
-        if workspace is None:
+        shop = next((shop for shop in where if _workspace(shop)), None)
+        if shop is None:
             return (), {}
-        numbers: dict[str, int] = {}
-        for shop in where:
-            for key, value in _workspace(shop).count_queue(shop).items():
-                numbers[key] = numbers.get(key, 0) + int(value or 0)
-        return workspace.counters, numbers
+        workspace = _workspace(shop)
+        return workspace.counters, dict(workspace.count_queue(shop))
 
     ids = {shop["id"] for shop in where}
     rows = [row for row in core_orders.everywhere() if row["account_id"] in ids]

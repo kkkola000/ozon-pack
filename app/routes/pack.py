@@ -4,12 +4,13 @@
 сканы и список заказов всех кабинетов. Обработчик общий, а площадка объявляет
 своё в Workspace: подписи, плитки очереди, как сканировать и чей это код.
 
-Кабинет в шапке тут ничего не решает. Решает **фильтр площадок** вверху:
+Кабинет в шапке тут ничего не решает. Решает **фильтр кабинетов** вверху —
+чипы по одному на каждый кабинет, заведённый в панель:
 
 * «Все заказы» — сборка идёт по всем кабинетам сразу. Стоите в Ozon, в руках
   этикетка Avito — панель сама найдёт её кабинет и откроет заказ.
-* выбрана площадка — сборка в её границах, и наклейка чужого кабинета честно
-  не откроется.
+* выбран кабинет — сборка в его границах, и наклейка другого кабинета честно
+  не откроется, даже если он той же площадки.
 
 Кто и как выбирает кабинет под скан — в `core/packing.py`. Адреса `/pack`,
 `/avito/pack`, `/yandex/pack` — просто разные двери в один и тот же раздел:
@@ -36,7 +37,7 @@ router = APIRouter()
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
 ALL = core_packing.ALL
 
-# Подписи поля сканирования, когда фильтра нет: площадка заранее неизвестна.
+# Подписи поля сканирования, когда фильтра нет: кабинет заранее неизвестен.
 ALL_PLACEHOLDER = "Сканируйте штрихкод товара или наклейку заказа…"
 ALL_BANNER = "Отсканируйте штрихкод товара или наклейку — панель найдёт заказ в любом кабинете."
 
@@ -48,49 +49,53 @@ def _registry():
 
 
 def _picked(request: Request) -> str:
-    """Какая площадка выбрана фильтром. Неизвестную считаем за «Все заказы»."""
-    wanted = str(request.query_params.get("market") or ALL)
-    return wanted if wanted != ALL and _registry().get(wanted) else ALL
+    """Какой кабинет выбран фильтром. Неизвестный считаем за «Все заказы»."""
+    return core_packing.filter_of(request.query_params.get("shop"))
 
 
-def markets_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
-    """Чипы фильтра: площадка, сколько у неё заказов и куда ведёт выбор.
+def shops_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
+    """Чипы фильтра: кабинет, сколько у него заказов и куда ведёт выбор.
+
+    Чип на каждый кабинет, заведённый в панель, — в том же порядке, что в
+    «Настройках». Кабинет без ключей не показываем: собирать в нём нечего.
+    Цветная точка — площадка кабинета, чтобы два «Магазина» разных площадок не
+    путались.
 
     Считаем по тому же списку, что показан на странице, — иначе число на чипе
     и число строк под ним разойдутся, и это первое, что заметят.
 
-    Ссылка остаётся на текущем адресе: кабинет фильтр больше не переключает,
+    Ссылка остаётся на текущем адресе: кабинет в шапке фильтр не переключает,
     он только сужает — и список, и наклейки, и сборку.
     """
-    counts: dict[str, int] = {}
+    counts: dict[int, int] = {}
     for order in orders:
-        counts[order["market"]] = counts.get(order["market"], 0) + 1
-    live = {shop["marketplace"] for shop in core_packing.shops(ALL)}
+        counts[order["account_id"]] = counts.get(order["account_id"], 0) + 1
     chips = [{
-        "code": ALL, "title": "Все заказы", "count": len(orders),
-        "href": f"{path}?market={ALL}", "active": picked == ALL,
+        "id": ALL, "title": "Все заказы", "market": None, "market_title": "",
+        "count": len(orders), "href": f"{path}?shop={ALL}", "active": picked == ALL,
     }]
-    for market in _registry().all_markets():
-        # Площадка без настроенного кабинета никуда не ведёт: собирать нечего.
-        if market.workspace is None or market.code not in live:
+    for shop in core_packing.shops(ALL):
+        market = _registry().get(shop["marketplace"])
+        if market is None or market.workspace is None:
             continue
         chips.append({
-            "code": market.code,
-            "title": market.title,
-            "count": counts.get(market.code, 0),
-            "href": f"{path}?market={market.code}",
-            "active": picked == market.code,
+            "id": str(shop["id"]),
+            "title": shop["title"],
+            "market": market.code,
+            "market_title": market.title,
+            "count": counts.get(shop["id"], 0),
+            "href": f"{path}?shop={shop['id']}",
+            "active": picked == str(shop["id"]),
         })
     return chips
 
 
 def _words(picked: str, where: list[dict]) -> tuple[str, str]:
-    """Подписи поля сканирования: под фильтром — слова площадки, иначе общие."""
-    if picked == ALL:
+    """Подписи поля сканирования: под фильтром — слова площадки кабинета, иначе общие."""
+    if picked == ALL or not where:
         return ALL_PLACEHOLDER, ALL_BANNER
-    market = _registry().get(picked)
-    workspace = market.workspace if market else None
-    if workspace is None or not where:
+    workspace = core_packing.workspace_of(where[0])
+    if workspace is None:
         return ALL_PLACEHOLDER, ALL_BANNER
     return workspace.placeholder, workspace.banner
 
@@ -124,7 +129,7 @@ def page(request: Request, user: dict, account: dict):
     where = core_packing.shops(picked)
     synced_at = _freshened(where)
     orders = core_orders.everywhere()
-    shown = [order for order in orders if picked == ALL or order["market"] == picked]
+    shown = [order for order in orders if picked == ALL or str(order["account_id"]) == picked]
     tiles, counters = core_packing.tiles(picked, where)
     placeholder, banner = _words(picked, where)
     return templates.TemplateResponse(
@@ -140,9 +145,9 @@ def page(request: Request, user: dict, account: dict):
             "counters": counters,
             "orders": shown,
             # Список идёт под фильтром, а счётчики на чипах — по всему списку:
-            # иначе выбранная площадка показывала бы сама себе ноль у соседей.
-            "market_chips": markets_filter(request.url.path, orders, picked),
-            "picked_market": picked,
+            # иначе выбранный кабинет показывал бы соседям ноль.
+            "shop_chips": shops_filter(request.url.path, orders, picked),
+            "picked_shop": picked,
             # Карточку открытой сборки рисует площадка её заказа, а он может
             # быть из любого кабинета — подключаем все.
             "pack_markets": [market.code for market in _registry().all_markets() if market.workspace],
@@ -158,7 +163,7 @@ def _endpoint():
     """Обработчик адреса площадки: страница одна, площадка адреса роли не играет."""
 
     def pack_page(request: Request,
-                  market: str = ALL,  # noqa: ARG001 - читается из query_params, нужен для /docs
+                  shop: str = ALL,  # noqa: ARG001 - читается из query_params, нужен для /docs
                   user: dict = Depends(require_section("pack")),
                   account: dict = Depends(require_account)):
         return page(request, user, account)

@@ -68,8 +68,9 @@ def ozon_barcode(cabinets) -> tuple[str, str]:
     return row["barcode"], row["sku"]
 
 
-def scan(client, code: str, market: str = "all"):
-    response = client.post(f"/api/pack/scan?market={market}", json={"code": code})
+def scan(client, code: str, shop="all"):
+    """Скан под фильтром: «all» или номер кабинета, как в адресе страницы."""
+    response = client.post(f"/api/pack/scan?shop={shop}", json={"code": code})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -109,8 +110,8 @@ def test_state_says_whose_order_is_open(client, cabinets):
 
 # ------------------------------------------------------------------ фильтр
 def test_a_filter_keeps_the_scan_inside_it(client, cabinets):
-    """Стоит фильтр «Озон» — этикетка Avito не открывается, и это правильный ответ."""
-    result = scan(client, avito_label(cabinets), market="ozon")
+    """Выбран кабинет Ozon — этикетка Avito не открывается, и это правильный ответ."""
+    result = scan(client, avito_label(cabinets), shop=cabinets["ozon"]["id"])
 
     assert result["status"] == "error"
     assert "не найден" in result["message"]
@@ -119,8 +120,8 @@ def test_a_filter_keeps_the_scan_inside_it(client, cabinets):
 
 
 def test_the_same_label_opens_under_its_own_filter(client, cabinets):
-    """Тот же скан под фильтром «Avito» открывает заказ — границы задаёт фильтр."""
-    result = scan(client, avito_label(cabinets), market="avito")
+    """Тот же скан под кабинетом Avito открывает заказ — границы задаёт фильтр."""
+    result = scan(client, avito_label(cabinets), shop=cabinets["avito"]["id"])
     assert result["status"] == "ok", result["message"]
     assert result["market"] == "avito"
 
@@ -135,7 +136,7 @@ def test_the_open_assembly_survives_a_filter_change(client, cabinets, user):
     scan(client, avito_label(cabinets))
     assert packing.started(user)["id"] == cabinets["avito"]["id"]
 
-    state = client.get("/api/pack/state?market=ozon").json()["state"]
+    state = client.get(f"/api/pack/state?shop={cabinets['ozon']['id']}").json()["state"]
     assert state["market"] == "avito", "сборка пропала при смене фильтра"
     assert state["active"] is not None
 
@@ -273,6 +274,23 @@ def test_the_answer_comes_from_the_cabinet_that_has_the_order(client, cabinets, 
     assert result["shop"] == "МК"
 
 
+def test_a_cabinet_filter_separates_two_shops_of_one_marketplace(client, cabinets, rucksack):
+    """Два кабинета Ozon — фильтр по одному не пускает в другой.
+
+    Ради этого фильтр и переделан с площадок на кабинеты: чип «Ozon» объединял
+    оба магазина, а склад собирает их раздельно.
+    """
+    number = "49000000-7777-1"          # отправление кабинета «МК»
+
+    other = scan(client, number, shop=cabinets["ozon"]["id"])
+    assert "не найдено" in other["message"], other["message"]
+    assert other.get("shop") != "МК"
+
+    own = scan(client, number, shop=rucksack["id"])
+    assert own["shop"] == "МК"
+    assert "Ожидает сборки" in own["message"], own["message"]
+
+
 def test_the_header_cabinet_does_not_change_the_answer(client, cabinets, rucksack):
     """Один и тот же скан — один и тот же ответ, какой бы кабинет ни был в шапке."""
     answers = set()
@@ -297,13 +315,13 @@ def test_switching_the_cabinet_keeps_the_pack_page_and_filter(client, cabinets):
     """Переключили кабинет на «Сборке» — остались на ней же, фильтр на месте.
 
     Раньше переключение уводило на адрес площадки кабинета и сбрасывало фильтр:
-    выбрали «Яндекс Маркет», сменили кабинет в шапке — снова «Все заказы».
+    выбрали кабинет Маркета, сменили кабинет в шапке — снова «Все заказы».
     """
+    where = f"/pack?shop={cabinets['yandex']['id']}"
     for shop in (cabinets["avito"], cabinets["yandex"], cabinets["ozon"]):
-        answer = client.post(
-            "/api/account/switch", json={"account_id": shop["id"], "next": "/pack?market=yandex"})
+        answer = client.post("/api/account/switch", json={"account_id": shop["id"], "next": where})
         assert answer.status_code == 200, answer.text
-        assert answer.json()["redirect"] == "/pack?market=yandex", shop["title"]
+        assert answer.json()["redirect"] == where, shop["title"]
 
 
 def test_owner_agrees_with_the_scan_on_every_barcode(cabinets, user):
@@ -429,11 +447,11 @@ def test_the_page_carries_every_market_card(client):
         assert f"/static/{code}/pack.js" in page, code
 
 
-def test_the_tiles_follow_the_filter(client):
-    """«Все заказы» — общие плитки, выбрана площадка — её собственные."""
+def test_the_tiles_follow_the_filter(client, cabinets):
+    """«Все заказы» — общие плитки, выбран кабинет — плитки его площадки."""
     everything = client.get("/pack").text
     assert "В работе" in everything and "Горит сегодня" in everything
 
-    only_ozon = client.get("/pack?market=ozon").text
+    only_ozon = client.get(f"/pack?shop={cabinets['ozon']['id']}").text
     assert "Ожидает отгрузки" in only_ozon
     assert "Возвраты к выдаче" in only_ozon, "плитки должны быть озоновские"

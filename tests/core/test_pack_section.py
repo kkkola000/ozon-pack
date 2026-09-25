@@ -1,12 +1,13 @@
-"""«Сборка» — один раздел на все площадки: фильтр площадок и общий обработчик.
+"""«Сборка» — один раздел на все площадки: фильтр кабинетов и общий обработчик.
 
 Рабочее место открывается по адресу любой площадки, но страница одна: её
 собирает routes/pack.py, а площадка объявляет только слова, плитки очереди,
 как сканировать и чей это код.
 
 Кабинет в шапке тут ничего не решает. Решает фильтр: «Все заказы» — сборка по
-всем кабинетам, выбрана площадка — в её границах. Кабинет при этом не
-переключается: страница про это больше не знает.
+всем кабинетам, выбран кабинет — в его границах. Фильтр по кабинетам, а не по
+площадкам: у Ozon их бывает два, и склад собирает их раздельно. Кабинет в
+шапке при этом не переключается: страница про это больше не знает.
 """
 import re
 
@@ -22,13 +23,14 @@ from app.markets.yandex import sync as yandex_sync
 
 @pytest.fixture
 def cabinets(sample_data):
-    """Три площадки сразу: по кабинету на каждую, у всех свои заказы."""
+    """Четыре кабинета на трёх площадках — у Ozon их два. У всех свои заказы."""
+    second = accounts.get(accounts.create("ozon", "Второй склад", "test-client", "test-key"))
     sync.sync_all()
     avito_one = accounts.get(accounts.create("avito", "Магазин Avito", "test-client", "test-secret"))
     avito_sync.sync_avito(avito_one)
     yandex_one = accounts.get(accounts.create("yandex", "Маркет", "9000001", "test-token"))
     yandex_sync.sync_yandex(yandex_one)
-    return {"ozon": accounts.default_account(), "avito": avito_one, "yandex": yandex_one}
+    return {"ozon": accounts.default_account(), "ozon2": second, "avito": avito_one, "yandex": yandex_one}
 
 
 @pytest.fixture
@@ -62,6 +64,11 @@ def cabinet_of(client) -> str | None:
 def rows_of(page: str) -> list[str]:
     """Площадки строк списка «Все заказы»."""
     return re.findall(r'<tr data-work="\d" data-market="([^"]+)"', page)
+
+
+def shops_of(page: str) -> list[int]:
+    """Кабинеты строк списка «Все заказы»."""
+    return [int(n) for n in re.findall(r'<tr data-work="\d" data-market="[^"]+" data-shop="(\d+)"', page)]
 
 
 # ------------------------------------------------------------------ один обработчик
@@ -100,39 +107,53 @@ def test_market_declares_its_workspace(client):
         assert callable(workspace.release)
 
 
-# ------------------------------------------------------------------ фильтр площадок
-def test_filter_shows_every_market_with_a_cabinet(client):
-    """Чипы: «Все заказы» и площадки, у которых есть кабинет."""
+# ------------------------------------------------------------------ фильтр кабинетов
+def test_filter_has_a_chip_per_cabinet(client, cabinets):
+    """Чипы: «Все заказы» и по одному на каждый кабинет, заведённый в панель."""
     page = client.get("/pack").text
     assert "Все заказы" in page
-    for market in registry.all_markets():
-        assert f'?market={market.code}' in page, market.code
+    for shop in cabinets.values():
+        assert f'?shop={shop["id"]}"' in page, shop["title"]
+        assert shop["title"] in page, shop["title"]
 
 
-def test_filter_leaves_only_its_market(client):
-    """Стоит фильтр — в списке только заказы этой площадки."""
-    everything = rows_of(client.get("/pack").text)
-    assert len(set(everything)) > 1, "в списке одна площадка — фильтр не на чем проверить"
+def test_two_cabinets_of_one_marketplace_are_two_chips(client, cabinets):
+    """Два кабинета Ozon — два чипа, а не один «Ozon» на оба.
 
-    only_ozon = rows_of(client.get("/pack?market=ozon").text)
-    assert only_ozon and set(only_ozon) == {"ozon"}
-    assert len(only_ozon) < len(everything)
+    Ради этого фильтр и переделан: склад собирает магазины раздельно, и
+    объединять их по площадке значило бы смешать чужие заказы со своими.
+    """
+    page = client.get("/pack").text
+    chips = page.split('<div class="chips">', 1)[1].split("</div>", 1)[0]
+    assert chips.count('class="dot ozon"') == 2
+    assert f'?shop={cabinets["ozon"]["id"]}"' in chips and f'?shop={cabinets["ozon2"]["id"]}"' in chips
+
+
+def test_filter_leaves_only_its_cabinet(client, cabinets):
+    """Выбран кабинет — в списке только его заказы, даже без соседа той же площадки."""
+    everything = shops_of(client.get("/pack").text)
+    assert cabinets["ozon"]["id"] in everything and cabinets["ozon2"]["id"] in everything
+
+    only_second = shops_of(client.get(f"/pack?shop={cabinets['ozon2']['id']}").text)
+    assert only_second and set(only_second) == {cabinets["ozon2"]["id"]}
+    assert len(only_second) < len(everything)
 
 
 def test_filter_narrows_without_touching_the_cabinet(client, cabinets):
-    """Выбрали площадку — список её, а кабинет в шапке остался прежним.
+    """Выбрали кабинет — список его, а кабинет в шапке остался прежним.
 
-    Фильтр задаёт границы сборки напрямую, поэтому переключать кабинет ради
-    него больше не нужно — и не надо: человек не просил менять шапку.
+    Фильтр задаёт границы сборки напрямую, поэтому переключать кабинет в шапке
+    ради него не нужно — и не надо: человек не просил менять шапку.
     """
     assert client.get("/pack").status_code == 200        # начинаем в кабинете Ozon
     before = cabinet_of(client)
-    page = client.get("/pack?market=avito")
+    avito = cabinets["avito"]["id"]
+    page = client.get(f"/pack?shop={avito}")
     assert page.status_code == 200, page.text[:300]
-    assert set(rows_of(page.text)) == {"avito"}
+    assert set(shops_of(page.text)) == {avito}
     assert cabinet_of(client) == before, "кабинет всё-таки переключился"
-    # И чип ведёт на текущий адрес, а не на адрес чужой площадки.
-    assert '"/pack?market=avito"' in page.text
+    # И чип ведёт на текущий адрес, а не на адрес площадки кабинета.
+    assert f'"/pack?shop={avito}"' in page.text
 
 
 def test_all_orders_is_the_default(client):
@@ -142,21 +163,35 @@ def test_all_orders_is_the_default(client):
     assert 'class="chip active"' in page
 
 
-def test_counts_on_chips_are_for_the_whole_list(client):
-    """Число на чипе — сколько всего у площадки, а не сколько осталось после фильтра."""
-    everything = rows_of(client.get("/pack").text)
-    filtered = client.get("/pack?market=ozon").text
-    for code in set(everything):
-        count = len([row for row in everything if row == code])
-        assert f'?market={code}">' in filtered or f"?market={code}" in filtered
-        assert f'<span class="badge">{count}</span>' in filtered, code
+def test_counts_on_chips_are_for_the_whole_list(client, cabinets):
+    """Число на чипе — сколько всего у кабинета, а не сколько осталось после фильтра."""
+    everything = shops_of(client.get("/pack").text)
+    filtered = client.get(f"/pack?shop={cabinets['ozon']['id']}").text
+    for shop in cabinets.values():
+        count = everything.count(shop["id"])
+        chip = filtered.split(f'?shop={shop["id"]}"', 1)[1].split("</a>", 1)[0]
+        assert f'<span class="badge">{count}</span>' in chip, shop["title"]
 
 
 def test_unknown_filter_is_not_a_crash(client):
-    """Кривой адрес не ломает рабочее место — показываем всё."""
-    page = client.get("/pack?market=нет-такой")
-    assert page.status_code == 200
-    assert len(set(rows_of(page.text))) > 1
+    """Кривой адрес не ломает рабочее место — показываем всё.
+
+    Сюда же — старые ссылки с фильтром по площадке (?market=ozon): такого
+    фильтра больше нет, и они открывают «Все заказы».
+    """
+    for where in ("/pack?shop=999999", "/pack?shop=нет-такого", "/pack?market=ozon"):
+        page = client.get(where)
+        assert page.status_code == 200, where
+        assert len(set(rows_of(page.text))) > 1, where
+
+
+def test_a_cabinet_without_keys_has_no_chip(client):
+    """Кабинет без ключей в фильтре не показываем: собирать в нём нечего."""
+    empty = accounts.get(accounts.create("ozon", "Пустой кабинет"))
+    page = client.get("/pack").text
+    assert f'?shop={empty["id"]}"' not in page
+    # И по прямой ссылке он не открывается как фильтр — это «Все заказы».
+    assert len(set(rows_of(client.get(f"/pack?shop={empty['id']}").text))) > 1
 
 
 # ------------------------------------------------------------------ что убрали
@@ -217,7 +252,7 @@ def test_the_filter_narrows_the_refresh_too(client, cabinets, monkeypatch):
                         lambda account, **kw: calls.append(account["id"]) or {})
     forget_sync()
 
-    client.get("/pack?market=yandex")
+    client.get(f"/pack?shop={cabinets['yandex']['id']}")
     assert calls == [cabinets["yandex"]["id"]]
 
 

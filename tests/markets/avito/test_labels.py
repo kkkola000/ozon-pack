@@ -59,7 +59,7 @@ def test_avito_archive_opens_the_lock(avito_cabinet):
             headers={"X-CSRF-Token": csrf})
         assert switched.status_code == 200, switched.text
         assert labels.state(avito_pack.pending_labels(account["id"]))["locked"] is True
-        response = client.post("/api/pack/labels.zip?market=avito", headers={"X-CSRF-Token": csrf})
+        response = client.post(f"/api/pack/labels.zip?shop={account['id']}", headers={"X-CSRF-Token": csrf})
         assert response.status_code == 200, response.text
 
     assert names_in(response.content), "архив Avito пустой"
