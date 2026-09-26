@@ -356,7 +356,8 @@ def board_card(row) -> dict:
         "deadline_local": posting.get("shipment_date_local"),
         "urgency": posting.get("urgency"),
         "items": [{"quantity": item["quantity"], "name": item.get("name") or "Без названия",
-                   "code": item.get("offer_id") or item.get("sku"), "warn": ""} for item in items],
+                   "code": item.get("offer_id") or item.get("sku"), "warn": "",
+                   "image": item.get("image") or ""} for item in items],
         # Пустая строка — фото у товара нет; None значило бы «у площадки их не бывает».
         "image": next((item.get("image") for item in items if item.get("image")), ""),
         "delivery": [posting.get("city"), posting.get("delivery_method"), posting.get("tpl_provider")],

@@ -99,9 +99,16 @@
 <div class="panel" id="idle-panel">
   <div class="row between">
     <h2 style="margin:0">Очередь</h2>
-    <div class="row small muted">
-      <span>Обновлено: <span id="sync-time">{{ synced_at or "—" }}</span></span>
-      <button class="btn small" id="btn-sync">Обновить заказы</button>
+    {# Лист с заказами — под кнопкой обновления: сначала свежие заказы, потом
+       лист по ним. Заказы «К сборке» под тем же фильтром кабинетов. #}
+    <div class="queue-actions">
+      <div class="row small muted">
+        <span>Обновлено: <span id="sync-time">{{ synced_at or "—" }}</span></span>
+        <button class="btn small" id="btn-sync">Обновить заказы</button>
+      </div>
+      <button class="btn small" id="btn-sheet"
+              title="PDF по заказам «К сборке»: кабинет, фото, название товара, артикул и количество">
+        Скачать «Лист с заказами»</button>
     </div>
   </div>
   <div class="row" style="margin-top:12px; gap:22px">

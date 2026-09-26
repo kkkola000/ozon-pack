@@ -24,6 +24,7 @@ const SCAN_URL = at('/api/pack/scan');
 const RELEASE_URL = at('/api/pack/release');
 const COMPLETE_URL = at('/api/pack/complete');
 const SYNC_URL = at('/api/pack/sync');
+const SHEET_URL = at('/api/pack/orders-sheet.pdf');
 
 const historyBox = document.getElementById('history');
 
@@ -446,6 +447,15 @@ document.getElementById('btn-sync').onclick = async (event) => {
   } finally {
     event.target.disabled = false;
   }
+};
+
+/* «Лист с заказами» — PDF по заказам «К сборке» под фильтром кабинетов: что
+   взять с полки. Фото сервер скачивает сам, поэтому лист собирается не
+   мгновенно — кнопка на это время говорит «Скачиваем…». */
+document.getElementById('btn-sheet').onclick = async (event) => {
+  const button = event.currentTarget;
+  if (await downloadArchive(SHEET_URL, button, 'list-zakazov.pdf')) toast('Лист с заказами скачан', 'ok');
+  input.focus();
 };
 
 document.getElementById('btn-labels').onclick = async (event) => {

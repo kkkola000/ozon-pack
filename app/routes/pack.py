@@ -26,6 +26,7 @@ from ..core import board as core_board
 from ..core import db
 from ..core import labels as core_labels
 from ..core import orders as core_orders
+from ..core import orders_sheet
 from ..core import packing as core_packing
 from ..core import shops as core_shops
 from ..core import store as core_store
@@ -201,6 +202,35 @@ def api_state(request: Request, user: dict = Depends(require_section("pack"))):
         "counters": counters,
         "labels": core_labels.state_everywhere(waiting),
     }
+
+
+# ------------------------------------------------------------------ лист с заказами
+@router.post("/api/pack/orders-sheet.pdf")
+def api_orders_sheet(request: Request, user: dict = Depends(require_section("pack"))):
+    """«Лист с заказами»: кабинет, фото, товар, артикул и количество — под заказы к сборке.
+
+    Кабинеты — те, что под фильтром «Сборки»; заказы — «К сборке», как в
+    плитке очереди. Одинаковый товар кабинета — одной строкой.
+    """
+    check_csrf(request)
+    picked = _picked(request)
+    where = core_packing.shops(picked)
+    scope = "все кабинеты" if picked == ALL else (where[0]["title"] if where else "—")
+    try:
+        pdf = orders_sheet.build(orders_sheet.collect(where), user=user, scope=scope)
+    except orders_sheet.NothingToPick as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except orders_sheet.PdfUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    db.log_event("orders_sheet", user=user, message=f"Лист с заказами: {scope}")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename(orders_sheet.filename(picked))}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ------------------------------------------------------------------ наклейки

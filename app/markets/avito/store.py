@@ -277,6 +277,11 @@ def board_card(row) -> dict:
     note = ""
     if board != "packaging" and "ship" not in actions:
         note = "Отправку отметит Avito при приёме посылки"
+    # Фото — из заказа, а нет его — сопоставленной карточки другой площадки.
+    items = [{"quantity": item["quantity"], "name": item.get("title") or "Без названия",
+              "code": item.get("seller_id") or item.get("avito_id"), "warn": "",
+              "image": _photo(order["account_id"], item) or ""}
+             for item in order.get("items") or []]
     return {
         "id": order["id"],
         "number": order.get("marketplace_id") or order["id"],
@@ -285,12 +290,8 @@ def board_card(row) -> dict:
         "deadline": order.get("deadline"),
         "deadline_local": order.get("deadline_local"),
         "urgency": order.get("urgency"),
-        "items": [{"quantity": item["quantity"], "name": item.get("title") or "Без названия",
-                   "code": item.get("seller_id") or item.get("avito_id"), "warn": ""}
-                  for item in order.get("items") or []],
-        # Фото — из заказа, а нет его — сопоставленной карточки другой площадки.
-        "image": next((photo for photo in (_photo(order["account_id"], item) for item in order.get("items") or [])
-                       if photo), ""),
+        "items": items,
+        "image": next((item["image"] for item in items if item["image"]), ""),
         # Имя покупателя — как и раньше: по нему находят посылку в пункте выдачи.
         "delivery": [order.get("service_label"), order.get("service_name"), order.get("terminal_address"),
                      order.get("buyer_name"), order.get("tracking_number")],

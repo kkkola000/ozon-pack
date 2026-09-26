@@ -281,7 +281,8 @@ def board_card(row) -> dict:
         # Кроме набора: его собирают по частям, у них штрихкоды свои.
         "items": [{"quantity": item["quantity"], "name": item.get("name") or "Без названия",
                    "code": item.get("offer_id") or item.get("item_id"),
-                   "warn": "" if item.get("barcodes") or _is_set(order["account_id"], item) else "нет ШК"}
+                   "warn": "" if item.get("barcodes") or _is_set(order["account_id"], item) else "нет ШК",
+                   "image": item.get("image") or ""}
                   for item in order.get("items") or []],
         # Фото — из каталога: карточки Маркета, сопоставленной или с тем же артикулом.
         "image": next((item.get("image") for item in order.get("items") or [] if item.get("image")), ""),
