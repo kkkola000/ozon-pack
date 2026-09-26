@@ -436,7 +436,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.45.0"
+    assert get_version() == "1.46.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам
@@ -529,15 +529,33 @@ def test_all_cabinets_sheet_marks_everything_printed(client, many_cabinets):
     assert not_printed_avito == 0, "возвраты Avito не отмечены напечатанными"
 
 
-def test_all_cabinets_sheet_ignores_current_cabinet_filters(client, many_cabinets):
-    """Фильтры текущего кабинета к чужим возвратам отношения не имеют."""
-    login(client)
-    second_ids = _ready_ids(many_cabinets["second"]["id"])
+def test_all_cabinets_sheet_follows_the_filters(client, many_cabinets):
+    """Фильтры общие: лист по всем кабинетам печатает ровно то, что на экране.
 
-    page = client.get("/returns/print?scope=all&scheme=FBS&place=Несуществующий&q=zzz")
+    Что отобрано — написано на листе, чтобы «только FBS» не приняли за полный.
+    """
+    login(client)
+    fbs = {row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1 AND scheme = 'FBS'")}
+    fbo = {row["id"] for row in db.query("SELECT id FROM returns WHERE is_ready = 1 AND scheme = 'FBO'")}
+    assert fbs and fbo, "в демо-данных нужны и FBO, и FBS"
+
+    page = client.get("/returns/print?shop=all&scheme=FBS")
     assert page.status_code == 200
-    for return_id in second_ids:
-        assert str(return_id) in page.text, "фильтр обрезал лист по всем кабинетам"
+    for return_id in fbs:
+        assert return_id in page.text, return_id
+    for return_id in fbo:
+        assert return_id not in page.text, f"FBO {return_id} на листе «только FBS»"
+    # У Avito схемы нет — под «только FBS» его строк нет вовсе.
+    assert re.findall(r'<h2 class="section">([^<]+)</h2>', page.text) == ["Ozon"]
+    assert "только FBS" in page.text
+
+    nothing = client.get("/returns/print?shop=all&q=zzz-нет-такого").text
+    assert not any(return_id in nothing for return_id in fbs | fbo)
+    assert "поиск «zzz-нет-такого»" in nothing
+
+    # Без фильтров — снова всё.
+    full = client.get("/returns/print?shop=all").text
+    assert all(return_id in full for return_id in fbs | fbo)
 
 
 def test_sheet_works_from_avito_cabinet(client, many_cabinets):
@@ -557,14 +575,14 @@ def test_returns_print_follows_the_cabinet_filter(client, many_cabinets):
     login(client)
     page = client.get("/returns")
     assert page.status_code == 200
-    assert "/returns/print?scope=all" in page.text
+    assert "/returns/print?shop=all" in page.text
     # Блок на каждый кабинет с возвратами — с его названием.
     for title in ("Ozon", "Второй Ozon", "Кабинет Avito"):
         assert re.search(rf'class="returns-shop">\s*<i class="dot [a-z]+"></i>{title}\s', page.text), title
     second = many_cabinets["second"]["id"]
     one = client.get(f"/returns?shop={second}").text
     assert f"/returns/print?shop={second}" in one
-    assert "/returns/print?scope=all" not in one
+    assert "/returns/print?shop=all" not in one
 
 
 def test_all_cabinets_sheet_warns_when_it_does_not_fit(client, many_cabinets, monkeypatch):
@@ -573,7 +591,8 @@ def test_all_cabinets_sheet_warns_when_it_does_not_fit(client, many_cabinets, mo
 
     login(client)
     original = returns_routes._sections_everywhere
-    monkeypatch.setattr(returns_routes, "_sections_everywhere", lambda limit=3: original(limit))
+    monkeypatch.setattr(returns_routes, "_sections_everywhere",
+                        lambda *_args, **kwargs: original(3, **kwargs))
     page = client.get("/returns/print?scope=all")
     assert page.status_code == 200
     assert "поместилась только часть возвратов" in page.text

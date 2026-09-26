@@ -32,7 +32,7 @@
     <div>
       <h1>{% if act %}Акт · {{ act.title }}{% else %}Возвраты к выдаче
         {% if everywhere %} · все кабинеты{% elif account %} · {{ account.title }}{% endif %}
-        {% if subtitle %} {{ subtitle }}{% endif %}{% endif %}
+        {% if subtitle %} · {{ subtitle }}{% endif %}{% endif %}
       </h1>
       <div class="meta">
         {% for s in sections %}

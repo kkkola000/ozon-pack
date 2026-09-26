@@ -1,24 +1,5 @@
-{# Вкладка «К выдаче», кабинет Ozon: свои фильтры и своя таблица.
-   Рамку страницы и кнопки печати рисует общий returns.html. #}
-{# Фильтры — когда выбран один кабинет; под «Все кабинеты» блок без них. #}
-{% if filters %}
-<form class="row no-print" method="get" action="/returns" style="margin-top:14px">
-  <input type="hidden" name="shop" value="{{ picked }}">
-  <select name="scheme">
-    <option value="all" {{ 'selected' if scheme == 'all' }}>FBO и FBS</option>
-    <option value="FBO" {{ 'selected' if scheme == 'FBO' }}>Только FBO</option>
-    <option value="FBS" {{ 'selected' if scheme == 'FBS' }}>Только FBS</option>
-  </select>
-  <select name="place">
-    <option value="">Все пункты выдачи</option>
-    {% for name in places %}<option value="{{ name }}" {{ 'selected' if place == name }}>{{ name }}</option>{% endfor %}
-  </select>
-  <input type="search" name="q" value="{{ q }}" placeholder="Товар, артикул, заказ, штрихкод…" style="width:240px">
-  <button class="btn" type="submit">Показать</button>
-  {% if q or place or scheme != 'all' %}<a class="btn" href="/returns?shop={{ picked }}">Сбросить</a>{% endif %}
-</form>
-{% endif %}
-
+{# Вкладка «К выдаче», кабинет Ozon: таблица под выбранными фильтрами.
+   Рамку страницы, фильтры и кнопки печати рисует общий returns.html. #}
 {% if items %}
 <table style="margin-top:10px">
   <thead>

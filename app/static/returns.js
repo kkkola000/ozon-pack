@@ -89,3 +89,20 @@ document.getElementById('btn-sync-returns')?.addEventListener('click', async (ev
     event.target.textContent = 'Обновить возвраты';
   }
 });
+
+/* Фильтры списка: пустые поля и «FBO и FBS» в адрес не пишем — ссылку потом
+   отправляют другому, и в ней должно быть видно только то, что выбрано.
+   Вернулись кнопкой «Назад» — поля снова доступны. */
+const returnsFilters = document.getElementById('returns-filters');
+if (returnsFilters) {
+  returnsFilters.addEventListener('submit', () => {
+    for (const field of returnsFilters.elements) {
+      if (field.name && (field.value === '' || (field.name === 'scheme' && field.value === 'all'))) {
+        field.disabled = true;
+      }
+    }
+  });
+  window.addEventListener('pageshow', () => {
+    for (const field of returnsFilters.elements) field.disabled = false;
+  });
+}

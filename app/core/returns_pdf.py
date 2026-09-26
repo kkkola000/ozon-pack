@@ -224,7 +224,7 @@ def build_sheet(
         elif account:
             title += f" · {account['title']}"
         if subtitle:
-            title += f" {subtitle}"
+            title += f" · {subtitle}"
 
     parts = [f"{s['label']}: {len(s['rows'])} {s['unit']}, {s['pieces']} шт." for s in sections if s["rows"]]
     if not parts:

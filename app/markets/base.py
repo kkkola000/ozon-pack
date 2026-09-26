@@ -84,15 +84,21 @@ class ReturnsSource:
     label: str                                  # заголовок секции на общем листе: «Ozon», «Avito»
     unit: str                                   # чем считать строки: «поз.» или «заказ(ов)»
     ready: Callable[..., list[dict]]            # ready(account_ids, params={}, limit=N): готовые к выдаче, с account_title
-    count_ready: Callable[[list[int]], int]     # сколько готово по кабинетам
+    count_ready: Callable[..., int]             # count_ready(account_ids, params=None): сколько готово под фильтрами
     page: Callable[[dict, dict], dict]          # контекст вкладки «К выдаче» кабинета: items, stats и всё для list_template
     act_rows: Callable[[str], list[dict]]       # строки акта из этой таблицы
     quantity: Callable[[dict], int]             # штук в строке — для итогов листа
-    list_template: str                          # «ozon/returns_list.html»: фильтры, кнопки, таблица
+    list_template: str                          # «ozon/returns_list.html»: таблица кабинета (фильтры — общие)
     sheet_template: str                         # «ozon/returns_sheet.html»: таблица на листе печати
     act_template: str                           # «ozon/returns_act_rows.html»: строки акта
     pdf_table: Callable[[Any, list[dict], bool], None]   # таблица секции на листе PDF
     sync: Callable[..., dict]                   # sync(account, full=False) -> {..., "message": str}
+    # Общие фильтры раздела, которые площадка понимает в ready(): «q» — поиск,
+    # «place» — пункт выдачи, «scheme» — FBO/FBS. Выбран фильтр, которого у
+    # площадки нет (FBS у Avito), — её строк под ним нет вовсе.
+    filters: tuple[str, ...] = ("q",)
+    # Пункты выдачи, где что-то лежит, — варианты фильтра: places(кабинеты).
+    places: Callable[[list[int]], list[str]] | None = None
     received: Callable[[int, str], list[str]] | None = None   # полученные за день, свободные для акта
     claim: Callable[[Any, str, int, list[str]], int] | None = None   # забрать строки в акт
     giveout: Callable[[dict], bytes] | None = None              # штрихкод на выдачу в ПВЗ (Ozon)

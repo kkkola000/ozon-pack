@@ -1,15 +1,5 @@
-{# Вкладка «К выдаче», кабинет Avito: свой поиск и своя таблица.
-   Рамку страницы и кнопки печати рисует общий returns.html. #}
-{# Фильтры — когда выбран один кабинет; под «Все кабинеты» блок без них. #}
-{% if filters %}
-<form class="row no-print" method="get" action="/returns" style="margin-top:14px">
-  <input type="hidden" name="shop" value="{{ picked }}">
-  <input type="search" name="q" value="{{ q }}" placeholder="Номер заказа, товар, трек-номер…" style="width:260px">
-  <button class="btn" type="submit">Найти</button>
-  {% if q %}<a class="btn" href="/returns?shop={{ picked }}">Сбросить</a>{% endif %}
-</form>
-{% endif %}
-
+{# Вкладка «К выдаче», кабинет Avito: таблица под выбранными фильтрами.
+   Рамку страницы, фильтры и кнопки печати рисует общий returns.html. #}
 {% if items %}
 <table style="margin-top:10px">
   <thead>

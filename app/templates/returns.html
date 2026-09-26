@@ -1,12 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Возвраты{% endblock %}
 
-{# Раздел один на все площадки. Рамка страницы — здесь: фильтр кабинетов,
-   плитки, вкладки, кнопки печати, акты. Что внутри списка «К выдаче» — знает
-   площадка: её фильтры и таблица приходят готовым куском (blocks). #}
+{# Раздел один на все площадки. Сверху, как в «Заказах», — кабинеты и статус;
+   числа перекрёстные: на кабинете — сколько у него в выбранном статусе, на
+   статусе — сколько под выбранным кабинетом. Ниже — общие фильтры списка:
+   одни на все кабинеты, и к ним привязано всё — строки, числа, лист и PDF.
+   Таблица кабинета приходит от площадки готовым куском (blocks). #}
 {% block content %}
 <div class="panel">
   {% include "_shop_chips.html" %}
+  {% if shop_chips[1:] %}
+  <div class="filter-line">
+    <span class="muted small filter-label">Статус:</span>
+    <div class="tabs status-tabs" id="status-tabs">
+      {% for status in status_tabs %}
+      <a href="{{ status.href }}" class="{{ 'active' if status.active }}">
+        {{ status.title }}
+        <span class="badge {{ 'warn' if loop.last and status.count }}">{{ status.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 <div class="panel" id="returns-panel" data-shop="{{ picked }}">
@@ -28,32 +43,36 @@
     </div>
   </div>
 
-  {# Знак стоит рядом с вкладками, но не внутри них: ссылка в подсказке иначе
-     получила бы вид вкладки — рамку и кружок. #}
-  {# Отступ снизу держит эта строка, а не сами вкладки: у .tabs он ушёл бы в
-     выравнивание и поднял знак «?» относительно вкладок. #}
-  <div class="row no-print" style="margin:16px 0; gap:8px">
-    <div class="tabs" style="margin:0">
-      <a href="/returns?shop={{ picked }}" class="{{ 'active' if tab == 'ready' }}">
-        К выдаче <span class="badge">{{ ready_total }}</span>
-      </a>
-      <a href="/returns?shop={{ picked }}&tab=acts" class="{{ 'active' if tab == 'acts' }}">
-        Ждёт подтверждения
-        {% if acts %}<span class="badge warn">{{ acts | length }}</span>{% endif %}
-      </a>
-    </div>
-    {# Объяснение нужно один раз. Дальше это стена текста над рабочими
-       кнопками, которую перестают читать, — поэтому под знак. #}
-  </div>
-
   {% if tab == 'acts' %}
     {% include "_return_acts.html" %}
   {% else %}
-  {# Фильтры списка у каждой площадки свои, а печать — общая: лист и кнопки
-     одни и те же, меняются только строки. Поэтому кнопки здесь, а не в
-     куске площадки; фильтры уезжают в ссылку как есть. Под «Все кабинеты»
-     лист общий — со всем, что готово к выдаче. #}
-  <div class="row no-print" style="margin-top:12px">
+  {# Фильтры и кнопки печати — в одной строке: лист печатается ровно с тем,
+     что выбрано, и видно это сразу. FBO/FBS — только если под фильтром есть
+     кабинет, который это различает (у Avito схемы нет). #}
+  <div class="row no-print" style="margin-top:16px">
+    <form class="row" method="get" action="/returns" id="returns-filters">
+      <input type="hidden" name="shop" value="{{ picked }}">
+      <input type="search" name="q" value="{{ params.q or '' }}"
+             placeholder="Товар, артикул, заказ, штрихкод…" style="width:260px">
+      <select name="place">
+        <option value="">Все пункты выдачи</option>
+        {% for name in places %}
+        <option value="{{ name }}" {{ 'selected' if params.place == name }}>{{ name }}</option>
+        {% endfor %}
+        {% if params.place and params.place not in places %}
+        <option value="{{ params.place }}" selected>{{ params.place }}</option>
+        {% endif %}
+      </select>
+      {% if has_scheme or params.scheme %}
+      <select name="scheme">
+        <option value="all">FBO и FBS</option>
+        <option value="FBO" {{ 'selected' if params.scheme == 'FBO' }}>Только FBO</option>
+        <option value="FBS" {{ 'selected' if params.scheme == 'FBS' }}>Только FBS</option>
+      </select>
+      {% endif %}
+      <button class="btn" type="submit">Показать</button>
+      {% if params %}<a class="btn" href="/returns?shop={{ picked }}">Сбросить</a>{% endif %}
+    </form>
     <span class="grow"></span>
     <a class="btn" href="/returns/sheet.pdf?{{ query | urlencode }}"
        title="Тот же лист готовым файлом: сохранить, переслать, напечатать где угодно">
@@ -73,10 +92,15 @@
     <h3 class="returns-shop">
       <i class="dot {{ block.market.code }}"></i>{{ block.account.title }}
       <span class="badge">{{ block.ready }}</span>
-      <a class="small" href="/returns?shop={{ block.account.id }}" style="font-weight:400">фильтры и поиск</a>
+      <a class="small" href="{{ block.href }}" style="font-weight:400">только этот кабинет</a>
     </h3>
     {% endif %}
     {{ block.html }}
+  {% else %}
+    <div class="empty">
+      {% if params %}Под выбранными фильтрами возвратов нет.
+      {% else %}Возвратов к выдаче нет — забирать нечего.{% endif %}
+    </div>
   {% endfor %}
   {% endif %}
   {% endif %}

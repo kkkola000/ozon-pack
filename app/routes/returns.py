@@ -5,17 +5,20 @@
 знает площадка — она объявляет ReturnsSource, а здесь по именам площадок
 ничего не решается.
 
-Кабинета в шапке нет: сверху фильтр кабинетов (core/shops.py). Выбран
-кабинет — его список со своими фильтрами площадки. «Все кабинеты» — блок на
-каждый кабинет, а лист печати и акты — сразу по всем.
+Кабинета в шапке нет: сверху фильтр кабинетов (core/shops.py) и статус, как
+в «Заказах». Под ними — общие фильтры списка: поиск, пункт выдачи, FBO/FBS.
+Они одни на все кабинеты, работают и под «Все кабинеты», и к ним привязано
+всё: строки, числа, лист печати и PDF. «Все кабинеты» — блок на каждый
+кабинет, а лист и акты — сразу по всем.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
-
 from markupsafe import Markup
 
 from ..core import accounts, db, return_acts, returns_pdf, shops, store
@@ -59,13 +62,48 @@ def _source(account: dict):
     return _registry().require(account["marketplace"]).returns
 
 
-def _sections_everywhere(limit: int = 1000) -> list[dict]:
-    """Всё, что готово к выдаче, по всем включённым кабинетам — секциями по площадкам."""
-    active = accounts.all_accounts(active_only=True)
+# Общие фильтры списка «К выдаче» — одни на все кабинеты. Что из них понимает
+# площадка, она объявляет в ReturnsSource.filters.
+FILTERS = ("q", "place", "scheme")
+
+
+def filters_of(values) -> dict:
+    """Выбранные фильтры из адреса. Пустые и «все» не в счёт."""
+    out = {}
+    for key in FILTERS:
+        value = str(values.get(key) or "").strip()
+        if value and not (key == "scheme" and value == "all"):
+            out[key] = value
+    return out
+
+
+def _fits(source, params: dict) -> bool:
+    """Площадка понимает все выбранные фильтры. Нет — её строк под ними нет."""
+    return all(key in source.filters for key in params)
+
+
+def _ready(accounts_: list[dict], source, params: dict, limit: int = 1000) -> list[dict]:
+    if not accounts_ or not _fits(source, params):
+        return []
+    return source.ready([account["id"] for account in accounts_], params=params, limit=limit)
+
+
+def _count(account: dict, params: dict) -> int:
+    """Сколько у кабинета готово к выдаче под фильтрами — запросом, без строк."""
+    source = _source(account)
+    if not _fits(source, params):
+        return 0
+    return source.count_ready([account["id"]], params)
+
+
+def _sections_everywhere(limit: int = 1000, *, where: list[dict] | None = None,
+                         params: dict | None = None) -> list[dict]:
+    """Готовое к выдаче по кабинетам под фильтром — секциями по площадкам."""
+    where = returns_shops() if where is None else where
+    params = params or {}
     sections = []
     for market, source in return_acts.sources():
-        ids = [a["id"] for a in active if a["marketplace"] == market.code]
-        rows = source.ready(ids, params={}, limit=limit) if ids else []
+        rows = _ready([a for a in where if a["marketplace"] == market.code], source, params, limit=limit)
         if rows:
             sections.append(_section(market, source, rows))
     return sections
@@ -98,20 +136,25 @@ def ready_everywhere() -> int:
     return total
 
 
-def _link(shop: str, tab: str = "ready") -> str:
-    return f"/returns?shop={shop}" + ("&tab=acts" if tab == "acts" else "")
+def _link(shop: str, tab: str = "ready", params: dict | None = None) -> str:
+    """Адрес раздела: кабинет, статус и фильтры списка живут в адресе."""
+    query = {"shop": shop, **({"tab": "acts"} if tab == "acts" else {}), **(params or {})}
+    return "/returns?" + urlencode(query)
 
 
-def _block(account: dict, params: dict, *, filters: bool) -> dict:
-    """Список «К выдаче» одного кабинета — кусок площадки, отрисованный её шаблоном."""
+def _block(account: dict, params: dict, ready: int) -> dict | None:
+    """Список «К выдаче» одного кабинета — кусок площадки, отрисованный её шаблоном.
+
+    None — площадка выбранных фильтров не понимает (FBS у Avito): её строк нет.
+    """
     source = _source(account)
+    if not _fits(source, params):
+        return None
     page = source.page(account, params)
-    html = templates.get_template(source.list_template).render(
-        {**page, "picked": str(account["id"]), "filters": filters}
-    )
+    html = templates.get_template(source.list_template).render(page)
     market = _registry().get(account["marketplace"])
-    return {"account": account, "market": market, "page": page, "html": Markup(html),
-            "ready": source.count_ready([account["id"]])}
+    return {"account": account, "market": market, "page": page, "html": Markup(html), "ready": ready,
+            "href": _link(str(account["id"]), "ready", params)}
 
 
 @router.get("/returns", response_class=HTMLResponse)
@@ -121,46 +164,65 @@ def returns_page(
     shop: str = shops.ALL,
     user: dict = Depends(require_section("returns")),
 ):
-    """Возвраты под фильтром кабинетов.
+    """Возвраты: сверху кабинеты и статус, под ними — общие фильтры списка.
 
-    Выбран кабинет — его список с фильтрами площадки (схема, пункт выдачи,
-    поиск). «Все кабинеты» — по блоку на кабинет, без фильтров: это обзор
-    перед поездкой, а лист печати тогда сразу общий.
+    Фильтры (поиск, пункт выдачи, FBO/FBS) одни на все кабинеты и работают и
+    под «Все кабинеты». К ним привязано всё: строки, числа на чипах и вкладках,
+    лист печати и PDF — на бумаге ровно то, что на экране.
     """
     picked, where, everyone = _where(shop)
     tab = "acts" if tab == "acts" else "ready"
-    params = {key: value for key, value in request.query_params.items() if key not in ("tab", "shop")}
-    counts = {account["id"]: _source(account).count_ready([account["id"]]) for account in everyone}
+    params = filters_of(request.query_params)
+    # Числа перекрёстные, как в «Заказах»: на кабинете — сколько у него в
+    # выбранном статусе, на статусе — сколько под выбранным кабинетом.
+    ready_by_shop = {account["id"]: _count(account, params) for account in everyone}
+    acts_by_shop = {account["id"]: len(return_acts.pending([account["id"]])) for account in everyone}
+    acts = return_acts.pending([account["id"] for account in where]) if where else []
     blocks = []
     if tab == "ready":
-        single = picked != shops.ALL
-        blocks = [_block(account, params if single else {}, filters=single) for account in where]
-    total = sum(counts.get(account["id"], 0) for account in where)
-    if picked != shops.ALL and blocks:
+        # Под «Все кабинеты» с фильтром пустые кабинеты не показываем: блок
+        # «ничего не найдено» на каждый магазин только мешает найти нужное.
+        shown = [account for account in where
+                 if not params or picked != shops.ALL or ready_by_shop[account["id"]]]
+        blocks = [block for block in (_block(account, params, ready_by_shop[account["id"]])
+                                      for account in shown) if block]
+    total = sum(ready_by_shop.get(account["id"], 0) for account in where)
+    if picked != shops.ALL and blocks and not params:
         stats = blocks[0]["page"]["stats"]
-        items = len(blocks[0]["page"]["items"])
     else:
         stats = [("Готовы к выдаче", total)]
-        items = total
-    # Лист печати: у одного кабинета — с его фильтрами, у всех — общий.
-    query = {"shop": picked, **params} if picked != shops.ALL else {"scope": ALL_ACCOUNTS}
+    sources = [_source(account) for account in where]
+    places = sorted({place for account, source in zip(where, sources, strict=True) if source.places
+                     for place in source.places([account["id"]])})
+    # Лист печати — по тем же фильтрам и кабинетам, что на экране.
+    query = {"shop": picked, **params}
     return templates.TemplateResponse(
         request,
         "returns.html",
         {
             "request": request,
             "user": user,
-            "shop_chips": shops.chips(everyone, picked, counts, lambda value: _link(value, tab)),
+            "shop_chips": shops.chips(everyone, picked, ready_by_shop if tab == "ready" else acts_by_shop,
+                                      lambda value: _link(value, tab, params)),
+            "status_tabs": [
+                {"title": "К выдаче", "count": total, "href": _link(picked, "ready", params),
+                 "active": tab == "ready"},
+                {"title": "Ждёт подтверждения", "count": len(acts), "href": _link(picked, "acts", params),
+                 "active": tab == "acts"},
+            ],
             "picked": picked,
             "where": where,
             "blocks": blocks,
             "stats": stats,
-            "items_count": items,
+            "items_count": total,
             "ready_total": total,
+            "params": params,
+            "places": places,
+            "has_scheme": any("scheme" in source.filters for source in sources),
             "query": query,
             "synced_at": _synced(where),
             "tab": tab,
-            "acts": return_acts.pending([account["id"] for account in where]) if where else [],
+            "acts": acts,
             "today": store.local_day(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
@@ -391,25 +453,39 @@ def _mark_printed(table: str, rows: list[dict]) -> None:
     )
 
 
+def _describe(filters: dict) -> str:
+    """Подпись листа: с какими фильтрами его собрали — видно и на бумаге."""
+    parts = []
+    if filters.get("scheme"):
+        parts.append(f"только {filters['scheme']}")
+    if filters.get("place"):
+        parts.append(filters["place"])
+    if filters.get("q"):
+        parts.append(f"поиск «{filters['q']}»")
+    return " · ".join(parts)
+
+
 def _collect_sheet(request: Request, user: dict, scope: str, *, kind: str) -> dict:
     """Данные листа возвратов — общие для печати из браузера и для файла PDF.
 
-    scope=all — один лист сразу по всем кабинетам и площадкам. Фильтры
-    текущего кабинета к нему не применяются: на таком листе нужно всё, что
-    готово к выдаче, иначе сборщик уедет за частью возвратов.
+    shop=all (или scope=all из старых ссылок) — один лист сразу по всем
+    кабинетам и площадкам. Фильтры списка действуют и на него: на бумаге ровно
+    то, что на экране, а что именно отобрано — написано в подзаголовке, чтобы
+    лист «только FBS» не приняли за полный.
     """
-    params = {key: value for key, value in request.query_params.items() if key not in ("scope", "shop")}
-    # Без выбранного кабинета лист общий: «текущего кабинета» больше нет.
     shop = request.query_params.get("shop") or ""
     everywhere = scope == ALL_ACCOUNTS or shop in ("", shops.ALL)
 
+    filters = filters_of(request.query_params)
     if everywhere:
-        sections = _sections_everywhere()
+        sections = _sections_everywhere(params=filters)
         account = None
-        subtitle = ""
+        subtitle = _describe(filters)
         # Лимит выборки может обрезать лист. Промолчать нельзя: сборщик уедет,
         # решив, что забрал всё, и за остатком никто не вернётся.
-        truncated = sum(len(s["rows"]) for s in sections) < ready_everywhere()
+        expected = ready_everywhere() if not filters else sum(
+            _count(shop_, filters) for shop_ in returns_shops())
+        truncated = sum(len(s["rows"]) for s in sections) < expected
         db.log_event(
             kind, user=user,
             message="Лист возвратов по всем кабинетам: "
@@ -419,9 +495,9 @@ def _collect_sheet(request: Request, user: dict, scope: str, *, kind: str) -> di
         account = _one(shop)
         market = _registry().require(account["marketplace"])
         source = market.returns
-        rows = source.ready([account["id"]], params=params)
+        rows = _ready([account], source, filters)
         sections = [_section(market, source, rows)] if rows else []
-        subtitle = source.page(account, params).get("sheet_subtitle", "")
+        subtitle = _describe(filters)
         truncated = False
         db.log_event(
             kind, account_id=account["id"], user=user,

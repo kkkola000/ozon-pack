@@ -40,38 +40,56 @@ def ready(account_ids: list[int], params: dict | None = None, limit: int = 500) 
     """
     if not account_ids:
         return []
-    marks = ",".join("?" for _ in account_ids)
-    search_sql, search_params = _search(str((params or {}).get("q") or ""))
+    where, args = _ready_where(account_ids, params)
     rows = db.query(
         f"SELECT o.*, a.title AS account_title FROM avito_orders o "
-        f"LEFT JOIN accounts a ON a.id = o.account_id "
-        f"WHERE o.account_id IN ({marks}) AND o.status = ? AND o.received_at IS NULL{search_sql} "
+        f"LEFT JOIN accounts a ON a.id = o.account_id WHERE {where} "
         f"ORDER BY a.title, (o.updated_at_api IS NULL), o.updated_at_api DESC LIMIT ?",
-        list(account_ids) + [avito.STATUS_ON_RETURN] + search_params + [limit],
+        args + [limit],
     )
     return [store.avito_view(row) for row in rows]
 
 
-def count_ready(account_ids: list[int]) -> int:
+def _ready_where(account_ids: list[int], params: dict | None) -> tuple[str, list]:
+    """Условие «лежит в пункте выдачи» с фильтрами раздела — для списка и для числа."""
+    marks = ",".join("?" for _ in account_ids)
+    search_sql, search_params = _search(str((params or {}).get("q") or ""))
+    # Пункт выдачи у Avito — адрес ПВЗ, куда вернулась посылка.
+    place = str((params or {}).get("place") or "")
+    if place:
+        search_sql += " AND o.terminal_address = ?"
+        search_params = search_params + [place]
+    where = f"o.account_id IN ({marks}) AND o.status = ? AND o.received_at IS NULL{search_sql}"
+    return where, list(account_ids) + [avito.STATUS_ON_RETURN] + search_params
+
+
+def places(account_ids: list[int]) -> list[str]:
+    """Адреса ПВЗ, где лежат возвраты, — варианты фильтра «Пункт выдачи»."""
+    if not account_ids:
+        return []
+    marks = ",".join("?" for _ in account_ids)
+    rows = db.query(
+        f"SELECT DISTINCT terminal_address FROM avito_orders WHERE account_id IN ({marks}) "
+        "AND status = ? AND received_at IS NULL AND terminal_address IS NOT NULL "
+        "AND terminal_address != '' ORDER BY terminal_address",
+        list(account_ids) + [avito.STATUS_ON_RETURN],
+    )
+    return [row["terminal_address"] for row in rows]
+
+
+def count_ready(account_ids: list[int], params: dict | None = None) -> int:
+    """Сколько лежит в пункте выдачи — под теми же фильтрами, что и список."""
     if not account_ids:
         return 0
-    marks = ",".join("?" for _ in account_ids)
-    return db.query_one(
-        f"SELECT COUNT(*) AS c FROM avito_orders WHERE status = ? AND received_at IS NULL "
-        f"AND account_id IN ({marks})",
-        [avito.STATUS_ON_RETURN] + list(account_ids),
-    )["c"]
+    where, args = _ready_where(account_ids, params)
+    return db.query_one(f"SELECT COUNT(*) AS c FROM avito_orders o WHERE {where}", args)["c"]
 
 
 def page(account: dict, params: dict) -> dict:
-    """Контекст вкладки «К выдаче» для кабинета Avito."""
-    q = str(params.get("q") or "")
-    items = ready([account["id"]], params={"q": q})
+    """Контекст вкладки «К выдаче» для кабинета Avito. Фильтры — общие, над списком."""
     return {
-        "items": items,
+        "items": ready([account["id"]], params=params),
         "stats": [("Заберите заказ", count_ready([account["id"]]))],
-        "q": q,
-        "sheet_subtitle": "",
     }
 
 
@@ -194,6 +212,8 @@ SOURCE = ReturnsSource(
     page=page,
     act_rows=act_rows,
     quantity=quantity,
+    filters=("q", "place"),
+    places=places,
     list_template="avito/returns_list.html",
     sheet_template="avito/returns_sheet.html",
     act_template="avito/returns_act_rows.html",

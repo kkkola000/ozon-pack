@@ -728,6 +728,20 @@ def ready(account_ids: list[int], params: dict | None = None, limit: int = 1000)
     """
     if not account_ids:
         return []
+    where, args = _ready_where(account_ids, params)
+    # Пункт выдачи впереди: за возвратами едут в конкретный ПВЗ, и на листе по
+    # нескольким кабинетам строки одного пункта должны идти подряд.
+    rows = db.query(
+        f"SELECT r.*, a.title AS account_title FROM returns r "
+        f"LEFT JOIN accounts a ON a.id = r.account_id WHERE {where} "
+        f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
+        args + [limit],
+    )
+    return [return_view(row) for row in rows]
+
+
+def _ready_where(account_ids: list[int], params: dict | None) -> tuple[str, list]:
+    """Условие «готово к выдаче» с фильтрами раздела — одно для списка и для числа."""
     params = params or {}
     scheme = str(params.get("scheme") or "all")
     place = str(params.get("place") or "")
@@ -750,77 +764,43 @@ def ready(account_ids: list[int], params: dict | None = None, limit: int = 1000)
             " OR r.posting_number LIKE ? OR r.barcode LIKE ? OR r.id LIKE ?)"
         )
         args += [like] * 7
-    where = " WHERE " + " AND ".join(conditions)
-    # Пункт выдачи впереди: за возвратами едут в конкретный ПВЗ, и на листе по
-    # нескольким кабинетам строки одного пункта должны идти подряд.
-    rows = db.query(
-        f"SELECT r.*, a.title AS account_title FROM returns r "
-        f"LEFT JOIN accounts a ON a.id = r.account_id{where} "
-        f"ORDER BY (r.place_name IS NULL), r.place_name, a.title, r.product_name LIMIT ?",
-        args + [limit],
-    )
-    return [return_view(row) for row in rows]
+    return " AND ".join(conditions), args
 
 
-def count_ready(account_ids: list[int]) -> int:
+def count_ready(account_ids: list[int], params: dict | None = None) -> int:
+    """Сколько готово к выдаче — под теми же фильтрами, что и список."""
     if not account_ids:
         return 0
-    placeholders = ",".join("?" for _ in account_ids)
-    ready_sql, ready_params = pickup_sql()
-    return db.query_one(
-        f"SELECT COUNT(*) AS c FROM returns WHERE {ready_sql} AND account_id IN ({placeholders})",
-        list(ready_params) + list(account_ids),
-    )["c"]
+    where, args = _ready_where(account_ids, params)
+    return db.query_one(f"SELECT COUNT(*) AS c FROM returns r WHERE {where}", args)["c"]
 
 
-def places(account_id: int) -> list[str]:
+def places(account_ids: list[int]) -> list[str]:
     """Пункты выдачи, в которых что-то лежит, — для фильтра раздела."""
+    if not account_ids:
+        return []
     ready_sql, ready_params = pickup_sql()
+    marks = ",".join("?" for _ in account_ids)
     rows = db.query(
-        f"SELECT DISTINCT place_name FROM returns WHERE account_id = ? AND {ready_sql} "
+        f"SELECT DISTINCT place_name FROM returns WHERE account_id IN ({marks}) AND {ready_sql} "
         "AND place_name IS NOT NULL ORDER BY place_name",
-        [account_id] + list(ready_params),
+        list(account_ids) + list(ready_params),
     )
     return [row["place_name"] for row in rows]
 
 
 def page(account: dict, params: dict) -> dict:
-    """Контекст вкладки «К выдаче» для кабинета Ozon."""
-    scheme = str(params.get("scheme") or "all")
-    place = str(params.get("place") or "")
-    q = str(params.get("q") or "")
-    items = ready([account["id"]], params={"scheme": scheme, "place": place, "q": q})
+    """Контекст вкладки «К выдаче» для кабинета Ozon.
 
-    ready_sql, ready_params = pickup_sql()
-    args = [account["id"]] + list(ready_params)
-    totals = {
-        "ready": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}", args
-        )["c"],
-        "fbo": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
-            "AND (type = 'FBO' OR scheme = 'FBO')", args
-        )["c"],
-        "fbs": db.query_one(
-            f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql} "
-            "AND (type = 'FBS' OR scheme = 'FBS')", args
-        )["c"],
-    }
-    # Заголовок листа печати: по нему на бумаге видно, с каким фильтром его собрали.
-    subtitle = ""
-    if scheme != "all":
-        subtitle += f"({scheme})"
-    if place:
-        subtitle += f" · {place}"
+    Фильтры раздела общие и рисуются над списком; здесь — строки под ними и
+    плитки кабинета без фильтров: сколько всего лежит и сколько из них FBO/FBS.
+    """
+    ids = [account["id"]]
     return {
-        "items": items,
-        "stats": [("Готовы к выдаче", totals["ready"]), ("FBO", totals["fbo"]), ("FBS", totals["fbs"])],
-        "totals": totals,
-        "places": places(account["id"]),
-        "scheme": scheme,
-        "place": place,
-        "q": q,
-        "sheet_subtitle": subtitle.strip(),
+        "items": ready(ids, params=params),
+        "stats": [("Готовы к выдаче", count_ready(ids)),
+                  ("FBO", count_ready(ids, {"scheme": "FBO"})),
+                  ("FBS", count_ready(ids, {"scheme": "FBS"}))],
     }
 
 
@@ -909,6 +889,8 @@ SOURCE = ReturnsSource(
     page=page,
     act_rows=act_rows,
     quantity=quantity,
+    filters=("q", "place", "scheme"),
+    places=places,
     list_template="ozon/returns_list.html",
     sheet_template="ozon/returns_sheet.html",
     act_template="ozon/returns_act_rows.html",
