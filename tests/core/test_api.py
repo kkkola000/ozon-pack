@@ -443,7 +443,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.49.0"
+    assert get_version() == "1.49.1"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

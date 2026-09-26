@@ -138,14 +138,29 @@ def test_all_orders_is_the_default(client):
     assert 'class="chip active"' in page
 
 
-def test_counts_on_chips_are_for_the_whole_list(client, cabinets):
-    """Число на чипе — сколько всего у кабинета, а не сколько осталось после фильтра."""
-    everything = shops_of(client.get("/pack").text)
+def to_pack(page: str) -> list[int]:
+    """Кабинеты строк «к сборке» — заказов «Ожидает отгрузки»."""
+    return [int(n) for n in re.findall(r'<tr data-work="1" data-market="[^"]+" data-shop="(\d+)"', page)]
+
+
+def test_counts_on_chips_are_orders_to_pack(client, cabinets):
+    """Число на чипе — сколько у кабинета заказов «Ожидает отгрузки», какой бы кабинет ни был выбран.
+
+    «Ожидает сборки» и собранное в число не входят: на сборку они не попадают.
+    """
+    page = client.get("/pack").text
+    everything, packable = shops_of(page), to_pack(page)
+    assert len(packable) < len(everything), "в списке должны быть и заказы не к сборке"
     filtered = client.get(f"/pack?shop={cabinets['ozon']['id']}").text
     for shop in cabinets.values():
-        count = everything.count(shop["id"])
+        count = packable.count(shop["id"])
         chip = filtered.split(f'?shop={shop["id"]}"', 1)[1].split("</a>", 1)[0]
         assert f'<span class="badge">{count}</span>' in chip, shop["title"]
+    all_chip = page.split('<div class="chips">', 1)[1].split("</a>", 1)[0]
+    assert f'<span class="badge">{len(packable)}</span>' in all_chip
+    # Статус каждой строки «к сборке» — «Ожидает отгрузки».
+    rows = re.findall(r'<tr data-work="1".*?</tr>', page, flags=re.S)
+    assert rows and all("Ожидает отгрузки" in row for row in rows)
 
 
 def test_unknown_filter_is_not_a_crash(client):

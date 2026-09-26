@@ -58,14 +58,16 @@ def _picked(request: Request) -> str:
 
 
 def shops_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
-    """Чипы фильтра: кабинет, сколько у него заказов и куда ведёт выбор.
+    """Чипы фильтра: кабинет, сколько у него заказов к сборке и куда ведёт выбор.
 
-    Считаем по тому же списку, что показан на странице, — иначе число на чипе
-    и число строк под ним разойдутся, и это первое, что заметят.
+    Считаем только «Ожидает отгрузки» — то, что можно собирать прямо сейчас,
+    ровно те строки, что видны под галочкой «только к сборке». «Ожидает сборки»
+    и собранное в число не входят: на сборку они не попадают.
     """
     counts: dict[int, int] = {}
     for order in orders:
-        counts[order["account_id"]] = counts.get(order["account_id"], 0) + 1
+        if order["in_work"]:
+            counts[order["account_id"]] = counts.get(order["account_id"], 0) + 1
     return core_shops.chips(core_packing.shops(ALL), picked, counts,
                             lambda value: f"{path}?shop={value}", all_title="Все заказы")
 
