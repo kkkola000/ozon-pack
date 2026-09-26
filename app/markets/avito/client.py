@@ -7,6 +7,7 @@
   POST /order-management/1/order/applyTransition       — confirm / perform / reject
   POST /order-management/1/orders/labels               — задача на генерацию этикеток
   GET  /order-management/1/orders/labels/{id}/download — готовый PDF
+  GET  /core/v1/items                                  — объявления кабинета (каталог «Товары»)
 
 Авторизация — client_credentials: client_id и client_secret из личного кабинета
 меняются на токен, который живёт сутки. Токен кэшируется в памяти клиента.
@@ -29,6 +30,8 @@ log = logging.getLogger("avito")
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 4
+# Объявлений на страницу /core/v1/items: Avito принимает «больше 0 и меньше 100».
+ITEMS_PER_PAGE = 99
 
 # Статусы заказов Avito (см. раздел «Получение заказов»).
 STATUS_ON_CONFIRMATION = "on_confirmation"
@@ -384,6 +387,16 @@ class AvitoClient:
             message, code = self._extract_error(response)
             raise AvitoError(message, status=response.status_code, code=code)
         raise AvitoError(f"Истекло время ожидания этикетки Avito (последний ответ {last_status or '—'})")
+
+    def items(self, *, page: int = 1, per_page: int = ITEMS_PER_PAGE, status: str = "active") -> list[dict]:
+        """Объявления кабинета — «Получение информации по объявлениям» (GET /core/v1/items).
+
+        Отдаёт номер объявления, название, цену, статус и ссылку. Не больше 25
+        запросов в минуту — паузы держит обход каталога.
+        """
+        params = {"page": max(1, page), "per_page": max(1, min(per_page, ITEMS_PER_PAGE)), "status": status}
+        data = self.request_json("GET", "/core/v1/items", params=params)
+        return [item for item in (data.get("resources") or []) if isinstance(item, dict)]
 
     def self_info(self) -> dict:
         return self.request_json("GET", "/core/v1/accounts/self")

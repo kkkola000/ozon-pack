@@ -33,6 +33,13 @@ SAMPLE_ITEMS = [
     ("2799377321", "Настольная лампа LED", 1290.0),
 ]
 
+# Объявления кабинета сверх тех, что в заказах: одно ещё не заказывали, одно
+# снято с продажи — в каталог оно не попадает.
+EXTRA_ITEMS = [
+    ("2799377399", "Термос 1 л", "active"),
+    ("2799377398", "Самокат детский", "removed"),
+]
+
 SAMPLE_SERVICES = [
     ("pvz", "Boxberry"),
     ("pvz", "СДЭК"),
@@ -229,6 +236,18 @@ class FakeAvitoClient(AvitoClient):
         if not pages:
             raise AvitoError("Нет заказов для печати", status=404)
         return make_label_pdf(pages), "avito-label-fake.pdf"
+
+    def items(self, *, page=1, per_page=99, status="active"):  # type: ignore[override]
+        """GET /core/v1/items: объявления кабинета страницами, как у Avito."""
+        self.item_requests = getattr(self, "item_requests", []) + [(page, per_page, status)]
+        rows = [{"id": int(avito_id), "title": title, "price": int(price), "status": "active",
+                 "url": f"https://www.avito.ru/moskva/{avito_id}", "category": {"id": 111, "name": "Товары"}}
+                for avito_id, title, price in SAMPLE_ITEMS]
+        rows += [{"id": int(avito_id), "title": title, "price": 990, "status": state,
+                  "url": f"https://www.avito.ru/moskva/{avito_id}", "category": {"id": 111, "name": "Товары"}}
+                 for avito_id, title, state in EXTRA_ITEMS]
+        start = (max(1, page) - 1) * per_page
+        return rows[start : start + per_page]
 
     def self_info(self):  # type: ignore[override]
         return {"id": 94235311, "name": "Тестовый магазин", "email": "fake@example.com"}

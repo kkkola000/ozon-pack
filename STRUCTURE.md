@@ -94,7 +94,7 @@ ozon-pack/
 │   │   │
 │   │   ├── avito/                  — Avito: заказы, сборка по этикетке, возвраты внутри заказа
 │   │   │   ├── __init__.py  client.py  store.py  sync.py  pack.py  returns.py  routes.py
-│   │   │   │                         (каталога у площадки нет — раздел «Товары» её кабинетам не виден)
+│   │   │   ├── catalog.py          — каталог: объявления кабинета (/core/v1/items) — номер как артикул и название
 │   │   │   ├── templates/          — returns_list/sheet/act_rows
 │   │   │   └── static/             — pack.js
 │   │   │

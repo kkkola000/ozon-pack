@@ -1,8 +1,8 @@
 """Avito — объявление площадки для реестра."""
 from __future__ import annotations
 
-from ..base import LabelsSource, Market
-from . import client, pack, returns, routes, store, sync
+from ..base import CatalogSource, LabelsSource, Market
+from . import catalog, client, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="avito",
@@ -29,6 +29,8 @@ MARKET = Market(
         size_hint="Размер этикетки зависит от службы доставки — бывает 58×40 и 100×150. "
                   "Добавьте оба размера: панель посмотрит размер файла и выберет принтер.",
     ),
+    # «Товары»: объявления кабинета — номер и название из /core/v1/items.
+    catalog=CatalogSource(pages=catalog.pages),
     # Возврат у Avito — состояние заказа, но в разделе он выглядит как у всех.
     returns=returns.SOURCE,
     # «Заказы»: подтвердить, отправить, этикетки — в общем разделе.
