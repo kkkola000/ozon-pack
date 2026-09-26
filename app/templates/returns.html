@@ -10,16 +10,12 @@
 <div class="panel">
   {% include "_shop_chips.html" %}
   {% if shop_chips[1:] %}
-  <div class="filter-line">
-    <span class="muted small filter-label">Статус:</span>
-    <div class="tabs status-tabs" id="status-tabs">
-      {% for status in status_tabs %}
-      <a href="{{ status.href }}" class="{{ 'active' if status.active }}">
-        {{ status.title }}
-        <span class="badge {{ 'warn' if loop.last and status.count }}">{{ status.count }}</span>
-      </a>
-      {% endfor %}
-    </div>
+  <div class="status-tabs" id="status-tabs">
+    {% for status in status_tabs %}
+    <a href="{{ status.href }}" class="{{ 'active' if status.active }}">
+      {{ status.title }} <span class="badge">{{ status.count }}</span>
+    </a>
+    {% endfor %}
   </div>
   {% endif %}
 </div>

@@ -74,6 +74,8 @@ def test_status_row_sits_under_cabinets_with_cross_counts(client, cabinets):
     page = client.get("/returns").text
     top = page[:page.index('id="returns-panel"')]
     assert 'id="shop-chips"' in top and 'id="status-tabs"' in top, "строка «Статус» — в верхней панели"
+    # Статусы — вкладки с подчёркиванием, не чипы: без подписи и без класса пилюль.
+    assert '<div class="status-tabs" id="status-tabs">' in top and "Статус:" not in top
     assert _statuses(page) == {"К выдаче": ozon_ready + avito_ready, "Ждёт подтверждения": 0}
     # На кабинете — сколько у него в выбранном статусе.
     assert _chips(page) == {"Все кабинеты": ozon_ready + avito_ready, "Ozon": ozon_ready, "Avito": avito_ready}

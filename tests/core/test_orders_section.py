@@ -256,3 +256,12 @@ def test_sync_updates_the_cabinets_under_the_filter(client, cabinets):
     assert sorted(response.json()["updated"]) == sorted(a["title"] for a in cabinets.values())
     one = client.post(f"/api/orders/sync?shop={cabinets['avito']['id']}")
     assert one.json()["updated"] == ["Avito"]
+
+
+def test_status_row_is_underlined_tabs_under_the_chips(client):
+    """Статусы — вкладки с подчёркиванием под чипами кабинетов, как в «Возвратах»."""
+    page = client.get("/orders?status=deliver").text
+    assert page.index('id="shop-chips"') < page.index('<div class="status-tabs" id="status-tabs">')
+    assert "Статус:" not in page
+    active = re.search(r'<a href="[^"]*status=deliver[^"]*" class="active">\s*Ожидает отгрузки', page)
+    assert active, "открытая вкладка не отмечена"

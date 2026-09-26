@@ -423,7 +423,25 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 /* ---------- Раздел «Заказы»: кабинеты сверху, статусы склада под ними ---------- */
 .filter-label { font-weight: 600; min-width: 74px; }
 .filter-line + .filter-line { margin-top: 12px; }
-.status-tabs { margin: 0; }
+/* Статусы — вкладки с подчёркиванием, а не чипы: кабинеты выбирают, в каком
+   магазине смотреть, статус — какой список открыт. Разный вид — чтобы две
+   строки фильтров не читались как одна. Серая линия — во всю ширину, синяя —
+   под открытой вкладкой, поверх серой. */
+.status-tabs {
+  display: flex; gap: 36px; margin-top: 18px; border-bottom: 2px solid var(--line);
+  overflow-x: auto; scrollbar-width: none;
+}
+.status-tabs a {
+  display: inline-flex; align-items: center; gap: 10px; white-space: nowrap;
+  padding: 4px 0 14px; margin-bottom: -2px; border-bottom: 3px solid transparent;
+  color: var(--muted); font-size: 17px; font-weight: 500;
+}
+.status-tabs a:hover { color: var(--text); text-decoration: none; }
+.status-tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
+.status-tabs .badge {
+  background: #d9dde3; color: #4a5566; font-size: 13px; font-weight: 600;
+  min-width: 24px; padding: 2px 7px;
+}
 .order-items .thumb { float: left; margin: 0 10px 4px 0; }
 .returns-shop { display: flex; align-items: center; gap: 10px; margin: 22px 0 0; font-size: 16px; }
 .row-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }

@@ -14,15 +14,12 @@
    статусе — сколько в выбранном кабинете. #}
 <div class="panel">
   {% with shop_chips = chips %}{% include "_shop_chips.html" %}{% endwith %}
-  <div class="filter-line">
-    <span class="muted small filter-label">Статус:</span>
-    <div class="tabs status-tabs" id="status-tabs">
-      {% for tab in tabs %}
-      <a href="{{ link(picked, tab.key, search) | trim }}" class="{{ 'active' if tab.active }}">
-        {{ tab.title }} <span class="badge">{{ tab.count }}</span>
-      </a>
-      {% endfor %}
-    </div>
+  <div class="status-tabs" id="status-tabs">
+    {% for tab in tabs %}
+    <a href="{{ link(picked, tab.key, search) | trim }}" class="{{ 'active' if tab.active }}">
+      {{ tab.title }} <span class="badge">{{ tab.count }}</span>
+    </a>
+    {% endfor %}
   </div>
 </div>
 
