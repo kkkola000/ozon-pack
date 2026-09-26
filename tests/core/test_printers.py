@@ -18,6 +18,7 @@ import re
 import stat
 from pathlib import Path
 
+import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
@@ -254,13 +255,14 @@ def test_the_format_goes_into_the_request(client, yandex_account):
     fake = yandex_client.get_client(yandex_account)
     sent = {}
 
-    def request_json(method, path, payload=None, params=None, **kwargs):
-        sent.update(params or {})
-        return {"result": {"reportId": "r-1"}}
+    def request(method, path, **kwargs):
+        sent.update(kwargs.get("params") or {}, path=path)
+        return httpx.Response(200, content=b"%PDF-1.4 label")
 
-    fake.request_json = request_json
-    yandex_client.YandexClient.labels_task(fake, [1])
+    fake._request = request
+    yandex_client.YandexClient.order_labels(fake, 21000000, 80000001)
     assert sent["format"] == "A9_HORIZONTALLY"
+    assert sent["path"] == "/v2/campaigns/21000000/orders/80000001/delivery/labels"
 
 
 # ------------------------------------------------------------------ сертификат

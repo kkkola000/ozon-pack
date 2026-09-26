@@ -152,7 +152,7 @@ def break_yandex(monkeypatch, cabinet) -> None:
     def refuse(*_args, **_kwargs):
         raise RuntimeError("Маркет прилёг")
 
-    monkeypatch.setattr(yandex_client.get_client(cabinet), "labels_pdf", refuse)
+    monkeypatch.setattr(yandex_client.get_client(cabinet), "order_labels", refuse)
 
 
 def test_a_refusing_marketplace_does_not_stop_the_others(client, warehouse, monkeypatch):

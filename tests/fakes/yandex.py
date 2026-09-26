@@ -35,7 +35,10 @@ class FakeYandexClient(YandexClient):
         self._rnd = random.Random(20250901 + seed)
         self._seed = seed
         self._orders: dict[str, dict] = {}
-        self._reports: dict[str, list[str]] = {}
+        # Запросы ярлыков: (campaignId, orderId, format) — проверки смотрят, что ушло.
+        self.label_requests: list[tuple[str, str, str]] = []
+        # Сколько коробок у заказа: ярлыков в его PDF столько же. По умолчанию одна.
+        self.boxes: dict[str, int] = {}
         # Проверки включают это, чтобы изобразить Маркет, который отдал заказ
         # мимо фильтра по этапу: панель обязана отсеять такое сама.
         self.ignore_filter = False
@@ -145,28 +148,15 @@ class FakeYandexClient(YandexClient):
             "mapping": {"marketSku": 100000 + sum(ord(c) for c in offer), "marketSkuName": name},
         }
 
-    def labels_task(self, order_ids, *, sorted_as_given=True):  # type: ignore[override]
-        if not order_ids:
-            raise YandexError("Не передано ни одного заказа")
-        report_id = f"fake-report-{len(self._reports) + 1}"
-        self._reports[report_id] = [str(i) for i in order_ids]
-        return report_id
-
-    def report_info(self, report_id):  # type: ignore[override]
-        if report_id not in self._reports:
-            raise YandexError("Отчёт не найден", status=404)
-        return {"status": "DONE", "sub_status": "", "link": f"fake://yandex/{report_id}.pdf", "raw": {}}
-
-    def download(self, url):  # type: ignore[override]
-        report_id = url.rsplit("/", 1)[-1].removesuffix(".pdf")
-        return self._pdf(self._reports.get(report_id, []))
-
-    def labels_pdf(self, order_ids, *, wait=120):  # type: ignore[override]
-        report_id = self.labels_task(order_ids)
-        return self.download(self.report_info(report_id)["link"]), "yandex-labels.pdf"
-
-    def order_labels(self, campaign_id, order_id):  # type: ignore[override]
-        return self._pdf([str(order_id)])
+    def order_labels(self, campaign_id, order_id, *, fmt=None):  # type: ignore[override]
+        """generateOrderLabels: ярлыки на все коробки одного заказа, сразу PDF."""
+        order = self._orders.get(str(order_id))
+        if not order:
+            raise YandexError("Заказ не найден", status=404, code="NOT_FOUND")
+        if str(campaign_id) != str(order["campaignId"]):
+            raise YandexError("Заказ не принадлежит магазину", status=403, code="FORBIDDEN")
+        self.label_requests.append((str(campaign_id), str(order_id), fmt or "A7"))
+        return self._pdf([str(order_id)] * self.boxes.get(str(order_id), 1))
 
     def _pdf(self, order_ids: list[str]) -> bytes:
         from tests.pdfstub import make_label_pdf

@@ -3,17 +3,19 @@
 Пути методов сверены с присланной документацией:
   POST /v1/businesses/{businessId}/orders        — заказы кабинета
   POST /v2/businesses/{businessId}/offer-mappings — каталог товаров со штрихкодами
-  POST /v2/reports/documents/labels/generate     — ярлыки пачкой (до 1000 заказов)
-  GET  /v2/reports/info/{reportId}               — готов ли файл и где его взять
-  GET  /v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels — ярлык одного заказа
+  GET  /v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels
+                                                 — ярлыки на все коробки заказа (generateOrderLabels)
 
 Авторизация — заголовок `Api-Key: <токен>`; идентификатор кабинета (businessId)
 идёт в пути и в теле, а идентификатор магазина (campaignId) панель не
 спрашивает: он приходит в каждом заказе.
 
-Ярлыки берём массовым методом, а не поштучным. Причин три: он принимает
-businessId, который у нас и так есть, забирает до 1000 заказов за раз и, в
-отличие от поштучного, доступен с правом только на чтение.
+Ярлыки — по заказу, актуальным методом generateOrderLabels: PDF сразу, без
+фоновой сборки отчёта и ожидания, и в нём ярлыки на все коробки этого заказа.
+Прежний массовый путь через отчёты (reports/documents/labels/generate + ожидание
+reports/info) панель больше не использует. Методу нужен доступ «Обработка
+заказов и учёт товаров» (inventory-and-order-processing) или полный; лимит —
+10 000 запросов в час, с запасом на любой склад.
 """
 from __future__ import annotations
 
@@ -36,14 +38,15 @@ MAX_RETRIES = 4
 PAGE_LIMIT = 50
 # И столько товаров за страницу каталога: предел метода offer-mappings.
 CATALOG_PAGE_LIMIT = 100
-# Столько заказов принимает массовый запрос ярлыков.
-LABELS_MAX_ORDERS = 1000
 # Формат ярлыка у Маркета задаётся в запросе. Какой нужен, решает размер листа,
 # выбранный для ярлыков Маркета на странице «Принтеры»: лента 58×40 — ярлык без
 # полей того же размера, иначе — A7 (75×120), как было всегда. Сделать ярлык
-# 100×150 Маркет не умеет: для такой ленты берём A7, принтер растянет.
+# 100×150 Маркет не умеет: для такой ленты берём A7, принтер растянет. A4 —
+# ярлык формата, выбранного в кабинете Маркета, на листе A4.
 LABEL_FORMAT = "A7"
 LABEL_FORMATS = {"58x40": "A9_HORIZONTALLY", "75x120": "A7", "100x150": "A7", "a4": "A4"}
+# Все значения, которые принимает generateOrderLabels (PageFormatType).
+PAGE_FORMATS = ("A9_HORIZONTALLY", "A9", "A7", "A4")
 
 
 def label_format() -> str:
@@ -73,6 +76,17 @@ DELIVERY_LABELS = {
     "DIGITAL": "Цифровой товар",
     "UNKNOWN": "—",
 }
+
+
+def _positive_int(value: int | str, what: str) -> int:
+    """Идентификатор в пути запроса: Маркет ждёт целое число от 1."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        number = 0
+    if number < 1:
+        raise YandexError(f"Некорректный идентификатор {what}: «{value}»")
+    return number
 
 
 class YandexError(MarketError):
@@ -228,82 +242,29 @@ class YandexClient:
         return mappings, next_token
 
     # ------------------------------------------------------------------ ярлыки
-    def labels_task(self, order_ids: list[int | str], *, sorted_as_given: bool = True) -> str:
-        """Запустить сборку PDF с ярлыками. Возвращает идентификатор отчёта."""
-        if not order_ids:
-            raise YandexError("Не передано ни одного заказа")
-        payload = {
-            "businessId": int(self.business_id),
-            "orderIds": [int(i) for i in order_ids][:LABELS_MAX_ORDERS],
-            "sortingType": "SORT_BY_GIVEN_ORDER" if sorted_as_given else "SORT_BY_ORDER_CREATED_AT",
-        }
-        data = self.request_json(
-            "POST", "/v2/reports/documents/labels/generate",
-            payload=payload, params={"format": label_format()},
-        )
-        report_id = ((data.get("result") or {}).get("reportId")) or ""
-        if not report_id:
-            raise YandexError("Маркет не вернул идентификатор файла с ярлыками")
-        return str(report_id)
+    def order_labels(self, campaign_id: int | str, order_id: int | str, *, fmt: str | None = None) -> bytes:
+        """Ярлыки‑наклейки на все коробки одного заказа — готовый PDF.
 
-    def report_info(self, report_id: str) -> dict:
-        """Состояние сборки файла: готов ли и где его взять.
-
-        Имена полей у этого метода в присланной документации не расписаны,
-        поэтому разбор терпим к нескольким написаниям — иначе панель молча
-        ждала бы файл, который давно готов.
+        GET v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels: файл
+        приходит сразу. format — размещение ярлыков на странице (A9_HORIZONTALLY,
+        A9, A7, A4); без него Маркет отдал бы A7, поэтому передаём всегда — тот,
+        что выбран для ярлыков Маркета на странице «Принтеры».
         """
-        data = self.request_json("GET", f"/v2/reports/info/{report_id}")
-        result = data.get("result") or {}
-        status = str(result.get("status") or result.get("state") or "").upper()
-        link = result.get("file") or result.get("url") or result.get("link") or ""
-        return {
-            "status": status,
-            "sub_status": str(result.get("subStatus") or ""),
-            "link": str(link),
-            "raw": result,
-        }
-
-    def labels_pdf(self, order_ids: list[int | str], *, wait: int = 120) -> tuple[bytes, str]:
-        """Готовый PDF с ярлыками на переданные заказы.
-
-        Маркет собирает файл не сразу, поэтому ждём: запустили — опрашиваем —
-        скачиваем. Ровно так же устроена асинхронная печать стикеров у Ozon.
-        """
-        report_id = self.labels_task(order_ids)
-        deadline = time.time() + wait
-        last = ""
-        while time.time() < deadline:
-            info = self.report_info(report_id)
-            last = info["status"] or last
-            if info["link"]:
-                return self.download(info["link"]), "yandex-labels.pdf"
-            if info["status"] in ("FAILED", "ERROR"):
-                raise YandexError(
-                    f"Маркет не собрал ярлыки: {info['sub_status'] or info['status']}"
-                )
-            time.sleep(2)
-        raise YandexError(f"Истекло время ожидания ярлыков Маркета (последний статус {last or '—'})")
-
-    def download(self, url: str) -> bytes:
-        """Скачать готовый файл по ссылке из отчёта."""
-        response = self._request("GET", url)
-        if response.status_code >= 400:
-            message, code = self._extract_error(response)
-            raise YandexError(message, status=response.status_code, code=code)
-        if not response.content:
-            raise YandexError("Маркет отдал пустой файл с ярлыками")
-        return response.content
-
-    def order_labels(self, campaign_id: int | str, order_id: int | str) -> bytes:
-        """Ярлыки одного заказа. Нужен полный доступ, поэтому путь запасной."""
+        campaign, order = _positive_int(campaign_id, "магазина (campaignId)"), _positive_int(order_id, "заказа")
+        page_format = fmt or label_format()
+        if page_format not in PAGE_FORMATS:
+            raise YandexError(f"Маркет не знает формата ярлыка «{page_format}»")
         response = self._request(
-            "GET", f"/v2/campaigns/{campaign_id}/orders/{order_id}/delivery/labels",
-            params={"format": label_format()},
+            "GET", f"/v2/campaigns/{campaign}/orders/{order}/delivery/labels",
+            params={"format": page_format},
+            # Ответ — PDF, а ошибки Маркет присылает в JSON: принимаем оба.
+            headers={"Accept": "application/pdf, application/json"},
         )
         if response.status_code >= 400:
             message, code = self._extract_error(response)
             raise YandexError(message, status=response.status_code, code=code)
+        if not response.content.startswith(b"%PDF"):
+            raise YandexError(f"Маркет прислал вместо ярлыков заказа {order} не PDF", status=response.status_code)
         return response.content
 
     # ------------------------------------------------------------------ проверка

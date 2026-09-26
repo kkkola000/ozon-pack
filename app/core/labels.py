@@ -109,6 +109,33 @@ def collect(keys: list[str], fetch, *, prefix: str, folder: str = "") -> tuple[d
     return files, saved
 
 
+def collect_files(keys: list[str], fetch, *, prefix: str, folder: str = "") -> tuple[dict[str, bytes], list[str]]:
+    """То же, что collect, для площадки, которая отдаёт наклейки по заказу.
+
+    `fetch` получает пачку номеров и отдаёт {номер: PDF} по тем, что взять
+    удалось. Файл — на заказ, со всеми его коробками: резать нечего, и заказ
+    в несколько мест не превращается в безымянную пачку. Не отданный заказ
+    остаётся без отметки и попадёт в следующую выгрузку.
+    """
+    saved: list[str] = []
+    files: dict[str, bytes] = {}
+    at = f"{_safe(folder)}/" if folder else ""
+    for start in range(0, len(keys), BATCH):
+        batch = keys[start : start + BATCH]
+        try:
+            got = fetch(batch) or {}
+        except Exception as exc:  # noqa: BLE001 - причина уходит в журнал
+            log.warning("Наклейки (%s): площадка отказала на пачке из %d — %s", prefix, len(batch), exc)
+            continue
+        for key in batch:
+            if got.get(key):
+                files[f"{at}{_safe(key)}.pdf"] = got[key]
+                saved.append(key)
+        if len(got) < len(batch):
+            log.warning("Наклейки (%s): площадка не отдала %d из %d", prefix, len(batch) - len(got), len(batch))
+    return files, saved
+
+
 def zip_files(files: dict[str, bytes]) -> bytes:
     """Сложить готовые файлы в один архив."""
     buffer = io.BytesIO()
@@ -197,12 +224,19 @@ def archive_everywhere(waiting: list[dict], user: dict | None = None) -> tuple[b
         account, market = item["account"], item["market"]
         keys = item["keys"][:MAX_AT_ONCE]
         source = market.labels
-        part, saved = collect(
-            keys,
-            lambda batch, account=account, source=source: source.pdf(account, user or {}, batch),
-            prefix=source.word,
-            folder=account["title"] if by_folders else "",
-        )
+        folder = account["title"] if by_folders else ""
+        if source.files:
+            part, saved = collect_files(
+                keys,
+                lambda batch, account=account, source=source: source.files(account, user or {}, batch),
+                prefix=source.word, folder=folder,
+            )
+        else:
+            part, saved = collect(
+                keys,
+                lambda batch, account=account, source=source: source.pdf(account, user or {}, batch),
+                prefix=source.word, folder=folder,
+            )
         if not saved:
             refused.append(account["title"])
             continue

@@ -15,8 +15,11 @@
 """
 from __future__ import annotations
 
+import io
 import json
+import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ...core import board as core_board
@@ -592,32 +595,90 @@ def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
 
 
 # ------------------------------------------------------------------ ярлыки
-def labels(account: dict, user: dict, order_ids: list[str], *, mark: bool = True) -> tuple[bytes, str]:
-    """Ярлыки заказов — файл Маркета как есть. mark — отметить печать.
+log = logging.getLogger("yandex.labels")
 
-    Один заказ печатается поштучным методом — он отвечает сразу. Пачка идёт
-    массовым: Маркет собирает файл в фоне, и панель ждёт его. Если поштучный
-    отказал (нет прав, метод недоступен), пачка из одного заказа выручит.
+# Сколько ярлыков запрашивать у Маркета одновременно. Метод отвечает сразу, но
+# по одному заказу: утренний архив из сотни заказов подряд шёл бы минуту.
+LABEL_WORKERS = 4
+
+
+def label_files(account: dict, order_ids: list[str]) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Ярлыки по заказам — ({номер: PDF}, {номер: почему не отдан}).
+
+    Каждый файл — ярлыки на все коробки заказа (generateOrderLabels). Магазин
+    (campaignId), которого требует метод, приходит в самом заказе и хранится
+    в базе; формат — тот, что выбран для ярлыков Маркета на «Принтерах».
+    """
+    if not order_ids:
+        return {}, {}
+    marks = ",".join("?" for _ in order_ids)
+    campaigns = {
+        str(row["id"]): row["campaign_id"]
+        for row in db.query(
+            f"SELECT id, campaign_id FROM yandex_orders WHERE account_id = ? AND id IN ({marks})",
+            [account["id"]] + [str(order_id) for order_id in order_ids],
+        )
+    }
+    client = yandex.get_client(account)
+    page_format = yandex.label_format()
+    files: dict[str, bytes] = {}
+    failed: dict[str, str] = {}
+    wanted = []
+    for order_id in map(str, order_ids):
+        if order_id not in campaigns:
+            failed[order_id] = "заказа нет в панели — обновите заказы"
+        elif not campaigns[order_id]:
+            failed[order_id] = "Маркет не прислал магазин заказа (campaignId) — обновите заказы"
+        else:
+            wanted.append(order_id)
+
+    def fetch(order_id: str) -> bytes:
+        return client.order_labels(campaigns[order_id], order_id, fmt=page_format)
+
+    with ThreadPoolExecutor(max_workers=min(LABEL_WORKERS, len(wanted) or 1)) as pool:
+        futures = {order_id: pool.submit(fetch, order_id) for order_id in wanted}
+    for order_id, future in futures.items():
+        try:
+            files[order_id] = future.result()
+        except YandexError as exc:
+            failed[order_id] = exc.message
+            log.warning("Ярлык заказа %s: Маркет отказал — %s", order_id, exc)
+    return files, failed
+
+
+def _merge(parts: list[bytes]) -> bytes:
+    """Несколько PDF в один — в том порядке, в каком просили заказы."""
+    if len(parts) == 1:
+        return parts[0]
+    from pypdf import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for part in parts:
+        for page in PdfReader(io.BytesIO(part)).pages:
+            writer.add_page(page)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def labels(account: dict, user: dict, order_ids: list[str], *, mark: bool = True) -> tuple[bytes, str]:
+    """Ярлыки заказов одним PDF — для печати. mark — отметить печать.
+
+    Печатать половину нельзя: сборщик наклеит, что пришло, и не заметит, что
+    одного ярлыка нет. Поэтому отказ по любому заказу — ошибка с его номером.
     Выгрузка архива до смены печать не отмечает: у неё своя отметка «скачано».
     """
-    client = yandex.get_client(account)
-    pdf: bytes | None = None
-    if len(order_ids) == 1:
-        row = db.query_one(
-            "SELECT campaign_id FROM yandex_orders WHERE account_id = ? AND id = ?",
-            (account["id"], order_ids[0]),
-        )
-        if row and row["campaign_id"]:
-            try:
-                pdf = client.order_labels(row["campaign_id"], order_ids[0])
-            except YandexError:
-                pdf = None
-    if not pdf:
-        pdf, _name = client.labels_pdf(order_ids)
+    ids = [str(order_id) for order_id in order_ids]
+    files, failed = label_files(account, ids)
+    if failed:
+        order_id, reason = next(iter(failed.items()))
+        more = f" (и ещё {len(failed) - 1})" if len(failed) > 1 else ""
+        raise YandexError(f"Ярлык заказа {order_id}{more}: {reason}")
+    pdf = _merge([files[order_id] for order_id in ids])
     if mark:
-        core_board.mark_printed(account, user, order_ids, event="yandex_label_print",
+        core_board.mark_printed(account, user, ids, event="yandex_label_print",
                                 message="Ярлык отправлен на печать")
-    return pdf, f"yandex-label-{order_ids[0]}.pdf" if len(order_ids) == 1 else "yandex-labels.pdf"
+    return pdf, f"yandex-label-{ids[0]}.pdf" if len(ids) == 1 else "yandex-labels.pdf"
 
 
 # ------------------------------------------------------------------- Яндекс Маркет
