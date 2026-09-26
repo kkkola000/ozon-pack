@@ -183,7 +183,7 @@ def test_ship_moves_status(account, sample_data, user):
 
 def test_label_marks_print(account, sample_data, user):
     posting = pick_posting()
-    pdf, name = packing.label_pdf(account, user, [posting["posting_number"]])
+    pdf, name = packing.labels(account, user, [posting["posting_number"]])
     assert pdf[:4] == b"%PDF"
     row = db.query_one("SELECT printed_at, print_count FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting["posting_number"]))
     assert row["printed_at"] and row["print_count"] == 1

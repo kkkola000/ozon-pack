@@ -234,6 +234,57 @@ def badges() -> tuple[tuple[int, str, str], ...]:
     )
 
 
+# ------------------------------------------------------------------ отметки
+def _find(account: dict, number: str):
+    board = board_of(account)
+    if board is None:
+        raise LookupError("У этой площадки заказов в панели нет")
+    row = db.query_one(
+        f"SELECT * FROM {board.table} WHERE account_id = ? AND {board.key} = ?", (account["id"], number)
+    )
+    if row is None:
+        raise LookupError(f"Заказ {number} не найден в кабинете «{account['title']}»")
+    return board, row
+
+
+def unmark(account: dict, user: dict, number: str, *, event: str, shown: str | None = None) -> str:
+    """Снять отметку «Собран»: заказ снова в работе, бронь снята. Одинаково у всех.
+
+    shown — как номер назвать человеку, если он не тот, что в базе (у Avito
+    это номер сделки). Отменённый заказ остаётся отменённым.
+    """
+    board, _row = _find(account, number)
+    db.execute(
+        f"UPDATE {board.table} SET local_state = CASE WHEN status = 'cancelled' THEN 'cancelled' ELSE 'new' END, "
+        f"packed_at = NULL, packed_by = NULL, claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
+        f"WHERE account_id = ? AND {board.key} = ?",
+        (account["id"], number),
+    )
+    db.log_event(event, level="warn", account_id=account["id"], user=user,
+                 posting_number=shown or number, message="Сброшена отметка сборки")
+    return f"{shown or number}: отметка сборки снята"
+
+
+def mark_printed(account: dict, user: dict, numbers: list[str], *, event: str, message: str,
+                 shown: dict[str, str] | None = None) -> None:
+    """Отметить наклейки напечатанными: время и счётчик — в таблице площадки, строка — в журнал.
+
+    Выгрузка архива наклеек сюда не ходит: это скачивание, у неё своя
+    отметка — label_saved_at, по ней открывается замок на сборку.
+    """
+    board = board_of(account)
+    now = db.now_iso()
+    with db.write() as conn:
+        for number in numbers:
+            conn.execute(
+                f"UPDATE {board.table} SET printed_at = ?, print_count = print_count + 1 "
+                f"WHERE account_id = ? AND {board.key} = ?",
+                (now, account["id"], number),
+            )
+            db.log_event(event, account_id=account["id"], user=user,
+                         posting_number=(shown or {}).get(number, number), message=message, conn=conn)
+
+
 # ------------------------------------------------------------------ действия
 def action_of(account: dict, key: str):
     """Действие площадки кабинета по ключу. LookupError — такого у неё нет."""

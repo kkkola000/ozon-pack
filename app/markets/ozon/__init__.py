@@ -35,7 +35,8 @@ MARKET = Market(
     labels=LabelsSource(
         word="стикеры",
         pending=pack.pending_labels,
-        pdf=lambda account, user, keys: pack.label_pdf(account, user, keys)[0],
+        # Выгрузка — это скачивание: печать не отмечается, ставится «скачано».
+        pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         table="postings",
         key="posting_number",
         size_hint="Размер стикера задаётся в личном кабинете Ozon — панель печатает файл как есть.",

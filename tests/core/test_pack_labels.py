@@ -182,3 +182,52 @@ def test_everyone_refusing_is_an_error(client, warehouse, monkeypatch):
     response = client.post(f"/api/pack/labels.zip?shop={warehouse['yandex']['id']}")
     assert response.status_code == 502
     assert "Маркет" in response.json()["detail"]
+
+
+# ------------------------------------------------------------- скачано ≠ напечатано
+def test_the_archive_marks_downloaded_not_printed(client, warehouse):
+    """Архив ставит «скачано» — по нему открывается замок. «Печатался» он не ставит.
+
+    Раньше у Ozon выгрузка засчитывалась и как печать, а у Avito и Маркета —
+    нет. Теперь одинаково: печать отмечает только печать.
+    """
+    from app.core import db, labels
+
+    response = client.post("/api/pack/labels.zip")
+    assert response.status_code == 200, response.text
+    for table in ("postings", "avito_orders", "yandex_orders"):
+        printed = db.query_one(f"SELECT COUNT(*) AS c FROM {table} WHERE print_count > 0")["c"]
+        assert printed == 0, f"{table}: выгрузка засчиталась как печать"
+    assert all(labels.state(keys)["locked"] is False for keys in pending(warehouse).values())
+
+    # Новый заказ без отметки «скачано» — замок снова закрыт.
+    number = db.query_one("SELECT posting_number FROM postings WHERE label_saved_at IS NOT NULL LIMIT 1")[0]
+    db.execute("UPDATE postings SET label_saved_at = NULL WHERE posting_number = ?", (number,))
+    state = client.get("/api/pack/state").json()["labels"]
+    assert state["locked"] is True and state["pending"] == 1
+
+
+# ------------------------------------------------------------- бронь при сквозной сборке
+def test_opening_an_ozon_posting_frees_a_held_avito_order(warehouse, user):
+    """Держал заказ Avito, открыл отправление Ozon — бронь Avito снята.
+
+    Раньше Ozon снимал бронь только в своей таблице: заказ Avito висел
+    забронированным до истечения CLAIM_TTL_MINUTES.
+    """
+    from app.core import db, pack_state
+    from app.markets.ozon import store as ozon_store
+
+    avito = warehouse["avito"]
+    held = db.query_one("SELECT id FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship' LIMIT 1",
+                        (avito["id"],))["id"]
+    with db.write() as conn:
+        pack_state.save(conn, avito, user, held, [])
+    db.execute("UPDATE avito_orders SET claim_user_id = ?, claim_login = ?, claim_at = ? WHERE id = ?",
+               (user["id"], user["login"], db.now_iso(), held))
+
+    number = db.query_one("SELECT posting_number FROM postings WHERE status = ? AND local_state = 'new' LIMIT 1",
+                          (ozon_store.STATUS_AWAITING_DELIVER,))[0]
+    ozon_pack.select_posting(warehouse["ozon"], user, number)
+    assert db.query_one("SELECT claim_login FROM avito_orders WHERE id = ?", (held,))["claim_login"] is None
+    assert db.query_one("SELECT account_id, posting_number FROM pack_state WHERE user_id = ?",
+                        (user["id"],))["posting_number"] == number

@@ -29,7 +29,7 @@ MARKET = Market(
     labels=LabelsSource(
         word="ярлыки",
         pending=pack.pending_labels,
-        pdf=pack.labels_pdf,
+        pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         table="yandex_orders",
         key="id",
         size_hint="Выбранный размер — это и формат, в котором панель запрашивает ярлык у Маркета: "

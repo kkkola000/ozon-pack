@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
+from ..core import board as core_board
 from ..core import db
 from ..core import labels as core_labels
 from ..core import orders as core_orders
@@ -238,11 +239,14 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
     у него открыт, а открыть он мог заказ любого магазина.
     """
     shop = core_packing.shop_of(code, order_id, user)
-    workspace = core_packing.workspace_of(shop) if shop else None
-    if workspace is None or workspace.label is None:
+    board = core_board.board_of(shop) if shop else None
+    if board is None:
         raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден ни в одном кабинете")
+    # Та же функция площадки, что печатает наклейки в «Заказах»: одна на всё.
     try:
-        pdf, filename = workspace.label(shop, user, order_id)
+        pdf, filename = board.labels(shop, user, [order_id])
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейку: {exc.message}") from exc
     return Response(

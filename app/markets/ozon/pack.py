@@ -15,7 +15,8 @@ import json
 import re
 from typing import Any
 
-from ...core import access, db, product_sets, report
+from ...core import board as core_board
+from ...core import access, db, pack_state, product_sets, report
 from ...core.config import settings
 from . import client as ozon
 from .client import OzonError
@@ -133,7 +134,7 @@ def load_state(account: dict, user: dict) -> dict:
         (account["id"], row["posting_number"]),
     )
     if not posting_row:
-        clear_state(user)
+        pack_state.clear(user)
         return {"active": None, "scanned": {}, "items": [], "done": 0, "total": 0, "complete": False}
 
     scanned = json.loads(row["scanned"] or "{}")
@@ -222,67 +223,9 @@ def _set_progress(set_sku: str, need: int, direct: int,
     return total, {"is_set": True, "parts": rows}
 
 
-def clear_state(user: dict, conn=None) -> None:
-    sql = "DELETE FROM pack_state WHERE user_id = ?"
-    if conn is not None:
-        conn.execute(sql, (user["id"],))
-    else:
-        db.execute(sql, (user["id"],))
-
-
-def _release_previous(conn, user: dict, *, keep: tuple[int, str] | None = None) -> tuple[int, str] | None:
-    """Снять бронь с отправления, которое сборщик держал раньше.
-
-    Строка pack_state одна на сборщика, а кабинетов несколько: если человек
-    переключил кабинет посреди сборки, бронь в прежнем кабинете надо отпустить,
-    иначе отправление зависнет до истечения CLAIM_TTL_MINUTES.
-    """
-    row = conn.execute(
-        "SELECT account_id, posting_number FROM pack_state WHERE user_id = ?", (user["id"],)
-    ).fetchone()
-    if not row or not row["posting_number"]:
-        return None
-    previous = (row["account_id"], row["posting_number"])
-    if keep is not None and previous == keep:
-        return None
-    conn.execute(
-        "UPDATE postings SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
-        "WHERE account_id = ? AND posting_number = ?",
-        previous,
-    )
-    return previous
-
-
-def _save_state(conn, account: dict, user: dict, posting_number: str, scanned: dict) -> None:
-    now = db.now_iso()
-    conn.execute(
-        """
-        INSERT INTO pack_state(user_id, account_id, posting_number, scanned, started_at, updated_at)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE SET account_id = excluded.account_id,
-            posting_number = excluded.posting_number,
-            scanned = excluded.scanned, updated_at = excluded.updated_at,
-            started_at = CASE WHEN pack_state.posting_number = excluded.posting_number
-                              THEN pack_state.started_at ELSE excluded.started_at END
-        """,
-        (user["id"], account["id"], posting_number, json.dumps(scanned, ensure_ascii=False), now, now),
-    )
-
-
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
     """Отпустить активное отправление, ничего не завершая."""
-    with db.write() as conn:
-        released = _release_previous(conn, user)
-        if released:
-            db.log_event(
-                "pack_release",
-                account_id=released[0],
-                user=user,
-                posting_number=released[1],
-                message=f"Сборка отменена ({reason})",
-                conn=conn,
-            )
-        clear_state(user, conn)
+    pack_state.release(user, event="pack_release", reason=reason)
     return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
 
@@ -467,7 +410,7 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
     scanned[slot] = int(scanned.get(slot, 0)) + 1
     was_done = item["scanned"]
     with db.write() as conn:
-        _save_state(conn, account, user, active["posting_number"], scanned)
+        pack_state.save(conn, account, user, active["posting_number"], scanned)
         db.log_event(
             "scan_set_part", account_id=account["id"], user=user,
             posting_number=active["posting_number"], sku=parent["set_sku"], barcode=code,
@@ -643,7 +586,7 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
 
         scanned[sku] = already + 1
         with db.write() as conn:
-            _save_state(conn, account, user, active["posting_number"], scanned)
+            pack_state.save(conn, account, user, active["posting_number"], scanned)
             db.log_event(
                 "scan_product",
                 account_id=account["id"],
@@ -843,13 +786,13 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
 
     now = db.now_iso()
     with db.write() as conn:
-        _release_previous(conn, user, keep=(account["id"], posting_number))
+        pack_state.release_previous(conn, user, keep=(account["id"], posting_number))
         conn.execute(
             "UPDATE postings SET claim_user_id = ?, claim_login = ?, claim_at = ? "
             "WHERE account_id = ? AND posting_number = ?",
             (user["id"], user["login"], now, account["id"], posting_number),
         )
-        _save_state(conn, account, user, posting_number, scanned)
+        pack_state.save(conn, account, user, posting_number, scanned)
         db.log_event(
             "pack_start",
             account_id=account["id"],
@@ -982,7 +925,7 @@ def complete(account: dict, user: dict, posting_number: str, code: str | None = 
             message="Отправление собрано",
             conn=conn,
         )
-        clear_state(user, conn)
+        pack_state.clear(user, conn)
     return ScanResult(
         "ok",
         f"Готово: отправление {posting_number} собрано.",
@@ -1122,21 +1065,16 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
     }
 
 
-def label_pdf(account: dict, user: dict, posting_numbers: list[str]) -> tuple[bytes, str]:
-    """Стикер(ы) отправления + отметка о печати."""
+def labels(account: dict, user: dict, posting_numbers: list[str], *, mark: bool = True) -> tuple[bytes, str]:
+    """Стикеры отправлений — файл Ozon как есть.
+
+    mark — отметить печать (время, счётчик, журнал). Выгрузка архива до смены
+    её не ставит: там своя отметка «скачано», по ней открывается замок.
+    """
     pdf, filename = ozon.get_client(account).package_label(posting_numbers)
-    now = db.now_iso()
-    with db.write() as conn:
-        for number in posting_numbers:
-            conn.execute(
-                "UPDATE postings SET printed_at = ?, print_count = print_count + 1 "
-                "WHERE account_id = ? AND posting_number = ?",
-                (now, account["id"], number),
-            )
-            db.log_event(
-                "label_print", account_id=account["id"], user=user, posting_number=number,
-                message="Стикер отправлен на печать", conn=conn,
-            )
+    if mark:
+        core_board.mark_printed(account, user, posting_numbers,
+                                event="label_print", message="Стикер отправлен на печать")
     return pdf, filename
 
 

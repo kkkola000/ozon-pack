@@ -165,10 +165,6 @@ class Workspace:
     # complete(кабинет, человек, причина). None — площадка так не умеет (Avito:
     # заказ там закрывает последняя единица товара).
     complete: Callable[[dict, dict, str], dict] | None = None
-    # Наклейка одного заказа на печать: label(кабинет, человек, номер) ->
-    # (PDF, имя файла). Берётся с рабочего места, где кабинет заранее неизвестен,
-    # поэтому ходит через ядро, а не через ручку площадки.
-    label: Callable[[dict, dict, str], tuple[bytes, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -204,6 +200,7 @@ class OrdersBoard:
     """
 
     table: str                   # «postings»
+    key: str                     # колонка номера заказа в ней: «posting_number», «id»
     # CASE … END → 'packaging' / 'deliver' / 'packed'; NULL — заказа в разделе нет.
     status_sql: str
     deadline_sql: str            # срок отгрузки: по нему сортируется список
@@ -219,6 +216,7 @@ class OrdersBoard:
     # Наклейки на печать: labels(кабинет, человек, номера) -> (PDF, имя файла).
     labels: Callable[[dict, dict, list[str]], tuple[bytes, str]]
     # Снять отметку «Собран»: reset(кабинет, человек, номер) -> сообщение.
+    # Площадка зовёт board.unmark ядра со своим событием журнала.
     reset: Callable[[dict, dict, str], str]
     actions: tuple[OrderAction, ...] = ()
     max_labels: int = 50         # сколько наклеек площадка отдаёт за один запрос

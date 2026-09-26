@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from . import client as avito, pack as avito_pack
+from ...core import board as core_board
 from ...core import db
 from .client import AvitoError
 from ...core.deps import require_manager
@@ -173,44 +174,18 @@ def reset_mark(account: dict, user: dict, order_id: str) -> str:
     сборщика, и снимать её должен тот, кто отвечает за склад, а не тот, кто ошибся.
     """
     order = _order_row(account, order_id)
-    db.execute(
-        "UPDATE avito_orders SET local_state = 'new', packed_at = NULL, packed_by = NULL, "
-        "claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
-        "WHERE account_id = ? AND id = ?",
-        (account["id"], order_id),
-    )
-    db.log_event(
-        "avito_order_reset", level="warn", account_id=account["id"], user=user,
-        posting_number=order.get("marketplace_id") or order_id,
-        message="Сброшена отметка сборки",
-    )
-    return f"{order.get('marketplace_id') or order_id}: отметка сборки снята"
+    return core_board.unmark(account, user, order_id, event="avito_order_reset",
+                             shown=order.get("marketplace_id") or order_id)
 
 
 def print_labels(account: dict, user: dict, ids: list[str]) -> tuple[bytes, str]:
     """Оригинальные этикетки Avito — без нашего редактирования — и отметка о печати."""
-    orders = [_order_row(account, order_id) for order_id in ids]
-    # Этикетки Avito запрашиваются по номеру из сервиса сделок (marketplaceId).
-    numbers = [order.get("marketplace_id") or order["id"] for order in orders]
-    pdf, filename = avito.get_client(account).label_pdf(numbers)
-    now = db.now_iso()
-    with db.write() as conn:
-        for order in orders:
-            conn.execute(
-                "UPDATE avito_orders SET printed_at = ?, print_count = print_count + 1 "
-                "WHERE account_id = ? AND id = ?",
-                (now, account["id"], order["id"]),
-            )
-            db.log_event(
-                "avito_label_print", account_id=account["id"], user=user,
-                posting_number=order.get("marketplace_id") or order["id"],
-                message="Этикетка отправлена на печать", conn=conn,
-            )
-    return pdf, filename
+    return avito_pack.labels(account, user, ids)
 
 
 ORDERS = OrdersBoard(
     table="avito_orders",
+    key="id",
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql=store.BOARD_DEADLINE_SQL,
     search_sql=store.BOARD_SEARCH_SQL,
@@ -278,7 +253,6 @@ WORKSPACE = Workspace(
         ("c-confirm", "confirm", "Ждут подтверждения", ""),
     ),
     owner=avito_pack.owner,
-    label=avito_pack.label_one,
     scan=avito_pack.scan,
     release=avito_pack.release,
     # «Завершить без скана» у Avito нет: заказ закрывает последняя единица товара.

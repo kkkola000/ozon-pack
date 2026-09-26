@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import re
 
-from ...core import db, report
+from ...core import board as core_board
+from ...core import db, pack_state, report
 from .client import STATUS_LABELS
 from . import store
 from ...core import store as core_store
@@ -69,31 +70,26 @@ def find_order(account_id: int, code: str) -> dict | None:
     return dict(row) if row else None
 
 
-def label_one(account: dict, user: dict, order_id: str) -> tuple[bytes, str]:
-    """Этикетка одного заказа на печать: файл Avito как есть, плюс отметка.
+def labels(account: dict, user: dict, ids: list[str], *, mark: bool = True) -> tuple[bytes, str]:
+    """Этикетки заказов — файл Avito как есть. mark — отметить печать.
 
     Avito знает заказ по номеру сделки, а ключ у нас свой — отсюда подстановка.
+    Выгрузка архива до смены печать не отмечает: у неё своя отметка «скачано».
     """
     from . import client as avito
 
-    row = db.query_one(
-        "SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND id = ?",
-        (account["id"], order_id),
-    )
-    if not row:
-        raise LookupError(f"Заказ {order_id} не найден")
-    pdf, filename = avito.get_client(account).label_pdf([row["marketplace_id"] or row["id"]])
-    with db.write() as conn:
-        conn.execute(
-            "UPDATE avito_orders SET printed_at = ?, print_count = print_count + 1 "
-            "WHERE account_id = ? AND id = ?",
-            (db.now_iso(), account["id"], order_id),
-        )
-        db.log_event(
-            "avito_label_print", account_id=account["id"], user=user,
-            posting_number=row["marketplace_id"] or row["id"],
-            message="Этикетка отправлена на печать", conn=conn,
-        )
+    marks = ",".join("?" for _ in ids)
+    shown = {row["id"]: (row["marketplace_id"] or row["id"]) for row in db.query(
+        f"SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND id IN ({marks})",
+        [account["id"]] + list(ids),
+    )} if ids else {}
+    missing = [key for key in ids if key not in shown]
+    if missing:
+        raise LookupError(f"Заказ {missing[0]} не найден в кабинете «{account['title']}»")
+    pdf, filename = avito.get_client(account).label_pdf([shown[key] for key in ids])
+    if mark:
+        core_board.mark_printed(account, user, ids, event="avito_label_print",
+                                message="Этикетка отправлена на печать", shown=shown)
     return pdf, filename
 
 
@@ -121,7 +117,7 @@ def load_state(account: dict, user: dict) -> dict:
         "SELECT * FROM avito_orders WHERE account_id = ? AND id = ?", (account["id"], row["posting_number"])
     )
     if not order_row:
-        clear_state(user)
+        pack_state.clear(user)
         return empty
 
     scanned = json.loads(row["scanned"] or "[]")
@@ -158,49 +154,9 @@ def _units(account_id: int, order_id: str) -> list[tuple[dict, int]]:
     return units
 
 
-def clear_state(user: dict, conn=None) -> None:
-    sql = "DELETE FROM pack_state WHERE user_id = ?"
-    (conn.execute if conn is not None else db.execute)(sql, (user["id"],))
-
-
-def _save_state(conn, account: dict, user: dict, order_id: str, scanned: list[str]) -> None:
-    now = db.now_iso()
-    conn.execute(
-        """
-        INSERT INTO pack_state(user_id, account_id, posting_number, scanned, started_at, updated_at)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE SET account_id = excluded.account_id,
-            posting_number = excluded.posting_number, scanned = excluded.scanned,
-            updated_at = excluded.updated_at,
-            started_at = CASE WHEN pack_state.posting_number = excluded.posting_number
-                              THEN pack_state.started_at ELSE excluded.started_at END
-        """,
-        (user["id"], account["id"], order_id, json.dumps(scanned, ensure_ascii=False), now, now),
-    )
-
-
-def _release_previous(conn, user: dict, *, keep: tuple[int, str] | None = None) -> None:
-    row = conn.execute(
-        "SELECT account_id, posting_number FROM pack_state WHERE user_id = ?", (user["id"],)
-    ).fetchone()
-    if not row or not row["posting_number"]:
-        return
-    previous = (row["account_id"], row["posting_number"])
-    if keep is not None and previous == keep:
-        return
-    conn.execute(
-        "UPDATE avito_orders SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
-        "WHERE account_id = ? AND id = ?",
-        previous,
-    )
-
-
-def release(account: dict, user: dict) -> ScanResult:
-    with db.write() as conn:
-        _release_previous(conn, user)
-        clear_state(user, conn)
-        db.log_event("avito_pack_release", account_id=account["id"], user=user,
-                     message="Сборка отменена", conn=conn)
+def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
+    """Отпустить начатый заказ, ничего не завершая."""
+    pack_state.release(user, event="avito_pack_release", reason=reason)
     return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
 
@@ -291,13 +247,13 @@ def open_order(account: dict, user: dict, order: dict, code: str | None = None) 
 
     now = db.now_iso()
     with db.write() as conn:
-        _release_previous(conn, user, keep=(account["id"], order_id))
+        pack_state.release_previous(conn, user, keep=(account["id"], order_id))
         conn.execute(
             "UPDATE avito_orders SET claim_user_id = ?, claim_login = ?, claim_at = ? "
             "WHERE account_id = ? AND id = ?",
             (user["id"], user["login"], now, account["id"], order_id),
         )
-        _save_state(conn, account, user, order_id, [])
+        pack_state.save(conn, account, user, order_id, [])
         db.log_event("avito_pack_start", account_id=account["id"], user=user,
                      posting_number=order_id, barcode=code, message="Заказ взят в сборку", conn=conn)
 
@@ -357,7 +313,7 @@ def _scan_item(account: dict, user: dict, state: dict, code: str) -> ScanResult:
     scanned = list(state["scanned"]) + [code]
 
     with db.write() as conn:
-        _save_state(conn, account, user, order_id, scanned)
+        pack_state.save(conn, account, user, order_id, scanned)
         db.log_event("avito_scan_item", account_id=account["id"], user=user, posting_number=order_id,
                      barcode=code, message=f"{len(scanned)}/{state['total']}", conn=conn)
         # Отчёт: сошлась пара «штрихкод -> отправление», её и записываем.
@@ -391,7 +347,7 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None,
         )
         db.log_event("avito_pack_complete", account_id=account["id"], user=user,
                      posting_number=order_id, barcode=code, message="Заказ собран", conn=conn)
-        clear_state(user, conn)
+        pack_state.clear(user, conn)
     row = db.query_one("SELECT marketplace_id FROM avito_orders WHERE account_id = ? AND id = ?",
                        (account["id"], order_id))
     number = (row["marketplace_id"] if row and row["marketplace_id"] else order_id)
@@ -419,13 +375,4 @@ def pending_labels(account_id: int) -> list[str]:
     return [row["id"] for row in rows]
 
 
-def labels_pdf(account: dict, user: dict, ids: list[str]) -> bytes:  # noqa: ARG001 - человек нужен другим площадкам
-    """Этикетки пачкой. Avito знает заказ по номеру сделки, а ключ у нас свой."""
-    from . import client as avito
 
-    marks = ",".join("?" for _ in ids)
-    rows = {row["id"]: (row["marketplace_id"] or row["id"]) for row in db.query(
-        f"SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND id IN ({marks})",
-        [account["id"]] + list(ids),
-    )}
-    return avito.get_client(account).label_pdf([rows.get(key, key) for key in ids])[0]

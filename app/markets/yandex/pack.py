@@ -19,7 +19,8 @@ import json
 import re
 from typing import Any
 
-from ...core import access, db, report
+from ...core import board as core_board
+from ...core import access, db, pack_state, report
 from . import client as yandex
 from ...core.config import settings
 from ..ozon.pack import ScanResult, barcode_variants
@@ -105,7 +106,7 @@ def load_state(account: dict, user: dict) -> dict:
         "SELECT * FROM yandex_orders WHERE account_id = ? AND id = ?", (account["id"], row["posting_number"])
     )
     if not order_row:
-        clear_state(user)
+        pack_state.clear(user)
         return _empty()
 
     scanned = json.loads(row["scanned"] or "{}")
@@ -140,59 +141,9 @@ def missing_items(state: dict) -> list[str]:
     ]
 
 
-def clear_state(user: dict, conn=None) -> None:
-    sql = "DELETE FROM pack_state WHERE user_id = ?"
-    (conn.execute if conn is not None else db.execute)(sql, (user["id"],))
-
-
-def _save_state(conn, account: dict, user: dict, order_id: str, scanned: dict) -> None:
-    now = db.now_iso()
-    conn.execute(
-        """
-        INSERT INTO pack_state(user_id, account_id, posting_number, scanned, started_at, updated_at)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(user_id) DO UPDATE SET account_id = excluded.account_id,
-            posting_number = excluded.posting_number, scanned = excluded.scanned,
-            updated_at = excluded.updated_at,
-            started_at = CASE WHEN pack_state.posting_number = excluded.posting_number
-                              THEN pack_state.started_at ELSE excluded.started_at END
-        """,
-        (user["id"], account["id"], order_id, json.dumps(scanned, ensure_ascii=False), now, now),
-    )
-
-
-def _release_previous(conn, user: dict, *, keep: tuple[int, str] | None = None) -> tuple[int, str] | None:
-    """Снять бронь с того, что сборщик держал раньше.
-
-    Строка pack_state одна на сборщика, а кабинетов несколько — и площадок
-    тоже. Прежняя бронь могла остаться в кабинете Ozon или Avito, поэтому
-    отпускаем во всех трёх таблицах: лишние обновления ничего не найдут.
-    """
-    row = conn.execute(
-        "SELECT account_id, posting_number FROM pack_state WHERE user_id = ?", (user["id"],)
-    ).fetchone()
-    if not row or not row["posting_number"]:
-        return None
-    previous = (row["account_id"], row["posting_number"])
-    if keep is not None and previous == keep:
-        return None
-    unclaim = "SET claim_user_id = NULL, claim_login = NULL, claim_at = NULL"
-    conn.execute(f"UPDATE yandex_orders {unclaim} WHERE account_id = ? AND id = ?", previous)
-    conn.execute(f"UPDATE avito_orders {unclaim} WHERE account_id = ? AND id = ?", previous)
-    conn.execute(f"UPDATE postings {unclaim} WHERE account_id = ? AND posting_number = ?", previous)
-    return previous
-
-
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
     """Отпустить активный заказ, ничего не завершая."""
-    with db.write() as conn:
-        released = _release_previous(conn, user)
-        if released:
-            db.log_event(
-                "yandex_pack_release", account_id=released[0], user=user, posting_number=released[1],
-                message=f"Сборка отменена ({reason})", conn=conn,
-            )
-        clear_state(user, conn)
+    pack_state.release(user, event="yandex_pack_release", reason=reason)
     return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
 
@@ -353,7 +304,7 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
         scanned = dict(state["scanned"])
         scanned[item["item_id"]] = int(scanned.get(item["item_id"], 0)) + 1
         with db.write() as conn:
-            _save_state(conn, account, user, active["id"], scanned)
+            pack_state.save(conn, account, user, active["id"], scanned)
             db.log_event(
                 "scan_product", account_id=account["id"], user=user, posting_number=active["id"],
                 barcode=code, message=f"{scanned[item['item_id']]}/{item['need']}", conn=conn,
@@ -485,13 +436,13 @@ def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str
 
     now = db.now_iso()
     with db.write() as conn:
-        _release_previous(conn, user, keep=(account["id"], order_id))
+        pack_state.release_previous(conn, user, keep=(account["id"], order_id))
         conn.execute(
             "UPDATE yandex_orders SET claim_user_id = ?, claim_login = ?, claim_at = ? "
             "WHERE account_id = ? AND id = ?",
             (user["id"], user["login"], now, account["id"], order_id),
         )
-        _save_state(conn, account, user, order_id, scanned)
+        pack_state.save(conn, account, user, order_id, scanned)
         db.log_event(
             "yandex_pack_start", account_id=account["id"], user=user, posting_number=order_id,
             barcode=scan_code, message="Заказ взят в сборку", conn=conn,
@@ -578,7 +529,7 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None) 
             "yandex_pack_complete", account_id=account["id"], user=user, posting_number=order_id,
             barcode=code, message="Заказ собран", conn=conn,
         )
-        clear_state(user, conn)
+        pack_state.clear(user, conn)
     return ScanResult(
         "ok", f"Готово: заказ {order_id} собран.", action="completed", sound="done",
         completed_order=order_id, state=load_state(account, user),
@@ -641,12 +592,13 @@ def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
 
 
 # ------------------------------------------------------------------ ярлыки
-def label_pdf(account: dict, user: dict, order_ids: list[str]) -> tuple[bytes, str]:
-    """Ярлык(и) заказов + отметка о печати.
+def labels(account: dict, user: dict, order_ids: list[str], *, mark: bool = True) -> tuple[bytes, str]:
+    """Ярлыки заказов — файл Маркета как есть. mark — отметить печать.
 
     Один заказ печатается поштучным методом — он отвечает сразу. Пачка идёт
     массовым: Маркет собирает файл в фоне, и панель ждёт его. Если поштучный
     отказал (нет прав, метод недоступен), пачка из одного заказа выручит.
+    Выгрузка архива до смены печать не отмечает: у неё своя отметка «скачано».
     """
     client = yandex.get_client(account)
     pdf: bytes | None = None
@@ -662,18 +614,9 @@ def label_pdf(account: dict, user: dict, order_ids: list[str]) -> tuple[bytes, s
                 pdf = None
     if not pdf:
         pdf, _name = client.labels_pdf(order_ids)
-    now = db.now_iso()
-    with db.write() as conn:
-        for order_id in order_ids:
-            conn.execute(
-                "UPDATE yandex_orders SET printed_at = ?, print_count = print_count + 1 "
-                "WHERE account_id = ? AND id = ?",
-                (now, account["id"], order_id),
-            )
-            db.log_event(
-                "yandex_label_print", account_id=account["id"], user=user, posting_number=order_id,
-                message="Ярлык отправлен на печать", conn=conn,
-            )
+    if mark:
+        core_board.mark_printed(account, user, order_ids, event="yandex_label_print",
+                                message="Ярлык отправлен на печать")
     return pdf, f"yandex-label-{order_ids[0]}.pdf" if len(order_ids) == 1 else "yandex-labels.pdf"
 
 
@@ -696,8 +639,4 @@ def pending_labels(account_id: int) -> list[str]:
     return [row["id"] for row in rows]
 
 
-def labels_pdf(account: dict, user: dict, ids: list[str]) -> bytes:  # noqa: ARG001 - человек нужен другим площадкам
-    """Ярлыки пачкой: Маркет собирает их отчётом и отдаёт одним файлом."""
-    from . import client as yandex
 
-    return yandex.get_client(account).labels_pdf(ids)[0]

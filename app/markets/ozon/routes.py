@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+from ...core import board as core_board
 from ...core import db
 from ...core.deps import check_csrf, require_manager
 from ..base import OrderAction, OrdersBoard, Workspace
@@ -79,31 +80,17 @@ def ship_many(account: dict, user: dict, numbers: list[str]) -> dict:
 def print_labels(account: dict, user: dict, numbers: list[str]) -> tuple[bytes, str]:
     """Стикеры отправлений на печать — файл Ozon как есть."""
     _known(account, numbers)
-    return packing.label_pdf(account, user, numbers)
+    return packing.labels(account, user, numbers)
 
 
 def reset_mark(account: dict, user: dict, number: str) -> str:
     """Снять отметку «собрано» — например, если сборку закрыли по ошибке."""
-    row = db.query_one(
-        "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], number)
-    )
-    if not row:
-        raise LookupError(f"Отправление {number} не найдено в кабинете «{account['title']}»")
-    state = "cancelled" if row["status"] == "cancelled" else "new"
-    db.execute(
-        "UPDATE postings SET local_state = ?, packed_at = NULL, packed_by = NULL,"
-        " claim_user_id = NULL, claim_login = NULL, claim_at = NULL WHERE account_id = ? AND posting_number = ?",
-        (state, account["id"], number),
-    )
-    db.log_event(
-        "posting_reset", level="warn", account_id=account["id"], user=user,
-        posting_number=number, message="Сброшена отметка сборки",
-    )
-    return f"{number}: отметка сборки снята"
+    return core_board.unmark(account, user, number, event="posting_reset")
 
 
 ORDERS = OrdersBoard(
     table="postings",
+    key="posting_number",
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql="o.shipment_date",
     search_sql=store.BOARD_SEARCH_SQL,
@@ -139,7 +126,6 @@ WORKSPACE = Workspace(
         ("c-returns", "returns_ready", "Возвраты к выдаче", ""),
     ),
     owner=packing.owner,
-    label=lambda account, user, number: packing.label_pdf(account, user, [number]),
     scan=packing.scan,
     release=packing.release,
     complete=packing.complete_active,

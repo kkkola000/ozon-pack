@@ -23,7 +23,7 @@ MARKET = Market(
     labels=LabelsSource(
         word="этикетки",
         pending=pack.pending_labels,
-        pdf=pack.labels_pdf,
+        pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         table="avito_orders",
         key="id",
         size_hint="Размер этикетки зависит от службы доставки — бывает 58×40 и 100×150. "

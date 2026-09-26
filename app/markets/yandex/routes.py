@@ -14,6 +14,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
+from ...core import board as core_board
 from ...core import db
 from . import pack as yandex_pack
 from ..base import OrdersBoard, Workspace
@@ -58,30 +59,20 @@ def reset_mark(account: dict, user: dict, order_id: str) -> str:
     Только админу и владельцу — это проверяет ядро: отметка — результат работы
     сборщика, и снимать её должен тот, кто отвечает за склад.
     """
-    _order_row(account, order_id)
-    db.execute(
-        "UPDATE yandex_orders SET local_state = 'new', packed_at = NULL, packed_by = NULL, "
-        "claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
-        "WHERE account_id = ? AND id = ?",
-        (account["id"], order_id),
-    )
-    db.log_event(
-        "yandex_order_reset", level="warn", account_id=account["id"], user=user,
-        posting_number=order_id, message="Сброшена отметка сборки",
-    )
-    return f"{order_id}: отметка сборки снята"
+    return core_board.unmark(account, user, order_id, event="yandex_order_reset")
 
 
 def print_labels(account: dict, user: dict, ids: list[str]) -> tuple[bytes, str]:
     """Ярлыки заказов — файл Маркета как есть."""
     for order_id in ids:
         _order_row(account, order_id)
-    return yandex_pack.label_pdf(account, user, ids)
+    return yandex_pack.labels(account, user, ids)
 
 
 # Переводов статуса на стороне Маркета панель не делает — действий нет.
 ORDERS = OrdersBoard(
     table="yandex_orders",
+    key="id",
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql="o.shipment_date",
     search_sql=store.BOARD_SEARCH_SQL,
@@ -128,7 +119,6 @@ WORKSPACE = Workspace(
         ("c-packed", "packed_today", "Собрано сегодня", "ok"),
     ),
     owner=yandex_pack.owner,
-    label=lambda account, user, order_id: yandex_pack.label_pdf(account, user, [order_id]),
     scan=yandex_pack.scan,
     release=yandex_pack.release,
     complete=yandex_pack.complete_active,
