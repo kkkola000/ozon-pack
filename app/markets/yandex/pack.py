@@ -12,6 +12,12 @@
 
 Защита от тех же трёх ошибок: чужой товар — стоп, чужой ярлык — стоп,
 собранное второй раз не открывается.
+
+На сборку попадают только заказы «Ожидает отгрузки» (READY_TO_SHIP) — так же,
+как у Ozon и Avito. «Ожидает сборки» (STARTED) сканом не открывается: сначала
+заказ отмечают готовым к отгрузке в кабинете Маркета, и после обновления
+заказов он появится на сборке. Ярлыки таких заказов при этом выгружаются
+заранее — Маркет отдаёт их с подтверждения.
 """
 from __future__ import annotations
 
@@ -34,6 +40,13 @@ from . import store
 # места через дефис: «12345678-1».
 ORDER_ID_RE = re.compile(r"^\d{5,}$")
 BOX_LABEL_RE = re.compile(r"^(\d{5,})-(\d{1,3})$")
+
+# Какие заказы открываются на сборке: только «Ожидает отгрузки».
+PACKABLE = yandex.SUBSTATUS_READY_TO_SHIP
+# «Ожидает сборки»: заказ в работе, но собирать его на складе ещё рано.
+NOT_YET = yandex.SUBSTATUS_STARTED
+NOT_YET_HINT = ("Отметьте его готовым к отгрузке в кабинете Маркета и нажмите «Обновить заказы» — "
+                "тогда он откроется на сборке.")
 
 # Ключ единицы в отчёте. У Маркета нет SKU, поэтому строка опознаётся по
 # позиции заказа — иначе защите от дублей не за что зацепиться.
@@ -152,20 +165,19 @@ def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
 
 # ------------------------------------------------------------------ подбор заказа
 def candidates_for_offers(account: dict, offers: list[str], user: dict) -> list[dict]:
-    """Заказы в работе, где нужен товар с одним из артикулов, — самые срочные первыми."""
+    """Заказы «Ожидает отгрузки», где нужен товар с одним из артикулов, — срочные первыми."""
     if not offers:
         return []
     marks = ",".join("?" for _ in offers)
-    subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
     rows = db.query(
         f"""
         SELECT DISTINCT o.* FROM yandex_orders o
         JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
         WHERE o.account_id = ? AND i.offer_id IN ({marks})
-          AND o.substatus IN ({subs}) AND o.local_state != 'packed'
+          AND o.substatus = ? AND o.local_state != 'packed'
         ORDER BY (o.shipment_date IS NULL), o.shipment_date, o.id
         """,
-        [account["id"]] + list(offers) + list(yandex.WORK_SUBSTATUSES),
+        [account["id"]] + list(offers) + [PACKABLE],
     )
     result = []
     for row in rows:
@@ -336,39 +348,7 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
-        marks = ",".join("?" for _ in offers)
-        packed = db.query_one(
-            f"""
-            SELECT COUNT(DISTINCT o.id) AS c FROM yandex_orders o
-            JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
-            WHERE o.account_id = ? AND i.offer_id IN ({marks}) AND o.local_state = 'packed'
-            """,
-            [account["id"]] + list(offers),
-        )["c"]
-        with db.write() as conn:
-            db.log_event(
-                "scan_no_candidates", level="warn", account_id=account["id"], user=user,
-                barcode=code, message=name, conn=conn,
-            )
-            report.record_error(
-                conn, account, user, "no_candidates", barcode=code, name=name, offer_id=offers[0],
-            )
-        if locked:
-            return ScanResult(
-                "warning",
-                f"«{name}»: все подходящие заказы сейчас собирает {locked[0]['locked_by']}.",
-                action="locked", sound="error", state=state,
-            )
-        if packed:
-            return ScanResult(
-                "warning",
-                f"«{name}»: все заказы с этим товаром уже собраны ({packed} шт). Не собирайте повторно.",
-                action="already_packed", sound="error", state=state,
-            )
-        return ScanResult(
-            "error", f"«{name}» не нужен ни в одном заказе Маркета в работе.",
-            action="no_candidates", sound="error", state=state,
-        )
+        return _nothing_to_open(account, user, offers, name, code, state, locked)
 
     # Товар нужен в нескольких заказах — берём самый срочный. Собранный выпадает
     # из подбора сам, и следующий скан того же штрихкода отдаёт следующий заказ.
@@ -392,6 +372,62 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
     return result
 
 
+def _nothing_to_open(account: dict, user: dict, offers: list[str], name: str, code: str,
+                     state: dict, locked: list[dict]) -> ScanResult:
+    """Товар отсканирован, а открыть нечего: объяснить почему — словами для сборщика."""
+    marks = ",".join("?" for _ in offers)
+    packed = db.query_one(
+        f"""
+        SELECT COUNT(DISTINCT o.id) AS c FROM yandex_orders o
+        JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
+        WHERE o.account_id = ? AND i.offer_id IN ({marks}) AND o.local_state = 'packed'
+        """,
+        [account["id"]] + list(offers),
+    )["c"]
+    # Товар есть в заказе «Ожидает сборки» — открывать его рано, но и
+    # «не нужен ни в одном заказе» было бы неправдой.
+    waiting = db.query_one(
+        f"""
+        SELECT o.id FROM yandex_orders o
+        JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
+        WHERE o.account_id = ? AND i.offer_id IN ({marks}) AND o.substatus = ?
+          AND o.local_state != 'packed'
+        ORDER BY (o.shipment_date IS NULL), o.shipment_date, o.id LIMIT 1
+        """,
+        [account["id"]] + list(offers) + [NOT_YET],
+    )
+    with db.write() as conn:
+        db.log_event(
+            "scan_no_candidates", level="warn", account_id=account["id"], user=user,
+            barcode=code, message=name, conn=conn,
+        )
+        report.record_error(
+            conn, account, user, "no_candidates", barcode=code, name=name, offer_id=offers[0],
+        )
+    if locked:
+        return ScanResult(
+            "warning",
+            f"«{name}»: все подходящие заказы сейчас собирает {locked[0]['locked_by']}.",
+            action="locked", sound="error", state=state,
+        )
+    if waiting:
+        return ScanResult(
+            "warning",
+            f"«{name}»: заказ {waiting['id']} ещё «Ожидает сборки» — собирать его рано. {NOT_YET_HINT}",
+            action="needs_ship", sound="error", state=state,
+        )
+    if packed:
+        return ScanResult(
+            "warning",
+            f"«{name}»: все заказы с этим товаром уже собраны ({packed} шт). Не собирайте повторно.",
+            action="already_packed", sound="error", state=state,
+        )
+    return ScanResult(
+        "error", f"«{name}» не нужен ни в одном заказе Маркета, который ждёт отгрузки.",
+        action="no_candidates", sound="error", state=state,
+    )
+
+
 # ------------------------------------------------------------------ выбор заказа
 def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str | None = None,
                  scan_code: str | None = None, label_in_hand: bool = False) -> ScanResult:
@@ -412,7 +448,12 @@ def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str
             "warning", f"Заказ {order_id} уже собран ({order.get('packed_by') or '—'}).",
             action="already_packed", sound="error", state=load_state(account, user),
         )
-    if order["substatus"] not in yandex.WORK_SUBSTATUSES:
+    if order["substatus"] == NOT_YET:
+        return ScanResult(
+            "warning", f"Заказ {order_id} ещё «Ожидает сборки» — собирать его рано. {NOT_YET_HINT}",
+            action="needs_ship", sound="error", state=load_state(account, user),
+        )
+    if order["substatus"] != PACKABLE:
         return ScanResult(
             "error", f"Заказ {order_id} в статусе «{order['status_label']}» — он не в работе.",
             action="wrong_status", state=load_state(account, user),

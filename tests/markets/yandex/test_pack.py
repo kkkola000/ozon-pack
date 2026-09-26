@@ -9,16 +9,26 @@ from app.markets.yandex import store as yandex_store
 
 @pytest.fixture
 def market(yandex_account, sample_data):
-    """Кабинет Маркета вместе с каталогом Ozon — без него штрихкодов не найти."""
+    """Кабинет Маркета вместе с каталогом Ozon — без него штрихкодов не найти.
+
+    На сборку идут только заказы «Ожидает отгрузки». Чтобы проверкам было что
+    собирать, часть заказов подделки переводим в этот статус заранее; остальные
+    «Ожидает сборки» остаются — на них проверяется, что сборка их не открывает.
+    """
+    fake = yandex.get_client(yandex_account)
+    for index in (1, 2):
+        order = fake._orders[str(80000000 + int(fake.business_id) % 1000 * 100000 + index)]
+        order["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
     yandex_sync.sync_yandex(yandex_account)
     return yandex_account
 
 
-def work_orders(account):
+def work_orders(account, substatus=yandex.SUBSTATUS_READY_TO_SHIP):
+    """Заказы, которые открываются на сборке, — самые срочные первыми."""
     rows = db.query(
-        "SELECT * FROM yandex_orders WHERE account_id = ? AND local_state != 'packed' "
+        "SELECT * FROM yandex_orders WHERE account_id = ? AND local_state != 'packed' AND substatus = ? "
         "ORDER BY (shipment_date IS NULL), shipment_date, id",
-        (account["id"],),
+        (account["id"], substatus),
     )
     return [yandex_store.yandex_view(r) for r in rows]
 
@@ -259,11 +269,56 @@ def test_second_pass_does_not_duplicate_report_rows(market, user):
     assert len(shipped("ok")) == first_count, "повторная сборка не должна раздувать отчёт"
 
 
-def test_ready_to_ship_orders_are_packable_too(market, user):
-    ready = [o for o in work_orders(market) if o["substatus"] == yandex.SUBSTATUS_READY_TO_SHIP]
-    assert ready
-    result = yandex_pack.scan(market, user, ready[0]["id"])
-    assert result["action"] == "order_selected"
+# ------------------------------------------------------------------ только «Ожидает отгрузки»
+def test_awaiting_packaging_order_does_not_open_by_label(market, user):
+    """«Ожидает сборки» на сборку не попадает — даже сканом самого ярлыка."""
+    started = work_orders(market, yandex.SUBSTATUS_STARTED)
+    assert started, "в подделке нужны заказы «Ожидает сборки»"
+    result = yandex_pack.scan(market, user, started[0]["id"])
+    assert result["status"] == "warning" and result["action"] == "needs_ship"
+    assert "Ожидает сборки" in result["message"] and "кабинете Маркета" in result["message"]
+    assert result["state"]["active"] is None
+    row = db.query_one("SELECT claim_user_id FROM yandex_orders WHERE id = ?", (started[0]["id"],))
+    assert row["claim_user_id"] is None, "заказ не должен браться в сборку"
+
+
+def test_product_scan_skips_awaiting_packaging_orders(market, user):
+    """Товар нужен и в «Ожидает сборки», и в «Ожидает отгрузки» — открывается второй."""
+    ready_offers = {i["offer_id"] for o in work_orders(market) for i in o["items"]}
+    for order in work_orders(market, yandex.SUBSTATUS_STARTED):
+        shared = next((i for i in order["items"] if i["offer_id"] in ready_offers and i["barcodes"]), None)
+        if shared:
+            break
+    else:
+        pytest.skip("нужен товар, который стоит в заказах обоих статусов")
+    result = yandex_pack.scan(market, user, shared["barcodes"][0])
+    assert result["action"] == "order_selected", result["message"]
+    assert result["state"]["active"]["substatus"] == yandex.SUBSTATUS_READY_TO_SHIP
+
+
+def test_product_only_in_awaiting_packaging_explains_why(market, user):
+    """Товар есть только в «Ожидает сборки» — не «не нужен», а «рано, подтвердите в Маркете»."""
+    started = work_orders(market, yandex.SUBSTATUS_STARTED)[0]
+    item = started["items"][0]
+    db.execute("UPDATE yandex_orders SET local_state = 'packed' WHERE account_id = ? AND substatus = ?",
+               (market["id"], yandex.SUBSTATUS_READY_TO_SHIP))
+    result = yandex_pack.scan(market, user, item["barcodes"][0])
+    assert result["status"] == "warning" and result["action"] == "needs_ship", result["message"]
+    assert "Ожидает сборки" in result["message"]
+    assert result["state"]["active"] is None
+    # Ядро спрашивает «чей код» до скана — ответ обязан вести в этот кабинет.
+    assert yandex_pack.owner(market, user, item["barcodes"][0])[0] == "known"
+
+
+def test_packing_list_counts_only_what_can_be_packed(market):
+    from app.core import orders
+
+    rows = {str(row["number"]): row for row in orders.everywhere() if row["market"] == "yandex"}
+    for order in work_orders(market):
+        assert rows[order["id"]]["in_work"] is True
+    for order in work_orders(market, yandex.SUBSTATUS_STARTED):
+        assert rows[order["id"]]["in_work"] is False, "«Ожидает сборки» — не к сборке"
+        assert rows[order["id"]]["status_label"] == "Ожидает сборки"
 
 
 def test_switching_cabinet_releases_the_previous_claim(market, user, account):

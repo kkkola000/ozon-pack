@@ -423,7 +423,7 @@ def test_the_page_carries_every_market_card(client):
 def test_the_tiles_follow_the_filter(client, cabinets):
     """«Все заказы» — общие плитки, выбран кабинет — плитки его площадки."""
     everything = client.get("/pack").text
-    assert "В работе" in everything and "Горит сегодня" in everything
+    assert "К сборке" in everything and "Горит сегодня" in everything
 
     only_ozon = client.get(f"/pack?shop={cabinets['ozon']['id']}").text
     assert "Ожидает отгрузки" in only_ozon
