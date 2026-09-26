@@ -94,11 +94,21 @@ def _yandex_dt(value: Any) -> str | None:
 
 
 # --------------------------------------------------------------- Яндекс Маркет
+# «Ожидает отгрузки» — с него у панели начинаются наклейки (см. client.py).
+READY_TO_SHIP = "READY_TO_SHIP"
+
+
 def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     """Заказ из POST /v1/businesses/{businessId}/orders, не трогая наши отметки.
 
     Локальное состояние сборки (packed_at, кто взял в работу, выгружен ли ярлык)
     принадлежит панели: площадка о нём не знает и затирать его нельзя.
+
+    Одно исключение — переход в «Ожидает отгрузки». На «Сборку» нужен ярлык,
+    скачанный в этом статусе: коробки заказа окончательно известны, когда его
+    отмечают готовым к отгрузке. Ярлык, скачанный раньше (до 1.51.1 выгрузка
+    брала и «Ожидает сборки»), не в счёт — отметку сбрасываем, и сборка
+    запирается, пока ярлык не скачают заново.
     """
     order_id = _text(raw.get("orderId"))
     if not order_id:
@@ -133,7 +143,10 @@ def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) ->
             notes = excluded.notes, total = excluded.total, items_count = excluded.items_count,
             positions_count = excluded.positions_count, created_at_api = excluded.created_at_api,
             updated_at_api = excluded.updated_at_api, raw = excluded.raw,
-            updated_at = excluded.updated_at
+            updated_at = excluded.updated_at,
+            label_saved_at = CASE
+                WHEN excluded.substatus = ? AND yandex_orders.substatus IS NOT ? THEN NULL
+                ELSE yandex_orders.label_saved_at END
         """,
         (
             account_id,
@@ -157,6 +170,8 @@ def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) ->
             json.dumps(raw, ensure_ascii=False),
             (existing["first_seen_at"] if existing else now) or now,
             now,
+            READY_TO_SHIP,
+            READY_TO_SHIP,
         ),
     )
 

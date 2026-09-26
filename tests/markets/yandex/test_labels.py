@@ -244,3 +244,46 @@ def test_started_order_has_no_print_button(client, market):
     ready = client.get(f"/orders?shop={market['id']}&status=deliver").text
     assert 'data-label="1"' in ready and "data-print>" in ready
 
+
+def test_label_saved_before_ready_to_ship_does_not_count(client, market):
+    """Ярлык скачали в «Ожидает сборки» (так выгружали до 1.51.1), потом заказ стал
+    «Ожидает отгрузки» — сборка должна запереться, пока ярлык не скачают заново."""
+    started = work_ids(market, yandex.SUBSTATUS_STARTED)[0]
+    client.post(f"/api/pack/labels.zip?shop={market['id']}")
+    db.execute("UPDATE yandex_orders SET label_saved_at = ? WHERE id = ?", (db.now_iso(), started))
+
+    fake = yandex.get_client(market)
+    fake._orders[started]["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
+    yandex_sync.sync_yandex(market)
+
+    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
+    assert gate["locked"] is True and gate["pending"] == 1
+    names = zipfile.ZipFile(io.BytesIO(client.post(f"/api/pack/labels.zip?shop={market['id']}").content)).namelist()
+    assert names == [f"{started}.pdf"]
+
+
+def test_label_saved_in_ready_to_ship_survives_the_next_sync(client, market):
+    """Обычное обновление заказов отметку не трогает — иначе замок падал бы каждые пять минут."""
+    assert client.post(f"/api/pack/labels.zip?shop={market['id']}").status_code == 200
+    yandex_sync.sync_yandex(market)
+    assert client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]["locked"] is False
+
+
+def test_early_labels_are_forgotten_once_on_update(market):
+    """Заказы, перешедшие ещё до исправления, получают отметку «скачать заново» — один раз."""
+    from app.markets.yandex import migrations
+
+    ready = work_ids(market)
+    db.execute("UPDATE yandex_orders SET label_saved_at = ?", (db.now_iso(),))
+    db.execute("DELETE FROM kv WHERE key = ?", (migrations.KV_EARLY_LABELS_FORGOTTEN,))
+    with db.write() as conn:
+        migrations.migrate(conn)
+    left = {row["id"] for row in db.query(
+        "SELECT id FROM yandex_orders WHERE account_id = ? AND label_saved_at IS NULL", (market["id"],))}
+    assert left == set(ready), "только «Ожидает отгрузки»: «Ожидает сборки» сбросит сам переход"
+
+    db.execute("UPDATE yandex_orders SET label_saved_at = ?", (db.now_iso(),))
+    with db.write() as conn:
+        migrations.migrate(conn)
+    assert not db.query("SELECT 1 FROM yandex_orders WHERE label_saved_at IS NULL"), "второй раз не сбрасывает"
+

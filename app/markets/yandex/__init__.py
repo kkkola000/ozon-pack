@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from ..base import CatalogSource, LabelsSource, Market
-from . import catalog, client, pack, routes, store, sync
+from . import catalog, client, migrations, pack, routes, store, sync
 
 MARKET = Market(
     code="yandex",
@@ -25,6 +25,8 @@ MARKET = Market(
     sync=sync.sync_account,
     stats=routes.settings_stats,
     schema=store.SCHEMA,
+    # Разовые правки своих таблиц: ярлыки, скачанные в «Ожидает сборки».
+    migrate=migrations.migrate,
     raw_tables=("yandex_orders",),
     labels=LabelsSource(
         word="ярлыки",
