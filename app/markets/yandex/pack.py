@@ -16,8 +16,9 @@
 На сборку попадают только заказы «Ожидает отгрузки» (READY_TO_SHIP) — так же,
 как у Ozon и Avito. «Ожидает сборки» (STARTED) сканом не открывается: сначала
 заказ отмечают готовым к отгрузке в кабинете Маркета, и после обновления
-заказов он появится на сборке. Ярлыки таких заказов при этом выгружаются
-заранее — Маркет отдаёт их с подтверждения.
+заказов он появится на сборке. Ярлыки — так же: Маркет отдаёт их уже с
+подтверждения, но на «Сборку» выгружаются только ярлыки заказов «Ожидает
+отгрузки», и печатать ярлык заказа «Ожидает сборки» панель не даёт.
 
 Сопоставление (core/linked.py) работает и здесь: штрихкод любой карточки,
 сопоставленной с карточкой Маркета, подходит к позиции заказа, даже если
@@ -34,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ...core import board as core_board
+from ...core import labels as core_labels
 from ...core import access, db, linked, pack_state, product_sets, report
 from ...core.product_sets import part_slot
 from . import client as yandex
@@ -880,21 +882,11 @@ def labels(account: dict, user: dict, order_ids: list[str], *, mark: bool = True
 
 # ------------------------------------------------------------------- Яндекс Маркет
 def pending_labels(account_id: int) -> list[str]:
-    """Заказы Маркета в работе, чей ярлык ещё не выгружен.
+    """Заказы Маркета «Ожидает отгрузки», чей ярлык ещё не выгружен.
 
-    У Маркета ярлык есть с момента подтверждения заказа, а сборка в панели
-    закрывается его сканом — значит, нужен он по каждому заказу в работе, и
-    «Ожидает сборки», и «Ожидает отгрузки». Собранное замок не держит.
+    Маркет отдаёт ярлык уже с подтверждения, но на «Сборку» идут только
+    заказы «Ожидает отгрузки» — как у Ozon и Avito: «Ожидает сборки» собирать
+    рано, и его ярлык выгрузится, когда заказ отметят готовым к отгрузке.
+    Собранное замок не держит.
     """
-    from . import client as yandex
-
-    subs = ",".join("?" for _ in yandex.WORK_SUBSTATUSES)
-    rows = db.query(
-        f"SELECT id FROM yandex_orders WHERE account_id = ? AND substatus IN ({subs}) "
-        "AND local_state != 'packed' AND label_saved_at IS NULL ORDER BY id",
-        [account_id] + list(yandex.WORK_SUBSTATUSES),
-    )
-    return [row["id"] for row in rows]
-
-
-
+    return core_labels.waiting(account_id, table="yandex_orders", key="id", status_sql=store.BOARD_STATUS_SQL)

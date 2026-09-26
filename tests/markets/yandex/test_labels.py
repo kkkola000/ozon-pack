@@ -83,6 +83,17 @@ def test_all_documented_formats_are_accepted():
 # ------------------------------------------------------------------ панель
 @pytest.fixture
 def market(yandex_account):
+    """Наклейки у панели — по «Ожидает отгрузки»: туда переводим все заказы, кроме одного.
+
+    Оставшийся «Ожидает сборки» — на нём проверяется, что его ярлык не
+    выгружается и не печатается, хотя Маркет отдал бы его.
+    """
+    fake = yandex.get_client(yandex_account)
+    work = sorted((order for order in fake._orders.values() if order["status"] == "PROCESSING"),
+                  key=lambda order: order["orderId"])
+    for order in work:
+        order["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
+    work[0]["substatus"] = yandex.SUBSTATUS_STARTED
     yandex_sync.sync_yandex(yandex_account)
     return yandex_account
 
@@ -96,9 +107,10 @@ def client(market):
         yield test_client
 
 
-def work_ids(account) -> list[str]:
+def work_ids(account, substatus=yandex.SUBSTATUS_READY_TO_SHIP) -> list[str]:
     return [row["id"] for row in db.query(
-        "SELECT id FROM yandex_orders WHERE account_id = ? ORDER BY id", (account["id"],))]
+        "SELECT id FROM yandex_orders WHERE account_id = ? AND substatus = ? ORDER BY id",
+        (account["id"], substatus))]
 
 
 def pages(pdf: bytes) -> int:
@@ -180,3 +192,55 @@ def test_order_without_campaign_asks_to_refresh(client, market):
     response = client.post("/api/orders/labels.pdf", json={"account_id": market["id"], "ids": [order_id]})
     assert response.status_code == 502
     assert "обновите заказы" in response.json()["detail"]
+
+
+# ------------------------------------------------------------------ «Ожидает сборки»
+def test_started_order_label_is_not_unloaded(client, market):
+    """На «Сборку» — новые ярлыки только «Ожидает отгрузки», хотя Маркет отдал бы и этот."""
+    started = work_ids(market, yandex.SUBSTATUS_STARTED)
+    assert started, "в фикстуре нужен заказ «Ожидает сборки»"
+    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
+    assert gate["pending"] == len(work_ids(market))
+
+    response = client.post(f"/api/pack/labels.zip?shop={market['id']}")
+    assert response.status_code == 200, response.text
+    names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
+    assert f"{started[0]}.pdf" not in names
+    assert started[0] not in {order for _c, order, _f in yandex.get_client(market).label_requests}
+    assert client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]["locked"] is False, \
+        "«Ожидает сборки» замок не держит"
+
+
+def test_started_order_waits_until_it_is_ready_to_ship(client, market):
+    started = work_ids(market, yandex.SUBSTATUS_STARTED)[0]
+    client.post(f"/api/pack/labels.zip?shop={market['id']}")
+    fake = yandex.get_client(market)
+    fake._orders[started]["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
+    yandex_sync.sync_yandex(market)
+    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
+    assert gate == {**gate, "pending": 1, "locked": True}, "стал «Ожидает отгрузки» — его ярлык ждёт выгрузки"
+    names = zipfile.ZipFile(io.BytesIO(client.post(f"/api/pack/labels.zip?shop={market['id']}").content)).namelist()
+    assert names == [f"{started}.pdf"]
+
+
+def test_started_order_is_not_printed(client, market):
+    started = work_ids(market, yandex.SUBSTATUS_STARTED)[0]
+    fake = yandex.get_client(market)
+    response = client.post("/api/orders/labels.pdf",
+                           json={"account_id": market["id"], "ids": [work_ids(market)[0], started]})
+    assert response.status_code == 400
+    assert started in response.json()["detail"] and "Ожидает сборки" in response.json()["detail"]
+    assert fake.label_requests == [], "к Маркету за ярлыком не ходили"
+    single = client.get(f"/api/pack/label/yandex/{started}.pdf")
+    assert single.status_code == 400
+
+
+def test_started_order_has_no_print_button(client, market):
+    page = client.get(f"/orders?shop={market['id']}&status=packaging").text
+    started = work_ids(market, yandex.SUBSTATUS_STARTED)[0]
+    assert started in page
+    assert 'data-label="1"' not in page, "в «Ожидает сборки» наклейку не печатают"
+    assert "data-print>" not in page and 'data-bulk="labels"' not in page
+    ready = client.get(f"/orders?shop={market['id']}&status=deliver").text
+    assert 'data-label="1"' in ready and "data-print>" in ready
+

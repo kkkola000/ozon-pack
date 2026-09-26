@@ -59,6 +59,31 @@ def names_in(archive: bytes) -> list[str]:
         return sorted(zf.namelist())
 
 
+# ------------------------------------------------------------- какие заказы
+def test_labels_wait_for_exactly_the_orders_awaiting_shipment(warehouse):
+    """Новые наклейки на «Сборке» — ровно заказы «Ожидает отгрузки» из «Заказов».
+
+    У всех площадок одно правило: не «Ожидает сборки» (Маркет отдал бы и такой
+    ярлык, но собирать рано) и не «Собран».
+    """
+    from app.core import board as core_board
+
+    waiting = pending(warehouse)
+    for code, keys in waiting.items():
+        expected = {str(card["id"]) for card in core_board.rows([warehouse[code]], "deliver")}
+        assert set(keys) == expected, code
+        early = {str(card["id"]) for card in core_board.rows([warehouse[code]], "packaging")}
+        assert not set(keys) & early, f"{code}: «Ожидает сборки» в выгрузке"
+
+
+def test_packed_order_does_not_hold_the_lock(warehouse, user):
+    """Собранный заказ закрыли сканом наклейки — она уже на коробке, замок его не держит."""
+    ozon = warehouse["ozon"]
+    number = ozon_pack.pending_labels(ozon["id"])[0]
+    ozon_pack.complete(ozon, user, number)
+    assert number not in ozon_pack.pending_labels(ozon["id"])
+
+
 # ---------------------------------------------------------------------- замок
 def test_the_gate_counts_every_cabinet(client, warehouse):
     """Замок держит, пока не выгружено всё: считаем по трём кабинетам сразу."""

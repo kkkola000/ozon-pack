@@ -2,6 +2,7 @@
 
 Главное требование то же, что у Avito: сборщик видит только заказы в работе —
 «Ожидает сборки» и «Ожидает отгрузки», — а всё, что уехало, панель не хранит.
+Ярлыки на «Сборку» выгружаются только по «Ожидает отгрузки».
 """
 import io
 import re
@@ -230,9 +231,15 @@ def test_sync_button_updates_the_filtered_cabinet(client, market):
 
 
 # ------------------------------------------------------------------ ярлыки
-def test_pending_labels_cover_every_order_in_work(market):
+def test_pending_labels_are_orders_awaiting_shipment(market):
+    """На «Сборку» — ярлыки только «Ожидает отгрузки», как у Ozon и Avito.
+
+    Маркет отдаёт ярлык уже с подтверждения, но «Ожидает сборки» собирать рано:
+    его ярлык выгрузится, когда заказ станет «Ожидает отгрузки».
+    """
     pending = yandex_pack.pending_labels(market["id"])
-    assert set(pending) == {r["id"] for r in orders_in(market)}
+    assert set(pending) == {r["id"] for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP)}
+    assert not set(pending) & {r["id"] for r in orders_in(market, yandex.SUBSTATUS_STARTED)}
     assert labels.state(yandex_pack.pending_labels(market["id"]))["locked"] is True
 
 
@@ -251,7 +258,7 @@ def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
     assert response.headers["content-type"].startswith("application/zip")
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = sorted(archive.namelist())
-    assert names == sorted(f"{r['id']}.pdf" for r in orders_in(market))
+    assert names == sorted(f"{r['id']}.pdf" for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP))
     assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
     assert db.query_one("SELECT 1 FROM events WHERE kind = 'labels_archive'")
 
@@ -267,11 +274,16 @@ def test_new_order_locks_the_scanner_again(client, market):
     fake._orders[str(fresh["orderId"])] = fresh
     yandex_sync.sync_yandex(market)
     state = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
+    assert state["locked"] is False, "новый «Ожидает сборки» сборку не запирает"
+
+    fresh["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
+    yandex_sync.sync_yandex(market)
+    state = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
     assert state["pending"] == 1 and state["locked"] is True
 
 
 def test_single_label_and_batch_print(client, market):
-    order = orders_in(market)[0]
+    order = orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP)[0]
     def labels(ids):
         return client.post("/api/orders/labels.pdf", json={"account_id": market["id"], "ids": ids})
 
@@ -281,9 +293,11 @@ def test_single_label_and_batch_print(client, market):
     row = db.query_one("SELECT print_count, printed_at FROM yandex_orders WHERE id = ?", (order["id"],))
     assert row["print_count"] == 1 and row["printed_at"]
 
-    ids = [r["id"] for r in orders_in(market)[:2]]
+    ids = [r["id"] for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP)[:2]]
     batch = labels(ids)
     assert batch.status_code == 200
+    early = labels([orders_in(market, yandex.SUBSTATUS_STARTED)[0]["id"]])
+    assert early.status_code == 400 and "Ожидает сборки" in early.json()["detail"]
     assert batch.content.startswith(b"%PDF")
     assert labels([]).status_code == 400
     assert labels(["000"]).status_code == 404

@@ -122,6 +122,13 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
         raise HTTPException(
             status_code=400, detail=f"За один раз площадка отдаёт не больше {board.max_labels} наклеек"
         )
+    early = core_board.not_ready(shop, ids)
+    if early:
+        more = f" (и ещё {len(early) - 1})" if len(early) > 1 else ""
+        raise HTTPException(
+            status_code=400,
+            detail=f"Заказ {early[0]}{more} ещё «Ожидает сборки» — наклейки печатаются с «Ожидает отгрузки»",
+        )
     try:
         pdf, filename = board.labels(shop, user, ids)
     except LookupError as exc:

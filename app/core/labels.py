@@ -167,6 +167,25 @@ def mark_saved(table: str, account_id: int, keys: list[str], column: str) -> Non
             )
 
 
+def waiting(account_id: int, *, table: str, key: str, status_sql: str) -> list[str]:
+    """Заказы «Ожидает отгрузки», чья наклейка ещё не выгружена.
+
+    Статус — ровно тот, что в «Заказах»: площадка объявляет его выражением
+    status_sql (OrdersBoard), и замок считает по нему же. Так на «Сборку» идут
+    новые наклейки только заказов «Ожидает отгрузки» у всех площадок сразу:
+    не «Ожидает сборки» (их собирать рано, даже если площадка наклейку уже
+    отдаёт, как Маркет) и не «Собран» (его закрыли сканом наклейки — она уже
+    на коробке).
+    """
+    rows = db.query(
+        f"SELECT o.{key} AS number FROM {table} o "
+        f"WHERE o.account_id = ? AND ({status_sql}) = 'deliver' AND o.label_saved_at IS NULL "
+        f"ORDER BY o.{key}",
+        (account_id,),
+    )
+    return [str(row["number"]) for row in rows]
+
+
 def state(pending: list[str]) -> dict:
     """Что показать на «Сборке»: сколько ждёт выгрузки и пускать ли к сканеру."""
     return {"pending": len(pending), "locked": bool(pending)}

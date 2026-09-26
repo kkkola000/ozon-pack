@@ -28,6 +28,7 @@ import re
 from collections import Counter
 
 from ...core import board as core_board
+from ...core import labels as core_labels
 from ...core import db, linked, pack_state, product_sets, report
 from ..ozon.pack import barcode_variants
 from .client import STATUS_LABELS
@@ -511,15 +512,5 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None,
 
 # ------------------------------------------------------------------- Avito
 def pending_labels(account_id: int) -> list[str]:
-    """Заказы «Отправьте заказ», чья этикетка ещё не выгружена."""
-    from . import client as avito
-
-    rows = db.query(
-        "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? "
-        "AND local_state != 'packed' AND label_saved_at IS NULL ORDER BY id",
-        (account_id, avito.STATUS_READY_TO_SHIP),
-    )
-    return [row["id"] for row in rows]
-
-
-
+    """Заказы «Ожидает отгрузки» («Отправьте заказ»), чья этикетка ещё не выгружена."""
+    return core_labels.waiting(account_id, table="avito_orders", key="id", status_sql=store.BOARD_STATUS_SQL)

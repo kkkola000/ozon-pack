@@ -245,6 +245,11 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
     board = core_board.board_of(shop) if shop else None
     if board is None:
         raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден ни в одном кабинете")
+    if core_board.not_ready(shop, [order_id]):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Заказ {order_id} ещё «Ожидает сборки» — наклейки печатаются с «Ожидает отгрузки»",
+        )
     # Та же функция площадки, что печатает наклейки в «Заказах»: одна на всё.
     try:
         pdf, filename = board.labels(shop, user, [order_id])

@@ -294,7 +294,8 @@ def board_card(row) -> dict:
         "packed_at": order.get("packed_at"),
         "packed_at_local": order.get("packed_at_local"),
         "claim": order.get("claim_login") if order.get("claim_active") else "",
-        # Ярлык у Маркета есть с подтверждения заказа — в любом из статусов.
-        "label": True,
+        # Маркет отдаёт ярлык уже с подтверждения, но наклейки у панели — по
+        # «Ожидает отгрузки», как у Ozon и Avito: «Ожидает сборки» собирать рано.
+        "label": dict(row).get("board") != "packaging",
         "actions": [],
     }

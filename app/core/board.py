@@ -225,6 +225,24 @@ def badges() -> tuple[tuple[int, str, str], ...]:
     )
 
 
+def not_ready(account: dict, numbers: list[str]) -> list[str]:
+    """Заказы из списка, которые ещё «Ожидает сборки»: наклейки по ним не печатаем.
+
+    Наклейки у панели — с «Ожидает отгрузки», у всех площадок одинаково. Маркет
+    ярлык отдаёт и раньше, но заказ, который собирать рано, не должен уезжать
+    на принтер: наклейка окажется на коробке, которую ещё не собрали.
+    """
+    board = board_of(account)
+    if board is None or not numbers:
+        return []
+    rows = db.query(
+        f"SELECT o.{board.key} AS number FROM {board.table} o "
+        f"WHERE o.account_id = ? AND o.{board.key} IN ({_marks(numbers)}) AND ({board.status_sql}) = 'packaging'",
+        [account["id"], *numbers],
+    )
+    return [str(row["number"]) for row in rows]
+
+
 # ------------------------------------------------------------------ отметки
 def _find(account: dict, number: str):
     board = board_of(account)

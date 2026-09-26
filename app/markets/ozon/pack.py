@@ -21,6 +21,7 @@ import re
 from typing import Any
 
 from ...core import board as core_board
+from ...core import labels as core_labels
 from ...core import access, db, linked, pack_state, product_sets, report
 from ...core.config import settings
 from ...core.product_sets import part_slot
@@ -1098,13 +1099,9 @@ def label_batch(account: dict, posting_numbers: list[str]) -> tuple[bytes | None
 def pending_labels(account_id: int) -> list[str]:
     """Отправления «Ожидает отгрузки», чей стикер ещё не выгружен.
 
-    Только этот статус: в «Ожидает сборки» стикера ещё нет, а всё, что уехало
+    Статус — как в «Заказах» (store.BOARD_STATUS_SQL): в «Ожидает сборки»
+    стикера ещё нет, собранное закрыли сканом стикера, а всё, что уехало
     дальше, замок не держит — там стикер уже не получить.
     """
-
-    rows = db.query(
-        "SELECT posting_number FROM postings WHERE account_id = ? AND status = ? "
-        "AND label_saved_at IS NULL ORDER BY posting_number",
-        (account_id, store.STATUS_AWAITING_DELIVER),
-    )
-    return [row["posting_number"] for row in rows]
+    return core_labels.waiting(account_id, table="postings", key="posting_number",
+                               status_sql=store.BOARD_STATUS_SQL)
