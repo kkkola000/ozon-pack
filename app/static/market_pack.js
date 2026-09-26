@@ -32,20 +32,127 @@ let hasActive = false;   // открыта ли сборка — при откр
 let pack = null;         // площадка открытого заказа: её слова и её карточка
 const history = [];
 
-function keepFocus() {
-  if (document.activeElement !== input && !document.activeElement?.closest('input, select, button, a')) {
-    input.focus();
+/* ---------- Зона сканирования ----------
+   Рамка показывает, куда сейчас уйдёт скан. Сканер — это клавиатура: если
+   курсор не в поле, коды пропадают, а Enter в конце кода ещё и нажимает
+   кнопку, на которой стоит фокус. Поэтому «сканер не слушает» видно сразу. */
+const zone = document.getElementById('scan-panel');
+const zoneState = document.querySelector('#scan-state span');
+const SIGNS = { ok: '✓', error: '✕', warning: '!', busy: '…', idle: '›' };
+const STATE_WORDS = {
+  lost: 'Сканер не слушает', busy: 'Проверяем…', error: 'Ошибка скана', warning: 'Проверьте', ready: 'Сканер готов',
+};
+let flash = null;        // итог последнего скана: busy | ok | error | warning
+let flashTimer = null;
+let lost = false;        // поле без фокуса — коды сканера сейчас теряются
+let lostTimer = null;
+
+function listening() {
+  return document.hasFocus() && document.activeElement === input;
+}
+
+function paintZone() {
+  if (!zone) return;
+  zone.classList.toggle('is-lost', lost);
+  zone.classList.toggle('is-active', hasActive);
+  for (const kind of ['busy', 'ok', 'error', 'warning']) {
+    zone.classList.toggle(`is-${kind}`, !lost && flash === kind);
+  }
+  zoneState.textContent = STATE_WORDS[lost ? 'lost' : flash in STATE_WORDS ? flash : 'ready'];
+}
+
+/* Фокус ушёл — ждём полсекунды: клик по кнопке или печать уводят его на миг,
+   и мигать из-за этого рамкой незачем. Вернулся — гасим сразу. */
+function watchFocus() {
+  if (listening()) {
+    clearTimeout(lostTimer);
+    lostTimer = null;
+    if (lost) { lost = false; paintZone(); }
+  } else if (!lost && !lostTimer) {
+    lostTimer = setTimeout(() => {
+      lostTimer = null;
+      lost = !listening();
+      paintZone();
+    }, 600);
   }
 }
-setInterval(keepFocus, 800);
-document.addEventListener('click', (event) => {
-  if (!event.target.closest('button, a, input, select, label')) input.focus();
-});
 
-function setBanner(kind, message) {
-  banner.className = `banner ${kind} flash`;
-  banner.textContent = message;
-  setTimeout(() => banner.classList.remove('flash'), 500);
+/* Фокус возвращаем сами, если человек не печатает в другом поле (поиск по
+   заказам, выбор): после нажатия кнопки следующий скан должен попасть сюда. */
+function keepFocus() {
+  const current = document.activeElement;
+  if (current === input || !document.hasFocus()) return;
+  if (current?.matches('input:not([type=checkbox]):not([type=radio]), select, textarea')) return;
+  input.focus();
+}
+setInterval(() => { keepFocus(); watchFocus(); }, 500);
+for (const target of [input, window]) {
+  target.addEventListener('focus', watchFocus);
+  target.addEventListener('blur', watchFocus);
+}
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('button, a, input, select, label, textarea')) input.focus();
+});
+document.getElementById('scan-refocus')?.addEventListener('click', () => input.focus());
+
+/* Итог скана — в той же рамке. «Найден» гаснет сам, ошибка держится до
+   следующего скана: отвернулся на секунду — всё равно увидишь. */
+function setBanner(kind, message, code = '') {
+  banner.className = `scan-result ${kind}`;
+  banner.querySelector('.sign').textContent = SIGNS[kind] || SIGNS.idle;
+  banner.querySelector('.text').textContent = message;
+  banner.querySelector('.code').textContent = code
+    ? `${code} · ${new Date().toLocaleTimeString('ru-RU')}` : '';
+  clearTimeout(flashTimer);
+  flash = kind === 'idle' ? null : kind;
+  if (flash === 'ok') flashTimer = setTimeout(() => { flash = null; paintZone(); }, 1500);
+  if (flash === 'error' || flash === 'warning') {
+    zone?.classList.remove('is-shake');
+    void zone?.offsetWidth;   // перезапуск встряски при повторной ошибке
+    zone?.classList.add('is-shake');
+  }
+  paintZone();
+}
+
+/* Идёт сборка: номер заказа, сколько отсканировано и — оранжевым внизу — что
+   ещё осталось. Список нужен, когда товаров несколько: с одним всё сказано
+   заголовком. Что осталось, знает площадка (pack.left): у Ozon это ещё и части
+   наборов, у Avito — единицы товара. */
+function paintSteps(state) {
+  const title = document.getElementById('scan-title');
+  const hint = document.getElementById('scan-hint');
+  const steps = document.getElementById('scan-steps');
+  const left = document.getElementById('scan-left');
+  if (!title || !steps || !left) return;
+  if (!hasActive) {
+    title.textContent = zone.dataset.title;
+    hint.textContent = zone.dataset.hint;
+    steps.innerHTML = '';
+    left.innerHTML = '';
+    paintZone();
+    return;
+  }
+  const rest = pack.left ? pack.left(state) : [];
+  const total = state.total || 0;
+  const done = state.done || 0;
+  const percent = total ? Math.round((done / total) * 100) : 0;
+  title.textContent = rest.length ? 'Сканируйте следующий товар'
+    : pack.words.close || 'Отсканируйте наклейку — заказ закроется';
+  hint.textContent = rest.length ? 'Сверяйте товар с карточкой заказа ниже' : 'Все товары на месте';
+  steps.innerHTML = `
+    <span>Заказ <b class="mono">${escapeHtml((pack.number || pack.activeId)(state.active))}</b> · отсканировано</span>
+    <div class="bar"><div style="width:${percent}%"></div></div>
+    <b>${done} из ${total}</b>`;
+  const pieces = rest.reduce((sum, row) => sum + row.count, 0);
+  left.innerHTML = total > 1 && rest.length ? `
+    <div class="scan-left-title">Осталось отсканировать: ${pieces} шт</div>
+    ${rest.map((row) => `
+      <div class="scan-left-row">
+        <span class="count">×${row.count}</span>
+        <span class="grow">${escapeHtml(row.name)}
+          ${row.note ? `<div class="scan-left-note">${escapeHtml(row.note)}</div>` : ''}</span>
+      </div>`).join('')}` : '';
+  paintZone();
 }
 
 /* Карточку сборки рисует площадка открытого заказа, кнопки на ней — общие:
@@ -58,6 +165,7 @@ function renderActive(state) {
   pack = PACKS[state?.market] || null;
   hasActive = Boolean(state?.active) && pack !== null;
   const idle = document.getElementById('idle-panel');
+  paintSteps(state);
   if (!hasActive) {
     activePanel.innerHTML = '';
     idle.style.display = '';
@@ -92,7 +200,7 @@ function pushHistory(code, result) {
 
 function applyResult(result, code, printWindow = null) {
   document.getElementById('photo-zoom')?.classList.remove('open');
-  setBanner(result.status, result.message);
+  setBanner(result.status, result.message, code || '');
   beep(result.sound || result.status);
   renderActive(result.state || { active: null });
   if (result.counters) applyCounters(result.counters);
@@ -137,9 +245,12 @@ function applyGate(state) {
   gate.hidden = !locked;
   scanPanel.hidden = locked;
   if (!locked) {
-    if (pending && hasActive) {
-      setBanner('warning', `Подъехали новые заказы (${pending}). Закройте текущий — `
-                         + 'дальше понадобится скачать наклейки.');
+    const notice = `Подъехали новые заказы (${pending}). Закройте текущий — `
+                 + 'дальше понадобится скачать наклейки.';
+    // Опрос идёт каждые 30 секунд: говорим один раз, а не встряхиваем рамку
+    // и не затираем итог скана при каждом опросе.
+    if (pending && hasActive && banner.querySelector('.text').textContent !== notice) {
+      setBanner('warning', notice);
     }
     return;
   }
@@ -177,12 +288,13 @@ async function submitScan(code, printWindow = null) {
     return;
   }
   busy = true;
+  setBanner('busy', 'Проверяем код…', code);
   try {
     const result = await api(SCAN_URL, { code });
     applyResult(result, code, printWindow);
   } catch (error) {
     printWindow?.close();
-    setBanner('error', error.message);
+    setBanner('error', error.message, code);
     beep('error');
     toast(error.message, 'error');
   } finally {

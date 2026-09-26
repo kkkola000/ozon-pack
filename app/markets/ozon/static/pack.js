@@ -21,8 +21,28 @@ window.PACKS.ozon = {
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить отправление без сканирования стикера? Действие попадёт в журнал.',
+    close: 'Наклейте и отсканируйте стикер отправления',   // все товары на месте
   },
   activeId: (active) => active.posting_number,
+  number: (active) => active.posting_number,
+
+  /* Что ещё отсканировать — для оранжевого списка в зоне сканирования. У
+     набора называем недостающие части, а не сам набор: к полке идут за ними. */
+  left(state) {
+    const rows = [];
+    for (const item of state.items || []) {
+      if (item.ok) continue;
+      const parts = item.is_set ? (item.parts || []).filter((part) => !part.ok) : [];
+      if (parts.length) {
+        for (const part of parts) {
+          rows.push({ name: part.name, count: part.need - part.scanned, note: `часть набора «${item.name}»` });
+        }
+      } else {
+        rows.push({ name: item.name || 'Без названия', count: item.need - item.scanned });
+      }
+    }
+    return rows;
+  },
 
   renderActive(state) {
     const posting = state.active;

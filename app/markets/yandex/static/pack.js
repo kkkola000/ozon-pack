@@ -17,8 +17,17 @@ window.PACKS.yandex = {
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,
     confirmComplete: 'Завершить заказ без сканирования ярлыка? Действие попадёт в журнал.',
+    close: 'Наклейте и отсканируйте ярлык заказа',   // все товары на месте
   },
   activeId: (active) => active.id,
+  number: (active) => active.id,
+
+  // Что ещё отсканировать — для оранжевого списка в зоне сканирования.
+  left: (state) => (state.items || []).filter((item) => !item.ok).map((item) => ({
+    name: item.name || 'Без названия',
+    count: item.need - item.scanned,
+    note: item.barcodes?.length ? '' : 'нет штрихкода в каталоге',
+  })),
 
   renderActive(state) {
     const order = state.active;

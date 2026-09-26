@@ -246,8 +246,9 @@ def api_avito_return_raw(order_id: str, admin: dict = Depends(require_manager)):
 # ------------------------------------------------------------------ для реестра площадок
 # Рабочее место сборщика: страница одна на все площадки, слова — свои.
 WORKSPACE = Workspace(
-    placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…",
-    banner="Отсканируйте стикер отправления — откроется сборка заказа.",
+    title="Сканируйте стикер отправления",
+    hint="Откроется заказ — затем сканируйте штрихкоды его товаров",
+    kinds=(("label", "Стикер отправления"), ("product", "Штрихкод товара")),
     load_state=avito_pack.load_state,
     count_queue=lambda account: _pack_counters(account),
     counters=(

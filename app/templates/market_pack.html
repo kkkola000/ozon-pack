@@ -39,13 +39,59 @@
   </div>
 </div>
 
-<div class="panel" id="scan-panel">
-  <div class="scanbar">
-    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="{{ placeholder }}" autofocus>
-    <button class="btn big" id="btn-clear" title="Очистить поле">Очистить</button>
+{#- Значки зоны сканирования: сканер, штрихкод товара, наклейка заказа. -#}
+{%- macro icon(kind) -%}
+{%- if kind == 'scanner' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+  <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+  <path d="M7 8v8M10 8v8M13 8v8M16 8v8" stroke-width="1.8"/></svg>
+{%- elif kind == 'label' -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
+  <rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M7 8h6M7 11h4" stroke-linecap="round"/>
+  <path d="M7 14.5v2.5M9 14.5v2.5M11 14.5v2.5M13 14.5v2.5M15 14.5v2.5M17 14.5v2.5" stroke-linecap="round"/></svg>
+{%- else -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+  <path d="M4 6v12M7 6v12M9.5 6v12M13 6v12M15.5 6v12M18 6v12M20 6v12"/></svg>
+{%- endif -%}
+{%- endmacro -%}
+
+{# Зона сканирования. Цвет рамки — состояние: зелёная — сканер готов, синяя —
+   идёт сборка заказа, красная — ошибка, оранжевый пунктир — поле потеряло
+   фокус и коды сканера сейчас никуда не попадают. Итог скана — здесь же, а
+   не отдельной полосой: смотреть надо в одно место. Внизу, оранжевым, — что
+   ещё осталось отсканировать, когда товаров в заказе несколько. #}
+<div class="scan-zone" id="scan-panel" data-title="{{ scan.title }}" data-hint="{{ scan.hint }}">
+  <div class="scan-head">
+    <div class="scan-icon">{{ icon('scanner') }}</div>
+    <div class="grow">
+      <div class="scan-title" id="scan-title">{{ scan.title }}</div>
+      <div class="scan-hint" id="scan-hint">{{ scan.hint }}</div>
+    </div>
+    <div class="scan-state" id="scan-state"><i></i><span>Сканер готов</span></div>
   </div>
-  <div id="banner" class="banner idle">{{ banner }}</div>
+
+  <div class="scan-steps" id="scan-steps"></div>
+
+  <div class="scan-field">
+    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="Поднесите сканер к штрихкоду…" autofocus>
+    <button class="clear" type="button" id="btn-clear" title="Очистить поле">Очистить ✕</button>
+  </div>
+
+  <div class="scan-kinds">
+    <span class="label">Что сканировать:</span>
+    {% for kind, word in scan.kinds %}
+    <span class="scan-kind">{{ icon(kind) }} {{ word }}</span>
+    {% endfor %}
+    <span class="manual">Нет сканера — введите код и нажмите <kbd>Enter</kbd></span>
+  </div>
+
+  <div class="scan-result idle" id="banner" role="status" aria-live="polite">
+    <span class="sign">›</span><span class="text">Здесь появится результат скана</span><span class="code"></span>
+  </div>
+  <button type="button" class="scan-refocus" id="scan-refocus">Нажмите сюда — и сканируйте дальше</button>
+
+  <div class="scan-left" id="scan-left"></div>
 </div>
 
 <div id="active-panel"></div>

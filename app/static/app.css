@@ -186,13 +186,140 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2);
 }
 
-.scanbar { display: flex; gap: 12px; align-items: stretch; }
-.scanbar input {
-  flex: 1; font-size: 26px; padding: 18px 22px; font-weight: 600; letter-spacing: .01em;
-  border: 2px solid var(--accent); border-radius: 16px; background: var(--bg);
+/* ---------- Зона сканирования на «Сборке» ----------
+   Рамка говорит, в каком состоянии сканер: --zone — цвет состояния, его берут
+   рамка, значок, метка и поле. Классы ставит market_pack.js. */
+.scan-zone {
+  --zone: var(--ok); --zone-soft: var(--ok-soft);
+  position: relative; margin: 16px 0; padding: 22px 24px 20px;
+  border: 3px solid var(--zone); border-radius: 22px; background: var(--bg); box-shadow: var(--shadow);
+  transition: border-color .15s, background-color .15s;
 }
-.scanbar input:focus { box-shadow: 0 0 0 4px var(--accent-soft); }
-.scanbar input::placeholder { color: #b3bcc6; font-weight: 400; letter-spacing: 0; }
+.scan-head { display: flex; align-items: center; gap: 18px; }
+.scan-icon {
+  width: 68px; height: 68px; border-radius: 18px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--zone-soft); color: var(--zone);
+}
+.scan-icon svg { width: 40px; height: 40px; }
+.scan-title { font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
+.scan-hint { color: var(--muted); font-size: 15px; margin-top: 4px; }
+.scan-state {
+  align-self: flex-start; white-space: nowrap; display: inline-flex; align-items: center; gap: 9px;
+  padding: 8px 14px; border-radius: 999px; font-weight: 700; font-size: 15px;
+  background: var(--zone-soft); color: var(--zone);
+}
+.scan-state i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; animation: scan-pulse 1.6s infinite; }
+@keyframes scan-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(0, 164, 108, .55); }
+  70% { box-shadow: 0 0 0 10px rgba(0, 164, 108, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 164, 108, 0); }
+}
+
+.scan-field { position: relative; margin-top: 18px; }
+.scan-field input {
+  width: 100%; padding: 20px 150px 20px 24px; border: 2px solid var(--line-strong); border-radius: 16px;
+  background: var(--surface); color: var(--text); letter-spacing: .05em;
+  font: 700 34px/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.scan-field input::placeholder {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 22px; font-weight: 500; letter-spacing: 0; color: #a3aeb9;
+}
+.scan-field input:focus { outline: none; border-color: var(--zone); background: var(--bg); box-shadow: none; }
+.scan-field .clear {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer;
+  background: var(--surface-2); color: var(--muted); font-family: inherit; font-size: 14px; font-weight: 600;
+}
+.scan-field .clear:hover { color: var(--text); }
+
+.scan-kinds { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; font-size: 14px; }
+.scan-kinds .label { color: var(--muted); }
+.scan-kind {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px;
+  border-radius: 10px; background: var(--surface-2); font-weight: 600;
+}
+.scan-kind svg { width: 22px; height: 22px; }
+.scan-kinds .manual { margin-left: auto; color: var(--muted); }
+.scan-kinds kbd {
+  font: 600 12px/1 ui-monospace, Menlo, monospace; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; background: var(--bg); color: var(--text);
+}
+
+/* Итог скана: знак, слова сервера, справа — код и время. */
+.scan-result {
+  margin-top: 16px; padding: 16px 20px; border-radius: 14px; display: flex; align-items: center; gap: 14px;
+  font-size: 20px; font-weight: 700; background: var(--surface); color: var(--muted);
+}
+.scan-result .sign { font-size: 26px; line-height: 1; width: 30px; text-align: center; flex: none; }
+.scan-result .text { flex: 1; }
+.scan-result .code { font: 600 15px ui-monospace, Menlo, monospace; color: var(--muted); white-space: nowrap; }
+.scan-result.ok { background: var(--ok-soft); color: #00734c; }
+.scan-result.error { background: var(--err-soft); color: #c4003e; }
+.scan-result.warning { background: var(--warn-soft); color: var(--warn); }
+.scan-result.busy { background: var(--accent-soft); color: var(--accent); }
+
+/* Идёт сборка: номер заказа и сколько отсканировано. */
+.scan-steps { display: none; margin-top: 14px; gap: 12px; align-items: center; font-size: 15px; font-weight: 600; }
+.scan-zone.is-active .scan-steps { display: flex; }
+.scan-steps .bar { flex: 1; max-width: 360px; height: 10px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
+.scan-steps .bar > div { height: 100%; background: var(--ok); transition: width .2s; }
+
+/* Что ещё осталось — внизу, оранжевым: взгляд сразу падает на то, чего не хватает. */
+.scan-left:empty { display: none; }
+.scan-left { margin-top: 16px; }
+.scan-left-title { font-size: 14px; font-weight: 700; color: var(--warn); margin-bottom: 8px; }
+.scan-left-row {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-top: 6px;
+  border-radius: 12px; background: var(--warn-soft); border-left: 5px solid #f1a33c;
+  font-size: 17px; font-weight: 600; color: #7a4a00;
+}
+.scan-left-row .count {
+  flex: none; min-width: 52px; text-align: center; padding: 4px 8px; border-radius: 8px;
+  background: #f1a33c; color: #fff; font-weight: 800;
+}
+.scan-left-note { color: var(--warn); font-size: 13px; font-weight: 500; margin-top: 2px; }
+
+/* Поле потеряло фокус: коды сканера уходят в никуда. Кнопка — вернуть. */
+.scan-refocus {
+  display: none; width: 100%; margin-top: 16px; padding: 18px 20px; border: 0; border-radius: 14px;
+  background: var(--warn); color: #fff; font-family: inherit; font-size: 21px; font-weight: 800; cursor: pointer;
+}
+
+/* ——— состояния зоны ——— */
+.scan-zone.is-active { --zone: var(--accent); --zone-soft: var(--accent-soft); }
+.scan-zone.is-active .scan-state { background: var(--ok-soft); color: var(--ok); }
+.scan-zone.is-busy { --zone: var(--accent); --zone-soft: var(--accent-soft); }
+.scan-zone.is-busy .scan-state i {
+  animation: scan-spin .8s linear infinite; background: none;
+  border: 2px solid currentColor; border-right-color: transparent;
+}
+@keyframes scan-spin { to { transform: rotate(360deg); } }
+.scan-zone.is-busy .scan-state { background: var(--accent-soft); color: var(--accent); }
+.scan-zone.is-ok { background: #f3fcf8; }
+.scan-zone.is-warning { --zone: #f1a33c; --zone-soft: var(--warn-soft); }
+.scan-zone.is-warning .scan-state { background: var(--warn-soft); color: var(--warn); }
+.scan-zone.is-error { --zone: var(--err); --zone-soft: var(--err-soft); background: #fff8fa; }
+.scan-zone.is-error .scan-state { background: var(--err-soft); color: var(--err); }
+.scan-zone.is-shake { animation: scan-shake .35s; }
+@keyframes scan-shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+.scan-zone.is-warning .scan-state i, .scan-zone.is-error .scan-state i { animation: none; }
+
+.scan-zone.is-lost { --zone: #f1b44c; --zone-soft: #ffe2b8; border-style: dashed; background: var(--warn-soft); cursor: pointer; }
+.scan-zone.is-lost .scan-state { background: #ffe2b8; color: var(--warn); }
+.scan-zone.is-lost .scan-state i { animation: none; }
+.scan-zone.is-lost .scan-field input { opacity: .45; border-color: var(--line-strong); }
+.scan-zone.is-lost .scan-refocus { display: block; }
+.scan-zone.is-lost .scan-result { display: none; }
+
+@media (max-width: 720px) {
+  .scan-head { flex-wrap: wrap; }
+  .scan-title { font-size: 21px; }
+  .scan-field input { font-size: 24px; padding-right: 24px; }
+  .scan-field .clear { display: none; }
+  .scan-kinds .manual { margin-left: 0; }
+}
 
 .banner {
   margin-top: 16px; padding: 18px 22px; border-radius: 14px; font-size: 20px; font-weight: 700;

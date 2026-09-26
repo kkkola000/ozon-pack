@@ -15,8 +15,24 @@ window.PACKS.avito = {
     released: 'Сборка отменена. Сканируйте этикетку следующего заказа.',
     confirmRelease: 'Отменить сборку этого заказа?',
     confirmComplete: '',
+    close: 'Отсканируйте стикер — заказ закроется',   // все товары на месте
   },
   activeId: (active) => active.id,
+  number: (active) => active.marketplace_id || active.id,
+
+  /* Что ещё отсканировать. Позиция у Avito — единица товара, поэтому
+     одинаковые единицы складываем в одну строку «×2». */
+  left(state) {
+    const rows = new Map();
+    for (const item of state.items || []) {
+      if (item.scanned) continue;
+      const name = item.title || 'Без названия';
+      const row = rows.get(name) || { name, count: 0, note: item.seller_id ? `артикул ${item.seller_id}` : '' };
+      row.count += 1;
+      rows.set(name, row);
+    }
+    return [...rows.values()];
+  },
 
   renderActive(state) {
     const order = state.active;

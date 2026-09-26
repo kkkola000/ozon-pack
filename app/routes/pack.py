@@ -38,9 +38,12 @@ router = APIRouter()
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
 ALL = core_packing.ALL
 
-# Подписи поля сканирования, когда фильтра нет: кабинет заранее неизвестен.
-ALL_PLACEHOLDER = "Сканируйте штрихкод товара или наклейку заказа…"
-ALL_BANNER = "Отсканируйте штрихкод товара или наклейку — панель найдёт заказ в любом кабинете."
+# Подписи зоны сканирования, когда фильтра нет: кабинет заранее неизвестен.
+ALL_WORDS = {
+    "title": "Сканируйте товар или наклейку заказа",
+    "hint": "Панель сама найдёт заказ в любом кабинете и отправит наклейку на печать",
+    "kinds": (("product", "Штрихкод товара"), ("label", "Наклейка заказа")),
+}
 
 
 def _registry():
@@ -67,14 +70,12 @@ def shops_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
                             lambda value: f"{path}?shop={value}", all_title="Все заказы")
 
 
-def _words(picked: str, where: list[dict]) -> tuple[str, str]:
-    """Подписи поля сканирования: под фильтром — слова площадки кабинета, иначе общие."""
-    if picked == ALL or not where:
-        return ALL_PLACEHOLDER, ALL_BANNER
-    workspace = core_packing.workspace_of(where[0])
+def _words(picked: str, where: list[dict]) -> dict:
+    """Подписи зоны сканирования: под фильтром — слова площадки кабинета, иначе общие."""
+    workspace = core_packing.workspace_of(where[0]) if picked != ALL and where else None
     if workspace is None:
-        return ALL_PLACEHOLDER, ALL_BANNER
-    return workspace.placeholder, workspace.banner
+        return ALL_WORDS
+    return {"title": workspace.title, "hint": workspace.hint, "kinds": workspace.kinds}
 
 
 def _freshened(where: list[dict]) -> str | None:
@@ -105,15 +106,13 @@ def page(request: Request,
     orders = core_orders.everywhere()
     shown = [order for order in orders if picked == ALL or str(order["account_id"]) == picked]
     tiles, counters = core_packing.tiles(picked, where)
-    placeholder, banner = _words(picked, where)
     return templates.TemplateResponse(
         request,
         "market_pack.html",
         {
             "request": request,
             "user": user,
-            "placeholder": placeholder,
-            "banner": banner,
+            "scan": _words(picked, where),
             "tiles": tiles,
             "counters": counters,
             "orders": shown,
