@@ -4,8 +4,10 @@
    Сборку открывает скан этикетки, а не товара, — поэтому печати по скану нет,
    как нет и «завершить без скана»: закрывает заказ последняя единица товара.
 
-   Справочника штрихкодов Avito не отдаёт, поэтому позиция — это единица
-   товара, а панель записывает то, что отсканировали, без сверки. */
+   Своих штрихкодов у Avito нет, поэтому позиция — это единица товара. Если
+   объявление сопоставлено с карточкой другой площадки, скан сверяется с её
+   штрихкодами (метка «сверка»), у набора — по частям. Иначе панель записывает
+   то, что отсканировали, без сверки. */
 window.PACKS = window.PACKS || {};
 window.PACKS.avito = {
   print: null,
@@ -21,15 +23,16 @@ window.PACKS.avito = {
   number: (active) => active.marketplace_id || active.id,
 
   /* Что ещё отсканировать. Позиция у Avito — единица товара, поэтому
-     одинаковые единицы складываем в одну строку «×2». */
+     одинаковые строки складываем в одну «×2»; у набора — недостающие части. */
   left(state) {
     const rows = new Map();
-    for (const item of state.items || []) {
-      if (item.scanned) continue;
-      const name = item.title || 'Без названия';
-      const row = rows.get(name) || { name, count: 0, note: item.seller_id ? `артикул ${item.seller_id}` : '' };
-      row.count += 1;
-      rows.set(name, row);
+    const units = (state.items || []).map((item) => ({ ...item, need: 1, scanned: item.scanned ? 1 : 0 }));
+    for (const row of packLeft(units, (item) => item.title || 'Без названия',
+      (item) => (item.seller_id ? `артикул ${item.seller_id}` : ''))) {
+      const key = `${row.name}\u0000${row.note}`;
+      const same = rows.get(key);
+      if (same) same.count += row.count;
+      else rows.set(key, { ...row });
     }
     return [...rows.values()];
   },
@@ -40,12 +43,16 @@ window.PACKS.avito = {
     const rows = state.items.map((item) => `
       <div class="item-row ${item.scanned ? 'ok' : ''}">
         <div class="qty">${item.scanned ? '✓' : '—'}</div>
+        ${packPhoto(item.image, item.title)}
         <div class="name">
           ${escapeHtml(item.title || 'Без названия')}
           <div class="meta">
             ${item.seller_id ? `артикул ${escapeHtml(item.seller_id)} · ` : ''}единица ${item.unit_no}
             ${item.barcode ? ` · штрихкод <b>${escapeHtml(item.barcode)}</b>` : ''}
+            ${item.is_set ? ` · <span class="tag">Набор из ${item.parts.length}</span>`
+              : item.checked ? ` · <span class="tag" title="Объявление сопоставлено: подходят только штрихкоды ${escapeHtml(item.barcodes.join(', '))}">сверка</span>` : ''}
           </div>
+          ${packSetParts(item)}
         </div>
       </div>`).join('');
 

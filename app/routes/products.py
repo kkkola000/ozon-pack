@@ -128,7 +128,10 @@ def catalog_rows(account_ids: list[int] | None = None, q: str = "",
             seen_groups.add(group_id)
             cards = product_links.cards_of(group_id)
             main = next((card for card in cards if card["is_main"]), cards[0] if cards else item)
-            rows.append({**main, "group_id": group_id, "cards": cards, "linked": len(cards)})
+            # Нет фото у основной карточки — берём у любой сопоставленной: у
+            # Avito фото в каталоге нет совсем, у Маркета бывает не у всех.
+            image = main.get("image") or next((card["image"] for card in cards if card.get("image")), None)
+            rows.append({**main, "image": image, "group_id": group_id, "cards": cards, "linked": len(cards)})
             continue
         rows.append({
             **item, "cards": [], "linked": 0,
@@ -147,7 +150,12 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
     shops = accounts.all_accounts()
     items = catalog_rows(picked, q) if tab == "catalog" else []
     sets = product_sets.all_sets_everywhere(picked) if tab in ("sets", "catalog") else []
-    taken = {(item["account_id"], item["sku"]) for item in sets}
+    taken = product_sets.set_keys()
+    for item in items:
+        # Набор действует на всю группу: у сопоставленного товара «Состав»
+        # ведёт к той карточке, которой он задан, — основной первой.
+        members = [(card["account_id"], card["sku"]) for card in item["cards"]] or [(item["account_id"], item["sku"])]
+        item["set_of"] = next((key for key in members if key in taken), None)
     counts = {
         account["id"]: db.query_one(
             "SELECT COUNT(*) AS c FROM products WHERE account_id = ? AND archived = 0",

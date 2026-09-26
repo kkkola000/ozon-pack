@@ -18,6 +18,11 @@
 заказ отмечают готовым к отгрузке в кабинете Маркета, и после обновления
 заказов он появится на сборке. Ярлыки таких заказов при этом выгружаются
 заранее — Маркет отдаёт их с подтверждения.
+
+Сопоставление (core/linked.py) работает и здесь: штрихкод любой карточки,
+сопоставленной с карточкой Маркета, подходит к позиции заказа, даже если
+артикулы на площадках разные. И наборы: состав, заданный карточке Маркета или
+сопоставленной с ней, собирается по частям так же, как у Ozon.
 """
 from __future__ import annotations
 
@@ -29,7 +34,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ...core import board as core_board
-from ...core import access, db, pack_state, report
+from ...core import access, db, linked, pack_state, product_sets, report
+from ...core.product_sets import part_slot
 from . import client as yandex
 from ...core.config import settings
 from ..ozon.pack import ScanResult, barcode_variants
@@ -89,7 +95,9 @@ def classify(account_id: int, code: str) -> tuple[str, Any]:
         f"WHERE b.barcode IN ({marks}) AND p.offer_id IS NOT NULL AND p.offer_id != ''",
         variants,
     )
-    offers = [row["offer_id"] for row in rows]
+    # И карточки этого кабинета, сопоставленные с владельцем штрихкода: у них
+    # артикул может быть свой. Карточка Маркета в каталоге — его offerId.
+    offers = list(dict.fromkeys([row["offer_id"] for row in rows] + linked.skus_here(account_id, variants)))
     if offers:
         return "product", offers
 
@@ -129,14 +137,21 @@ def load_state(account: dict, user: dict) -> dict:
     if not isinstance(scanned, dict):  # состояние от рабочего места Avito
         scanned = {}
     order = store.yandex_view(order_row)
+    # Набор — по карточке Маркета (его offerId) или сопоставленной с ней.
+    sets = product_sets.parts_for(account["id"], [item.get("offer_id") for item in order["items"]])
     items = []
     done = total = 0
     for item in order["items"]:
         need = max(1, int(item.get("quantity") or 1))
         got = int(scanned.get(item["item_id"], 0))
+        extra: dict = {}
+        parts = sets.get(str(item.get("offer_id") or ""))
+        if parts:
+            # Прогресс частей — по позиции заказа: один артикул бывает в нём дважды.
+            got, extra = product_sets.progress(item["item_id"], need, got, parts, scanned)
         total += need
         done += min(got, need)
-        items.append({**item, "need": need, "scanned": got, "ok": got >= need})
+        items.append({**item, "need": need, "scanned": got, "ok": got >= need, **extra})
     return {
         "active": order,
         "scanned": scanned,
@@ -149,12 +164,18 @@ def load_state(account: dict, user: dict) -> dict:
 
 
 def missing_items(state: dict) -> list[str]:
-    """Чего не хватает до полной сборки — словами, которые видит сборщик."""
-    return [
-        f"{item.get('name') or item.get('offer_id') or item['item_id']} — {item['need'] - item['scanned']} шт"
-        for item in state.get("items", [])
-        if not item.get("ok")
-    ]
+    """Чего не хватает до полной сборки — словами, которые видит сборщик.
+
+    У набора называем недостающие части: к полке идут за ними, а не за набором.
+    """
+    missing = []
+    for item in state.get("items", []):
+        if item.get("ok"):
+            continue
+        name = item.get("name") or item.get("offer_id") or item["item_id"]
+        parts = product_sets.missing_parts(item)
+        missing.append(f"{name} (набор): {parts}" if parts else f"{name} — {item['need'] - item['scanned']} шт")
+    return missing
 
 
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
@@ -186,6 +207,25 @@ def candidates_for_offers(account: dict, offers: list[str], user: dict) -> list[
             view["locked_by"] = row["claim_login"]
         result.append(view)
     return result
+
+
+def openable(account: dict, user: dict, offers: list[str], code: str) -> list[dict]:
+    """Заказы, которые откроет скан, — срочные первыми.
+
+    Товар может быть и сам по себе, и частью набора — тогда годятся заказы
+    обоих видов. Одна функция на скан и на вопрос «чей это код»: ответ ядру
+    обязан совпадать с тем, что потом сделает скан.
+    """
+    found = candidates_for_offers(account, offers, user) if offers else []
+    seen = {candidate["id"] for candidate in found}
+    for parent in product_sets.parents_of(account["id"], barcodes=barcode_variants(code)):
+        for candidate in candidates_for_offers(account, [parent["set_sku"]], user):
+            if candidate["id"] not in seen:
+                seen.add(candidate["id"])
+                # Заказ подошёл набором, а не самим товаром: целый набор по
+                # одной части засчитывать нельзя.
+                found.append({**candidate, "via_set": parent["set_sku"]})
+    return found
 
 
 def _offer_title(account_id: int, offers: list[str]) -> str:
@@ -237,6 +277,12 @@ def _dispatch_scan(account: dict, user: dict, code: str) -> ScanResult:
         return _scan_order(account, user, target, code)
     if kind == "product":
         return _scan_product(account, user, list(target), code)
+    # Часть набора, которой нет ни в одном каталоге: своего артикула у неё
+    # нет, и classify её не узнаёт. Штрихкод из цифр похож и на номер заказа —
+    # поэтому спрашиваем раньше, чем говорить «заказ не найден».
+    part = _scan_set_part(account, user, code)
+    if part is not None:
+        return part
     if kind == "order_unknown":
         db.log_event(
             "scan_unknown_posting", level="error", account_id=account["id"], user=user,
@@ -281,6 +327,11 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
     if active:
         matching = [item for item in state["items"] if item.get("offer_id") in offers]
         if not matching:
+            # Прежде чем говорить «СТОП»: это может быть часть набора из этого
+            # же заказа — товар с полки, а не чужая позиция.
+            part = _scan_set_part(account, user, code)
+            if part is not None:
+                return part
             with db.write() as conn:
                 db.log_event(
                     "scan_wrong_product", level="error", account_id=account["id"], user=user,
@@ -344,7 +395,7 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
         )
 
     # Свободное рабочее место: подбираем заказ под товар.
-    all_candidates = candidates_for_offers(account, offers, user)
+    all_candidates = openable(account, user, offers, code)
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
@@ -358,10 +409,13 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
             "scan_choice", account_id=account["id"], user=user, barcode=code,
             message=f"{len(candidates)} заказов с этим товаром, взят {chosen['id']}",
         )
-    first = next((i for i in chosen["items"] if i.get("offer_id") in offers), None)
-    result = select_order(
-        account, user, chosen["id"], first_item_id=first["item_id"] if first else None, scan_code=code,
-    )
+    if chosen.get("via_set"):
+        result = _open_with_part(account, user, chosen["id"], code)
+    else:
+        first = next((i for i in chosen["items"] if i.get("offer_id") in offers), None)
+        result = select_order(
+            account, user, chosen["id"], first_item_id=first["item_id"] if first else None, scan_code=code,
+        )
     if len(candidates) > 1 and result["status"] == "ok":
         left = len(candidates) - 1
         word = "заказе" if left % 10 == 1 and left % 100 != 11 else "заказах"
@@ -426,6 +480,105 @@ def _nothing_to_open(account: dict, user: dict, offers: list[str], name: str, co
         "error", f"«{name}» не нужен ни в одном заказе Маркета, который ждёт отгрузки.",
         action="no_candidates", sound="error", state=state,
     )
+
+
+# ------------------------------------------------------------------ части наборов
+def _scan_set_part(account: dict, user: dict, code: str) -> ScanResult | None:
+    """Отсканирована часть набора. None — это не часть, идём дальше обычным путём.
+
+    Набор у Маркета — обычный товар, одной позицией в заказе. На складе его
+    собирают из нескольких вещей, и сборщик сканирует именно их: наклейки
+    набора на полке нет.
+    """
+    parents = product_sets.parents_of(account["id"], barcodes=barcode_variants(code))
+    if not parents:
+        return None
+    state = load_state(account, user)
+    active = state["active"]
+    if not active:
+        return _open_for_set(account, user, parents, code)
+
+    picked = product_sets.pick_part(state["items"], parents, lambda item: str(item.get("offer_id") or ""))
+    if picked is None:
+        return None
+    item, part = picked
+    set_name = item.get("name") or item.get("offer_id") or item["item_id"]
+    if item["ok"] or part["scanned"] >= part["need"]:
+        with db.write() as conn:
+            db.log_event(
+                "scan_extra_product", level="warn", account_id=account["id"], user=user,
+                posting_number=active["id"], barcode=code,
+                message=f"Часть набора сверх нужного: {part['name']}", conn=conn,
+            )
+            report.record_error(
+                conn, account, user, "extra_product", posting_number=active["id"], barcode=code,
+                name=f"{set_name} — {part['name']}", offer_id=item.get("offer_id"),
+            )
+        return ScanResult(
+            "warning",
+            f"«{part['name']}» для набора «{set_name}» уже набран ({part['need']} шт). Лишнее не кладите.",
+            action="extra_product", sound="error", state=state,
+        )
+    return _credit_part(account, user, state, item, part, code)
+
+
+def _credit_part(account: dict, user: dict, state: dict, item: dict, part: dict, code: str) -> ScanResult:
+    """Засчитать часть набора. Позиция в отчёт — только когда набор собран целиком."""
+    order_id = state["active"]["id"]
+    set_name = item.get("name") or item.get("offer_id") or item["item_id"]
+    scanned = dict(state["scanned"])
+    slot = part_slot(item["item_id"], part["part_key"])
+    scanned[slot] = int(scanned.get(slot, 0)) + 1
+    with db.write() as conn:
+        pack_state.save(conn, account, user, order_id, scanned)
+        db.log_event(
+            "scan_set_part", account_id=account["id"], user=user, posting_number=order_id, barcode=code,
+            message=f"{set_name}: {part['name']} {scanned[slot]}/{part['need']}", conn=conn,
+        )
+    new_state = load_state(account, user)
+    new_item = next(i for i in new_state["items"] if i["item_id"] == item["item_id"])
+    if new_item["scanned"] > item["scanned"]:
+        # Отгружен набор, а не его содержимое: пишем позицию, а не каждую часть.
+        with db.write() as conn:
+            report.record_shipped(
+                conn, account, user, order_id, _report_item(new_item), new_item["scanned"], code,
+            )
+    if new_state["complete"]:
+        return ScanResult(
+            "ok",
+            f"Все товары собраны ({new_state['done']}/{new_state['total']}). "
+            "Наклейте и отсканируйте ярлык заказа.",
+            action="ready_for_label", sound="done", state=new_state,
+        )
+    left = [p["name"] for p in new_item["parts"] if not p["ok"]]
+    tail = f" Осталось: {', '.join(left)}." if left else ""
+    return ScanResult(
+        "ok",
+        f"«{set_name}»: {part['name']} {scanned[slot]}/{part['need']}. "
+        f"Набор {new_item['scanned']}/{new_item['need']}.{tail}",
+        action="set_part_scanned", state=new_state,
+    )
+
+
+def _open_for_set(account: dict, user: dict, parents: list[dict], code: str) -> ScanResult | None:
+    """Свободное место, отсканирована часть набора — ищем заказ с этим набором."""
+    for set_offer in dict.fromkeys(parent["set_sku"] for parent in parents):
+        candidates = [c for c in candidates_for_offers(account, [set_offer], user) if not c.get("locked_by")]
+        if candidates:
+            return _open_with_part(account, user, candidates[0]["id"], code)
+    return None
+
+
+def _open_with_part(account: dict, user: dict, order_id: str, code: str) -> ScanResult:
+    """Взять заказ «пустым» и провести скан как часть: целый набор по одной части не засчитать."""
+    result = select_order(account, user, order_id, scan_code=code)
+    if result["status"] != "ok":
+        return result
+    credited = _scan_set_part(account, user, code)
+    if credited is not None:
+        result["state"] = credited["state"]
+        result["message"] = f"{result['message']} {credited['message']}"
+    return result
 
 
 # ------------------------------------------------------------------ выбор заказа
@@ -613,18 +766,21 @@ def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
     kind, target = classify(account["id"], code)
     if kind == "order":
         return "label", str(target["id"])
-    if kind != "product":
-        # «Похоже на номер заказа, но его тут нет» — не наш: иначе кабинет
-        # забирал бы себе чужие номера и отвечал за них «не найдено».
+    offers = list(target) if kind == "product" else []
+    if not offers and not product_sets.parents_of(account["id"], barcodes=barcode_variants(code)):
+        # Ни товар, ни часть набора. «Похоже на номер заказа, но его тут нет» —
+        # тоже не наш: иначе кабинет забирал бы себе чужие номера и отвечал за
+        # них «не найдено».
         return None
 
-    offers = list(target)
-    found = candidates_for_offers(account, offers, user)
+    found = openable(account, user, offers, code)
     free = [c for c in found if not c.get("locked_by")]
     if free:
         return "product", str(free[0]["id"])
     if found:
         return "known", str(found[0]["id"])
+    if not offers:
+        return None
     marks = ",".join("?" for _ in offers)
     row = db.query_one(
         f"SELECT o.id FROM yandex_orders o "

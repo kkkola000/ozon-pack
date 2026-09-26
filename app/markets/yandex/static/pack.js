@@ -1,8 +1,9 @@
 /* Сборка Яндекс Маркета: чем её рабочее место отличается от общего.
 
    Общее — в /static/market_pack.js. Здесь адреса запросов, слова и карточка
-   открытой сборки: у Маркета нет фото и наборов, зато видно, когда штрихкода
-   нет в каталоге, — сканировать такую позицию нечем. */
+   открытой сборки. Фото и штрихкоды Маркет в заказе не отдаёт: они из каталога
+   панели — карточки Маркета, сопоставленной с ней или с тем же артикулом. Если
+   штрихкода нет нигде, это видно на позиции: сканировать её нечем. */
 window.PACKS = window.PACKS || {};
 window.PACKS.yandex = {
   print: {
@@ -23,11 +24,8 @@ window.PACKS.yandex = {
   number: (active) => active.id,
 
   // Что ещё отсканировать — для оранжевого списка в зоне сканирования.
-  left: (state) => (state.items || []).filter((item) => !item.ok).map((item) => ({
-    name: item.name || 'Без названия',
-    count: item.need - item.scanned,
-    note: item.barcodes?.length ? '' : 'нет штрихкода в каталоге',
-  })),
+  left: (state) => packLeft(state.items, (item) => item.name || 'Без названия',
+    (item) => (item.barcodes?.length || item.is_set ? '' : 'нет штрихкода в каталоге')),
 
   renderActive(state) {
     const order = state.active;
@@ -43,14 +41,17 @@ window.PACKS.yandex = {
     const items = state.items.map((item) => `
       <div class="item-row ${item.ok ? 'ok' : ''}">
         <div class="qty">${item.scanned} / ${item.need}</div>
+        ${packPhoto(item.image, item.name)}
         <div class="name">
           ${escapeHtml(item.name || 'Без названия')}
           <div class="meta">
             Артикул: ${escapeHtml(item.offer_id || '—')}
             ${item.barcodes?.length
               ? ' · ШК: ' + escapeHtml(item.barcodes.join(', '))
-              : ' · <span class="tag overdue">нет штрихкода в каталоге</span>'}
+              : item.is_set ? '' : ' · <span class="tag overdue">нет штрихкода в каталоге</span>'}
+            ${item.is_set ? ' · <span class="tag">Набор из ' + item.parts.length + '</span>' : ''}
           </div>
+          ${packSetParts(item)}
         </div>
         ${item.ok ? '<div class="check">✔</div>' : ''}
       </div>`).join('');

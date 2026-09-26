@@ -134,8 +134,8 @@
             {% elif item.has_match %}
               <span class="badge warn" title="Такой же артикул есть в другом кабинете">есть совпадение</span>
             {% endif %}
-            {% if (item.account_id, item.sku) in taken %}
-              <span class="badge accent" title="У товара задан состав">набор</span>
+            {% if item.set_of %}
+              <span class="badge accent" title="{{ 'Состав задан одной из карточек и действует для всех сопоставленных' if item.linked else 'У товара задан состав' }}">набор</span>
             {% endif %}
           </td>
           <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
@@ -148,8 +148,9 @@
           </td>
           <td>
             {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}
-            <a class="btn small" href="/products?tab=sets&edit={{ item.account_id }}:{{ item.sku }}">
-              {{ 'Состав' if (item.account_id, item.sku) in taken else 'Сделать набором' }}
+            {%- set target = item.set_of or (item.account_id, item.sku) %}
+            <a class="btn small" href="/products?tab=sets&edit={{ target[0] }}:{{ target[1] }}">
+              {{ 'Состав' if item.set_of else 'Сделать набором' }}
             </a>
           </td>
         </tr>
@@ -264,6 +265,12 @@
               {{ shop_tag(s.market, s.shop) }} ·
               частей {{ s.parts | length }}, всего {{ s.parts_total }} шт.
             </div>
+            {% if s.shared %}
+              <div class="act-sub" title="Своего набора у этих карточек нет — их собирают по этому составу">
+                Действует и для сопоставленных:
+                {% for card in s.shared %}{{ shop_tag(card.market, card.shop) }}{% endfor %}
+              </div>
+            {% endif %}
           </div>
           <button class="btn small" data-edit-set="{{ s.account_id }}:{{ s.sku }}">Изменить</button>
           <button class="btn small danger" data-del-set="{{ s.account_id }}:{{ s.sku }}">Удалить</button>

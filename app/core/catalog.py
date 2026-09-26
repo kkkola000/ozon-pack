@@ -243,3 +243,15 @@ def offer_barcodes(offer_id: str | None) -> list[str]:
         (offer_id,),
     )
     return [row["barcode"] for row in rows]
+
+
+def offer_image(offer_id: str | None) -> str | None:
+    """Фото товара по артикулу — из каталога любого кабинета, как и штрихкоды."""
+    if not offer_id:
+        return None
+    row = db.query_one(
+        "SELECT image FROM products WHERE offer_id = ? AND image IS NOT NULL AND image != '' "
+        "ORDER BY archived, account_id LIMIT 1",
+        (offer_id,),
+    )
+    return row["image"] if row else None

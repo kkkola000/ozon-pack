@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from ...core import db
+from ...core import db, linked
 from ...core.store import (_dt, _num, _raw_json, _text, _with_mark, hours_left, local_time,
                            urgency as urgency_of)
 
@@ -260,6 +260,11 @@ BOARD_SEARCH_SQL = """(o.id LIKE ? OR o.marketplace_id LIKE ? OR o.tracking_numb
                AND (i.title LIKE ? OR i.avito_id LIKE ? OR i.seller_id LIKE ?)))"""
 
 
+def _photo(account_id: int, item: dict) -> str | None:
+    """Фото позиции: своё из заказа или сопоставленной карточки (объявление — это её SKU)."""
+    return item.get("image") or linked.extras(account_id, str(item.get("avito_id") or ""))[1]
+
+
 def board_card(row) -> dict:
     """Заказ Avito -> строка раздела «Заказы»."""
     order = avito_view(row)
@@ -283,7 +288,9 @@ def board_card(row) -> dict:
         "items": [{"quantity": item["quantity"], "name": item.get("title") or "Без названия",
                    "code": item.get("seller_id") or item.get("avito_id"), "warn": ""}
                   for item in order.get("items") or []],
-        "image": None,
+        # Фото — из заказа, а нет его — сопоставленной карточки другой площадки.
+        "image": next((photo for photo in (_photo(order["account_id"], item) for item in order.get("items") or [])
+                       if photo), ""),
         # Имя покупателя — как и раньше: по нему находят посылку в пункте выдачи.
         "delivery": [order.get("service_label"), order.get("service_name"), order.get("terminal_address"),
                      order.get("buyer_name"), order.get("tracking_number")],

@@ -155,6 +155,53 @@ function paintSteps(state) {
   paintZone();
 }
 
+/* Общие куски карточки сборки: фото, части набора, что осталось отсканировать.
+   Площадки зовут их из своих pack.js при рисовании — к этому времени файл уже
+   загружен. Фото и наборы теперь бывают у любой площадки: их даёт
+   сопоставленная карточка другого кабинета. */
+function packPhoto(image, name) {
+  if (!image) return '<div class="item-photo blank">🖼</div>';
+  return `<img class="item-photo" src="${escapeHtml(image)}" alt="${escapeHtml(name || '')}"
+               data-zoom="${escapeHtml(image)}" data-name="${escapeHtml(name || '')}" loading="lazy"
+               onerror="this.replaceWith(Object.assign(document.createElement('div'), {className: 'item-photo blank', textContent: '🖼'}))">`;
+}
+
+/* Набор на площадке — обычный товар, а на складе это несколько вещей со своими
+   штрихкодами. Сборщик сканирует их, поэтому и видеть он должен их, а не одну
+   строку «набор 0/1», по которой непонятно, что ещё брать. */
+function packSetParts(item) {
+  if (!item.is_set) return '';
+  return `
+    <div class="set-parts">
+      ${item.parts.map((part) => `
+        <div class="set-part ${part.ok ? 'ok' : ''}">
+          <span class="qty">${part.scanned} / ${part.need}</span>
+          <span class="grow">${escapeHtml(part.name)}
+            ${part.barcode ? `<span class="muted mono"> · ${escapeHtml(part.barcode)}</span>` : ''}
+          </span>
+          ${part.ok ? '<span class="check">✔</span>' : ''}
+        </div>`).join('')}
+    </div>`;
+}
+
+/* Что ещё отсканировать — для оранжевого списка. У набора называем
+   недостающие части, а не сам набор: к полке идут за ними. */
+function packLeft(items, nameOf, noteOf = () => '') {
+  const rows = [];
+  for (const item of items || []) {
+    if (item.ok) continue;
+    const parts = item.is_set ? (item.parts || []).filter((part) => !part.ok) : [];
+    if (parts.length) {
+      for (const part of parts) {
+        rows.push({ name: part.name, count: part.need - part.scanned, note: `часть набора «${nameOf(item)}»` });
+      }
+    } else {
+      rows.push({ name: nameOf(item), count: item.need - item.scanned, note: noteOf(item) });
+    }
+  }
+  return rows;
+}
+
 /* Карточку сборки рисует площадка открытого заказа, кнопки на ней — общие:
    печать, отмена, завершение без скана. Каких кнопок у площадки нет, те она
    просто не рисует.

@@ -15,10 +15,17 @@
 Часть набора — либо товар площадки (тогда у неё есть SKU и своё название),
 либо просто штрихкод. Второе нужно, потому что не всё, что лежит в наборе,
 продаётся отдельно: вкладыш, пакет, подарок из другой поставки.
+
+Набор действует на всю группу сопоставленных карточек (core/linked.py). Состав
+задают одной карточке, а собирают по нему заказы всех: коробка на полке одна,
+из какого бы магазина ни пришёл заказ. Часть узнаётся и по штрихкоду
+сопоставленной с ней карточки — наклейка на полке может быть любой площадки.
 """
 from __future__ import annotations
 
-from . import db
+from collections.abc import Iterable
+
+from . import db, linked
 
 # Ключ части внутри набора. У товара площадки это его SKU, у штрихкода без
 # товара — префикс и сам код. По этому ключу считается прогресс сборки, поэтому
@@ -100,8 +107,52 @@ def all_sets_everywhere(account_ids: list[int] | None = None) -> list[dict]:
         item = dict(row)
         item["parts"] = parts_of(item["account_id"], item["sku"])
         item["parts_total"] = sum(int(part["quantity"] or 1) for part in item["parts"])
+        item["shared"] = shared_with(item["account_id"], item["sku"])
         result.append(item)
     return result
+
+
+def shared_with(account_id: int, set_sku: str) -> list[dict]:
+    """Сопоставленные карточки, которые собираются по этому составу.
+
+    Своего набора у них нет — действует этот. Карточка со своим составом в
+    список не попадает: её собирают по её собственному.
+    """
+    source = linked.card(account_id, set_sku)
+    return [row for row in linked.others(account_id, set_sku)
+            if source_of(row["account_id"], row["sku"]) == source]
+
+
+def _has_parts(card: linked.Card) -> bool:
+    row = db.query_one(
+        "SELECT 1 FROM product_sets s "
+        "JOIN product_set_items i ON i.account_id = s.account_id AND i.set_sku = s.sku "
+        "WHERE s.account_id = ? AND s.sku = ? AND s.active = 1 LIMIT 1",
+        card,
+    )
+    return row is not None
+
+
+def source_of(account_id: int, sku: str) -> linked.Card | None:
+    """Чей состав действует для карточки: свой, а нет своего — сопоставленной.
+
+    Если наборы заданы нескольким карточкам группы, берём основной, дальше — по
+    порядку кабинетов. Выключенный или пустой набор не в счёт: такой товар
+    собирается как обычный.
+    """
+    own = linked.card(account_id, sku)
+    if _has_parts(own):
+        return own
+    for row in linked.others(account_id, sku):
+        other = linked.card(row["account_id"], row["sku"])
+        if _has_parts(other):
+            return other
+    return None
+
+
+def set_keys() -> set[tuple[int, str]]:
+    """Все карточки, которым задан набор, — (кабинет, SKU). Для значков в каталоге."""
+    return {(row["account_id"], row["sku"]) for row in db.query("SELECT account_id, sku FROM product_sets")}
 
 
 def set_skus(account_id: int) -> set[str]:
@@ -115,59 +166,167 @@ def set_skus(account_id: int) -> set[str]:
     return {row["sku"] for row in rows}
 
 
-def parts_for(account_id: int, skus: list[str]) -> dict[str, list[dict]]:
-    """Состав сразу для нескольких SKU — чтобы не спрашивать базу по строке.
+def parts_for(account_id: int, skus: Iterable[str]) -> dict[str, list[dict]]:
+    """Состав для позиций заказа: {SKU этого кабинета: части}.
 
-    Отдаём только рабочие наборы: выключенный или пустой набор собирается как
-    обычный товар, по своему штрихкоду.
+    Состав — свой или сопоставленной карточки (source_of). Отдаём только
+    рабочие наборы: выключенный или пустой набор собирается как обычный товар,
+    по своему штрихкоду.
     """
-    if not skus:
-        return {}
-    placeholders = ",".join("?" for _ in skus)
-    rows = db.query(
-        f"""
-        SELECT i.*, p.name AS product_name, p.image, p.offer_id
-        FROM product_set_items i
-        JOIN product_sets s ON s.account_id = i.account_id AND s.sku = i.set_sku AND s.active = 1
-        LEFT JOIN products p ON p.account_id = i.account_id AND p.sku = i.part_sku
-        WHERE i.account_id = ? AND i.set_sku IN ({placeholders})
-        ORDER BY i.sort, i.part_key
-        """,
-        [account_id] + list(skus),
-    )
     grouped: dict[str, list[dict]] = {}
-    for row in rows:
-        grouped.setdefault(row["set_sku"], []).append(dict(row))
+    for sku in dict.fromkeys(str(sku) for sku in skus if sku):
+        source = source_of(account_id, sku)
+        if source is not None:
+            grouped[sku] = _parts_view(*source)
     return grouped
 
 
+def _parts_view(account_id: int, set_sku: str) -> list[dict]:
+    """Части набора для сборщика: название и фото — свои или сопоставленной карточки."""
+    rows = db.query(
+        """
+        SELECT i.*, p.name AS product_name, p.image, p.offer_id
+        FROM product_set_items i
+        LEFT JOIN products p ON p.account_id = i.account_id AND p.sku = i.part_sku
+        WHERE i.account_id = ? AND i.set_sku = ?
+        ORDER BY i.sort, i.part_key
+        """,
+        (account_id, set_sku),
+    )
+    parts = []
+    for row in rows:
+        part = dict(row)
+        if not part.get("image"):
+            # Часть штрихкодом — фото у того, чей это штрихкод в каталоге.
+            cards = ({linked.card(account_id, part["part_sku"])} if part.get("part_sku")
+                     else linked.owners([part.get("barcode") or ""]))
+            part["image"] = linked.photo(cards)
+        parts.append(part)
+    return parts
+
+
 def parents_of(account_id: int, *, sku: str | None = None, barcodes: list[str] | None = None) -> list[dict]:
-    """В какие наборы входит отсканированное. Обычно ровно в один.
+    """В какие наборы этого кабинета входит отсканированное. Обычно ровно в один.
 
     Ищем и по SKU (часть есть в каталоге площадки), и по штрихкоду (части в
-    каталоге нет). Одна часть может входить в несколько наборов — какой из них
-    засчитать, решает состав отправления, а не эта функция.
+    каталоге нет) — с учётом сопоставления: часть узнаётся и по штрихкоду
+    сопоставленной с ней карточки, а набор, заданный другой карточке группы,
+    действует и здесь. set_sku в ответе — SKU этого кабинета: по нему заказ и
+    собирается. Одна часть может входить в несколько наборов — какой из них
+    засчитать, решает состав заказа, а не эта функция.
     """
-    conditions, params = [], [account_id]
+    codes = [str(code) for code in (barcodes or []) if code]
+    cards = linked.cards_of_code(codes)
     if sku:
-        conditions.append("i.part_sku = ?")
-        params.append(sku)
-    codes = [code for code in (barcodes or []) if code]
-    if codes:
-        placeholders = ",".join("?" for _ in codes)
-        conditions.append(f"i.barcode IN ({placeholders})")
-        params += codes
+        cards |= linked.group([linked.card(account_id, sku)])
+    known = sorted(set(codes) | linked.codes_of(cards))
+    conditions: list[str] = []
+    params: list = []
+    if known:
+        conditions.append(f"i.barcode IN ({','.join('?' for _ in known)})")
+        params += known
+    for owner, part_sku in sorted(cards):
+        conditions.append("(i.account_id = ? AND i.part_sku = ?)")
+        params += [owner, part_sku]
     if not conditions:
         return []
     rows = db.query(
         f"""
         SELECT i.* FROM product_set_items i
         JOIN product_sets s ON s.account_id = i.account_id AND s.sku = i.set_sku AND s.active = 1
-        WHERE i.account_id = ? AND ({' OR '.join(conditions)})
+        WHERE {' OR '.join(conditions)}
+        ORDER BY i.account_id, i.set_sku, i.sort, i.part_key
         """,
         params,
     )
-    return [dict(row) for row in rows]
+    found: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        source = linked.card(row["account_id"], row["set_sku"])
+        for local in _local_sets(account_id, source):
+            if (local, row["part_key"]) in seen:
+                continue
+            seen.add((local, row["part_key"]))
+            found.append({**dict(row), "set_sku": local, "account_id": int(account_id),
+                          "source_account_id": row["account_id"], "source_sku": row["set_sku"]})
+    return found
+
+
+def _local_sets(account_id: int, source: linked.Card) -> list[str]:
+    """SKU этого кабинета, которые собираются по составу source."""
+    account_id = int(account_id)
+    return sorted(sku for owner, sku in linked.group([source])
+                  if owner == account_id and source_of(owner, sku) == source)
+
+
+# ------------------------------------------------------------------ прогресс сборки
+def part_slot(set_sku: str, part_key: str) -> str:
+    """Ключ прогресса по части набора внутри одного заказа."""
+    return f"{set_sku}#{part_key}"
+
+
+def progress(set_sku: str, need: int, direct: int, parts: list[dict], scanned: dict) -> tuple[int, dict]:
+    """Сколько наборов собрано и что ещё осталось взять с полки.
+
+    Набор считается собранным, когда набраны все его части: по одной неполной
+    части нельзя закрыть позицию, иначе в коробку уедет половина комплекта.
+    Отсюда минимум по частям, а не сумма.
+
+    Штрихкод самого набора тоже засчитывается (direct) — если такая наклейка на
+    складе есть, сканировать части незачем. Тогда и частей нужно меньше.
+
+    set_sku — ключ позиции в заказе: SKU у Ozon, номер позиции у Маркета,
+    единица товара у Avito. По нему считаются части в scanned.
+    """
+    from_parts = None
+    left = max(0, need - direct)
+    rows = []
+    for part in parts:
+        per_set = max(1, int(part.get("quantity") or 1))
+        got = int(scanned.get(part_slot(set_sku, part["part_key"]), 0))
+        part_need = per_set * left
+        from_parts = got // per_set if from_parts is None else min(from_parts, got // per_set)
+        rows.append({
+            "part_key": part["part_key"],
+            "sku": part.get("part_sku"),
+            "barcode": part.get("barcode"),
+            "name": part_title(part),
+            "image": part.get("image"),
+            "per_set": per_set,
+            "need": part_need,
+            "scanned": got,
+            "ok": got >= part_need,
+        })
+    total = direct + min(from_parts or 0, left)
+    return total, {"is_set": True, "parts": rows}
+
+
+def pick_part(items: list[dict], parents: list[dict], set_of) -> tuple[dict, dict] | None:
+    """Какой позиции заказа засчитать отсканированную часть и какую именно часть.
+
+    items — позиции после progress(), parents — ответ parents_of(), set_of(item)
+    — SKU набора этой позиции в кабинете. Часть может подходить нескольким
+    позициям (или одна позиция — несколько раз, у Avito по единицам): берём
+    первую, где она ещё нужна. Нужна нигде — первую подходящую, чтобы сказать
+    «лишнее». None — часть не из этого заказа.
+    """
+    pairs = []
+    for item in items:
+        if not item.get("is_set"):
+            continue
+        keys = {parent["part_key"] for parent in parents if parent["set_sku"] == set_of(item)}
+        pairs += [(item, part) for part in item["parts"] if part["part_key"] in keys]
+    if not pairs:
+        return None
+    return next(((item, part) for item, part in pairs if not item.get("ok") and not part["ok"]), pairs[0])
+
+
+def missing_parts(item: dict) -> str | None:
+    """Недостающие части набора словами — или None, если позиция не набор."""
+    if not item.get("is_set"):
+        return None
+    left = [f"{part['name']} — {part['need'] - part['scanned']} шт" for part in item["parts"] if not part["ok"]]
+    return ", ".join(left) or None
 
 
 def part_title(part: dict) -> str:

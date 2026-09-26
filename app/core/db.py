@@ -79,6 +79,9 @@ CREATE TABLE IF NOT EXISTS product_barcodes (
     PRIMARY KEY (account_id, barcode)
 );
 CREATE INDEX IF NOT EXISTS idx_barcodes_sku ON product_barcodes(account_id, sku);
+-- Скан ищет штрихкод во всех кабинетах сразу: у сопоставленного товара
+-- наклейка может быть от карточки любой площадки.
+CREATE INDEX IF NOT EXISTS idx_barcodes_code ON product_barcodes(barcode);
 
 -- Сопоставление: карточки разных кабинетов, за которыми стоит один и тот же
 -- товар склада. Связь per-карточка, поэтому ключ — (account_id, sku): карточка
@@ -133,6 +136,7 @@ CREATE TABLE IF NOT EXISTS product_set_items (
 );
 CREATE INDEX IF NOT EXISTS idx_set_items_sku ON product_set_items(account_id, part_sku);
 CREATE INDEX IF NOT EXISTS idx_set_items_barcode ON product_set_items(account_id, barcode);
+CREATE INDEX IF NOT EXISTS idx_set_items_code ON product_set_items(barcode);
 
 CREATE TABLE IF NOT EXISTS pack_state (
     user_id        INTEGER PRIMARY KEY,

@@ -6,8 +6,8 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ...core import db
-from ...core.catalog import offer_barcodes
+from ...core import db, linked, product_sets
+from ...core.catalog import offer_barcodes, offer_image
 from ...core.store import (_dt, _num, _text, claim_is_active, hours_left, local_time,
                            urgency as urgency_of)
 
@@ -197,15 +197,26 @@ def yandex_items(account_id: int, order_id: str) -> list[dict]:
     Маркет штрихкодов не отдаёт — сверять скан не с чем. Зато артикул (offerId)
     у товара тот же, что на других площадках, и по нему в каталоге находятся
     штрихкоды: тогда сборщик сканирует товар как обычно, а пересорт ловится.
+
+    К ним добавляются штрихкоды и фото сопоставленных карточек (core/linked.py):
+    артикулы на площадках бывают и разными, а коробка на полке одна. Карточка
+    Маркета в каталоге панели — это его offerId.
     """
     rows = db.query(
-        "SELECT * FROM yandex_order_items WHERE account_id = ? AND order_id = ? ORDER BY name",
+        "SELECT i.*, p.image FROM yandex_order_items i "
+        "LEFT JOIN products p ON p.account_id = i.account_id AND p.sku = i.offer_id "
+        "WHERE i.account_id = ? AND i.order_id = ? ORDER BY i.name",
         (account_id, order_id),
     )
     items = []
     for row in rows:
         item = dict(row)
-        item["barcodes"] = offer_barcodes(item.get("offer_id"))
+        offer = item.get("offer_id")
+        item["barcodes"], photo = linked.extras(
+            account_id, offer, image=item.get("image"), barcodes=offer_barcodes(offer)
+        )
+        # Фото: своё, сопоставленной карточки, а нет их — карточки с тем же артикулом.
+        item["image"] = photo or offer_image(offer)
         items.append(item)
     return items
 
@@ -250,6 +261,10 @@ BOARD_SEARCH_SQL = """(o.id LIKE ? OR o.external_id LIKE ? OR o.service_name LIK
                AND (i.name LIKE ? OR i.offer_id LIKE ?)))"""
 
 
+def _is_set(account_id: int, item: dict) -> bool:
+    return bool(item.get("offer_id")) and product_sets.source_of(account_id, item["offer_id"]) is not None
+
+
 def board_card(row) -> dict:
     """Заказ Маркета -> строка раздела «Заказы»."""
     order = yandex_view(row)
@@ -263,11 +278,13 @@ def board_card(row) -> dict:
         "deadline_local": order.get("deadline_local"),
         "urgency": order.get("urgency"),
         # Штрихкода нет в каталоге ни по одному кабинету — сканировать нечем.
+        # Кроме набора: его собирают по частям, у них штрихкоды свои.
         "items": [{"quantity": item["quantity"], "name": item.get("name") or "Без названия",
                    "code": item.get("offer_id") or item.get("item_id"),
-                   "warn": "" if item.get("barcodes") else "нет ШК"}
+                   "warn": "" if item.get("barcodes") or _is_set(order["account_id"], item) else "нет ШК"}
                   for item in order.get("items") or []],
-        "image": None,
+        # Фото — из каталога: карточки Маркета, сопоставленной или с тем же артикулом.
+        "image": next((item.get("image") for item in order.get("items") or [] if item.get("image")), ""),
         "delivery": [order.get("delivery_label"), order.get("service_name"), order.get("notes")],
         "own_status": "",
         "note": "",

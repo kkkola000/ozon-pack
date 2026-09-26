@@ -4,10 +4,9 @@
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 
-from ...core import db
+from ...core import db, linked
 from ...core.store import (_dt, _raw_json, _text, claim_is_active,
                            hours_left, local_time, urgency as urgency_of)
 
@@ -280,6 +279,11 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
 
 # ------------------------------------------------------------------ чтение для UI
 def posting_items(account_id: int, posting_number: str) -> list[dict]:
+    """Состав отправления со штрихкодами и фото — своими и сопоставленных карточек.
+
+    Сопоставленная карточка — та же коробка: её штрихкод сканируется так же,
+    а её фото годится, когда своего у товара нет.
+    """
     rows = db.query(
         """
         SELECT i.*, p.image, p.barcodes
@@ -291,7 +295,9 @@ def posting_items(account_id: int, posting_number: str) -> list[dict]:
     items = []
     for row in rows:
         item = dict(row)
-        item["barcodes"] = json.loads(item.get("barcodes") or "[]")
+        item["barcodes"], item["image"] = linked.extras(
+            account_id, item.get("sku"), image=item.get("image"), barcodes=db.json_list(item.get("barcodes"))
+        )
         items.append(item)
     return items
 

@@ -8,6 +8,11 @@
 
 Все запросы ограничены кабинетом (account_id): товар одного магазина никогда
 не подойдёт к отправлению другого, даже если штрихкод совпадает.
+
+Исключение одно — сопоставление (core/linked.py). Сопоставленные карточки —
+одна коробка на полке, и её штрихкод годится любой: своей карточки, карточки
+Маркета или соседнего кабинета. Засчитывается скан всё равно позиции этого
+отправления, по SKU этого кабинета.
 """
 from __future__ import annotations
 
@@ -16,8 +21,9 @@ import re
 from typing import Any
 
 from ...core import board as core_board
-from ...core import access, db, pack_state, product_sets, report
+from ...core import access, db, linked, pack_state, product_sets, report
 from ...core.config import settings
+from ...core.product_sets import part_slot
 from . import client as ozon
 from .client import OzonError
 from . import store
@@ -98,6 +104,11 @@ def classify(account_id: int, code: str) -> tuple[str, Any]:
     if barcode_row:
         return "product", barcode_row["sku"]
 
+    # Штрихкод сопоставленной карточки: другой площадки или соседнего кабинета.
+    same_box = linked.skus_here(account_id, variants)
+    if same_box:
+        return "product", same_box[0]
+
     # Штучные случаи: отсканировали SKU или артикул продавца.
     item = db.query_one(
         f"SELECT sku FROM posting_items WHERE account_id = ? "
@@ -147,7 +158,7 @@ def load_state(account: dict, user: dict) -> dict:
         got = int(scanned.get(item["sku"], 0))
         row_extra: dict = {}
         if sets.get(item["sku"]):
-            got, row_extra = _set_progress(item["sku"], need, got, sets[item["sku"]], scanned)
+            got, row_extra = product_sets.progress(item["sku"], need, got, sets[item["sku"]], scanned)
         total += need
         done += min(got, need)
         items.append({**item, "need": need, "scanned": got, "ok": got >= need, **row_extra})
@@ -162,11 +173,6 @@ def load_state(account: dict, user: dict) -> dict:
     }
 
 
-def part_slot(set_sku: str, part_key: str) -> str:
-    """Ключ прогресса по части набора внутри одного отправления."""
-    return f"{set_sku}#{part_key}"
-
-
 def missing_items(state: dict) -> list[str]:
     """Чего не хватает до полной сборки — словами, которые видит сборщик.
 
@@ -179,48 +185,12 @@ def missing_items(state: dict) -> list[str]:
         if item.get("ok"):
             continue
         name = item.get("name") or item.get("sku")
-        if item.get("is_set"):
-            left = [f"{part['name']} — {part['need'] - part['scanned']} шт"
-                    for part in item["parts"] if not part["ok"]]
-            if left:
-                missing.append(f"{name} (набор): " + ", ".join(left))
-                continue
+        parts = product_sets.missing_parts(item)
+        if parts:
+            missing.append(f"{name} (набор): {parts}")
+            continue
         missing.append(f"{name} — {item['need'] - item['scanned']} шт")
     return missing
-
-
-def _set_progress(set_sku: str, need: int, direct: int,
-                  parts: list[dict], scanned: dict) -> tuple[int, dict]:
-    """Сколько наборов собрано и что ещё осталось взять с полки.
-
-    Набор считается собранным, когда набраны все его части: по одной неполной
-    части нельзя закрыть позицию, иначе в коробку уедет половина комплекта.
-    Отсюда минимум по частям, а не сумма.
-
-    Штрихкод самого набора тоже засчитывается (direct) — если такая наклейка на
-    складе есть, сканировать части незачем. Тогда и частей нужно меньше.
-    """
-    from_parts = None
-    left = max(0, need - direct)
-    rows = []
-    for part in parts:
-        per_set = max(1, int(part.get("quantity") or 1))
-        got = int(scanned.get(part_slot(set_sku, part["part_key"]), 0))
-        part_need = per_set * left
-        from_parts = got // per_set if from_parts is None else min(from_parts, got // per_set)
-        rows.append({
-            "part_key": part["part_key"],
-            "sku": part.get("part_sku"),
-            "barcode": part.get("barcode"),
-            "name": product_sets.part_title(part),
-            "image": part.get("image"),
-            "per_set": per_set,
-            "need": part_need,
-            "scanned": got,
-            "ok": got >= part_need,
-        })
-    total = direct + min(from_parts or 0, left)
-    return total, {"is_set": True, "parts": rows}
 
 
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
@@ -257,7 +227,12 @@ def openable(account: dict, user: dict, sku: str | None, code: str) -> list[dict
     ответ ядру обязан совпадать с тем, что потом сделает скан, иначе скан
     уйдёт не в тот кабинет.
     """
-    found = candidates_for_sku(account, sku, user) if sku else []
+    found: list[dict] = []
+    for one in same_box(account["id"], sku, code) if sku else []:
+        # Сопоставленные карточки одного кабинета — одна коробка: годится
+        # отправление любой из них. matched_sku — какая позиция в нём засчитается.
+        found += [{**candidate, "matched_sku": one} for candidate in candidates_for_sku(account, one, user)]
+    found.sort(key=lambda c: (c.get("shipment_date") is None, c.get("shipment_date") or ""))
     seen = {c["posting_number"] for c in found}
     for parent in product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code)):
         for candidate in candidates_for_sku(account, parent["set_sku"], user):
@@ -267,6 +242,31 @@ def openable(account: dict, user: dict, sku: str | None, code: str) -> list[dict
                 # засчитывать по такому скану целый набор нельзя.
                 found.append({**candidate, "via_set": parent["set_sku"]})
     return found
+
+
+def same_box(account_id: int, sku: str, code: str) -> list[str]:
+    """SKU этого кабинета, которые означает скан: найденный первым, потом сопоставленные.
+
+    Обычно это один SKU. Больше — когда в кабинете две карточки одной коробки
+    и их сопоставили: тогда скан подходит к позиции любой из них.
+    """
+    found = [str(sku)]
+    found += linked.skus_here(account_id, barcode_variants(code))
+    found += sorted(other for owner, other in linked.group([linked.card(account_id, sku)])
+                    if owner == int(account_id))
+    return list(dict.fromkeys(found))
+
+
+def _posting_sku(account_id: int, sku: str, code: str, state: dict) -> str:
+    """Какую позицию открытого отправления означает скан.
+
+    Скан мог означать и сопоставленную карточку этого кабинета — берём ту, что
+    стоит в отправлении. Отправление не открыто — SKU как есть.
+    """
+    in_posting = {item["sku"] for item in state["items"]}
+    if not state["active"] or sku in in_posting:
+        return sku
+    return next((one for one in same_box(account_id, sku, code) if one in in_posting), sku)
 
 
 def _sku_offer(account_id: int, sku: str) -> str | None:
@@ -375,28 +375,26 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
     if not active:
         return _pick_posting_for_set(account, user, parents, code, sku)
 
-    by_sku = {item["sku"]: item for item in state["items"] if item.get("is_set")}
     # Часть может входить в несколько наборов. Берём тот, что есть в этом
     # отправлении и ещё не собран: иначе скан уйдёт в уже закрытую позицию.
-    usable = [p for p in parents if p["set_sku"] in by_sku]
-    if not usable:
+    picked = product_sets.pick_part(state["items"], parents, lambda item: item["sku"])
+    if picked is None:
         return None
-    parent = next((p for p in usable if not by_sku[p["set_sku"]]["ok"]), usable[0])
-    item = by_sku[parent["set_sku"]]
-    part = next(p for p in item["parts"] if p["part_key"] == parent["part_key"])
+    item, part = picked
+    set_sku = item["sku"]
     name = part["name"]
-    set_name = item.get("name") or parent["set_sku"]
+    set_name = item.get("name") or set_sku
 
     if item["ok"] or part["scanned"] >= part["need"]:
         with db.write() as conn:
             db.log_event(
                 "scan_extra_product", level="warn", account_id=account["id"], user=user,
-                posting_number=active["posting_number"], sku=parent["set_sku"], barcode=code,
+                posting_number=active["posting_number"], sku=set_sku, barcode=code,
                 message=f"Часть набора сверх нужного: {name}", conn=conn,
             )
             report.record_error(
                 conn, account, user, "extra_product",
-                posting_number=active["posting_number"], barcode=code, sku=parent["set_sku"],
+                posting_number=active["posting_number"], barcode=code, sku=set_sku,
                 name=f"{set_name} — {name}", offer_id=item.get("offer_id"),
             )
         return ScanResult(
@@ -406,30 +404,30 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
         )
 
     scanned = dict(state["scanned"])
-    slot = part_slot(parent["set_sku"], parent["part_key"])
+    slot = part_slot(set_sku, part["part_key"])
     scanned[slot] = int(scanned.get(slot, 0)) + 1
     was_done = item["scanned"]
     with db.write() as conn:
         pack_state.save(conn, account, user, active["posting_number"], scanned)
         db.log_event(
             "scan_set_part", account_id=account["id"], user=user,
-            posting_number=active["posting_number"], sku=parent["set_sku"], barcode=code,
+            posting_number=active["posting_number"], sku=set_sku, barcode=code,
             message=f"{set_name}: {name} {scanned[slot]}/{part['need']}", conn=conn,
         )
 
     new_state = load_state(account, user)
-    new_item = next(i for i in new_state["items"] if i["sku"] == parent["set_sku"])
+    new_item = next(i for i in new_state["items"] if i["sku"] == set_sku)
     if new_item["scanned"] > was_done:
         # Набор собран целиком — только теперь позиция зачтена в отчёт. Писать
         # туда каждую часть нельзя: отгружен набор, а не его содержимое.
         with db.write() as conn:
             report.record_shipped(
                 conn, account, user, active["posting_number"],
-                {"sku": parent["set_sku"], "name": set_name, "offer_id": new_item.get("offer_id")},
+                {"sku": set_sku, "name": set_name, "offer_id": new_item.get("offer_id")},
                 new_item["scanned"], code,
             )
         new_state = load_state(account, user)
-        new_item = next(i for i in new_state["items"] if i["sku"] == parent["set_sku"])
+        new_item = next(i for i in new_state["items"] if i["sku"] == set_sku)
 
     if new_state["complete"]:
         return ScanResult(
@@ -520,6 +518,7 @@ def _scan_unknown_posting(account: dict, user: dict, number: str, code: str) -> 
 def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
     state = load_state(account, user)
     active = state["active"]
+    sku = _posting_sku(account["id"], sku, code, state)
     name = _sku_title(account["id"], sku)
 
     if active:
@@ -622,21 +621,23 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
     candidates = [c for c in all_candidates if not c.get("locked_by")]
     locked = [c for c in all_candidates if c.get("locked_by")]
     if not candidates:
+        skus = same_box(account["id"], sku, code)
+        marks = ",".join("?" for _ in skus)
         packed = db.query_one(
-            """
-            SELECT COUNT(*) AS c FROM postings p
+            f"""
+            SELECT COUNT(DISTINCT p.posting_number) AS c FROM postings p
             JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
-            WHERE p.account_id = ? AND i.sku = ? AND p.local_state = 'packed'
+            WHERE p.account_id = ? AND i.sku IN ({marks}) AND p.local_state = 'packed'
             """,
-            (account["id"], sku),
+            [account["id"]] + skus,
         )["c"]
         waiting = db.query_one(
-            """
-            SELECT COUNT(*) AS c FROM postings p
+            f"""
+            SELECT COUNT(DISTINCT p.posting_number) AS c FROM postings p
             JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
-            WHERE p.account_id = ? AND i.sku = ? AND p.status = ?
+            WHERE p.account_id = ? AND i.sku IN ({marks}) AND p.status = ?
             """,
-            (account["id"], sku, store.STATUS_AWAITING_PACKAGING),
+            [account["id"]] + skus + [store.STATUS_AWAITING_PACKAGING],
         )["c"]
         with db.write() as conn:
             db.log_event(
@@ -703,7 +704,8 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
                 result["message"] = f"{result['message']} {credited['message']}"
     else:
         result = select_posting(
-            account, user, chosen["posting_number"], first_sku=sku, scan_code=code
+            account, user, chosen["posting_number"], first_sku=chosen.get("matched_sku") or sku,
+            scan_code=code,
         )
     if len(candidates) > 1 and result["status"] == "ok":
         # Говорим, сколько ещё впереди: сборщик должен понимать, что отсканирует

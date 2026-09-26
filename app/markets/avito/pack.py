@@ -8,17 +8,28 @@
   4. панель записывает его в отчёт вместе с отправлением и названием товара;
   5. когда отсканированы все позиции, заказ помечается собранным.
 
-Сверять штрихкод не с чем: справочника товаров Avito не отдаёт. Поэтому
-панель не решает, «тот» это товар или нет, а фиксирует, что именно приложили
-к этому отправлению. Ошибкой считается только скан стикера чужого заказа.
+Своих штрихкодов у Avito нет: в каталоге панели объявление — это номер и
+название. Поэтому сверка есть только там, где её дало сопоставление
+(core/linked.py):
+
+* объявление **сопоставлено** с карточкой другой площадки — годятся только
+  штрихкоды этой группы, чужой товар — «СТОП»;
+* у объявления есть **набор** (свой или сопоставленной карточки) — единицу
+  собирают по частям, как у Ozon;
+* **не сопоставлено** — сверять не с чем: панель записывает, что приложили к
+  заказу, и не решает, «тот» это товар или нет.
+
+Ошибкой всегда считается и скан стикера чужого заказа.
 """
 from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 from ...core import board as core_board
-from ...core import db, pack_state, report
+from ...core import db, linked, pack_state, product_sets, report
+from ..ozon.pack import barcode_variants
 from .client import STATUS_LABELS
 from . import store
 from ...core import store as core_store
@@ -120,29 +131,72 @@ def load_state(account: dict, user: dict) -> dict:
         pack_state.clear(user)
         return empty
 
-    scanned = json.loads(row["scanned"] or "[]")
-    if isinstance(scanned, dict):          # состояние от рабочего места Ozon
-        scanned = []
+    entries = _entries(json.loads(row["scanned"] or "[]"))
     order = store.avito_view(order_row)
     units = _units(account["id"], row["posting_number"])
+    sets = product_sets.parts_for(account["id"], [card_sku(item) for item, _no in units])
+    looks: dict[str, tuple[list[str], str | None]] = {}
     items = []
     for index, (item, unit_no) in enumerate(units):
-        items.append({
-            **item,
-            "unit_no": unit_no,
-            "scanned": index < len(scanned),
-            "barcode": scanned[index] if index < len(scanned) else None,
-        })
-    done = min(len(scanned), len(units))
+        sku = card_sku(item)
+        if sku not in looks:
+            looks[sku] = linked.extras(account["id"], sku, image=item.get("image"))
+        items.append(_unit_view(index, item, unit_no, entries, sets.get(sku), looks[sku]))
+    done = sum(1 for item in items if item["scanned"])
     return {
         "active": order,
         "items": items,
         "done": done,
         "total": len(units),
         "complete": bool(units) and done >= len(units),
-        "scanned": scanned,
+        "scanned": entries,
         "started_at": row["started_at"],
     }
+
+
+def card_sku(item: dict) -> str:
+    """Карточка позиции в каталоге панели: у Avito это номер объявления."""
+    return str(item.get("avito_id") or "")
+
+
+def _entries(raw) -> list[dict]:
+    """Сканы заказа: {"u": единица, "code": штрихкод} и у набора ещё "part".
+
+    Раньше это был просто список штрихкодов по порядку единиц — читаем и его:
+    сборка, начатая до обновления, не должна потеряться.
+    """
+    if not isinstance(raw, list):          # состояние от рабочего места Ozon
+        return []
+    entries = []
+    for index, entry in enumerate(raw):
+        if isinstance(entry, str):
+            entries.append({"u": index, "code": entry})
+        elif isinstance(entry, dict) and isinstance(entry.get("u"), int):
+            entries.append(entry)
+    return entries
+
+
+def _unit_view(index: int, item: dict, unit_no: int, entries: list[dict],
+               parts: list[dict] | None, look: tuple[list[str], str | None]) -> dict:
+    """Единица товара для экрана и для сверки.
+
+    checked — есть ли с чем сверять скан: штрихкоды сопоставленных карточек
+    или состав набора. Нет — единица принимает любой штрихкод, как раньше.
+    """
+    mine = [entry for entry in entries if entry["u"] == index]
+    direct = next((entry["code"] for entry in mine if not entry.get("part")), None)
+    barcodes, image = look
+    view = {**item, "index": index, "unit_no": unit_no, "image": image, "barcodes": barcodes,
+            "barcode": direct, "checked": bool(barcodes) or bool(parts)}
+    if parts:
+        counts = Counter(product_sets.part_slot(str(index), entry["part"]) for entry in mine if entry.get("part"))
+        got, extra = product_sets.progress(str(index), 1, 1 if direct else 0, parts, counts)
+        view.update(extra)
+        view["scanned"] = got >= 1
+    else:
+        view["scanned"] = direct is not None
+    view["ok"] = view["scanned"]
+    return view
 
 
 def _units(account_id: int, order_id: str) -> list[tuple[dict, int]]:
@@ -276,60 +330,153 @@ def open_order(account: dict, user: dict, order: dict, code: str | None = None) 
 
 
 def _scan_item(account: dict, user: dict, state: dict, code: str) -> ScanResult:
-    """Штрихкод товара: сверять не с чем, поэтому записываем как есть."""
-    order = state["active"]
-    order_id = order["id"]
+    """Штрихкод товара: к какой единице заказа он подходит.
 
+    По порядку: единица, чей товар сопоставлен с владельцем штрихкода, — скан
+    сверен; часть набора; единица, сверять которую не с чем, — записываем как
+    есть. Ни то, ни другое, ни третье — «СТОП»: остались только единицы со
+    сверкой, и этот товар ни одной из них не подходит.
+    """
+    order_id = state["active"]["id"]
     if state["complete"]:
-        with db.write() as conn:
-            db.log_event("avito_scan_extra", level="warn", account_id=account["id"], user=user,
-                         posting_number=order_id, barcode=code, message="Лишний скан", conn=conn)
-            report.record_error(conn, account, user, "extra_product",
-                                posting_number=order_id, barcode=code)
-        return ScanResult(
-            "warning",
-            f"Все {state['total']} шт уже отсканированы. Отсканируйте стикер, чтобы закрыть заказ.",
-            action="extra_product",
-            sound="error",
-            state=state,
-        )
+        return _extra_scan(account, user, state, code)
 
-    index = state["done"]
-    units = _units(account["id"], order_id)
-    if index >= len(units):
-        # Состав заказа перечитывается из базы, а счётчик сканов — из состояния
-        # сборщика: синхронизация могла убрать позицию между сканами. Раньше
-        # это был IndexError и белый экран прямо в руках у сборщика.
-        db.log_event("avito_scan_stale", level="warn", account_id=account["id"], user=user,
-                     posting_number=order_id, barcode=code, message="Состав заказа изменился")
-        return ScanResult(
-            "error",
-            "Состав заказа изменился — откройте заказ заново (отсканируйте стикер).",
-            action="stale_order",
-            sound="error",
-            state=state,
-        )
-    item, unit_no = units[index]
-    scanned = list(state["scanned"]) + [code]
+    variants = barcode_variants(code)
+    cards = linked.cards_of_code(variants)
+    mine = [u for u in state["items"] if linked.card(account["id"], card_sku(u)) in cards]
+    unit = next((u for u in mine if not u["scanned"]), None)
+    if unit is not None:
+        return _credit_unit(account, user, state, unit, code)
+    if mine:
+        # Товар этого заказа, но все его единицы уже набраны: это лишнее, а не
+        # повод записать его в соседнюю единицу без сверки.
+        return _too_many(account, user, state, mine[0].get("title") or "Товар", code,
+                         f"«{mine[0].get('title') or 'Товар'}» уже отсканирован в нужном количестве. "
+                         "Лишнее не кладите.")
 
+    parents = product_sets.parents_of(account["id"], barcodes=variants)
+    picked = product_sets.pick_part(state["items"], parents, card_sku) if parents else None
+    if picked is not None and not picked[0]["ok"] and not picked[1]["ok"]:
+        return _credit_part(account, user, state, picked[0], picked[1], code)
+    if picked is not None:
+        part, set_name = picked[1]["name"], picked[0].get("title") or "набор"
+        return _too_many(account, user, state, f"{set_name} — {part}", code,
+                         f"«{part}» для набора «{set_name}» уже набран. Лишнее не кладите.")
+
+    unit = next((u for u in state["items"] if not u["scanned"] and not u["checked"]), None)
+    if unit is not None:
+        return _credit_unit(account, user, state, unit, code)
+    return _wrong_product(account, user, order_id, state, cards, code)
+
+
+def _extra_scan(account: dict, user: dict, state: dict, code: str) -> ScanResult:
+    """Все единицы уже отсканированы — лишний скан."""
+    order_id = state["active"]["id"]
     with db.write() as conn:
-        pack_state.save(conn, account, user, order_id, scanned)
+        db.log_event("avito_scan_extra", level="warn", account_id=account["id"], user=user,
+                     posting_number=order_id, barcode=code, message="Лишний скан", conn=conn)
+        report.record_error(conn, account, user, "extra_product",
+                            posting_number=order_id, barcode=code)
+    return ScanResult(
+        "warning",
+        f"Все {state['total']} шт уже отсканированы. Отсканируйте стикер, чтобы закрыть заказ.",
+        action="extra_product",
+        sound="error",
+        state=state,
+    )
+
+
+def _wrong_product(account: dict, user: dict, order_id: str, state: dict,
+                   cards: set, code: str) -> ScanResult:
+    """Остались только единицы со сверкой, и этот товар ни одной не подходит."""
+    name = _name_of(cards) or f"код {code}"
+    with db.write() as conn:
+        db.log_event("avito_scan_wrong_product", level="error", account_id=account["id"], user=user,
+                     posting_number=order_id, barcode=code, message="Товар не из заказа", conn=conn)
+        report.record_error(conn, account, user, "wrong_product", posting_number=order_id,
+                            barcode=code, name=name if cards else None)
+    number = state["active"].get("marketplace_id") or order_id
+    return ScanResult(
+        "error",
+        f"СТОП: {'«' + name + '»' if cards else name} не входит в заказ {number}. Уберите товар.",
+        action="wrong_product",
+        state=state,
+    )
+
+
+def _name_of(cards: set) -> str | None:
+    """Название товара по карточкам, которым принадлежит штрихкод."""
+    for account_id, sku in sorted(cards):
+        row = db.query_one("SELECT name FROM products WHERE account_id = ? AND sku = ?", (account_id, sku))
+        if row and row["name"]:
+            return row["name"]
+    return None
+
+
+def _too_many(account: dict, user: dict, state: dict, name: str, code: str, text: str) -> ScanResult:
+    """Товар или часть набора этого заказа, но нужное количество уже набрано."""
+    order_id = state["active"]["id"]
+    with db.write() as conn:
+        db.log_event("avito_scan_extra", level="warn", account_id=account["id"], user=user,
+                     posting_number=order_id, barcode=code, message=f"Сверх нужного: {name}", conn=conn)
+        report.record_error(conn, account, user, "extra_product", posting_number=order_id,
+                            barcode=code, name=name)
+    return ScanResult("warning", text, action="extra_product", sound="error", state=state)
+
+
+def _credit_part(account: dict, user: dict, state: dict, unit: dict, part: dict, code: str) -> ScanResult:
+    """Засчитать часть набора. В отчёт единица идёт, только когда собрана целиком."""
+    order_id = state["active"]["id"]
+    set_name = unit.get("title") or "набор"
+    entries = list(state["scanned"]) + [{"u": unit["index"], "part": part["part_key"], "code": code}]
+    with db.write() as conn:
+        pack_state.save(conn, account, user, order_id, entries)
+        db.log_event("avito_scan_set_part", account_id=account["id"], user=user, posting_number=order_id,
+                     barcode=code, message=f"{set_name}: {part['name']} {part['scanned'] + 1}/{part['need']}",
+                     conn=conn)
+    new_state = load_state(account, user)
+    new_unit = new_state["items"][unit["index"]]
+    if new_unit["scanned"]:
+        # Отгружен набор, а не его содержимое: пишем единицу, а не каждую часть.
+        with db.write() as conn:
+            report.record_shipped(conn, account, user, order_id, _report_item(unit), unit["unit_no"], code)
+    if new_state["complete"]:
+        return complete(account, user, order_id, code, auto=True)
+    left = [p["name"] for p in new_unit.get("parts", []) if not p["ok"]]
+    tail = f" Осталось: {', '.join(left)}." if left else ""
+    return ScanResult(
+        "ok",
+        f"«{set_name}»: {part['name']} {part['scanned'] + 1}/{part['need']}. "
+        f"Собрано {new_state['done']} из {new_state['total']}.{tail}",
+        action="set_part_scanned",
+        state=new_state,
+    )
+
+
+def _report_item(unit: dict) -> dict:
+    return {"sku": None, "offer_id": unit.get("seller_id"), "name": unit.get("title"),
+            "key": f"av:{unit.get('avito_id')}"}
+
+
+def _credit_unit(account: dict, user: dict, state: dict, unit: dict, code: str) -> ScanResult:
+    """Записать штрихкод в единицу. Сверенный — так и сказать сборщику."""
+    order_id = state["active"]["id"]
+    entries = list(state["scanned"]) + [{"u": unit["index"], "code": code}]
+    with db.write() as conn:
+        pack_state.save(conn, account, user, order_id, entries)
         db.log_event("avito_scan_item", account_id=account["id"], user=user, posting_number=order_id,
-                     barcode=code, message=f"{len(scanned)}/{state['total']}", conn=conn)
+                     barcode=code, message=f"{state['done'] + 1}/{state['total']}", conn=conn)
         # Отчёт: сошлась пара «штрихкод -> отправление», её и записываем.
-        report.record_shipped(
-            conn, account, user, order_id,
-            {"sku": None, "offer_id": item.get("seller_id"), "name": item.get("title"),
-             "key": f"av:{item.get('avito_id')}"},
-            unit_no, code,
-        )
+        report.record_shipped(conn, account, user, order_id, _report_item(unit), unit["unit_no"], code)
 
     new_state = load_state(account, user)
     if new_state["complete"]:
         return complete(account, user, order_id, code, auto=True)
+    head = (f"«{unit.get('title') or 'Товар'}»: штрихкод сверен." if unit["checked"]
+            else f"Записан штрихкод {code}.")
     return ScanResult(
         "ok",
-        f"Записан штрихкод {code}. Собрано {new_state['done']} из {new_state['total']}.",
+        f"{head} Собрано {new_state['done']} из {new_state['total']}.",
         action="item_scanned",
         state=new_state,
     )

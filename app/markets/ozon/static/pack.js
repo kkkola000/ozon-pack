@@ -26,23 +26,8 @@ window.PACKS.ozon = {
   activeId: (active) => active.posting_number,
   number: (active) => active.posting_number,
 
-  /* Что ещё отсканировать — для оранжевого списка в зоне сканирования. У
-     набора называем недостающие части, а не сам набор: к полке идут за ними. */
-  left(state) {
-    const rows = [];
-    for (const item of state.items || []) {
-      if (item.ok) continue;
-      const parts = item.is_set ? (item.parts || []).filter((part) => !part.ok) : [];
-      if (parts.length) {
-        for (const part of parts) {
-          rows.push({ name: part.name, count: part.need - part.scanned, note: `часть набора «${item.name}»` });
-        }
-      } else {
-        rows.push({ name: item.name || 'Без названия', count: item.need - item.scanned });
-      }
-    }
-    return rows;
-  },
+  // Что ещё отсканировать — для оранжевого списка в зоне сканирования.
+  left: (state) => packLeft(state.items, (item) => item.name || 'Без названия'),
 
   renderActive(state) {
     const posting = state.active;
@@ -55,29 +40,11 @@ window.PACKS.ozon = {
       return `<span class="tag ${posting.urgency}">${text} · ${escapeHtml(hoursLeftText(posting.hours_left))}</span>`;
     };
 
-    /* Набор на площадке — обычный товар, а на складе это несколько вещей со
-       своими штрихкодами. Сборщик сканирует их, поэтому и видеть он должен их, а
-       не одну строку «набор 0/1», по которой непонятно, что ещё брать. */
-    const setParts = (item) => !item.is_set ? '' : `
-      <div class="set-parts">
-        ${item.parts.map((part) => `
-          <div class="set-part ${part.ok ? 'ok' : ''}">
-            <span class="qty">${part.scanned} / ${part.need}</span>
-            <span class="grow">${escapeHtml(part.name)}
-              ${part.barcode ? `<span class="muted mono"> · ${escapeHtml(part.barcode)}</span>` : ''}
-            </span>
-            ${part.ok ? '<span class="check">✔</span>' : ''}
-          </div>`).join('')}
-      </div>`;
-
+    // Фото и части набора рисует общий market_pack.js: они есть у любой площадки.
     const items = state.items.map((item) => `
       <div class="item-row ${item.ok ? 'ok' : ''}">
         <div class="qty">${item.scanned} / ${item.need}</div>
-        ${item.image
-          ? `<img class="item-photo" src="${escapeHtml(item.image)}" alt="${escapeHtml(item.name || '')}"
-                  data-zoom="${escapeHtml(item.image)}" data-name="${escapeHtml(item.name || '')}" loading="lazy"
-                  onerror="this.replaceWith(Object.assign(document.createElement('div'), {className: 'item-photo blank', textContent: '🖼'}))">`
-          : '<div class="item-photo blank">🖼</div>'}
+        ${packPhoto(item.image, item.name)}
         <div class="name">
           ${escapeHtml(item.name || 'Без названия')}
           <div class="meta">
@@ -86,7 +53,7 @@ window.PACKS.ozon = {
             ${item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : ''}
             ${item.is_set ? ' · <span class="tag">Набор из ' + item.parts.length + '</span>' : ''}
           </div>
-          ${setParts(item)}
+          ${packSetParts(item)}
         </div>
         ${item.ok ? '<div class="check">✔</div>' : ''}
       </div>`).join('');
