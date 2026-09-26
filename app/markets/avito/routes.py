@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from . import client as avito, pack as avito_pack
+from ...core import orders as core_orders
 from ...core import board as core_board
 from ...core import db
 from .client import AvitoError
@@ -189,6 +190,8 @@ ORDERS = OrdersBoard(
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql=store.BOARD_DEADLINE_SQL,
     search_sql=store.BOARD_SEARCH_SQL,
+    number_sql="COALESCE(o.marketplace_id, o.id)",
+    goods_sql=core_orders.goods_column("avito_order_items", on="i.order_id = o.id", name="title"),
     card=store.board_card,
     label="Этикетка",
     printed="Этикетка печаталась",
@@ -259,17 +262,14 @@ WORKSPACE = Workspace(
     complete=None,
 )
 
-def _count(sql: str, params: tuple) -> int:
-    row = db.query_one(sql, params)
-    return row["c"] if row else 0
 
 
 def settings_stats(account_id: int) -> dict[str, int]:
     aid = (account_id,)
     return {
-        "Ждут подтверждения": _count(
+        "Ждут подтверждения": db.count(
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'on_confirmation'", aid),
-        "Ждут отправки": _count(
+        "Ждут отправки": db.count(
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = 'ready_to_ship'", aid),
-        "Позиций в заказах": _count("SELECT COUNT(*) AS c FROM avito_order_items WHERE account_id = ?", aid),
+        "Позиций в заказах": db.count("SELECT COUNT(*) AS c FROM avito_order_items WHERE account_id = ?", aid),
     }

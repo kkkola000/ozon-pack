@@ -13,18 +13,7 @@
    Числа перекрёстные: на кабинете — сколько у него в выбранном статусе, на
    статусе — сколько в выбранном кабинете. #}
 <div class="panel">
-  <div class="filter-line" style="margin-top:0">
-    <span class="muted small filter-label">Кабинеты:</span>
-    <div class="chips" id="shop-chips">
-      {% for chip in chips %}
-      <a class="chip {{ 'active' if chip.active }}" href="{{ link(chip.id, status, search) | trim }}"
-         {%- if chip.market %} title="{{ chip.market_title }}"{% endif %}>
-        {%- if chip.market %}<i class="dot {{ chip.market }}"></i>{% endif -%}
-        {{ chip.title }} <span class="badge">{{ chip.count }}</span>
-      </a>
-      {% endfor %}
-    </div>
-  </div>
+  {% with shop_chips = chips %}{% include "_shop_chips.html" %}{% endwith %}
   <div class="filter-line">
     <span class="muted small filter-label">Статус:</span>
     <div class="tabs status-tabs" id="status-tabs">

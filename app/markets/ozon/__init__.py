@@ -45,7 +45,6 @@ MARKET = Market(
     catalog=CatalogSource(pages=catalog.pages),
     # Возвраты Ozon: отдельная сущность со своим методом API и своими статусами.
     returns=returns.SOURCE,
-    orders_feed=store.orders_feed,
     # «Заказы»: какие отправления в каком статусе склада и что с ними можно сделать.
     orders=routes.ORDERS,
     workspace=routes.WORKSPACE,

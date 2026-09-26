@@ -65,6 +65,20 @@ def sync_many(shops: list[dict], *, returns: bool = False) -> tuple[list[str], l
     return done, failed
 
 
+def refresh(shops: list[dict]) -> dict:
+    """«Обновить заказы» — ответ кнопки. ValueError — нечего обновлять,
+    RuntimeError — не ответил ни один кабинет (текст — причины)."""
+    if not shops:
+        raise ValueError("Нет ни одного кабинета с ключами")
+    done, failed = sync_many(shops)
+    if not done:
+        raise RuntimeError("; ".join(failed))
+    message = f"Обновлено кабинетов: {len(done)}"
+    if failed:
+        message += f". Не ответили: {', '.join(name.split(':')[0] for name in failed)}"
+    return {"status": "ok", "message": message, "updated": done, "failed": failed}
+
+
 def synced_at(account_id: int) -> str | None:
     """Когда кабинет последний раз ходил на площадку. Неважно, кто его отправил."""
     return db.kv_get(f"{KV_ACCOUNT_SYNC}:{int(account_id)}") or None

@@ -206,6 +206,10 @@ class OrdersBoard:
     deadline_sql: str            # срок отгрузки: по нему сортируется список
     # Условие поиска; каждый «?» получает одну и ту же строку «%запрос%».
     search_sql: str
+    # Для списка на «Сборке» — одним запросом, без карточек: номер, как его
+    # называют человеку, и товары строкой (core/orders.goods_column).
+    number_sql: str
+    goods_sql: str
     # Строка базы (с колонкой board — её статус) → строка общего списка:
     # id, number, sub, tags, deadline, deadline_local, urgency, items, image,
     # delivery, own_status, printed, packed_by, packed_at, packed_at_local,
@@ -255,11 +259,6 @@ class Market:
     settings_panel: str | None = None      # «ozon/settings_panel.html»
     # Возвраты: None — площадка их в панель не отдаёт, раздел ей не показывается.
     returns: ReturnsSource | None = None
-    # Заказы кабинетов для общего списка на рабочем месте: feed(account_ids, limit).
-    # Строка приводится к общему виду — {account_id, number, goods, quantity,
-    # deadline, deadline_local, urgency, status_label, in_work}, — чтобы список
-    # показывал рядом отправление Ozon и заказ Avito, не различая их.
-    orders_feed: Callable[..., list[dict]] | None = None
     # Заказы кабинетов в общем разделе «Заказы». None — раздела у площадки нет.
     orders: OrdersBoard | None = None
     # Рабочее место сборщика: слова и счётчики очереди.

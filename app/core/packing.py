@@ -44,6 +44,7 @@ Avito в руках давала «такого отправления нет»,
 from __future__ import annotations
 
 from . import accounts, db, orders as core_orders
+from . import shops as core_shops
 
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
 ALL = "all"
@@ -71,28 +72,17 @@ def workspace_of(account: dict):
 
 # ------------------------------------------------------------------ кабинеты
 def shops(picked: str = ALL) -> list[dict]:
-    """Кабинеты под фильтром: все настроенные или один выбранный.
+    """Кабинеты под фильтром: все настроенные или один выбранный (core/shops.py).
 
-    Порядок — как в «Настройках»: в нём же идут чипы фильтра и переключатель
-    в шапке, и он же решает, чей ответ «не найден».
+    Порядок — как в «Настройках»: в нём же идут чипы фильтра, и он же решает,
+    чей ответ «не найден».
     """
-    live = [account for account in accounts.all_accounts(active_only=True)
-            if accounts.is_configured(account)]
-    if picked == ALL:
-        return live
-    return [account for account in live if str(account["id"]) == str(picked)]
+    return core_shops.narrow(core_shops.live(), picked)
 
 
 def filter_of(value) -> str:
-    """Значение фильтра из адреса: номер кабинета или «все».
-
-    Незнакомый номер, выключенный кабинет или кабинет без ключей — это «Все
-    заказы»: кривая ссылка не должна оставлять сборщика с пустым экраном.
-    """
-    wanted = str(value or ALL).strip()
-    if wanted != ALL and shops(wanted):
-        return wanted
-    return ALL
+    """Значение фильтра из адреса. Кривая ссылка — «Все заказы», а не пустой экран."""
+    return core_shops.picked_of(value, core_shops.live())
 
 
 def started(user: dict) -> dict | None:

@@ -19,7 +19,8 @@
 """
 from __future__ import annotations
 
-from . import accounts, db
+from . import db
+from . import shops as core_shops
 from .store import local_time
 
 # «Все заказы»: фильтр кабинета не выбран.
@@ -53,23 +54,13 @@ def board_of(account: dict):
 
 # ------------------------------------------------------------------ фильтры
 def shops(picked: str = ALL) -> list[dict]:
-    """Кабинеты под фильтром: включённые, с ключами и с разделом заказов.
-
-    Порядок — как в «Настройках»: в нём же идут чипы.
-    """
-    live = [account for account in accounts.all_accounts(active_only=True)
-            if accounts.is_configured(account) and board_of(account) is not None]
-    if picked == ALL:
-        return live
-    return [account for account in live if str(account["id"]) == str(picked)]
+    """Кабинеты под фильтром: включённые, с ключами и с разделом заказов."""
+    return core_shops.narrow(core_shops.live(lambda market: market.orders is not None), picked)
 
 
 def filter_of(value) -> str:
     """Кабинет из адреса. Незнакомый, выключенный или без ключей — «Все заказы»."""
-    wanted = str(value or ALL).strip()
-    if wanted != ALL and shops(wanted):
-        return wanted
-    return ALL
+    return core_shops.picked_of(value, shops())
 
 
 def status_of(value) -> str:
@@ -94,7 +85,7 @@ def shop(account_id) -> dict:
 
 
 # ------------------------------------------------------------------ запросы
-def _groups(where: list[dict]) -> list[tuple]:
+def groups(where: list[dict]) -> list[tuple]:
     """Кабинеты по площадкам: [(площадка, объявление, [номера кабинетов])]."""
     out = []
     for market in _registry().all_markets():
@@ -120,7 +111,7 @@ def _marks(ids: list[int]) -> str:
 def counts(where: list[dict], search: str = "") -> dict[tuple[int, str], int]:
     """Сколько заказов у каждого кабинета в каждом статусе: {(кабинет, статус): n}."""
     out: dict[tuple[int, str], int] = {}
-    for _market, board, ids in _groups(where):
+    for _market, board, ids in groups(where):
         extra, params = _search(board, search)
         rows = db.query(
             f"SELECT o.account_id AS account_id, {board.status_sql} AS board, COUNT(*) AS c "
@@ -143,7 +134,7 @@ def rows(where: list[dict], status: str, search: str = "", limit: int = LIMIT) -
     """
     names = {account["id"]: account.get("title") or "—" for account in where}
     out: list[dict] = []
-    for market, board, ids in _groups(where):
+    for market, board, ids in groups(where):
         extra, params = _search(board, search)
         order = ("o.packed_at DESC" if status == "packed"
                  else f"({board.deadline_sql}) IS NULL, {board.deadline_sql}")
@@ -178,6 +169,13 @@ def rows(where: list[dict], status: str, search: str = "", limit: int = LIMIT) -
 
 
 # ------------------------------------------------------------------ страница
+def link(shop: str, status: str, search: str = "") -> str:
+    """Адрес раздела с фильтрами: кабинет, статус и поиск живут в адресе."""
+    from urllib.parse import quote
+
+    return f"/orders?shop={shop}&status={status}" + (f"&q={quote(search)}" if search else "")
+
+
 def page(picked: str, status: str, search: str = "") -> dict:
     """Всё для страницы: чипы кабинетов, статусы с числами, строки, действия."""
     everyone = shops(ALL)
@@ -187,17 +185,10 @@ def page(picked: str, status: str, search: str = "") -> dict:
     def total(ids, key) -> int:
         return sum(table.get((account_id, key), 0) for account_id in ids)
 
-    chips = [{
-        "id": ALL, "title": "Все заказы", "market": None, "market_title": "",
-        "count": total([account["id"] for account in everyone], status), "active": picked == ALL,
-    }]
-    for account in everyone:
-        market = _registry().get(account["marketplace"])
-        chips.append({
-            "id": str(account["id"]), "title": account["title"],
-            "market": market.code, "market_title": market.title,
-            "count": total([account["id"]], status), "active": picked == str(account["id"]),
-        })
+    # На кабинете — сколько у него в выбранном статусе.
+    per_shop = {account["id"]: total([account["id"]], status) for account in everyone}
+    chips = core_shops.chips(everyone, picked, per_shop, lambda value: link(value, status, search),
+                             all_title="Все заказы")
     ids = [account["id"] for account in where]
     tabs = [{"key": key, "title": title, "count": total(ids, key), "active": key == status}
             for key, title in STATUSES]
@@ -205,7 +196,7 @@ def page(picked: str, status: str, search: str = "") -> dict:
     shown = rows(where, status, search)
     # Кнопки над списком — действия площадок, чьи заказы сейчас на экране.
     actions = []
-    for market, board, _ids in _groups(where):
+    for market, board, _ids in groups(where):
         for action in board.actions:
             if any(card["market"] == market.code and action.key in card.get("actions", ()) for card in shown):
                 actions.append({"id": f"{market.code}:{action.key}", "title": action.title,

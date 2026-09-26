@@ -14,6 +14,7 @@ import logging
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
+from ...core import orders as core_orders
 from ...core import board as core_board
 from ...core import db
 from . import pack as yandex_pack
@@ -76,6 +77,8 @@ ORDERS = OrdersBoard(
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql="o.shipment_date",
     search_sql=store.BOARD_SEARCH_SQL,
+    number_sql="o.id",
+    goods_sql=core_orders.goods_column("yandex_order_items", on="i.order_id = o.id"),
     card=store.board_card,
     label="Ярлык",
     printed="Ярлык печатался",
@@ -124,19 +127,16 @@ WORKSPACE = Workspace(
     complete=yandex_pack.complete_active,
 )
 
-def _count(sql: str, params: tuple) -> int:
-    row = db.query_one(sql, params)
-    return row["c"] if row else 0
 
 
 def settings_stats(account_id: int) -> dict[str, int]:
     aid = (account_id,)
     return {
-        "Ждут сборки": _count(
+        "Ждут сборки": db.count(
             "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'STARTED'", aid),
-        "Ждут отгрузки": _count(
+        "Ждут отгрузки": db.count(
             "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND substatus = 'READY_TO_SHIP'", aid),
-        "Собрано": _count(
+        "Собрано": db.count(
             "SELECT COUNT(*) AS c FROM yandex_orders WHERE account_id = ? AND local_state = 'packed'", aid),
-        "Позиций в заказах": _count("SELECT COUNT(*) AS c FROM yandex_order_items WHERE account_id = ?", aid),
+        "Позиций в заказах": db.count("SELECT COUNT(*) AS c FROM yandex_order_items WHERE account_id = ?", aid),
     }

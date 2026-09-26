@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import jinja2
 from fastapi import HTTPException, Request
+from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
 from . import access
@@ -106,6 +107,21 @@ def safe_filename(raw: object, default: str = "label.pdf") -> str:
     if not name or not name.strip("._"):
         return default
     return name
+
+
+def pdf_response(pdf: bytes, filename: str) -> Response:
+    """PDF площадки на печать: как есть, без кеша, с размером листа.
+
+    По заголовку X-Page-Size браузер выбирает принтер документа (см. «Принтеры»).
+    """
+    from . import printers
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
+                 "Cache-Control": "no-store", **printers.size_header(pdf)},
+    )
 
 
 def local_dt(value: str | None, fmt: str = "%d.%m %H:%M") -> str:

@@ -12,13 +12,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse
 
 from ..core import board as core_board
-from ..core import printers as core_printers
 from ..core import store as core_store
 from ..core import sync as core_sync
-from ..core.deps import check_csrf, require_manager, require_section, safe_filename, templates
+from ..core.deps import check_csrf, pdf_response, require_manager, require_section, templates
 from ..markets.base import MarketError
 
 router = APIRouter()
@@ -129,27 +128,16 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейки: {exc.message}") from exc
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store",
-                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
-                 **core_printers.size_header(pdf)},
-    )
+    return pdf_response(pdf, filename)
 
 
 @router.post("/api/orders/sync")
 def api_sync(request: Request, user: dict = Depends(require_section("orders"))):  # noqa: ARG001 - доступ
     """«Обновить заказы» — все кабинеты под фильтром."""
     check_csrf(request)
-    where = core_board.shops(core_board.filter_of(request.query_params.get("shop")))
-    if not where:
-        raise HTTPException(status_code=400, detail="Нет ни одного кабинета с ключами")
-    done, failed = core_sync.sync_many(where)
-    if not done:
-        raise HTTPException(status_code=502, detail="; ".join(failed))
-    message = f"Обновлено кабинетов: {len(done)}"
-    if failed:
-        message += f". Не ответили: {', '.join(name.split(':')[0] for name in failed)}"
-    return {"status": "ok", "message": message, "updated": done, "failed": failed}
+    try:
+        return core_sync.refresh(core_board.shops(core_board.filter_of(request.query_params.get("shop"))))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

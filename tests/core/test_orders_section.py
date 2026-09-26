@@ -91,7 +91,7 @@ def test_all_cabinets_in_one_list(client, cabinets):
     # Чипы — на каждый кабинет, и «Все заказы» активен.
     assert re.search(r'class="chip active"[^>]*>\s*Все заказы', page)
     for account in cabinets.values():
-        assert f"/orders?shop={account['id']}&status=packaging" in page
+        assert f"/orders?shop={account['id']}&amp;status=packaging" in page
 
 
 def test_cabinet_filter_narrows_the_list(client, cabinets):

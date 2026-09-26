@@ -9,13 +9,15 @@
 а сначала то, что горит. На этот же порядок опирается сборка, когда один и тот
 же товар нужен в нескольких кабинетах: берётся первый по списку.
 
-Список собирается из объявлений площадок: каждая отдаёт свои заказы уже
-приведёнными к общему виду (Market.orders_feed), а здесь они только
-складываются в одну стопку и сортируются. Площадок по именам тут нет.
+Список собирается из того же объявления, что и раздел «Заказы»
+(OrdersBoard): статус склада, срок, номер и товары строкой — одним запросом
+на площадку. Поэтому «в работе» здесь и «Ожидает сборки / отгрузки» в
+«Заказах» — одно и то же, а собранный — «Собран» в обоих местах. Площадок по
+именам тут нет.
 """
 from __future__ import annotations
 
-from . import accounts
+from . import db
 from .store import local_time, urgency
 
 # Порядок срочности: сначала то, что уже просрочено, потом то, что горит.
@@ -62,13 +64,6 @@ def row(account_id: int, number, *, goods: str | None, quantity, deadline: str |
     }
 
 
-def _registry():
-    """Реестр площадок — лениво: ядро не тянет их при загрузке."""
-    from ..markets import registry
-
-    return registry
-
-
 def everywhere(limit: int = 300) -> list[dict]:
     """Заказы всех включённых кабинетов — одной очередью, срочное сверху.
 
@@ -79,21 +74,28 @@ def everywhere(limit: int = 300) -> list[dict]:
     список на «мою работу» и «чужую» больше не по чему. Заодно это и делает
     осмысленным правило «одинаковый товар — берём первый по списку».
     """
-    active = accounts.all_accounts(active_only=True)
-    by_id = {account["id"]: account for account in active}
+    from . import board
 
+    live = board.shops()
+    names = {account["id"]: account["title"] for account in live}
     rows: list[dict] = []
-    for market in _registry().all_markets():
-        if not market.orders_feed:
-            continue
-        ids = [account["id"] for account in active if account["marketplace"] == market.code]
-        if not ids:
-            continue
-        for row in market.orders_feed(ids, limit=limit):
-            account = by_id.get(row["account_id"]) or {}
+    for market, declared, ids in board.groups(live):
+        deadline = declared.deadline_sql
+        found = db.query(
+            f"SELECT o.account_id AS account_id, {declared.number_sql} AS number, "
+            f"{deadline} AS deadline, o.items_count AS quantity, {declared.status_sql} AS board, "
+            f"{declared.goods_sql} "
+            f"FROM {declared.table} o WHERE o.account_id IN ({marks(ids)}) "
+            f"AND ({declared.status_sql}) IS NOT NULL "
+            f"ORDER BY ({deadline}) IS NULL, {deadline} LIMIT ?",
+            [*ids, limit],
+        )
+        for item in found:
             rows.append({
-                **row,
-                "shop": account.get("title") or "—",
+                **row(item["account_id"], item["number"], goods=item["goods"], quantity=item["quantity"],
+                      deadline=item["deadline"], status_label=board.STATUS_TITLES[item["board"]],
+                      in_work=item["board"] != "packed"),
+                "shop": names.get(item["account_id"]) or "—",
                 "market": market.code,
                 "market_title": market.title,
             })

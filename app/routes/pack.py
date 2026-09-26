@@ -27,10 +27,10 @@ from ..core import db
 from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import packing as core_packing
-from ..core import printers as core_printers
+from ..core import shops as core_shops
 from ..core import store as core_store
 from ..core import sync as core_sync
-from ..core.deps import check_csrf, require_section, safe_filename, templates
+from ..core.deps import check_csrf, pdf_response, require_section, safe_filename, templates
 from ..markets.base import MarketError
 
 router = APIRouter()
@@ -57,38 +57,14 @@ def _picked(request: Request) -> str:
 def shops_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
     """Чипы фильтра: кабинет, сколько у него заказов и куда ведёт выбор.
 
-    Чип на каждый кабинет, заведённый в панель, — в том же порядке, что в
-    «Настройках». Кабинет без ключей не показываем: собирать в нём нечего.
-    Цветная точка — площадка кабинета, чтобы два «Магазина» разных площадок не
-    путались.
-
     Считаем по тому же списку, что показан на странице, — иначе число на чипе
     и число строк под ним разойдутся, и это первое, что заметят.
-
-    Ссылка остаётся на текущем адресе: кабинет в шапке фильтр не переключает,
-    он только сужает — и список, и наклейки, и сборку.
     """
     counts: dict[int, int] = {}
     for order in orders:
         counts[order["account_id"]] = counts.get(order["account_id"], 0) + 1
-    chips = [{
-        "id": ALL, "title": "Все заказы", "market": None, "market_title": "",
-        "count": len(orders), "href": f"{path}?shop={ALL}", "active": picked == ALL,
-    }]
-    for shop in core_packing.shops(ALL):
-        market = _registry().get(shop["marketplace"])
-        if market is None or market.workspace is None:
-            continue
-        chips.append({
-            "id": str(shop["id"]),
-            "title": shop["title"],
-            "market": market.code,
-            "market_title": market.title,
-            "count": counts.get(shop["id"], 0),
-            "href": f"{path}?shop={shop['id']}",
-            "active": picked == str(shop["id"]),
-        })
-    return chips
+    return core_shops.chips(core_packing.shops(ALL), picked, counts,
+                            lambda value: f"{path}?shop={value}", all_title="Все заказы")
 
 
 def _words(picked: str, where: list[dict]) -> tuple[str, str]:
@@ -198,16 +174,12 @@ def api_complete(request: Request, payload: dict = Body(default={}),
 def api_sync(request: Request, user: dict = Depends(require_section("pack"))):
     """«Обновить заказы» — все кабинеты под фильтром, как и всё остальное здесь."""
     check_csrf(request)
-    where = core_packing.shops(_picked(request))
-    if not where:
-        raise HTTPException(status_code=400, detail="Нет ни одного кабинета с ключами")
-    done, failed = core_sync.sync_many(where)
-    if not done:
-        raise HTTPException(status_code=502, detail="; ".join(failed))
-    message = f"Обновлено кабинетов: {len(done)}"
-    if failed:
-        message += f". Не ответили: {', '.join(name.split(':')[0] for name in failed)}"
-    return {"status": "ok", "message": message, "updated": done, "failed": failed}
+    try:
+        return core_sync.refresh(core_packing.shops(_picked(request)))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 # ------------------------------------------------------------------ состояние
@@ -249,14 +221,7 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейку: {exc.message}") from exc
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store",
-                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
-                 **core_printers.size_header(pdf)},
-    )
+    return pdf_response(pdf, filename)
 
 
 @router.post("/api/pack/labels.zip")

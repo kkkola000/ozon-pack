@@ -102,7 +102,9 @@ def test_packed_orders_stay_but_leave_the_work(cabinets):
     """Собранный заказ из списка не исчезает, но «в работе» больше не считается."""
     account = cabinets["first"]
     number = db.query_one(
-        "SELECT posting_number FROM postings WHERE account_id = ? AND local_state != 'packed' LIMIT 1",
+        # Собирают в панели отправление «Ожидает отгрузки» — его и помечаем.
+        "SELECT posting_number FROM postings WHERE account_id = ? AND local_state != 'packed' "
+        "AND status = 'awaiting_deliver' LIMIT 1",
         (account["id"],),
     )["posting_number"]
     db.execute(
@@ -111,11 +113,15 @@ def test_packed_orders_stay_but_leave_the_work(cabinets):
     )
     row = next(row for row in orders.everywhere() if row["number"] == number)
     assert row["in_work"] is False
-    assert row["status_label"] == "Собрано"
+    assert row["status_label"] == "Собран"
 
 
 def test_avito_return_is_not_work_for_the_packer(cabinets):
-    """Возврат Avito виден в списке, но собирать его не нужно — у него свой раздел."""
+    """Возврат Avito — не заказ: в списке «Сборки» его нет, он в разделе «Возвраты».
+
+    Список строится из тех же статусов склада, что и «Заказы», а возврат ни в
+    один из них не входит.
+    """
     account = cabinets["avito"]
     order = db.query_one(
         "SELECT id, marketplace_id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
@@ -123,12 +129,8 @@ def test_avito_return_is_not_work_for_the_packer(cabinets):
     )
     if not order:
         pytest.skip("в подделке Avito нет возвратов")
-    row = next(
-        row for row in orders.everywhere()
-        if row["number"] == (order["marketplace_id"] or order["id"])
-    )
-    assert row["in_work"] is False
-    assert row["status_label"] == "На возврате"
+    numbers = {row["number"] for row in orders.everywhere()}
+    assert (order["marketplace_id"] or order["id"]) not in numbers
 
 
 def test_the_list_has_every_cabinet(client, cabinets):

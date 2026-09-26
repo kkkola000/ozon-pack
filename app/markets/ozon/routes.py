@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
+from ...core import orders as core_orders
 from ...core import board as core_board
 from ...core import db
 from ...core.deps import check_csrf, require_manager
@@ -94,6 +95,8 @@ ORDERS = OrdersBoard(
     status_sql=store.BOARD_STATUS_SQL,
     deadline_sql="o.shipment_date",
     search_sql=store.BOARD_SEARCH_SQL,
+    number_sql="o.posting_number",
+    goods_sql=core_orders.goods_column("posting_items", on="i.posting_number = o.posting_number"),
     card=store.board_card,
     label="Стикер",
     printed="Стикер печатался",
@@ -131,20 +134,17 @@ WORKSPACE = Workspace(
     complete=packing.complete_active,
 )
 
-def _count(sql: str, params: tuple) -> int:
-    row = db.query_one(sql, params)
-    return row["c"] if row else 0
 
 
 def settings_stats(account_id: int) -> dict[str, int]:
     """Плитки кабинета в «Настройках»."""
     aid = (account_id,)
     return {
-        "Отправлений": _count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", aid),
-        "Собрано": _count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed'", aid),
-        "Товаров": _count("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid),
-        "Штрихкодов": _count("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid),
-        "Возвратов": _count("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid),
+        "Отправлений": db.count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ?", aid),
+        "Собрано": db.count("SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND local_state = 'packed'", aid),
+        "Товаров": db.count("SELECT COUNT(*) AS c FROM products WHERE account_id = ?", aid),
+        "Штрихкодов": db.count("SELECT COUNT(*) AS c FROM product_barcodes WHERE account_id = ?", aid),
+        "Возвратов": db.count("SELECT COUNT(*) AS c FROM returns WHERE account_id = ?", aid),
     }
 
 

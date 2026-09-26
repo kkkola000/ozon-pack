@@ -8,7 +8,6 @@ import json
 import sqlite3
 
 from ...core import db
-from ...core import orders as core_orders
 from ...core.store import (_dt, _raw_json, _text, claim_is_active,
                            hours_left, local_time, urgency as urgency_of)
 
@@ -340,40 +339,3 @@ def board_card(row) -> dict:
         "label": board != "packaging",
         "actions": ["ship"] if board == "packaging" else [],
     }
-
-
-# ------------------------------------------------ общий список на рабочем месте
-# Список показывает заказы всех кабинетов сразу, поэтому строки приводятся к
-# одному виду: сборщику всё равно, отправление это Ozon или заказ Avito, ему
-# важно — чей магазин, что собирать и когда истекает срок.
-FEED_SQL = """
-SELECT o.account_id, o.posting_number, o.status, o.local_state, o.shipment_date, o.items_count,
-       {goods}
-  FROM postings o
- WHERE o.account_id IN ({marks}) AND o.status IN (?, ?)
- ORDER BY (o.shipment_date IS NULL), o.shipment_date
- LIMIT ?
-"""
-
-
-def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
-    """Отправления кабинетов для общего списка: в работе и уже собранные."""
-    if not account_ids:
-        return []
-    rows = db.query(
-        FEED_SQL.format(
-            goods=core_orders.goods_column("posting_items", on="i.posting_number = o.posting_number"),
-            marks=core_orders.marks(account_ids),
-        ),
-        list(account_ids) + [STATUS_AWAITING_PACKAGING, STATUS_AWAITING_DELIVER, limit],
-    )
-    return [
-        core_orders.row(
-            row["account_id"], row["posting_number"],
-            goods=row["goods"], quantity=row["items_count"], deadline=row["shipment_date"],
-            status_label=("Собрано" if (row["local_state"] or "new") == "packed"
-                          else STATUS_LABELS.get(row["status"] or "", row["status"] or "")),
-            in_work=(row["local_state"] or "new") != "packed",
-        )
-        for row in rows
-    ]

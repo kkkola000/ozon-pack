@@ -8,7 +8,6 @@ import json
 import sqlite3
 
 from ...core import db
-from ...core import orders as core_orders
 from ...core.store import (_dt, _num, _raw_json, _text, _with_mark, hours_left, local_time,
                            urgency as urgency_of)
 
@@ -300,47 +299,3 @@ def board_card(row) -> dict:
         "label": board != "packaging",
         "actions": actions,
     }
-
-
-# ------------------------------------------------ общий список на рабочем месте
-# Те же колонки, что у других площадок: список на «Сборке» показывает заказы
-# всех кабинетов рядом и о площадках ничего не знает.
-FEED_SQL = """
-SELECT o.account_id, o.id, o.marketplace_id, o.status, o.local_state, o.confirm_till, o.ship_till,
-       o.items_count,
-       {goods}
-  FROM avito_orders o
- WHERE o.account_id IN ({marks}) AND o.status IN (?, ?, ?)
- ORDER BY (COALESCE(o.confirm_till, o.ship_till) IS NULL), COALESCE(o.confirm_till, o.ship_till)
- LIMIT ?
-"""
-
-
-def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
-    """Заказы кабинетов Avito для общего списка, вместе с возвратами."""
-    if not account_ids:
-        return []
-    from .client import (STATUS_LABELS, STATUS_ON_CONFIRMATION, STATUS_ON_RETURN,
-                         STATUS_READY_TO_SHIP)
-
-    rows = db.query(
-        FEED_SQL.format(
-            goods=core_orders.goods_column("avito_order_items", on="i.order_id = o.id", name="title"),
-            marks=core_orders.marks(account_ids),
-        ),
-        list(account_ids) + [STATUS_ON_CONFIRMATION, STATUS_READY_TO_SHIP, STATUS_ON_RETURN, limit],
-    )
-    feed = []
-    for row in rows:
-        status = row["status"] or ""
-        packed = (row["local_state"] or "new") == "packed"
-        # Срок берём тот, который сейчас поджимает, — как на странице заказов.
-        deadline = row["confirm_till"] if status == STATUS_ON_CONFIRMATION else row["ship_till"]
-        feed.append(core_orders.row(
-            row["account_id"], row["marketplace_id"] or row["id"],
-            goods=row["goods"], quantity=row["items_count"], deadline=deadline,
-            status_label="Собран" if packed else STATUS_LABELS.get(status, status),
-            # Возврат в работу сборщика по заказам не входит: он в своём разделе.
-            in_work=not packed and status != STATUS_ON_RETURN,
-        ))
-    return feed

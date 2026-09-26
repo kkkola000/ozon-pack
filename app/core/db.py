@@ -297,6 +297,12 @@ def query_one(sql: str, params: Iterable[Any] = ()) -> sqlite3.Row | None:
     return connect().execute(sql, tuple(params)).fetchone()
 
 
+def count(sql: str, params: Iterable[Any] = ()) -> int:
+    """Первое число первой строки — для SELECT COUNT(*). Нет строки — ноль."""
+    row = query_one(sql, params)
+    return int(row[0] or 0) if row else 0
+
+
 def execute(sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
     with write() as conn:
         return conn.execute(sql, tuple(params))

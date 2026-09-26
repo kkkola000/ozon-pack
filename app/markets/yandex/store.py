@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ...core import db
-from ...core import orders as core_orders
 from ...core.catalog import offer_barcodes
 from ...core.store import (_dt, _num, _text, claim_is_active, hours_left, local_time,
                            urgency as urgency_of)
@@ -281,40 +280,3 @@ def board_card(row) -> dict:
         "label": True,
         "actions": [],
     }
-
-
-# ------------------------------------------------ общий список на рабочем месте
-FEED_SQL = """
-SELECT o.account_id, o.id, o.substatus, o.local_state, o.shipment_date, o.items_count,
-       {goods}
-  FROM yandex_orders o
- WHERE o.account_id IN ({marks}) AND o.substatus IN (?, ?)
- ORDER BY (o.shipment_date IS NULL), o.shipment_date
- LIMIT ?
-"""
-
-
-def orders_feed(account_ids: list[int], limit: int = 300) -> list[dict]:
-    """Заказы кабинетов Маркета для общего списка на «Сборке»."""
-    if not account_ids:
-        return []
-    from .client import SUBSTATUS_LABELS, SUBSTATUS_READY_TO_SHIP, SUBSTATUS_STARTED
-
-    rows = db.query(
-        FEED_SQL.format(
-            goods=core_orders.goods_column("yandex_order_items", on="i.order_id = o.id"),
-            marks=core_orders.marks(account_ids),
-        ),
-        list(account_ids) + [SUBSTATUS_STARTED, SUBSTATUS_READY_TO_SHIP, limit],
-    )
-    feed = []
-    for row in rows:
-        substatus = row["substatus"] or ""
-        packed = (row["local_state"] or "new") == "packed"
-        feed.append(core_orders.row(
-            row["account_id"], row["id"],
-            goods=row["goods"], quantity=row["items_count"], deadline=row["shipment_date"],
-            status_label="Собран" if packed else SUBSTATUS_LABELS.get(substatus, substatus),
-            in_work=not packed,
-        ))
-    return feed
