@@ -7,18 +7,18 @@
   <p class="muted small">
     Кабинет — это магазин на площадке со своими ключами. Заказы, товары и штрихкоды
     у кабинетов не пересекаются, поэтому товар одного магазина невозможно положить
-    в отправление другого. Переключаются кабинеты списком в шапке панели.
+    в отправление другого. Разделы панели показывают все кабинеты сразу, а сузить
+    до одного можно фильтром кабинетов на самой странице.
   </p>
 
   <div class="cabinets">
     {% for cab in cabinets %}
-      <div class="cabinet-card {{ 'current' if account and cab.id == account.id }} {{ '' if cab.active else 'off' }}"
+      <div class="cabinet-card {{ '' if cab.active else 'off' }}"
            data-account="{{ cab.id }}">
         <div class="head">
           <b>{{ cab.title }}</b>
           <span class="tag">{{ cab.marketplace_title }}</span>
           {% if cab.status.configured %}<span class="badge ok">Подключён</span>{% else %}<span class="badge warn">Нет ключей</span>{% endif %}
-          {% if account and cab.id == account.id %}<span class="tag success">текущий</span>{% endif %}
           {% if not cab.active %}<span class="tag">выключен</span>{% endif %}
           <span class="grow"></span>
           <button class="btn small" data-cab-test="{{ cab.id }}">Проверить связь</button>
@@ -47,6 +47,11 @@
           </div>
         </div>
         <div class="muted small">{{ marketplaces[cab.marketplace].hint }}</div>
+        {% if cab.stats %}
+        <div class="row small" style="gap:18px;margin-top:8px">
+          {% for key, value in cab.stats.items() %}<span class="muted">{{ key }}: <b style="color:var(--text)">{{ value }}</b></span>{% endfor %}
+        </div>
+        {% endif %}
       </div>
     {% endfor %}
   </div>
@@ -85,10 +90,10 @@
       <div class="muted">Меняется в файле .env, затем перезапуск службы.</div>
     </dd>
     {# Своё у площадки — её же кусок: ядро тут по именам площадок не решает. #}
-    {% if settings_rows %}{% include settings_rows %}{% endif %}
+    {% for part in settings_rows %}{% include part %}{% endfor %}
   </dl>
 
-  {% if settings_panel %}{% include settings_panel %}{% endif %}
+  {% for part in settings_panel %}{% include part %}{% endfor %}
 
   <h2 style="margin-top:18px">Отчёт об отгрузке</h2>
   <p class="muted small" style="margin-top:0">

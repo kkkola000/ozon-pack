@@ -4,8 +4,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from ..core import access, accounts, db, report, security, sync
-from ..core.deps import check_csrf, current_account, require_manager, require_section, templates
+from urllib.parse import urlencode
+
+from ..core import access, accounts, db, report, security, shops, sync
+from ..core.deps import check_csrf, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
 
@@ -82,6 +84,7 @@ def logs_page(
     kind: str = "",
     level: str = "",
     posting: str = "",
+    shop: str = shops.ALL,
     limit: int = 300,
     user: dict = Depends(require_section("logs")),
 ):
@@ -91,9 +94,13 @@ def logs_page(
     логинами и действия всех сотрудников: сборщику для разбора пересорта это
     не нужно, а как список учётных записей вполне пригодно.
     """
-    account = current_account(request)
-    # Журнал показываем по текущему кабинету; общие события (вход, польз.) — всегда.
-    conditions, params = ["(account_id IS NULL OR account_id = ?)"], [account["id"] if account else 0]
+    # Фильтр кабинетов, как в остальных разделах: «Все» — вся лента; выбран
+    # кабинет — его события и общие (вход, пользователи, настройки).
+    everyone = accounts.all_accounts()
+    picked = shops.picked_of(shop, everyone)
+    conditions, params = ["1 = 1"], []
+    if picked != shops.ALL:
+        conditions, params = ["(account_id IS NULL OR account_id = ?)"], [int(picked)]
     if kind:
         conditions.append("kind = ?")
         params.append(kind)
@@ -113,7 +120,11 @@ def logs_page(
             "request": request,
             "user": user,
             "events": [dict(e) for e in events],
-            "account": account,
+            "shop_chips": shops.chips(everyone, picked, None, lambda value: "/logs?" + urlencode(
+                {key: val for key, val in (("shop", value), ("kind", kind), ("level", level),
+                                           ("posting", posting)) if val})),
+            "picked": picked,
+            "shop_titles": {account["id"]: account["title"] for account in everyone},
             "labels": EVENT_LABELS,
             "kinds": kinds,
             "kind": kind,
@@ -135,15 +146,21 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
         # Владельца администратор не трогает — кнопки ему показывать незачем.
         item["editable"] = access.may_manage(user, item)
         users.append(item)
-    account = current_account(request)
-    # Плитки текущего кабинета — какие именно, знает его площадка.
-    market = registry.get(account["marketplace"]) if account else None
-    stats = dict(market.stats(account["id"])) if market else {}
-    stats["Событий"] = db.query_one("SELECT COUNT(*) AS c FROM events")["c"]
-    cabinets = [
-        {**item, **{"status": accounts.status(item)}}
-        for item in accounts.all_accounts()
-    ]
+    # Плитки — у каждого кабинета в его карточке: какие именно, знает площадка.
+    cabinets = []
+    for item in accounts.all_accounts():
+        market = registry.get(item["marketplace"])
+        cabinets.append({**item, "status": accounts.status(item),
+                         "stats": dict(market.stats(item["id"])) if market else {}})
+    stats = {"Событий": db.query_one("SELECT COUNT(*) AS c FROM events")["c"]}
+    # Свои настройки площадки (у Ozon — статусы возвратов) — если у панели есть
+    # хоть один её кабинет. Они общие на все кабинеты площадки.
+    present = [market for market in registry.all_markets()
+               if any(item["marketplace"] == market.code for item in cabinets)]
+    extra: dict = {}
+    for market in present:
+        if market.settings_context:
+            extra.update(market.settings_context(None))
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -152,10 +169,8 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "user": user,
             "users": users,
             "stats": stats,
-            "account": account,
             "cabinets": cabinets,
             "marketplaces": registry.MARKETS,
-            "ozon": accounts.status(account),
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
             "roles": [r for r in access.ROLES if access.may_set_role(user, r[0])],
@@ -165,9 +180,9 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "is_owner": access.is_owner(user),
             # Что ещё показать в настройках — знает площадка (у Ozon: статусы возвратов).
             # Её значения и её же куски страницы; у кого их нет, у того раздел пуст.
-            **(market.settings_context(account) if market and market.settings_context else {}),
-            "settings_rows": market.settings_rows if market else None,
-            "settings_panel": market.settings_panel if market else None,
+            **extra,
+            "settings_rows": [market.settings_rows for market in present if market.settings_rows],
+            "settings_panel": [market.settings_panel for market in present if market.settings_panel],
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",

@@ -316,6 +316,7 @@ def test_returns_section_is_closed_for_the_market(client, market):
     Отказ должен быть понятным: это не поломка, а «у этой площадки такого нет».
     """
     assert not any(item.tab == "returns" for item in yandex_market.MARKET.nav(market))
-    response = client.get("/returns")
-    assert response.status_code == 409
-    assert "Яндекс Маркет" in response.text
+    # В фильтре «Возвратов» кабинета Маркета нет, а его адрес — это «Все кабинеты».
+    response = client.get(f"/returns?shop={market['id']}")
+    assert response.status_code == 200
+    assert f'href="/returns?shop={market["id"]}"' not in response.text

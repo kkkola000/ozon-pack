@@ -518,14 +518,14 @@ def test_all_cabinets_sheet_covers_every_cabinet(client, many_cabinets):
 
 
 def test_single_cabinet_sheet_stays_as_before(client, many_cabinets):
-    """Обычный лист по-прежнему только про текущий кабинет."""
+    """Лист по выбранному кабинету — только про него."""
     from app.core import accounts
 
     login(client)
     second_ids = _ready_ids(many_cabinets["second"]["id"])
     first_ids = _ready_ids(accounts.default_account()["id"])
 
-    page = client.get("/returns/print")
+    page = client.get(f"/returns/print?shop={accounts.default_account()['id']}")
     assert page.status_code == 200
     assert "все кабинеты" not in page.text
     for return_id in first_ids:
@@ -582,12 +582,19 @@ def test_sheet_works_from_avito_cabinet(client, many_cabinets):
     assert client.get("/returns/print?scope=all").status_code == 200
 
 
-def test_returns_page_offers_all_cabinets_button(client, many_cabinets):
+def test_returns_print_follows_the_cabinet_filter(client, many_cabinets):
+    """«Все кабинеты» — лист сразу по всем; выбран кабинет — лист по нему."""
     login(client)
     page = client.get("/returns")
     assert page.status_code == 200
     assert "/returns/print?scope=all" in page.text
-    assert "Печать по всем кабинетам" in page.text
+    # Блок на каждый кабинет с возвратами — с его названием.
+    for title in ("Ozon", "Второй Ozon", "Кабинет Avito"):
+        assert re.search(rf'class="returns-shop">\s*<i class="dot [a-z]+"></i>{title}\s', page.text), title
+    second = many_cabinets["second"]["id"]
+    one = client.get(f"/returns?shop={second}").text
+    assert f"/returns/print?shop={second}" in one
+    assert "/returns/print?scope=all" not in one
 
 
 def test_all_cabinets_sheet_warns_when_it_does_not_fit(client, many_cabinets, monkeypatch):

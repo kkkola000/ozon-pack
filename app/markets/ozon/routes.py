@@ -201,9 +201,23 @@ def settings_stats(account_id: int) -> dict[str, int]:
     }
 
 
+def _resync_returns() -> dict:
+    """Перечитать возвраты всех кабинетов Ozon: настройка статусов общая на панель."""
+    from ...core import shops
+
+    total, errors = 0, []
+    for account in shops.live(lambda market: market.code == "ozon"):
+        try:
+            total += int(returns.sync_returns(account).get("returns", 0))
+        except Exception as exc:  # noqa: BLE001 - отказ одного кабинета не отменяет остальных
+            errors.append(f"{account['title']}: {exc}")
+    if errors and not total:
+        raise RuntimeError("; ".join(errors))
+    return {"returns": total, "errors": errors}
+
+
 @router.post("/api/returns/statuses")
-def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                         account: dict = Depends(require_market("ozon"))):
+def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     """Какие статусы возвратов панель загружает и показывает как доступные."""
     check_csrf(request)
     raw = payload.get("statuses") or []
@@ -214,7 +228,7 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
 
     returns.set_returns_statuses(statuses, user=admin)
     try:
-        result = returns.sync_returns(account)
+        result = _resync_returns()
     except Exception as exc:  # noqa: BLE001 - причину показываем оператору
         raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
     names = ", ".join(returns.status_label(code) for code in statuses)
@@ -226,8 +240,7 @@ def api_returns_statuses(request: Request, payload: dict = Body(...), admin: dic
 
 
 @router.post("/api/returns/received-statuses")
-def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager),
-                          account: dict = Depends(require_market("ozon"))):
+def api_received_statuses(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
     """В каких статусах возврат считается полученным — из них собирается акт.
 
     Пустой список разрешён: это «акты не вести». Отказывать здесь, как в списке
@@ -253,7 +266,7 @@ def api_received_statuses(request: Request, payload: dict = Body(...), admin: di
 
     returns.set_received_statuses(statuses, user=admin)
     try:
-        result = returns.sync_returns(account)
+        result = _resync_returns()
     except Exception as exc:  # noqa: BLE001 - причину показываем оператору
         raise HTTPException(status_code=502, detail=f"Статусы сохранены, но обновить возвраты не удалось: {exc}") from exc
     if not statuses:

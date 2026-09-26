@@ -441,6 +441,7 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .filter-line + .filter-line { margin-top: 12px; }
 .status-tabs { margin: 0; }
 .order-items .thumb { float: left; margin: 0 10px 4px 0; }
+.returns-shop { display: flex; align-items: center; gap: 10px; margin: 22px 0 0; font-size: 16px; }
 .row-actions { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .row-actions .btn { white-space: nowrap; }
 

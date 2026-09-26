@@ -4,6 +4,10 @@
 «принят / не принят», акты за день. Откуда берутся строки и как они выглядят,
 знает площадка — она объявляет ReturnsSource, а здесь по именам площадок
 ничего не решается.
+
+Кабинета в шапке нет: сверху фильтр кабинетов (core/shops.py). Выбран
+кабинет — его список со своими фильтрами площадки. «Все кабинеты» — блок на
+каждый кабинет, а лист печати и акты — сразу по всем.
 """
 from __future__ import annotations
 
@@ -12,10 +16,10 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ..core import accounts, db, return_acts, returns_pdf, store
-from ..core import sync as core_sync
-from ..core.deps import (check_csrf, current_account, require_account, require_owner, require_section,
-                         templates)
+from markupsafe import Markup
+
+from ..core import accounts, db, return_acts, returns_pdf, shops, store
+from ..core.deps import check_csrf, require_owner, require_section, templates
 from ..markets.base import MarketError
 
 router = APIRouter()
@@ -30,14 +34,25 @@ def _registry():
     return registry
 
 
-def require_returns(request: Request) -> dict:
-    """Кабинет площадки, у которой в панели есть возвраты."""
-    account = require_account(request)
-    market = _registry().get(account["marketplace"])
-    if market is None or market.returns is None:
-        title = market.title if market else account["marketplace"]
-        raise HTTPException(status_code=409, detail=f"У площадки «{title}» раздела возвратов в панели нет")
-    return account
+def returns_shops() -> list[dict]:
+    """Кабинеты, чья площадка отдаёт возвраты в панель, — в порядке «Настроек»."""
+    return shops.live(lambda market: market.returns is not None)
+
+
+def _where(value) -> tuple[str, list[dict], list[dict]]:
+    """(выбор фильтра, кабинеты под ним, все кабинеты с возвратами)."""
+    everyone = returns_shops()
+    picked = shops.picked_of(value, everyone)
+    return picked, shops.narrow(everyone, picked), everyone
+
+
+def _one(value) -> dict:
+    """Один кабинет с возвратами — для действий, которым нужен ровно один."""
+    everyone = returns_shops()
+    found = next((account for account in everyone if str(account["id"]) == str(value or "")), None)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Кабинет с возвратами не найден или выключен")
+    return found
 
 
 def _source(account: dict):
@@ -83,31 +98,69 @@ def ready_everywhere() -> int:
     return total
 
 
+def _link(shop: str, tab: str = "ready") -> str:
+    return f"/returns?shop={shop}" + ("&tab=acts" if tab == "acts" else "")
+
+
+def _block(account: dict, params: dict, *, filters: bool) -> dict:
+    """Список «К выдаче» одного кабинета — кусок площадки, отрисованный её шаблоном."""
+    source = _source(account)
+    page = source.page(account, params)
+    html = templates.get_template(source.list_template).render(
+        {**page, "picked": str(account["id"]), "filters": filters}
+    )
+    market = _registry().get(account["marketplace"])
+    return {"account": account, "market": market, "page": page, "html": Markup(html),
+            "ready": source.count_ready([account["id"]])}
+
+
 @router.get("/returns", response_class=HTMLResponse)
 def returns_page(
     request: Request,
     tab: str = "ready",
+    shop: str = shops.ALL,
     user: dict = Depends(require_section("returns")),
-    account: dict = Depends(require_returns),
 ):
-    source = _source(account)
-    params = {key: value for key, value in request.query_params.items() if key != "tab"}
-    page = source.page(account, params)
+    """Возвраты под фильтром кабинетов.
+
+    Выбран кабинет — его список с фильтрами площадки (схема, пункт выдачи,
+    поиск). «Все кабинеты» — по блоку на кабинет, без фильтров: это обзор
+    перед поездкой, а лист печати тогда сразу общий.
+    """
+    picked, where, everyone = _where(shop)
+    tab = "acts" if tab == "acts" else "ready"
+    params = {key: value for key, value in request.query_params.items() if key not in ("tab", "shop")}
+    counts = {account["id"]: _source(account).count_ready([account["id"]]) for account in everyone}
+    blocks = []
+    if tab == "ready":
+        single = picked != shops.ALL
+        blocks = [_block(account, params if single else {}, filters=single) for account in where]
+    total = sum(counts.get(account["id"], 0) for account in where)
+    if picked != shops.ALL and blocks:
+        stats = blocks[0]["page"]["stats"]
+        items = len(blocks[0]["page"]["items"])
+    else:
+        stats = [("Готовы к выдаче", total)]
+        items = total
+    # Лист печати: у одного кабинета — с его фильтрами, у всех — общий.
+    query = {"shop": picked, **params} if picked != shops.ALL else {"scope": ALL_ACCOUNTS}
     return templates.TemplateResponse(
         request,
         "returns.html",
         {
             "request": request,
             "user": user,
-            "account": account,
-            **page,
-            "list_template": source.list_template,
-            "ready_total": source.count_ready([account["id"]]),
-            "query": params,
-            "sync": core_sync.status(),
-            "all_total": ready_everywhere(),
-            "tab": "acts" if tab == "acts" else "ready",
-            "acts": return_acts.pending([account["id"]]),
+            "shop_chips": shops.chips(everyone, picked, counts, lambda value: _link(value, tab)),
+            "picked": picked,
+            "where": where,
+            "blocks": blocks,
+            "stats": stats,
+            "items_count": items,
+            "ready_total": total,
+            "query": query,
+            "synced_at": _synced(where),
+            "tab": tab,
+            "acts": return_acts.pending([account["id"] for account in where]) if where else [],
             "today": store.local_day(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "returns",
@@ -115,24 +168,44 @@ def returns_page(
     )
 
 
+def _synced(where: list[dict]) -> str | None:
+    """«Обновлено» — самый старый из заходов на площадку по кабинетам под фильтром."""
+    from ..core import sync as core_sync
+
+    stamps = [core_sync.synced_at(account["id"]) for account in where]
+    if not stamps or any(stamp is None for stamp in stamps):
+        return None
+    return store.local_time(min(stamps))
+
+
 @router.post("/api/returns/sync")
 def api_returns_sync(request: Request, payload: dict = Body(default={}),
-                     user: dict = Depends(require_section("returns")),
-                     account: dict = Depends(require_returns)):
-    """Обновить возвраты кабинета — как именно, знает площадка."""
+                     user: dict = Depends(require_section("returns"))):  # noqa: ARG001 - доступ
+    """Обновить возвраты кабинетов под фильтром — как именно, знает площадка."""
     check_csrf(request)
+    _picked, where, _everyone = _where(payload.get("shop") or request.query_params.get("shop"))
+    if not where:
+        raise HTTPException(status_code=400, detail="Нет ни одного кабинета с возвратами")
     full = bool(payload.get("full"))
-    try:
-        result = _source(account).sync(account, full=full)
-    except Exception as exc:  # noqa: BLE001 - причину показываем оператору
-        raise HTTPException(status_code=502, detail=f"Не удалось обновить возвраты: {exc}") from exc
-    return {"status": "ok", "message": result.get("message") or "Возвраты обновлены", "result": result}
+    messages, failed = [], []
+    for account in where:
+        try:
+            result = _source(account).sync(account, full=full)
+        except Exception as exc:  # noqa: BLE001 - причину показываем оператору
+            failed.append(f"{account['title']}: {exc}")
+            continue
+        text = result.get("message") or "возвраты обновлены"
+        messages.append(text if len(where) == 1 else f"{account['title']}: {text}")
+    if not messages:
+        raise HTTPException(status_code=502, detail="Не удалось обновить возвраты: " + "; ".join(failed))
+    message = "; ".join(messages + [f"не ответил {name}" for name in failed])
+    return {"status": "warning" if failed else "ok", "message": message}
 
 
 @router.get("/api/returns/giveout.pdf")
-def api_giveout(user: dict = Depends(require_section("returns")),
-                account: dict = Depends(require_returns)):
+def api_giveout(shop: str = "", user: dict = Depends(require_section("returns"))):
     """Документ площадки на выдачу возвратов — у кого он есть (Ozon: штрихкод FBS)."""
+    account = _one(shop)
     source = _source(account)
     if not source.giveout:
         raise HTTPException(status_code=409, detail="У этой площадки документа на выдачу нет")
@@ -152,8 +225,7 @@ def api_giveout(user: dict = Depends(require_section("returns")),
 
 @router.post("/api/returns/acts/by-day")
 def api_act_by_day(request: Request, payload: dict = Body(...),
-                   user: dict = Depends(require_section("returns")),
-                   account: dict = Depends(require_returns)):
+                   user: dict = Depends(require_section("returns"))):
     """Составить акт из возвратов за указанное число. Кто работает с возвратами.
 
     Акт составляет человек: когда поездка закончилась, знает только он. За
@@ -167,22 +239,36 @@ def api_act_by_day(request: Request, payload: dict = Body(...),
 
     Число одно, а не промежуток: акт — это поездка в пункт выдачи, и смешивать
     в нём разные дни значило бы подтверждать одной подписью две работы.
+
+    Акт — всегда по одному кабинету: у каждого магазина своя подпись. Под
+    фильтром «Все кабинеты» кнопка составляет по акту на каждый кабинет, где
+    за это число есть полученные возвраты: из поездки везут всё сразу.
     """
     check_csrf(request)
-    source = _source(account)
-    if not source.received:
+    _picked, where, _everyone = _where(payload.get("shop"))
+    where = [account for account in where if _source(account).received]
+    if not where:
         raise HTTPException(status_code=409, detail="Площадка не ведёт полученные возвраты — акт составить не из чего")
     day = _valid_day(str(payload.get("day") or ""))
+    found = {account["id"]: _source(account).received(account["id"], day) for account in where}
     if bool(payload.get("dry_run")):
-        ids = source.received(account["id"], day)
+        total = sum(len(ids) for ids in found.values())
         return {
-            "status": "ok" if ids else "warning",
-            "found": len(ids),
+            "status": "ok" if total else "warning",
+            "found": total,
             "day": day,
-            "message": (f"В акт попадёт возвратов: {len(ids)}" if ids else
+            "message": (f"В акт попадёт возвратов: {total}" if total else
                         "За это число полученных возвратов без акта нет"),
         }
-    return return_acts.from_received(source, account["id"], day, user=user)
+    made = [return_acts.from_received(_source(account), account["id"], day, user=user)
+            for account in where if found[account["id"]]]
+    made = [result for result in made if result.get("act_id")]
+    if not made:
+        return {"status": "warning", "act_id": None, "message": "За это число полученных возвратов без акта нет"}
+    if len(made) == 1:
+        return made[0]
+    return {"status": "ok", "act_id": made[0]["act_id"], "acts": [result["act_id"] for result in made],
+            "message": f"Составлено актов: {len(made)} — по одному на кабинет"}
 
 
 def _valid_day(day: str) -> str:
@@ -312,8 +398,10 @@ def _collect_sheet(request: Request, user: dict, scope: str, *, kind: str) -> di
     текущего кабинета к нему не применяются: на таком листе нужно всё, что
     готово к выдаче, иначе сборщик уедет за частью возвратов.
     """
-    everywhere = scope == ALL_ACCOUNTS
-    params = {key: value for key, value in request.query_params.items() if key != "scope"}
+    params = {key: value for key, value in request.query_params.items() if key not in ("scope", "shop")}
+    # Без выбранного кабинета лист общий: «текущего кабинета» больше нет.
+    shop = request.query_params.get("shop") or ""
+    everywhere = scope == ALL_ACCOUNTS or shop in ("", shops.ALL)
 
     if everywhere:
         sections = _sections_everywhere()
@@ -328,7 +416,7 @@ def _collect_sheet(request: Request, user: dict, scope: str, *, kind: str) -> di
                     + ", ".join(f"{s['label']} {len(s['rows'])} {s['unit']}" for s in sections),
         )
     else:
-        account = require_returns(request)
+        account = _one(shop)
         market = _registry().require(account["marketplace"])
         source = market.returns
         rows = source.ready([account["id"]], params=params)
@@ -394,9 +482,6 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
     """
     check_csrf(request)
     code = str(payload.get("marketplace") or "").strip()
-    account = current_account(request)
-    if not code and account:
-        code = account["marketplace"]
     market = _registry().get(code)
     if market is None or market.returns is None:
         raise HTTPException(status_code=400, detail="Неизвестная площадка")
@@ -411,16 +496,23 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         raise HTTPException(status_code=400, detail="Неизвестная отметка")
     note = str(payload.get("note") or "").strip()[:2000]
 
-    # Отмечают возврат текущего кабинета: строка чужого кабинета не находится.
-    if not account or account["marketplace"] != code:
-        raise HTTPException(
-            status_code=409, detail=f"Этот раздел работает только с кабинетами площадки «{market.title}»"
-        )
-    row = db.query_one(
-        f"SELECT id, act_id FROM {table} WHERE account_id = ? AND id = ?", (account["id"], return_id)
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Возврат {return_id} не найден в этом кабинете")
+    # Кабинет строки называет запрос: в акте «Все кабинеты» рядом лежат
+    # возвраты разных магазинов. Не назван — ищем строку по всем кабинетам
+    # этой площадки; нашлась в двух — пусть назовут.
+    ids = [a["id"] for a in returns_shops() if a["marketplace"] == code]
+    wanted = payload.get("account_id")
+    if wanted:
+        ids = [account_id for account_id in ids if str(account_id) == str(wanted)]
+    rows = db.query(
+        f"SELECT account_id, id, act_id FROM {table} WHERE id = ? AND account_id IN ({','.join('?' for _ in ids)})",
+        (return_id, *ids),
+    ) if ids else []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Возврат {return_id} не найден")
+    if len(rows) > 1:
+        raise HTTPException(status_code=409, detail=f"Возврат {return_id} есть в нескольких кабинетах — укажите кабинет")
+    row = rows[0]
+    account = accounts.get(row["account_id"])
 
     # Пустая отметка без комментария — это «снять»: следов в строке остаться
     # не должно, иначе в списке будет висеть имя и время неизвестно чего.

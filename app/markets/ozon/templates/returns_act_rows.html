@@ -21,7 +21,7 @@
   {% if editable %}
   <td class="small" data-mark-cell>
     <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
-            data-mark-open data-marketplace="ozon" data-id="{{ r.id }}"
+            data-mark-open data-marketplace="ozon" data-id="{{ r.id }}" data-account="{{ r.account_id }}"
             data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
             data-subject="{{ r.id }} · {{ r.product_name or 'Без названия' }}"
             title="{{ r.note or '' }}">

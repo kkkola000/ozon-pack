@@ -24,7 +24,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ..core import accounts, catalog, db, product_links, product_sets
-from ..core.deps import (check_csrf, current_account, require_account, require_manager,
+from ..core.deps import (check_csrf, require_manager,
                          require_section, templates)
 
 router = APIRouter()
@@ -34,18 +34,6 @@ TABS = ("catalog", "sets", "match")
 # Вкладка сопоставления: что разбираем — новые совпадения, уже сведённое или
 # отвергнутое. Три списка на одной странице читались бы как свалка.
 VIEWS = ("new", "linked", "skipped")
-
-
-def require_catalog(request: Request) -> dict:
-    """Кабинет площадки, которая умеет наполнять каталог, — для обхода каталога."""
-    from ..markets import registry
-
-    account = require_account(request)
-    market = registry.get(account["marketplace"])
-    if market is None or market.catalog is None:
-        title = market.title if market else account["marketplace"]
-        raise HTTPException(status_code=409, detail=f"Площадка «{title}» каталог товаров не отдаёт")
-    return account
 
 
 def catalog_accounts() -> list[dict]:
@@ -173,8 +161,6 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
         {
             "request": request,
             "user": user,
-            # Раздел общий, но шапка страницы показывает текущий кабинет.
-            "account": current_account(request),
             "items": items,
             "sets": sets,
             "taken": taken,
@@ -271,7 +257,10 @@ def api_save_set(request: Request, payload: dict = Body(...),
                  admin: dict = Depends(require_manager)):
     """Создать набор или переписать его состав."""
     check_csrf(request)
-    account_id = int(payload.get("account_id") or 0) or require_account(request)["id"]
+    # Кабинет набора называет запрос: «текущего кабинета» в панели больше нет.
+    account_id = int(payload.get("account_id") or 0)
+    if not account_id:
+        raise HTTPException(status_code=400, detail="Не указан кабинет товара")
     try:
         saved = product_sets.save(
             account_id,

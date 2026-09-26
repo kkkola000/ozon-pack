@@ -4,6 +4,8 @@
    возвратов попадёт, панель считает сама при выборе даты и пишет прямо на
    кнопке: акт удалить нельзя, и вслепую его заводить не надо. */
 const byDay = document.getElementById('act-byday');
+/* Кабинет из фильтра страницы: «all» — все кабинеты с возвратами. */
+const returnsShop = document.getElementById('returns-panel')?.dataset.shop || 'all';
 
 if (byDay) {
   const dayField = document.getElementById('act-day');
@@ -11,7 +13,7 @@ if (byDay) {
   const result = document.getElementById('act-byday-result');
 
   function send(dryRun) {
-    return api('/api/returns/acts/by-day', { day: dayField.value, dry_run: dryRun });
+    return api('/api/returns/acts/by-day', { day: dayField.value, dry_run: dryRun, shop: returnsShop });
   }
 
   /* Сколько попадёт в акт за выбранную дату. Кнопка заперта, пока это
@@ -77,7 +79,7 @@ document.getElementById('btn-sync-returns')?.addEventListener('click', async (ev
   event.target.disabled = true;
   event.target.textContent = 'Обновляем…';
   try {
-    const result = await api('/api/returns/sync', {});
+    const result = await api('/api/returns/sync', { shop: returnsShop });
     /* Про акты бывает что сказать: сообщение длиннее обычного, и его читают. */
     toast(result.message, result.status === 'warning' ? 'warning' : 'ok', 12000);
     setTimeout(() => window.location.reload(), 1500);

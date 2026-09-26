@@ -32,6 +32,8 @@ if (markModal) {
       button,
       marketplace: button.dataset.marketplace || 'ozon',
       id: button.dataset.id,
+      // Кабинет строки: возвраты в «Ждёт подтверждения» бывают из разных кабинетов.
+      account: button.dataset.account || '',
       mark: button.dataset.mark || '',
     };
     subject.textContent = button.dataset.subject || current.id;
@@ -115,12 +117,14 @@ if (markModal) {
 
   async function saveMark(mark) {
     if (!current) return;
-    const { button, marketplace, id } = current;
+    const { button, marketplace, id, account } = current;
     const note = noteField.value.trim();
     button.disabled = true;
     lockModal(true);
     try {
-      const result = await api('/api/returns/mark', { marketplace, id, mark, note });
+      const result = await api('/api/returns/mark', {
+        marketplace, id, mark, note, account_id: account ? Number(account) : null,
+      });
       /* Сервер ответил — отметка записана, и окно закрываем первым делом.
          Перерисовка списка идёт после: если споткнётся она, отметка всё равно
          сохранена, а открытое окно с ошибкой говорило бы обратное. */

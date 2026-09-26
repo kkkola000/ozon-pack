@@ -330,7 +330,7 @@ def test_set_is_created_through_the_api(client):
 
     response = client.post(
         "/api/products/sets",
-        json={"sku": sku, "title": "Подарочный набор",
+        json={"account_id": account_id(), "sku": sku, "title": "Подарочный набор",
               "parts": [{"sku": part, "quantity": 2}, {"barcode": "9990000000062", "title": "Открытка"}]},
         headers={"X-CSRF-Token": csrf},
     )
@@ -344,7 +344,7 @@ def test_set_is_created_through_the_api(client):
 def test_broken_set_is_refused_with_a_reason(client):
     csrf = login(client)
     sku = pick_posting(positions=1)["items"][0]["sku"]
-    response = client.post("/api/products/sets", json={"sku": sku, "parts": []},
+    response = client.post("/api/products/sets", json={"account_id": account_id(), "sku": sku, "parts": []},
                            headers={"X-CSRF-Token": csrf})
     assert response.status_code == 400
     assert "хотя бы одна часть" in response.json()["detail"]

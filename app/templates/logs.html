@@ -3,9 +3,14 @@
 
 {% block content %}
 <div class="panel">
+  {% include "_shop_chips.html" %}
+</div>
+
+<div class="panel">
   <div class="row between">
     <h2 style="margin:0">Журнал действий</h2>
     <form class="row" method="get" action="/logs">
+      <input type="hidden" name="shop" value="{{ picked }}">
       <select name="kind">
         <option value="">Все события</option>
         {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if kind == k }}>{{ labels.get(k, k) }}</option>{% endfor %}
@@ -28,6 +33,7 @@
       <tr>
         <th style="width:130px">Время</th>
         <th style="width:120px">Сотрудник</th>
+        <th style="width:130px">Кабинет</th>
         <th style="width:190px">Событие</th>
         <th style="width:170px">Отправление</th>
         <th>Детали</th>
@@ -38,6 +44,7 @@
       <tr>
         <td class="small mono">{{ e.at | local_dt('%d.%m %H:%M:%S') }}</td>
         <td class="small">{{ e.login or '—' }}</td>
+        <td class="small">{{ shop_titles.get(e.account_id, '—') if e.account_id else '—' }}</td>
         <td class="small">
           {% if e.level == 'error' %}<span class="badge err">!</span>
           {% elif e.level == 'warn' %}<span class="badge warn">!</span>{% endif %}
@@ -51,7 +58,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="empty">Событий нет.</td></tr>
+      <tr><td colspan="6" class="empty">Событий нет.</td></tr>
       {% endfor %}
     </tbody>
   </table>

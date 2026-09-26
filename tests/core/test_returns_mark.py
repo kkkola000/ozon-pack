@@ -150,7 +150,11 @@ def test_unknown_return_is_refused(client):
 
 
 def test_mark_from_another_cabinet_is_refused(client):
-    """Возврат чужого кабинета отметить нельзя — кабинеты не смешиваются."""
+    """Возврат отмечается в своём кабинете: назван чужой — отказ.
+
+    Кабинет строки приходит из акта. Не назван — строку ищут по кабинетам
+    площадки, и отметка ложится туда, где она лежит.
+    """
 
     csrf = login(client)
     second = accounts.get(accounts.create("ozon", "Второй Ozon", "test-client", "test-key"))
@@ -162,7 +166,12 @@ def test_mark_from_another_cabinet_is_refused(client):
     )
     if not foreign:
         pytest.skip("у второго кабинета нет собственных возвратов")
-    assert mark(client, csrf, marketplace="ozon", id=foreign["id"], mark="ok").status_code == 404
+    default_id = accounts.default_account()["id"]
+    assert mark(client, csrf, marketplace="ozon", id=foreign["id"], mark="ok",
+                account_id=default_id).status_code == 404
+    assert mark(client, csrf, marketplace="ozon", id=foreign["id"], mark="ok").status_code == 200
+    row = db.query_one("SELECT account_id FROM returns WHERE id = ? AND mark = 'ok'", (foreign["id"],))
+    assert row["account_id"] == second["id"]
 
 
 def test_mark_requires_csrf(client):
@@ -380,7 +389,8 @@ def test_sheet_pdf_covers_every_cabinet(client):
 def test_sheet_pdf_respects_the_filter(client):
     """Фильтр кабинета работает так же, как на странице и на листе печати."""
     login(client)
-    text = pdf_text(client.get("/returns/sheet.pdf?q=не-найдётся-такого").content)
+    shop = accounts.default_account()["id"]
+    text = pdf_text(client.get(f"/returns/sheet.pdf?shop={shop}&q=не-найдётся-такого").content)
     assert "Ни одного возврата" in text
 
 

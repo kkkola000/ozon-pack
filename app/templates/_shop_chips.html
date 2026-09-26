@@ -1,0 +1,14 @@
+{# Фильтр кабинетов — общий для разделов. Чипы собирает core/shops.chips:
+   «Все» и по одному на кабинет, точка — цвет площадки, число — если есть. #}
+<div class="filter-line" style="margin-top:0">
+  <span class="muted small filter-label">Кабинеты:</span>
+  <div class="chips" id="shop-chips">
+    {% for chip in shop_chips %}
+    <a class="chip {{ 'active' if chip.active }}" href="{{ chip.href }}"
+       {%- if chip.market %} title="{{ chip.market_title }}"{% endif %}>
+      {%- if chip.market %}<i class="dot {{ chip.market }}"></i>{% endif -%}
+      {{ chip.title }}{% if chip.count is not none %} <span class="badge">{{ chip.count }}</span>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+</div>

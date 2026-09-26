@@ -475,15 +475,13 @@ def test_print_sheet_shows_pickup_address_without_status(client, avito_account):
     assert "Заберите заказ" not in page.text
 
 
-def test_returns_section_shows_the_current_cabinet(client, avito_account):
-    """Раздел возвратов один, а строки в нём — текущего кабинета.
-
-    Переключились на Ozon — возвраты Avito из списка уходят: их забирают в
-    другую поездку. Для общей поездки есть лист по всем кабинетам.
-    """
+def test_returns_section_follows_the_cabinet_filter(client, avito_account):
+    """Раздел возвратов один: «Все кабинеты» — и Ozon, и Avito; выбран Ozon — без Avito."""
     ozon_account = accounts.all_accounts()[0]
-    client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/pack"})
-    page = client.get("/returns")
+    everything = client.get("/returns").text
+    for row in returns_of(avito_account):
+        assert (row["marketplace_id"] or row["id"]) in everything
+    page = client.get(f"/returns?shop={ozon_account['id']}")
     assert page.status_code == 200
     for row in returns_of(avito_account):
         assert (row["marketplace_id"] or row["id"]) not in page.text
