@@ -113,8 +113,9 @@ class LabelsSource:
     кабинетам сразу: склад один, и бегать за каждым магазином отдельно незачем.
 
     pending(account_id) — ключи, которые ещё не выгружены; pdf(кабинет,
-    человек, ключи) — пачка PDF от площадки; table и key — где стоит отметка
-    label_saved_at, по которой запирается сборка.
+    человек, ключи) — пачка PDF от площадки, либо (PDF, ключи без наклейки),
+    если площадка называет, на какие заказы наклейку не сделала (Ozon); table
+    и key — где стоит отметка label_saved_at, по которой запирается сборка.
 
     files(кабинет, человек, ключи) — если площадка отдаёт наклейки по заказу
     (Маркет): {ключ: PDF} по тем, что удалось взять. Тогда в архиве файл на
@@ -123,7 +124,7 @@ class LabelsSource:
 
     word: str                                        # «стикеры»: в именах файлов и сообщениях
     pending: Callable[[int], list[str]]
-    pdf: Callable[[dict, dict, list[str]], bytes]
+    pdf: Callable[[dict, dict, list[str]], bytes | tuple[bytes | None, list[str]]]
     table: str
     key: str
     files: Callable[[dict, dict, list[str]], dict[str, bytes]] | None = None

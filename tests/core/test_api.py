@@ -379,6 +379,9 @@ def test_label_header_survives_hostile_filename(client, monkeypatch):
         "http://api-seller.ozon.ru/label.pdf",
         "http://169.254.169.254/latest/meta-data/",
         "file:///etc/passwd",
+        "https://ozon.ru.evil.com/label.pdf",
+        "https://evilozon.ru/label.pdf",
+        "http://cdn1.ozone.ru/label.pdf",
     ],
 )
 def test_label_url_from_response_must_stay_on_ozon(url):
@@ -388,18 +391,22 @@ def test_label_url_from_response_must_stay_on_ozon(url):
     client_obj = OzonClient(client_id="x", api_key="y")
     try:
         with pytest.raises(OzonError):
-            client_obj._same_host_url(url)
+            client_obj._label_target(url)
     finally:
         client_obj.close()
 
 
-@pytest.mark.parametrize("url", ["https://api-seller.ozon.ru/f/1.pdf", "/f/1.pdf", "f/1.pdf"])
-def test_label_url_on_same_host_is_allowed(url):
+@pytest.mark.parametrize("url, own", [
+    ("https://api-seller.ozon.ru/f/1.pdf", True), ("/f/1.pdf", True), ("f/1.pdf", True),
+    # Другие домены Ozon — можно, но без ключей кабинета.
+    ("https://cdn1.ozone.ru/labels/1.pdf", False), ("https://files.ozon.ru/1.pdf", False),
+])
+def test_label_url_on_ozon_is_allowed(url, own):
     from app.markets.ozon.client import OzonClient
 
     client_obj = OzonClient(client_id="x", api_key="y")
     try:
-        assert client_obj._same_host_url(url) == url
+        assert client_obj._label_target(url) == (url, own)
     finally:
         client_obj.close()
 
@@ -436,7 +443,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.47.2"
+    assert get_version() == "1.48.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

@@ -17,6 +17,9 @@ from .client import OzonError
 
 log = logging.getLogger("ozon.sync")
 
+# Потолок страниц списка отправлений: по 100 — это 20 000 отправлений в работе.
+MAX_PAGES = 200
+
 
 def sync_account(account: dict, *, returns_too: bool = True) -> dict:
     """Один проход по кабинету. Возвраты — по отдельному расписанию, поэтому флагом."""
@@ -39,19 +42,23 @@ def sync_postings(account: dict | None = None) -> dict:
     seen: set[str] = set()
     saved = 0
 
-    for status in store.WORK_STATUSES:
-        offset = 0
-        while True:
-            postings, has_next = client.posting_list(status, since, to, limit=core_sync.PAGE_LIMIT, offset=offset)
-            if postings:
-                with db.write() as conn:
-                    for raw in postings:
-                        store.upsert_posting(conn, account_id, raw)
-                        seen.add(raw["posting_number"])
-                        saved += 1
-            if not has_next or not postings:
-                break
-            offset += core_sync.PAGE_LIMIT
+    # Оба рабочих статуса — одним обходом: /v4/posting/fbs/list принимает их
+    # списком и листается курсором. Курсор, который не сдвинулся, — конец:
+    # иначе ошибка площадки крутила бы обход по одной странице бесконечно.
+    cursor = ""
+    for _page in range(MAX_PAGES):
+        postings, next_cursor, has_next = client.posting_list(list(store.WORK_STATUSES), since, to, cursor=cursor)
+        if postings:
+            with db.write() as conn:
+                for raw in postings:
+                    store.upsert_posting(conn, account_id, raw)
+                    seen.add(raw["posting_number"])
+                    saved += 1
+        if not has_next or not postings or not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    else:
+        log.warning("Отправления Ozon: упёрлись в потолок %d страниц, список прочитан не до конца", MAX_PAGES)
 
     # Отправление могло уехать в «Доставляется» или отмениться — узнаём точный статус.
     stale = db.query(

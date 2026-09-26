@@ -80,7 +80,8 @@ def _split(pdf: bytes, keys: list[str]) -> dict[str, bytes] | None:
 def collect(keys: list[str], fetch, *, prefix: str, folder: str = "") -> tuple[dict[str, bytes], list[str]]:
     """Забрать наклейки у площадки. Возвращает (файлы для архива, выгруженные ключи).
 
-    `fetch` получает пачку номеров и отдаёт PDF. Пачка, на которой площадка
+    `fetch` получает пачку номеров и отдаёт PDF — или (PDF, номера без
+    наклейки), если площадка их называет. Пачка, на которой площадка
     отказала, пропускается: остальные наклейки важнее — из-за одного отказа
     сборщик остался бы вообще без архива. Что не вышло, останется без отметки
     и попадёт в следующую выгрузку.
@@ -91,21 +92,26 @@ def collect(keys: list[str], fetch, *, prefix: str, folder: str = "") -> tuple[d
     for start in range(0, len(keys), BATCH):
         batch = keys[start : start + BATCH]
         try:
-            pdf = fetch(batch)
+            got = fetch(batch)
         except Exception as exc:  # noqa: BLE001 - причина уходит в журнал
             log.warning("Наклейки (%s): площадка отказала на пачке из %d — %s",
                         prefix, len(batch), exc)
             continue
-        if not pdf:
+        pdf, missing = got if isinstance(got, tuple) else (got, [])
+        # В файле — только те, на кого наклейка сделана, в том же порядке.
+        done = [key for key in batch if key not in set(missing)]
+        if missing:
+            log.warning("Наклейки (%s): площадка не сделала %d из %d", prefix, len(batch) - len(done), len(batch))
+        if not pdf or not done:
             continue
-        pages = _split(pdf, batch)
+        pages = _split(pdf, done)
         if pages:
             for key, page in pages.items():
                 files[f"{at}{_safe(key)}.pdf"] = page
         else:
-            first, last = _safe(batch[0]), _safe(batch[-1])
+            first, last = _safe(done[0]), _safe(done[-1])
             files[f"{at}{prefix}-{first}-{last}.pdf"] = pdf
-        saved.extend(batch)
+        saved.extend(done)
     return files, saved
 
 

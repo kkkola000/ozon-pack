@@ -1,17 +1,20 @@
 """Клиент Ozon Seller API.
 
-Пути методов сверены с публичной схемой Seller API:
-  POST /v3/posting/fbs/list            — список FBS-отправлений
+Пути методов сверены с документацией Seller API:
+  POST /v4/posting/fbs/list            — список FBS-отправлений (страницы по курсору)
   POST /v3/posting/fbs/get             — одно отправление
   POST /v4/posting/fbs/ship            — сборка отправления (в «Ожидает отгрузки»)
-  POST /v2/posting/fbs/package-label   — стикер отправления (PDF)
-  POST /v2/posting/fbs/package-label/create + /v1/posting/fbs/package-label/get
-                                       — асинхронная генерация стикера
+  POST /v3/posting/fbs/package-label/create — задание на стикеры отправлений
+  POST /v2/posting/fbs/package-label/get    — готово ли задание и ссылка на PDF
   POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера
   POST /v3/product/list                — каталог кабинета (артикулы, архив)
   POST /v3/product/info/list           — карточки товаров (штрихкоды, фото)
   POST /v1/returns/list                — возвраты FBO и FBS
   POST /v1/return/giveout/get-pdf      — штрихкод на выдачу возвратов в пункте
+
+Стикеры — только через задание: синхронный /v2/posting/fbs/package-label
+Ozon отключает 2 ноября 2026 года, а /v2/.../create и /v1/.../get заменены
+на /v3/.../create и /v2/.../get.
 """
 from __future__ import annotations
 
@@ -33,6 +36,18 @@ log = logging.getLogger("ozon")
 
 RETRY_STATUSES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 4
+# Столько отправлений просим за страницу /v4/posting/fbs/list — как в примере
+# Ozon; дальше листаем курсором.
+POSTINGS_PAGE_LIMIT = 100
+# Сколько ждать готовности задания на стикеры и как часто спрашивать.
+LABEL_WAIT = 60
+LABEL_POLL = 2
+# Откуда разрешено скачивать готовый стикер: сам Seller API или домены Ozon.
+# Ссылку присылает Ozon, но ходит по ней наш сервер — поэтому не куда угодно.
+LABEL_HOSTS = ("ozon.ru", "ozone.ru")
+# Какое задание брать, если Ozon вернул несколько (обычная и маленькая
+# этикетка): по размеру ленты для стикеров Ozon на странице «Принтеры».
+SMALL_LABEL_SIZES = ("58x40",)
 
 
 class OzonError(MarketError):
@@ -52,6 +67,13 @@ class OzonError(MarketError):
         if self.code:
             parts.append(str(self.code))
         return " | ".join(parts)
+
+
+def label_size() -> str | None:
+    """Размер ленты для стикеров Ozon со страницы «Принтеры»."""
+    from ...core import printers
+
+    return printers.size_of("ozon:label")
 
 
 def iso_moment(dt: datetime) -> str:
@@ -129,25 +151,34 @@ class OzonClient:
     # ------------------------------------------------------------------ отправления FBS
     def posting_list(
         self,
-        status: str | None,
+        statuses: list[str] | None,
         since: datetime,
         to: datetime,
         *,
-        limit: int = 1000,
-        offset: int = 0,
-    ) -> tuple[list[dict], bool]:
-        payload = {
-            "dir": "ASC",
+        limit: int = POSTINGS_PAGE_LIMIT,
+        cursor: str = "",
+    ) -> tuple[list[dict], str, bool]:
+        """Страница отправлений: (отправления, курсор следующей страницы, есть ли ещё).
+
+        /v4/posting/fbs/list листается курсором, а статусы принимает списком —
+        оба рабочих статуса приходят одним обходом.
+        """
+        payload: dict[str, Any] = {
+            "sort_dir": "asc",
             "filter": {"since": iso_moment(since), "to": iso_moment(to)},
-            "limit": limit,
-            "offset": offset,
-            "with": {"analytics_data": True, "barcodes": True, "financial_data": False, "translit": False},
+            "limit": max(1, min(limit, POSTINGS_PAGE_LIMIT)),
+            "cursor": cursor or "",
+            "with": {"analytics_data": True, "barcodes": True},
         }
-        if status:
-            payload["filter"]["status"] = status
-        data = self.post("/v3/posting/fbs/list", payload)
-        result = data.get("result") or {}
-        return list(result.get("postings") or []), bool(result.get("has_next"))
+        if statuses:
+            payload["filter"]["statuses"] = list(statuses)
+        data = self.post("/v4/posting/fbs/list", payload)
+        body = data.get("result") if isinstance(data.get("result"), dict) else data
+        return (
+            [posting for posting in (body.get("postings") or []) if isinstance(posting, dict)],
+            str(body.get("cursor") or ""),
+            bool(body.get("has_next")),
+        )
 
     def posting_get(self, posting_number: str) -> dict | None:
         payload = {
@@ -190,60 +221,110 @@ class OzonClient:
 
     # ------------------------------------------------------------------ стикеры
     def package_label(self, posting_numbers: list[str]) -> tuple[bytes, str]:
-        """PDF со стикерами. Сначала синхронный метод, затем асинхронный."""
-        response = self._request("/v2/posting/fbs/package-label", {"posting_number": posting_numbers})
-        if response.status_code < 400:
-            content_type = (response.headers.get("Content-Type") or "").lower()
-            if "pdf" in content_type or response.content[:4] == b"%PDF":
-                return response.content, "label.pdf"
-            try:
-                data = response.json()
-            except ValueError:
-                data = {}
+        """PDF со стикерами для печати — все запрошенные или ошибка.
+
+        Напечатать половину нельзя: сборщик наклеит, что вышло, и не заметит,
+        что одного стикера нет. Поэтому любое отправление без стикера — ошибка
+        с его номером и причиной от Ozon.
+        """
+        pdf, missing = self.package_label_batch(posting_numbers)
+        if missing:
+            number, reason = next(iter(missing.items()))
+            more = f" (и ещё {len(missing) - 1})" if len(missing) > 1 else ""
+            raise OzonError(f"Стикер {number}{more}: {reason}")
+        return pdf, "label.pdf"
+
+    def package_label_batch(self, posting_numbers: list[str]) -> tuple[bytes | None, dict[str, str]]:
+        """Стикеры пачкой — (PDF или None, {номер: почему нет стикера}).
+
+        Для выгрузки до смены: что Ozon отдал, уезжает в архив, а отправления
+        без стикера остаются в замке и попадут в следующую выгрузку.
+        """
+        task_id = self.label_task(posting_numbers)
+        return self.label_file(task_id, posting_numbers)
+
+    def label_task(self, posting_numbers: list[str]) -> int:
+        """Создать задание на стикеры: /v3/posting/fbs/package-label/create.
+
+        Ozon может вернуть несколько заданий — на обычную и на маленькую
+        этикетку. Берём то, что подходит к ленте для стикеров Ozon на странице
+        «Принтеры»; не нашлось подходящего — первое.
+        """
+        if not posting_numbers:
+            raise OzonError("Не передано ни одного отправления")
+        data = self.post("/v3/posting/fbs/package-label/create", {"posting_numbers": list(posting_numbers)})
+        body = data.get("result") if isinstance(data.get("result"), dict) else data
+        tasks = [task for task in (body.get("tasks") or []) if isinstance(task, dict) and task.get("task_id")]
+        if not tasks:
+            raise OzonError("Ozon не вернул задание на стикеры")
+        wanted = "small" if label_size() in SMALL_LABEL_SIZES else "big"
+        chosen = next((task for task in tasks if wanted in str(task.get("task_type") or "").lower()), tasks[0])
+        return int(chosen["task_id"])
+
+    def label_file(self, task_id: int, posting_numbers: list[str], *,
+                   wait: int = LABEL_WAIT) -> tuple[bytes | None, dict[str, str]]:
+        """Дождаться задания (/v2/posting/fbs/package-label/get) и скачать PDF.
+
+        Готово — есть file_url. Ошибка задания — error. Отправления, на которые
+        стикер не сделан, Ozon называет в status.unprinted_postings с причиной.
+        """
+        deadline = time.time() + wait
+        last = ""
+        while True:
+            data = self.post("/v2/posting/fbs/package-label/get", {"task_id": int(task_id)})
             body = data.get("result") if isinstance(data.get("result"), dict) else data
-            content = (body or {}).get("file_content") or (body or {}).get("content")
-            if content:
-                return base64.b64decode(content), (body or {}).get("file_name") or "label.pdf"
-        else:
-            message, code = self._extract_error(response)
-            log.warning("Синхронный стикер недоступен (%s %s), пробуем асинхронный", response.status_code, message)
-        return self._package_label_async(posting_numbers)
+            error = body.get("error") if isinstance(body.get("error"), dict) else {}
+            status = body.get("status") if isinstance(body.get("status"), dict) else {}
+            code = str(status.get("code") or "")
+            last = code or last
+            missing = {
+                str(item.get("posting_number")): str(item.get("message") or "Ozon не сделал стикер")
+                for item in (status.get("unprinted_postings") or [])
+                if isinstance(item, dict) and item.get("posting_number")
+            }
+            if body.get("file_url"):
+                return self._download_label(str(body["file_url"])), missing
+            if error.get("code") or error.get("message") or code.lower() in ("error", "failed", "failure"):
+                reason = error.get("message") or error.get("code") or code
+                if missing and len(missing) >= len(posting_numbers):
+                    # Ни одного стикера — причины по отправлениям нагляднее общей.
+                    return None, missing
+                raise OzonError(f"Ozon не смог сделать стикеры: {reason}", code=str(error.get("code") or "") or None)
+            if time.time() >= deadline:
+                raise OzonError(f"Истекло время ожидания стикеров Ozon (статус задания: {last or '—'})")
+            time.sleep(LABEL_POLL)
 
-    def _same_host_url(self, raw: str) -> str:
-        """Адрес готового стикера из ответа Ozon — только на тот же хост.
+    def _label_target(self, raw: str) -> tuple[str, bool]:
+        """Куда идти за готовым стикером — (адрес, свой ли это хост).
 
-        По этому адресу панель ходит сама, со своего сервера. Если бы в file_url
-        пришёл чужой адрес, запрос ушёл бы туда же — в том числе на внутренний
-        адрес сети, куда снаружи хода нет. Относительный путь пропускаем: его
-        httpx достроит до base_url.
+        По этой ссылке ходит наш сервер, поэтому только Ozon: сам Seller API
+        (относительный путь или тот же хост) или https на домене Ozon. Чужой
+        адрес, в том числе внутренний адрес сети, отклоняется.
         """
         parts = urlsplit(raw)
-        if not parts.scheme and not parts.netloc:
-            return raw
         expected = urlsplit(self.base_url)
-        if (parts.scheme, parts.netloc) != (expected.scheme, expected.netloc):
-            raise OzonError(f"Ozon прислал стикер по чужому адресу: {parts.scheme}://{parts.netloc}")
-        return raw
+        host = (parts.hostname or "").lower()
+        if not parts.scheme and not parts.netloc:
+            return raw, True
+        if (parts.scheme, parts.netloc) == (expected.scheme, expected.netloc):
+            return raw, True
+        if parts.scheme == "https" and any(host == d or host.endswith("." + d) for d in LABEL_HOSTS):
+            return raw, False
+        raise OzonError(f"Ozon прислал стикер по чужому адресу: {parts.scheme}://{parts.netloc}")
 
-    def _package_label_async(self, posting_numbers: list[str]) -> tuple[bytes, str]:
-        created = self.post("/v2/posting/fbs/package-label/create", {"posting_number": posting_numbers})
-        tasks = ((created.get("result") or {}).get("tasks")) or []
-        if not tasks:
-            raise OzonError("Ozon не вернул задание на генерацию стикера")
-        task_id = tasks[0].get("task_id")
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            state = self.post("/v1/posting/fbs/package-label/get", {"task_id": task_id}).get("result") or {}
-            status = (state.get("status") or "").lower()
-            if status in {"completed", "ready", "success"} and state.get("file_url"):
-                file_url = self._same_host_url(state["file_url"])
-                file_response = self._client.get(file_url, timeout=60)
-                file_response.raise_for_status()
-                return file_response.content, "label.pdf"
-            if status in {"error", "failed"}:
-                raise OzonError(f"Ozon не смог сгенерировать стикер: {state.get('error') or 'неизвестная ошибка'}")
-            time.sleep(2)
-        raise OzonError("Истекло время ожидания генерации стикера")
+    def _download_label(self, raw: str) -> bytes:
+        """Скачать готовый стикер. Ключи кабинета уходят только на сам Seller API."""
+        url, own = self._label_target(raw)
+        if own:
+            response = self._client.get(url, timeout=60)
+        else:
+            with httpx.Client(timeout=60, follow_redirects=False) as plain:
+                response = plain.get(url)
+        if response.status_code >= 400:
+            raise OzonError(f"Стикер не скачался: HTTP {response.status_code}", status=response.status_code)
+        if response.content[:4] != b"%PDF":
+            raise OzonError("Ozon прислал вместо стикера не PDF")
+        return response.content
 
     # ------------------------------------------------------------------ товары
     def product_list(self, *, limit: int = 1000, last_id: str = "") -> tuple[list[dict], str, int]:
@@ -257,7 +338,9 @@ class OzonClient:
         data = self.post("/v3/product/list", payload)
         body = data.get("result") if isinstance(data.get("result"), dict) else data
         items = [item for item in (body.get("items") or []) if isinstance(item, dict)]
-        return items, str(body.get("last_id") or ""), int(body.get("total") or 0)
+        # result.total Ozon отключает 23 ноября 2026 — число теперь в total_items.
+        total = body.get("total_items") if body.get("total_items") is not None else body.get("total")
+        return items, str(body.get("last_id") or ""), int(total or 0)
 
     def product_info(self, skus: list[str] | None = None, offer_ids: list[str] | None = None) -> list[dict]:
         payload: dict[str, Any] = {}

@@ -81,6 +81,10 @@ class FakeOzonClient(OzonClient):
         self._seed = seed
         self._postings: dict[str, dict] = {}
         self._returns: list[dict] = []
+        # Отправления, на которые Ozon «не сделал» стикер: номер -> причина.
+        self.unprinted: dict[str, str] = {}
+        # Запросы списка отправлений: (статусы, курсор) — проверки смотрят, что ушло.
+        self.list_requests: list[tuple[tuple[str, ...], str]] = []
         self._generate()
 
     # -- генерация данных -------------------------------------------------
@@ -207,11 +211,16 @@ class FakeOzonClient(OzonClient):
         }
 
     # -- методы API -------------------------------------------------------
-    def posting_list(self, status, since, to, *, limit=1000, offset=0):  # type: ignore[override]
-        items = [p for p in self._postings.values() if not status or p["status"] == status]
-        items.sort(key=lambda p: p["shipment_date"])
-        page = items[offset : offset + limit]
-        return [json.loads(json.dumps(p)) for p in page], offset + limit < len(items)
+    def posting_list(self, statuses, since, to, *, limit=100, cursor=""):  # type: ignore[override]
+        """/v4/posting/fbs/list: статусы списком, страницы по курсору."""
+        self.list_requests.append((tuple(statuses or ()), cursor))
+        wanted = set(statuses or [])
+        items = [p for p in self._postings.values() if not wanted or p["status"] in wanted]
+        items.sort(key=lambda p: (p["shipment_date"], p["posting_number"]))
+        start = int(cursor or 0)
+        page = items[start : start + limit]
+        more = start + limit < len(items)
+        return [json.loads(json.dumps(p)) for p in page], (str(start + limit) if more else ""), more
 
     def posting_get(self, posting_number):  # type: ignore[override]
         posting = self._postings.get(posting_number)
@@ -234,12 +243,17 @@ class FakeOzonClient(OzonClient):
         posting["substatus"] = "posting_awaiting_deliver"
         return {"postings": [posting_number], "additional_data": []}
 
-    def package_label(self, posting_numbers):  # type: ignore[override]
-
+    def package_label_batch(self, posting_numbers):  # type: ignore[override]
+        """Задание v3/create + v2/get одним вызовом: PDF и отправления без стикера."""
         pages = []
+        missing = {}
         for number in posting_numbers:
             posting = self._postings.get(number)
+            if number in self.unprinted:
+                missing[number] = self.unprinted[number]
+                continue
             if not posting:
+                missing[number] = "Отправление не найдено"
                 continue
             pages.append(
                 {
@@ -251,9 +265,7 @@ class FakeOzonClient(OzonClient):
                     "products": [(p["name"], p["quantity"]) for p in posting.get("products", [])],
                 }
             )
-        if not pages:
-            raise OzonError("Нет отправлений для печати", status=404)
-        return make_label_pdf(pages), "label-fake.pdf"
+        return (make_label_pdf(pages) if pages else None), missing
 
     def product_list(self, *, limit=1000, last_id=""):  # type: ignore[override]
         """Каталог кабинета: живые товары и архив в одном ответе, как у Ozon."""

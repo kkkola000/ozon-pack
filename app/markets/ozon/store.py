@@ -118,11 +118,36 @@ LOCAL_STATE_LABELS = {
 }
 
 
+# Кто получатель — панели не нужно: сборщику хватает города и способа
+# доставки. /v4/posting/fbs/list отдаёт покупателя целиком (имя, адрес), и в
+# сохранённый ответ (колонку raw) это не попадает.
+PERSONAL_KEYS = ("customer", "addressee")
+
+
+def _warehouse(delivery: dict, analytics: dict) -> str | None:
+    """Название склада. В /v4 в delivery_method.warehouse приходит номер —
+    тогда название берём из analytics_data."""
+    own = _text(delivery.get("warehouse"))
+    named = _text(analytics.get("warehouse"))
+    if own and not own.isdigit():
+        return own
+    return named or own
+
+
+def _price(product: dict) -> tuple[str | None, str | None]:
+    """Цена и валюта товара: в /v4 это объект {amount, currency}, в /v3 — строка."""
+    price = product.get("price")
+    if isinstance(price, dict):
+        return _text(price.get("amount")), _text(price.get("currency") or product.get("currency_code"))
+    return _text(price), _text(product.get("currency_code"))
+
+
 def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     """Сохранить отправление, не затирая локальное состояние сборки."""
     number = raw.get("posting_number")
     if not number:
         raise ValueError("В ответе Ozon нет posting_number")
+    raw = {key: value for key, value in raw.items() if key not in PERSONAL_KEYS}
 
     delivery = raw.get("delivery_method") or {}
     analytics = raw.get("analytics_data") or {}
@@ -198,7 +223,7 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             _dt(raw.get("delivering_date")),
             _text(delivery.get("name")),
             delivery.get("warehouse_id"),
-            _text(delivery.get("warehouse")) or _text(analytics.get("warehouse")),
+            _warehouse(delivery, analytics),
             _text(delivery.get("tpl_provider")) or _text(analytics.get("tpl_provider")),
             _text(raw.get("tracking_number")),
             1 if raw.get("is_express") else 0,
@@ -229,6 +254,7 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
         sku = str(product.get("sku") or "")
         if not sku:
             continue
+        price, currency = _price(product)
         conn.execute(
             """
             INSERT INTO posting_items(account_id, posting_number, sku, offer_id, name, quantity, price, currency, mandatory_mark)
@@ -244,8 +270,8 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
                 _text(product.get("offer_id")),
                 _text(product.get("name")),
                 int(product.get("quantity") or 1),
-                _text(product.get("price")),
-                _text(product.get("currency_code")),
+                price,
+                currency,
                 1 if sku in mandatory or (product.get("mandatory_mark") or []) else 0,
             ),
         )

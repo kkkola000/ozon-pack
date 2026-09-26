@@ -1078,6 +1078,20 @@ def labels(account: dict, user: dict, posting_numbers: list[str], *, mark: bool 
     return pdf, filename
 
 
+def label_batch(account: dict, posting_numbers: list[str]) -> tuple[bytes | None, list[str]]:
+    """Стикеры для выгрузки до смены — (PDF, отправления без стикера).
+
+    Отправление, на которое Ozon стикер не сделал, в архив не попадает и
+    отметку «скачано» не получает: оно останется в замке и уйдёт в следующую
+    выгрузку, а не потеряется с пометкой «уже выгружено».
+    """
+    pdf, missing = ozon.get_client(account).package_label_batch(posting_numbers)
+    for number, reason in missing.items():
+        db.log_event("label_missing", level="warn", account_id=account["id"],
+                     posting_number=number, message=f"Ozon не сделал стикер: {reason}")
+    return pdf, list(missing)
+
+
 # ------------------------------------------------------------------- Ozon
 def pending_labels(account_id: int) -> list[str]:
     """Отправления «Ожидает отгрузки», чей стикер ещё не выгружен.
