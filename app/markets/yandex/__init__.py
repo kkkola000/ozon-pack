@@ -16,8 +16,6 @@ MARKET = Market(
     key_label="Api-Key",
     hint="Кабинет Маркета → Настройки → API и модули → Токены авторизации. "
          "Доступы: обработка заказов и, для раздела «Товары», управление товарами и карточками",
-    home="/yandex/pack",
-    prefixes=("/yandex",),
     tables=("yandex_orders", "yandex_order_items"),
     router=routes.router,
     get_client=client.get_client,
@@ -25,7 +23,6 @@ MARKET = Market(
     probe=client.probe,
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
-    nav=routes.nav_items,
     stats=routes.settings_stats,
     schema=store.SCHEMA,
     raw_tables=("yandex_orders",),

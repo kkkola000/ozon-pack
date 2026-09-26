@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 
 from ...core import db
 from . import pack as yandex_pack
-from ..base import NavItem, OrdersBoard, Workspace
+from ..base import OrdersBoard, Workspace
 from . import store
 
 log = logging.getLogger("yandex")
@@ -34,6 +34,13 @@ OLD_TABS = {"pack": "packaging", "ship": "deliver", "packed": "packed"}
 @router.get("/yandex")
 def yandex_page(tab: str = "pack"):
     return RedirectResponse(f"/orders?status={OLD_TABS.get(tab, 'packaging')}", status_code=303)
+
+
+# «Сборка» одна на все кабинеты — /pack. Старый адрес с закладок ведёт туда же.
+@router.get("/yandex/pack")
+def old_pack_address(request: Request):
+    query = request.url.query
+    return RedirectResponse("/pack" + (f"?{query}" if query else ""), status_code=303)
 
 
 def _order_row(account: dict, order_id: str) -> dict:
@@ -113,8 +120,6 @@ def _pack_counters(account: dict) -> dict:
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или ярлык заказа…",
     banner="Отсканируйте штрихкод товара — система сама найдёт заказ Маркета и отправит ярлык на печать.",
-    url="/yandex/pack",
-    tab="yandex_pack",
     load_state=yandex_pack.load_state,
     count_queue=lambda account: _pack_counters(account),
     counters=(
@@ -132,15 +137,6 @@ WORKSPACE = Workspace(
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0
-
-
-def nav_items(account: dict) -> list[NavItem]:
-    """Меню кабинета Маркета: своё у него — только рабочее место."""
-    return [
-        NavItem("/yandex/pack", "Сборка", "yandex_pack", "pack"),
-        # «Заказов» здесь нет: пункт общий, со счётчиками по всем кабинетам, —
-        # его ставит ядро (core/deps.market_nav).
-    ]
 
 
 def settings_stats(account_id: int) -> dict[str, int]:

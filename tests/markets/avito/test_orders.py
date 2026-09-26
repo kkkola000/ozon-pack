@@ -32,11 +32,6 @@ def client(avito_account):
         test_client.headers["X-CSRF-Token"] = re.search(
             r'name="csrf-token" content="([^"]*)"', page.text
         ).group(1)
-        # Переключаемся на кабинет Avito тем же способом, что и человек в шапке.
-        switched = test_client.post(
-            "/api/account/switch", json={"account_id": avito_account["id"], "next": "/avito"}
-        )
-        assert switched.status_code == 200, switched.text
         yield test_client
 
 
@@ -218,15 +213,7 @@ def test_orders_show_avito_work_statuses(client, avito_account):
 
 
 def test_old_avito_address_leads_to_shared_orders(client, avito_account):
-    """«Заказы Avito» больше нет: старый адрес ведёт в общий раздел, в тот же статус.
-
-    И раздел не зависит от кабинета в шапке: стоим в Ozon — заказы Avito видны.
-    """
-    ozon_account = accounts.all_accounts()[0]
-    assert ozon_account["marketplace"] == "ozon"
-    switched = client.post("/api/account/switch", json={"account_id": ozon_account["id"], "next": "/avito"})
-    assert switched.status_code == 200
-    assert switched.json()["redirect"] == "/pack"
+    """«Заказы Avito» больше нет: старый адрес ведёт в общий раздел, в тот же статус."""
     for tab, status in (("confirm", "packaging"), ("ship", "deliver"), ("packed", "packed")):
         assert client.get(f"/avito?tab={tab}").headers["location"] == f"/orders?status={status}"
     order = orders_in(avito_account, avito.STATUS_ON_CONFIRMATION)[0]

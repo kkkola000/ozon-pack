@@ -54,13 +54,6 @@ def forget_sync():
     )
 
 
-def cabinet_of(client) -> str | None:
-    """Какой кабинет сейчас открыт в шапке — по куке переключателя."""
-    from app.core.deps import ACCOUNT_COOKIE
-
-    return client.cookies.get(ACCOUNT_COOKIE)
-
-
 def rows_of(page: str) -> list[str]:
     """Площадки строк списка «Все заказы»."""
     return re.findall(r'<tr data-work="\d" data-market="([^"]+)"', page)
@@ -72,27 +65,17 @@ def shops_of(page: str) -> list[int]:
 
 
 # ------------------------------------------------------------------ один обработчик
-def test_a_market_url_opens_without_switching_cabinets(client, cabinets):
-    """Адрес площадки — просто дверь: кабинет в шапке он не трогает.
-
-    Раньше такая ссылка либо отказывала, либо молча переводила кабинет. Теперь
-    ни того, ни другого: страница одна, а границы сборки задаёт фильтр.
-    """
-    client.post("/api/account/switch", json={"account_id": cabinets["ozon"]["id"], "next": "/pack"})
-    before = cabinet_of(client)
-    page = client.get("/yandex/pack")
+def test_old_market_urls_lead_to_the_one_pack(client, cabinets):
+    """Адрес «Сборки» один — /pack. Старые адреса площадок ведут туда же, с фильтром."""
+    yandex = cabinets["yandex"]["id"]
+    for old in ("/avito/pack", "/yandex/pack"):
+        assert client.get(old).headers["location"] == "/pack"
+        assert client.get(f"{old}?shop={yandex}").headers["location"] == f"/pack?shop={yandex}"
+    page = client.get("/pack")
     assert page.status_code == 200, page.text[:300]
+    assert 'id="scan"' in page.text
+    assert "Все заказы" in page.text
     assert len(set(rows_of(page.text))) > 1, "фильтр по умолчанию — «Все заказы»"
-    assert cabinet_of(client) == before, "кабинет всё-таки переключился"
-
-
-def test_every_market_opens_the_same_page(client, cabinets):
-    """Три адреса — одна страница, в любом кабинете. Дверей много, комната одна."""
-    for where in ("/pack", "/avito/pack", "/yandex/pack"):
-        page = client.get(where)
-        assert page.status_code == 200, page.text[:300]
-        assert 'id="scan"' in page.text, where
-        assert "Все заказы" in page.text, where
 
 
 def test_market_declares_its_workspace(client):
@@ -100,7 +83,6 @@ def test_market_declares_its_workspace(client):
     for market in registry.all_markets():
         workspace = market.workspace
         assert workspace is not None, market.code
-        assert workspace.url and workspace.tab
         assert callable(workspace.load_state) and callable(workspace.count_queue)
         # Скан площадка тоже объявляет: ядро не ходит в её ручки напрямую.
         assert callable(workspace.owner) and callable(workspace.scan)
@@ -139,20 +121,13 @@ def test_filter_leaves_only_its_cabinet(client, cabinets):
     assert len(only_second) < len(everything)
 
 
-def test_filter_narrows_without_touching_the_cabinet(client, cabinets):
-    """Выбрали кабинет — список его, а кабинет в шапке остался прежним.
-
-    Фильтр задаёт границы сборки напрямую, поэтому переключать кабинет в шапке
-    ради него не нужно — и не надо: человек не просил менять шапку.
-    """
-    assert client.get("/pack").status_code == 200        # начинаем в кабинете Ozon
-    before = cabinet_of(client)
+def test_filter_narrows_to_the_cabinet(client, cabinets):
+    """Выбрали кабинет — список его: границы сборки задаёт фильтр."""
     avito = cabinets["avito"]["id"]
     page = client.get(f"/pack?shop={avito}")
     assert page.status_code == 200, page.text[:300]
     assert set(shops_of(page.text)) == {avito}
-    assert cabinet_of(client) == before, "кабинет всё-таки переключился"
-    # И чип ведёт на текущий адрес, а не на адрес площадки кабинета.
+    # И чип ведёт на тот же адрес «Сборки».
     assert f'"/pack?shop={avito}"' in page.text
 
 
@@ -292,7 +267,6 @@ def test_header_has_no_title_and_chips_go_left(client):
 
 def test_refresh_button_says_orders(client, cabinets):
     """Кнопка обновляет заказы — про площадку в надписи ни слова."""
-    for where in ("/pack", "/avito/pack", "/yandex/pack"):
-        page = client.get(where).text
-        assert "Обновить заказы" in page, where
-        assert "Обновить из" not in page, where
+    page = client.get("/pack").text
+    assert "Обновить заказы" in page
+    assert "Обновить из" not in page

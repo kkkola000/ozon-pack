@@ -35,10 +35,6 @@ def client(market):
         test_client.headers["X-CSRF-Token"] = re.search(
             r'name="csrf-token" content="([^"]*)"', page.text
         ).group(1)
-        switched = test_client.post(
-            "/api/account/switch", json={"account_id": market["id"], "next": "/yandex"}
-        )
-        assert switched.status_code == 200, switched.text
         yield test_client
 
 
@@ -235,9 +231,9 @@ def test_the_article_is_not_printed_twice(client, market):
 
 def test_menu_shows_the_section_on_a_market_cabinet(client):
     """Раздел бесполезен, если в него не ведёт пункт меню."""
-    page = client.get("/yandex/pack")
+    page = client.get("/pack")
     assert page.status_code == 200, page.text
-    assert 'href="/products"' in page.text, "в шапке кабинета Маркета нет «Товаров»"
+    assert 'href="/products"' in page.text, "в шапке нет «Товаров»"
 
 
 def test_refresh_button_works_for_a_market_cabinet(client):

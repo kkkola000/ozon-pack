@@ -32,7 +32,7 @@ class KeyCheckError(ValueError):
 
 @dataclass(frozen=True)
 class NavItem:
-    """Пункт меню площадки в шапке."""
+    """Пункт меню в шапке. Меню одно на панель — его собирает ядро (core/deps.nav)."""
 
     href: str
     label: str
@@ -140,8 +140,6 @@ class Workspace:
     banner: str                      # первая подсказка над полем
     # Плитки очереди: (id элемента, ключ в counters, подпись, класс значения).
     counters: tuple[tuple[str, str, str, str], ...]
-    url: str                         # адрес рабочего места: «/pack», «/avito/pack»
-    tab: str                         # значение active_tab: по нему подсвечивается меню
     load_state: Callable[[dict, dict], dict]   # состояние сборщика: (кабинет, человек)
     count_queue: Callable[[dict], dict]        # числа для плиток очереди кабинета
     # Чей это код. owner(кабинет, человек, код) -> (вид, номер заказа) либо
@@ -233,8 +231,6 @@ class Market:
     id_label: str                # что спросить в «Настройках» первым полем
     key_label: str               # и вторым
     hint: str                    # где взять ключи
-    home: str                    # куда вести после переключения на кабинет
-    prefixes: tuple[str, ...]    # адреса разделов площадки — при переключении они не сбрасываются
     tables: tuple[str, ...]      # её таблицы с account_id: удаляются вместе с кабинетом
     router: Any                  # APIRouter разделов площадки
     get_client: Callable[[dict | None], Any]
@@ -242,7 +238,6 @@ class Market:
     probe: Callable[[str, str], None]        # проверить ключи до сохранения; KeyCheckError с текстом
     ping: Callable[[dict], dict]             # проверить ключи кабинета; MarketError при отказе
     sync: Callable[..., dict]                # загрузка данных кабинета: sync(account, *, returns_too=True)
-    nav: Callable[[dict], list[NavItem]]     # меню и счётчики для кабинета
     stats: Callable[[int], dict[str, int]]   # плитки в «Настройках»
     # Запасные ключи из .env — только там, где они исторически были (Ozon).
     env_credentials: Callable[[], tuple[str, str]] | None = None

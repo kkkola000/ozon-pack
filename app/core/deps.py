@@ -38,58 +38,11 @@ def _template_env() -> jinja2.Environment:
 
 templates = Jinja2Templates(env=_template_env())
 
-# Выбранный кабинет держим в отдельной куке: менять его может любой вошедший,
-# поэтому переподписывать сессию (и сбрасывать CSRF) на каждое переключение незачем.
-ACCOUNT_COOKIE = "ozp_account"
-
-
 def current_user(request: Request) -> dict:
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(status_code=401, detail="Требуется вход")
     return user
-
-
-def current_account(request: Request) -> dict | None:
-    """Кабинет текущей вкладки: из куки, иначе первый включённый."""
-    from . import accounts
-
-    cached = getattr(request.state, "account", None)
-    if cached is not None:
-        return cached
-    account = accounts.resolve(request.cookies.get(ACCOUNT_COOKIE))
-    request.state.account = account
-    return account
-
-
-def require_account(request: Request) -> dict:
-    account = current_account(request)
-    if not account:
-        raise HTTPException(status_code=503, detail="Не добавлен ни один кабинет — откройте «Настройки»")
-    return account
-
-
-def require_market(code: str):
-    """Зависимость «текущий кабинет — этой площадки».
-
-    Разделы площадки открываются только в её кабинете: заказы Avito в
-    кабинете Ozon не существуют, и молча показать пустоту хуже, чем отказать.
-    """
-
-    def dependency(request: Request) -> dict:
-        account = require_account(request)
-        if account["marketplace"] != code:
-            from ..markets import registry
-
-            market = registry.get(code)
-            title = market.title if market else code
-            raise HTTPException(
-                status_code=409, detail=f"Этот раздел работает только с кабинетами площадки «{title}»"
-            )
-        return account
-
-    dependency.__name__ = f"require_market_{code}"
-    return dependency
 
 
 def require_manager(request: Request) -> dict:
@@ -190,26 +143,37 @@ def panel_has_catalog(request: Request = None) -> bool:  # noqa: ARG001 - зов
     return False
 
 
-def market_nav(request: Request) -> list:
-    """Пункты меню: свои у площадки текущего кабинета и общие «Заказы».
+def nav(request: Request = None) -> list:  # noqa: ARG001 - зовётся из шаблона
+    """Пункты меню — одни на всю панель, значки — по всем кабинетам.
 
-    «Заказы» — раздел на все кабинеты сразу, поэтому пункт ставит ядро, и
-    значки на нём считаются по всем кабинетам, а не по выбранному в шапке.
-    Место — сразу за «Сборкой», как раньше стояли «Заказы» площадок.
+    Кабинета в шапке нет, и меню от него не зависит: «Сборка» и «Заказы» есть
+    всегда, «Возвраты» — если хоть одна площадка панели их отдаёт.
     """
-    from ..markets import registry
     from ..markets.base import NavItem
-    from . import board
+    from . import board, return_acts, shops
 
-    account = current_account(request)
-    market = registry.get(account["marketplace"]) if account else None
-    items = list(market.nav(account)) if market else []
-    if not items:
-        return items
-    orders = NavItem("/orders", "Заказы", "orders", "orders", board.badges())
-    at = next((index + 1 for index, item in enumerate(items) if item.section == "pack"), 0)
-    items.insert(at, orders)
+    items = [NavItem("/pack", "Сборка", "pack", "pack"),
+             NavItem("/orders", "Заказы", "orders", "orders", board.badges())]
+    sources = return_acts.sources()
+    if sources:
+        live = shops.live()
+        ready = 0
+        for market, source in sources:
+            ids = [account["id"] for account in live if account["marketplace"] == market.code]
+            if ids:
+                ready += source.count_ready(ids)
+        items.append(NavItem("/returns", "Возвраты", "returns", "returns", (
+            (ready, "", "К выдаче"),
+            (return_acts.pending_count([account["id"] for account in live]), "warn", "Акты ждут подтверждения"),
+        )))
     return items
+
+
+def unconfigured() -> int:
+    """Сколько включённых кабинетов без ключей — для значка в шапке."""
+    from . import accounts
+
+    return sum(1 for account in accounts.all_accounts(active_only=True) if not accounts.is_configured(account))
 
 
 def static_version() -> str:
@@ -232,28 +196,10 @@ def static_version() -> str:
 _static_version: str | None = None
 
 
-def account_ready(request: Request) -> bool:
-    """Есть ли у текущего кабинета ключи — иначе панели нечего показывать."""
-    from . import accounts
-
-    return accounts.is_configured(current_account(request))
-
-
-def account_switcher(request: Request) -> dict:
-    """Данные для переключателя кабинетов в шапке."""
-    from . import accounts
-
-    return {
-        "current": current_account(request),
-        "accounts": accounts.all_accounts(active_only=True),
-    }
-
-
 templates.env.globals["build_label"] = build_label
-templates.env.globals["market_nav"] = market_nav
+templates.env.globals["nav"] = nav
 templates.env.globals["panel_has_catalog"] = panel_has_catalog
-templates.env.globals["account_ready"] = account_ready
-templates.env.globals["account_switcher"] = account_switcher
+templates.env.globals["unconfigured"] = unconfigured
 templates.env.globals["static_version"] = static_version
 
 

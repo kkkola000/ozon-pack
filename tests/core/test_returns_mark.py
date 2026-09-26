@@ -247,17 +247,8 @@ def avito_cabinet(client):
     return cabinet
 
 
-def switch_to(client, csrf, account, where="/avito"):
-    response = client.post(
-        "/api/account/switch", json={"account_id": account["id"], "next": where},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert response.status_code == 200, response.text
-
-
 def test_avito_return_can_be_marked(client, avito_cabinet):
     csrf = login(client)
-    switch_to(client, csrf, avito_cabinet)
     order = db.query_one(
         "SELECT id FROM avito_orders WHERE account_id = ? AND status = ? LIMIT 1",
         (avito_cabinet["id"], avito.STATUS_ON_RETURN),

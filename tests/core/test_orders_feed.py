@@ -131,26 +131,15 @@ def test_avito_return_is_not_work_for_the_packer(cabinets):
     assert row["status_label"] == "На возврате"
 
 
-def test_the_list_is_the_same_on_every_workspace(client, cabinets):
-    """Список один и тот же на «Сборке» любой площадки — он общий."""
-    pages = [
-        ("/pack", cabinets["first"]),
-        ("/avito/pack", cabinets["avito"]),
-        ("/yandex/pack", cabinets["yandex"]),
-    ]
-
-    for where, account in pages:
-        switched = client.post(
-            "/api/account/switch", json={"account_id": account["id"], "next": where}
-        )
-        assert switched.status_code == 200, switched.text
-        page = client.get(where)
-        assert page.status_code == 200, page.text
-        assert "Все заказы" in page.text
-        # На странице есть заказы чужих кабинетов — ради этого список и заведён.
-        foreign = next(row for row in orders.everywhere() if row["account_id"] != account["id"])
-        assert str(foreign["number"]) in page.text, where
-        assert foreign["shop"] in page.text, where
+def test_the_list_has_every_cabinet(client, cabinets):
+    """На «Сборке» — заказы всех кабинетов: список общий."""
+    page = client.get("/pack")
+    assert page.status_code == 200, page.text
+    assert "Все заказы" in page.text
+    for account in (cabinets["first"], cabinets["avito"], cabinets["yandex"]):
+        mine = next(row for row in orders.everywhere() if row["account_id"] == account["id"])
+        assert str(mine["number"]) in page.text, account["title"]
+        assert mine["shop"] in page.text, account["title"]
 
 
 def test_history_keeps_three_scans():

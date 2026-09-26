@@ -16,10 +16,6 @@ MARKET = Market(
     id_label="Client-Id",
     key_label="Api-Key",
     hint="Личный кабинет Ozon → Настройки → Seller API",
-    home="/pack",
-    # «/returns» тут нет намеренно: раздел возвратов общий, он в списке ядра.
-    # «/orders» тут тоже нет: раздел «Заказы» общий на все кабинеты.
-    prefixes=("/pack", "/api/"),
     # Каталог (products, product_barcodes) здесь не числится: таблица общая,
     # её чистит ядро вместе с кабинетом любой площадки.
     tables=("postings", "posting_items", "returns"),
@@ -29,7 +25,6 @@ MARKET = Market(
     probe=client.probe,
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
-    nav=routes.nav_items,
     stats=routes.settings_stats,
     # Первый кабинет Ozon исторически мог получать ключи из .env.
     env_credentials=lambda: (settings.ozon_client_id, settings.ozon_api_key),

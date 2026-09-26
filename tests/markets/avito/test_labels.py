@@ -54,10 +54,6 @@ def test_avito_archive_opens_the_lock(avito_cabinet):
     account = avito_cabinet
     with TestClient(app, follow_redirects=False) as client:
         csrf = login(client)
-        switched = client.post(
-            "/api/account/switch", json={"account_id": account["id"], "next": "/avito/pack"},
-            headers={"X-CSRF-Token": csrf})
-        assert switched.status_code == 200, switched.text
         assert labels.state(avito_pack.pending_labels(account["id"]))["locked"] is True
         response = client.post(f"/api/pack/labels.zip?shop={account['id']}", headers={"X-CSRF-Token": csrf})
         assert response.status_code == 200, response.text
@@ -69,11 +65,11 @@ def test_avito_archive_opens_the_lock(avito_cabinet):
 def test_the_avito_pack_page_holds_the_gate(avito_cabinet):
     """Замок есть и в сборке Avito — шаблон тот же по смыслу."""
     with TestClient(app, follow_redirects=False) as client:
-        csrf = login(client)
-        client.post(
-            "/api/account/switch", json={"account_id": avito_cabinet["id"], "next": "/avito/pack"},
-            headers={"X-CSRF-Token": csrf})
-        page = client.get("/avito/pack")
+        login(client)
+        # Старый адрес «Сборки» Avito ведёт на общую, с тем же фильтром.
+        old = client.get(f"/avito/pack?shop={avito_cabinet['id']}")
+        assert old.headers["location"] == f"/pack?shop={avito_cabinet['id']}"
+        page = client.get(old.headers["location"])
 
     assert page.status_code == 200
     assert 'id="label-gate"' in page.text

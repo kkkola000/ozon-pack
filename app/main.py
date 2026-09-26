@@ -175,16 +175,14 @@ def healthz(request: Request):
 
 
 @app.get("/")
-def index(request: Request):
-    """Стартовая страница зависит от кабинета: у каждой площадки своё рабочее место."""
-    account = deps.current_account(request)
-    market = registry.get(account["marketplace"]) if account else None
-    return RedirectResponse(market.home if market else "/pack", status_code=303)
+def index():
+    """Стартовая страница — «Сборка»: рабочее место одно на все кабинеты."""
+    return RedirectResponse("/pack", status_code=303)
 
 
 app.include_router(auth.router)
-# Рабочее место одно на все площадки: адреса берутся из их объявлений.
-app.include_router(pack.register())
+# Рабочее место одно на все площадки и кабинеты.
+app.include_router(pack.router)
 # Остальные разделы площадок — из реестра: новая площадка сюда ничего не дописывает.
 for _market in registry.all_markets():
     app.include_router(_market.router)

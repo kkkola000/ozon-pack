@@ -1,13 +1,12 @@
 """Вход и выход."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..core import accounts, db, security
+from ..core import db, security
 from ..core.config import settings
-from ..core.deps import ACCOUNT_COOKIE, check_csrf, current_user, templates
-from ..markets import registry
+from ..core.deps import templates
 
 router = APIRouter()
 
@@ -72,48 +71,4 @@ def logout(request: Request):
         db.log_event("logout", user=user)
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(security.SESSION_COOKIE, path="/")
-    return response
-
-
-@router.post("/api/account/switch")
-def switch_account(request: Request, payload: dict = Body(...)):
-    """Переключить кабинет. Данные разделены по account_id, поэтому меняется всё сразу."""
-    check_csrf(request)
-    user = current_user(request)
-    account = accounts.get(payload.get("account_id"))
-    if not account or not account["active"]:
-        raise HTTPException(status_code=404, detail="Кабинет не найден или выключен")
-
-    db.log_event(
-        "account_switch",
-        account_id=account["id"],
-        user=user,
-        message=f"Переключение на кабинет «{account['title']}»",
-    )
-    target = security.safe_next(payload.get("next"), "/")
-    # Разделы, общие для всех площадок, при переключении не сбрасываются;
-    # свои адреса и домашнюю страницу площадка объявляет сама.
-    shared = ("/logs", "/settings", "/products", "/reports", "/returns", "/orders", "/printers")
-    market = registry.get(account["marketplace"])
-    own = market.prefixes if market else ()
-    # «Сборка» от кабинета не зависит вовсе: границы задаёт её фильтр. Поэтому
-    # переключение оставляет человека там же, где он был, — на том же адресе и
-    # с тем же фильтром. Раньше его уводило на адрес площадки кабинета, и
-    # выбранный фильтр сбрасывался на «Все заказы».
-    path = target.split("?", 1)[0]
-    on_pack = any(other.workspace and path == other.workspace.url for other in registry.all_markets())
-    # Корень сам ведёт на рабочее место площадки — его не трогаем.
-    if target != "/" and not on_pack and not target.startswith(shared + own):
-        target = market.home if market else "/"
-
-    response = JSONResponse({"status": "ok", "redirect": target, "account": account["title"]})
-    response.set_cookie(
-        ACCOUNT_COOKIE,
-        str(account["id"]),
-        max_age=365 * 24 * 3600,
-        httponly=True,
-        secure=request.url.scheme == "https",
-        samesite="lax",
-        path="/",
-    )
     return response

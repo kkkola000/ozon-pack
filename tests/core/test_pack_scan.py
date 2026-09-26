@@ -14,7 +14,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import accounts, db, packing, sync
-from app.core.deps import ACCOUNT_COOKIE
 from app.main import app
 from app.markets.avito import sync as avito_sync
 from app.markets.ozon import store as ozon_store
@@ -91,13 +90,6 @@ def test_an_avito_label_opens_from_an_ozon_cabinet(client, cabinets):
     # Площадка нужна и внутри состояния: по ней браузер выбирает, чем рисовать
     # карточку. Без этого сборка открывалась, а экран оставался пустым.
     assert result["state"]["market"] == "avito"
-
-
-def test_the_cabinet_in_the_header_stays_where_it_was(client, cabinets):
-    """Сборка чужого заказа кабинет в шапке не трогает: он ни за что не отвечает."""
-    before = client.cookies.get(ACCOUNT_COOKIE)
-    scan(client, avito_label(cabinets))
-    assert client.cookies.get(ACCOUNT_COOKIE) == before
 
 
 def test_state_says_whose_order_is_open(client, cabinets):
@@ -291,37 +283,18 @@ def test_a_cabinet_filter_separates_two_shops_of_one_marketplace(client, cabinet
     assert "Ожидает сборки" in own["message"], own["message"]
 
 
-def test_the_header_cabinet_does_not_change_the_answer(client, cabinets, rucksack):
-    """Один и тот же скан — один и тот же ответ, какой бы кабинет ни был в шапке."""
-    answers = set()
-    for shop in (cabinets["ozon"], rucksack, cabinets["avito"], cabinets["yandex"]):
-        client.post("/api/account/switch", json={"account_id": shop["id"], "next": "/pack"})
-        result = scan(client, RUCKSACK)
-        answers.add((result["message"], result["shop"]))
-    assert len(answers) == 1, answers
+def test_the_same_scan_gives_the_same_answer(client, cabinets, rucksack):
+    """Один и тот же скан — один и тот же ответ: «текущего кабинета» нет вовсе."""
+    first = scan(client, RUCKSACK)
+    client.post("/api/pack/release")
+    second = scan(client, RUCKSACK)
+    assert (first["message"], first["shop"]) == (second["message"], second["shop"])
 
 
-def test_an_unknown_code_answers_the_same_from_any_cabinet(client, cabinets):
-    """Нераспознанный код не уходит в кабинет из шапки: ответ один на всех."""
-    answers = set()
-    for shop in (cabinets["ozon"], cabinets["avito"], cabinets["yandex"]):
-        client.post("/api/account/switch", json={"account_id": shop["id"], "next": "/pack"})
-        result = scan(client, "НЕТ-ТАКОГО-КОДА")
-        answers.add((result["message"], result.get("shop")))
-    assert len(answers) == 1, answers
-
-
-def test_switching_the_cabinet_keeps_the_pack_page_and_filter(client, cabinets):
-    """Переключили кабинет на «Сборке» — остались на ней же, фильтр на месте.
-
-    Раньше переключение уводило на адрес площадки кабинета и сбрасывало фильтр:
-    выбрали кабинет Маркета, сменили кабинет в шапке — снова «Все заказы».
-    """
-    where = f"/pack?shop={cabinets['yandex']['id']}"
-    for shop in (cabinets["avito"], cabinets["yandex"], cabinets["ozon"]):
-        answer = client.post("/api/account/switch", json={"account_id": shop["id"], "next": where})
-        assert answer.status_code == 200, answer.text
-        assert answer.json()["redirect"] == where, shop["title"]
+def test_an_unknown_code_answers_from_the_first_cabinet(client, cabinets):
+    """Нераспознанный код отвечает первый кабинет под фильтром — по порядку «Настроек»."""
+    result = scan(client, "НЕТ-ТАКОГО-КОДА")
+    assert result.get("shop") == cabinets["ozon"]["title"]
 
 
 def test_owner_agrees_with_the_scan_on_every_barcode(cabinets, user):

@@ -7,15 +7,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
-from fastapi.responses import Response
 
-from ...core import db, return_acts
-from ...core import printers as core_printers
-from ...core.deps import check_csrf, require_manager, require_market, require_section, safe_filename
-from ..base import NavItem, OrderAction, OrdersBoard, Workspace
+from ...core import db
+from ...core.deps import check_csrf, require_manager
+from ..base import OrderAction, OrdersBoard, Workspace
 from . import pack as packing
 from . import returns, store
-from .client import OzonError
 
 router = APIRouter()
 
@@ -46,23 +43,6 @@ def _counters(account: dict) -> dict:
             [account_id] + list(ready_params),
         )["c"],
     }
-
-
-@router.get("/api/label/{posting_number}.pdf")
-def api_label(posting_number: str, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_market("ozon"))):
-    try:
-        pdf, filename = packing.label_pdf(account, user, [posting_number])
-    except OzonError as exc:
-        raise HTTPException(status_code=502, detail=f"Ozon не отдал стикер: {exc.message}") from exc
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="{safe_filename(filename)}"',
-                 "Cache-Control": "no-store",
-                 # Размер листа — по нему браузер выбирает принтер (см. «Принтеры»).
-                 **core_printers.size_header(pdf)},
-    )
 
 
 # ================================================================== заказы FBS
@@ -150,8 +130,6 @@ ORDERS = OrdersBoard(
 WORKSPACE = Workspace(
     placeholder="Сканируйте штрихкод товара или стикер отправления…",
     banner="Отсканируйте штрихкод товара — система сама найдёт отправление и отправит стикер на печать.",
-    url="/pack",
-    tab="pack",
     load_state=packing.load_state,
     count_queue=lambda account: _counters(account),
     counters=(
@@ -170,23 +148,6 @@ WORKSPACE = Workspace(
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0
-
-
-def nav_items(account: dict) -> list[NavItem]:
-    """Меню кабинета Ozon. Значки — сколько работы осталось, собранное не в счёт."""
-    ready_sql, ready_params = returns.pickup_sql()
-    return [
-        NavItem("/pack", "Сборка", "pack", "pack"),
-        # «Заказов» здесь нет: пункт общий, со счётчиками по всем кабинетам, —
-        # его ставит ядро (core/deps.market_nav).
-        # Раздел возвратов один на все площадки — адрес общий, счётчики свои.
-        NavItem("/returns", "Возвраты", "returns", "returns", (
-            (_count(f"SELECT COUNT(*) AS c FROM returns WHERE account_id = ? AND {ready_sql}",
-                    (account["id"], *ready_params)),
-             "", "К выдаче"),
-            (return_acts.pending_count([account["id"]]), "warn", "Акты ждут подтверждения"),
-        )),
-    ]
 
 
 def settings_stats(account_id: int) -> dict[str, int]:

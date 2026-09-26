@@ -11,14 +11,14 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from . import client as avito, pack as avito_pack
-from ...core import db, return_acts
+from ...core import db
 from .client import AvitoError
-from ...core.deps import check_csrf, require_manager, require_market, require_section
-from ..base import NavItem, OrderAction, OrdersBoard, Workspace
+from ...core.deps import require_manager
+from ..base import OrderAction, OrdersBoard, Workspace
 from . import store
 
 log = logging.getLogger("avito")
@@ -33,6 +33,13 @@ OLD_TABS = {"confirm": "packaging", "ship": "deliver", "packed": "packed"}
 @router.get("/avito")
 def avito_page(tab: str = "confirm"):
     return RedirectResponse(f"/orders?status={OLD_TABS.get(tab, 'packaging')}", status_code=303)
+
+
+# «Сборка» одна на все кабинеты — /pack. Старый адрес с закладок ведёт туда же.
+@router.get("/avito/pack")
+def old_pack_address(request: Request):
+    query = request.url.query
+    return RedirectResponse("/pack" + (f"?{query}" if query else ""), status_code=303)
 
 
 # ------------------------------------------------------------------ сборка заказа
@@ -54,19 +61,6 @@ def _pack_counters(account: dict) -> dict:
             "SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? AND status = ?",
             (account["id"], avito.STATUS_ON_CONFIRMATION)),
     }
-
-
-@router.post("/api/avito/pack/open")
-def api_avito_pack_open(request: Request, payload: dict = Body(...), user: dict = Depends(require_section("pack")),
-                        account: dict = Depends(require_market("avito"))):
-    """Открыть сборку без сканера — если стикер не читается."""
-    check_csrf(request)
-    order = avito_pack.find_order(account["id"], str(payload.get("order_id") or ""))
-    if not order:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-    result = avito_pack.open_order(account, user, order)
-    result["counters"] = _pack_counters(account)
-    return result
 
 
 def _order_row(account: dict, order_id: str) -> dict:
@@ -242,16 +236,23 @@ ORDERS = OrdersBoard(
 # Забирать вручную ничего не отмечают: как только возврат получен, Avito
 # переводит заказ дальше, и ближайшая синхронизация убирает его из панели.
 @router.get("/api/avito/returns/{order_id}/raw")
-def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(require_manager),
-                         account: dict = Depends(require_market("avito"))):
+def api_avito_return_raw(order_id: str, admin: dict = Depends(require_manager)):  # noqa: ARG001 - доступ
     """Ответ Avito по возврату как есть — чтобы видеть, что площадка реально прислала.
 
     Нужен, когда чего-то не хватает на экране: например, Avito не отдал адрес ПВЗ.
+    Кабинет заказа ищем по всем кабинетам Avito — в шапке его больше нет.
     """
-    try:
-        row = _order_row(account, order_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from ...core import shops
+
+    row = None
+    for account in shops.live(lambda market: market.code == "avito"):
+        try:
+            row = _order_row(account, order_id)
+            break
+        except LookupError:
+            continue
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Заказ {order_id} не найден")
     try:
         raw = json.loads(row.get("raw") or "{}")
     except ValueError:
@@ -269,8 +270,6 @@ def api_avito_return_raw(order_id: str, request: Request, admin: dict = Depends(
 WORKSPACE = Workspace(
     placeholder="Сканируйте стикер отправления, затем штрихкоды товаров…",
     banner="Отсканируйте стикер отправления — откроется сборка заказа.",
-    url="/avito/pack",
-    tab="avito_pack",
     load_state=avito_pack.load_state,
     count_queue=lambda account: _pack_counters(account),
     counters=(
@@ -289,27 +288,6 @@ WORKSPACE = Workspace(
 def _count(sql: str, params: tuple) -> int:
     row = db.query_one(sql, params)
     return row["c"] if row else 0
-
-
-def nav_items(account: dict) -> list[NavItem]:
-    """Меню кабинета Avito. Собранные не в счёт, как и у Ozon: значок — сколько дел осталось."""
-    aid = (account["id"],)
-    return [
-        NavItem("/avito/pack", "Сборка", "avito_pack", "pack"),
-        # «Заказов» здесь нет: пункт общий, со счётчиками по всем кабинетам, —
-        # его ставит ядро (core/deps.market_nav).
-        # Раздел возвратов один на все площадки — адрес общий, счётчики свои.
-        # В таблице лежат только возвраты, готовые к выдаче, — фильтровать ещё
-        # и по return_status незачем: написание значения у Avito плавает.
-        # Полученные (пропавшие из выдачи) в счётчик не идут: забирать нечего,
-        # они ждут акта.
-        NavItem("/returns", "Возвраты", "returns", "returns", (
-            (_count("SELECT COUNT(*) AS c FROM avito_orders WHERE account_id = ? "
-                    "AND status = 'on_return' AND received_at IS NULL", aid),
-             "", "Заберите заказ"),
-            (return_acts.pending_count([account["id"]]), "warn", "Акты ждут подтверждения"),
-        )),
-    ]
 
 
 def settings_stats(account_id: int) -> dict[str, int]:

@@ -9,25 +9,13 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📦</text></svg>">
 </head>
 <body data-page="{{ active_tab or '' }}">
-{% set cab = account_switcher(request) %}
 <header class="topbar no-print">
   <div class="brand">📦 <span>Pack</span></div>
-  {% if user and cab.accounts %}
-    <label class="cabinet" title="Кабинет магазина: заказы и товары у каждого свои">
-      <select id="cabinet-select" data-current="{{ cab.current.id if cab.current }}">
-        {% for item in cab.accounts %}
-          <option value="{{ item.id }}" {{ 'selected' if cab.current and item.id == cab.current.id }}>
-            {{ item.marketplace_title }} · {{ item.title }}
-          </option>
-        {% endfor %}
-      </select>
-    </label>
-  {% endif %}
   {# Шапка рисуется по выданным разделам, а не по роли: сборщик с выданными
      «Отчётами» должен видеть на них ссылку, администратор без них — нет. #}
   <nav>
-    {# Пункты меню и счётчики на них объявляет площадка текущего кабинета. #}
-    {% for item in market_nav(request) %}
+    {# Меню одно на всю панель: кабинета в шапке нет, значки — по всем кабинетам. #}
+    {% for item in nav(request) if user %}
       {% if can_see(user, item.section) %}
       <a href="{{ item.href }}" class="{{ 'active' if active_tab == item.tab }}">
         {{ item.label }}
@@ -45,8 +33,10 @@
     {% if can_see(user, 'reports') %}<a href="/reports" class="{{ 'active' if active_tab == 'reports' }}">Отчёты</a>{% endif %}
     {% if can_see(user, 'settings') %}<a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>{% endif %}
   </nav>
-  {% if not account_ready(request) %}
-    <a class="badge warn" href="/settings" title="Панель не загружает заказы, пока не заданы ключи площадки">НЕТ КЛЮЧЕЙ</a>
+  {% set without_keys = unconfigured() if user else 0 %}
+  {% if without_keys %}
+    <a class="badge warn" href="/settings" title="Панель не загружает заказы кабинета, пока не заданы ключи площадки">
+      БЕЗ КЛЮЧЕЙ: {{ without_keys }}</a>
   {% endif %}
   <div class="user">{% if user %}<b>{{ user.login }}</b>
     <span class="muted small">{{ role_label(user.role) }}</span>

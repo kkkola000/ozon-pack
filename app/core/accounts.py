@@ -101,14 +101,6 @@ def default_account() -> dict | None:
     return _row_to_dict(row) if row else None
 
 
-def resolve(account_id: int | str | None) -> dict | None:
-    """Запрошенный кабинет, если он есть и включён, иначе — кабинет по умолчанию."""
-    account = get(account_id)
-    if account and account["active"]:
-        return account
-    return default_account()
-
-
 def credentials(account: dict | None) -> tuple[str, str, str]:
     """(client_id, api_key, источник): 'panel', 'env' или 'none'.
 

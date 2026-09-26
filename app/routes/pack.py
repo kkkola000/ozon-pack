@@ -12,10 +12,9 @@
 * выбран кабинет — сборка в его границах, и наклейка другого кабинета честно
   не откроется, даже если он той же площадки.
 
-Кто и как выбирает кабинет под скан — в `core/packing.py`. Адреса `/pack`,
-`/avito/pack`, `/yandex/pack` — просто разные двери в один и тот же раздел:
-каждая площадка объявляет свой в `Workspace.url`, и по нему регистрируется
-маршрут.
+Кто и как выбирает кабинет под скан — в `core/packing.py`. Адрес один —
+`/pack`; старые `/avito/pack` и `/yandex/pack` ведут сюда же (их держат сами
+площадки).
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ from ..core import packing as core_packing
 from ..core import printers as core_printers
 from ..core import store as core_store
 from ..core import sync as core_sync
-from ..core.deps import check_csrf, require_account, require_section, safe_filename, templates
+from ..core.deps import check_csrf, require_section, safe_filename, templates
 from ..markets.base import MarketError
 
 router = APIRouter()
@@ -118,14 +117,11 @@ def _freshened(where: list[dict]) -> str | None:
     return min(stamps)
 
 
-def _tabs(account: dict) -> str:
-    """Какой пункт меню подсветить: «Сборка» той площадки, чей кабинет в шапке."""
-    market = _registry().get(account.get("marketplace"))
-    return market.workspace.tab if market and market.workspace else "pack"
-
-
-def page(request: Request, user: dict, account: dict):
-    """Собрать страницу рабочего места. Площадка адреса роли не играет."""
+@router.get("/pack", response_class=HTMLResponse)
+def page(request: Request,
+         shop: str = ALL,  # noqa: ARG001 - читается из query_params, нужен для /docs
+         user: dict = Depends(require_section("pack"))):
+    """Страница рабочего места — одна на все кабинеты."""
     picked = _picked(request)
     where = core_packing.shops(picked)
     synced_at = _freshened(where)
@@ -139,7 +135,6 @@ def page(request: Request, user: dict, account: dict):
         {
             "request": request,
             "user": user,
-            "account": account,
             "placeholder": placeholder,
             "banner": banner,
             "tiles": tiles,
@@ -155,33 +150,9 @@ def page(request: Request, user: dict, account: dict):
             # «Обновлено» — время последнего похода на площадку, а не опроса панели.
             "synced_at": core_store.local_time(synced_at),
             "csrf": request.state.session.get("csrf"),
-            "active_tab": _tabs(account),
+            "active_tab": "pack",
         },
     )
-
-
-def _endpoint():
-    """Обработчик адреса площадки: страница одна, площадка адреса роли не играет."""
-
-    def pack_page(request: Request,
-                  shop: str = ALL,  # noqa: ARG001 - читается из query_params, нужен для /docs
-                  user: dict = Depends(require_section("pack")),
-                  account: dict = Depends(require_account)):
-        return page(request, user, account)
-
-    return pack_page
-
-
-def register() -> APIRouter:
-    """Зарегистрировать рабочее место по адресу каждой площадки из реестра."""
-    for market in _registry().all_markets():
-        if market.workspace is None:
-            continue
-        router.add_api_route(
-            market.workspace.url, _endpoint(), methods=["GET"],
-            response_class=HTMLResponse, name=f"pack_{market.code}",
-        )
-    return router
 
 
 # ------------------------------------------------------------------ сканирование
@@ -195,8 +166,7 @@ def _answer(request: Request, result: dict) -> dict:
 
 @router.post("/api/pack/scan")
 def api_scan(request: Request, payload: dict = Body(...),
-             user: dict = Depends(require_section("pack")),
-             account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+             user: dict = Depends(require_section("pack"))):
     """Один скан. В каком кабинете искать код — решает packing, а не шапка."""
     check_csrf(request)
     picked = _picked(request)
@@ -205,8 +175,7 @@ def api_scan(request: Request, payload: dict = Body(...),
 
 
 @router.post("/api/pack/release")
-def api_release(request: Request, user: dict = Depends(require_section("pack")),
-                account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+def api_release(request: Request, user: dict = Depends(require_section("pack"))):
     """Отменить начатую сборку — в том кабинете, где она открыта."""
     check_csrf(request)
     return _answer(request, core_packing.release(user))
@@ -214,8 +183,7 @@ def api_release(request: Request, user: dict = Depends(require_section("pack")),
 
 @router.post("/api/pack/complete")
 def api_complete(request: Request, payload: dict = Body(default={}),
-                 user: dict = Depends(require_section("pack")),
-                 account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+                 user: dict = Depends(require_section("pack"))):
     """«Завершить без скана наклейки» — например, если она не читается."""
     check_csrf(request)
     try:
@@ -226,8 +194,7 @@ def api_complete(request: Request, payload: dict = Body(default={}),
 
 
 @router.post("/api/pack/sync")
-def api_sync(request: Request, user: dict = Depends(require_section("pack")),
-             account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+def api_sync(request: Request, user: dict = Depends(require_section("pack"))):
     """«Обновить заказы» — все кабинеты под фильтром, как и всё остальное здесь."""
     check_csrf(request)
     where = core_packing.shops(_picked(request))
@@ -244,8 +211,7 @@ def api_sync(request: Request, user: dict = Depends(require_section("pack")),
 
 # ------------------------------------------------------------------ состояние
 @router.get("/api/pack/state")
-def api_state(request: Request, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+def api_state(request: Request, user: dict = Depends(require_section("pack"))):
     """Состояние рабочего места: начатая сборка, очередь и замок на наклейки.
 
     Замок общий на кабинеты под фильтром: сборка объединена, и начинать её,
@@ -265,8 +231,7 @@ def api_state(request: Request, user: dict = Depends(require_section("pack")),
 
 # ------------------------------------------------------------------ наклейки
 @router.get("/api/pack/label/{code}/{order_id}.pdf")
-def api_label(code: str, order_id: str, user: dict = Depends(require_section("pack")),
-              account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+def api_label(code: str, order_id: str, user: dict = Depends(require_section("pack"))):
     """Наклейка одного заказа на печать — из того кабинета, где заказ лежит.
 
     Кабинет в шапке тут ни при чём: сборщик печатает наклейку того заказа, что
@@ -291,8 +256,7 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
 
 
 @router.post("/api/pack/labels.zip")
-def api_labels(request: Request, user: dict = Depends(require_section("pack")),
-               account: dict = Depends(require_account)):  # noqa: ARG001 - нужен для проверки доступа
+def api_labels(request: Request, user: dict = Depends(require_section("pack"))):
     """Наклейки всех кабинетов одним архивом — то, с чего начинается смена."""
     check_csrf(request)
     waiting = core_labels.pending_everywhere(core_packing.shops(_picked(request)))

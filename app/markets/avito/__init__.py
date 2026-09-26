@@ -10,9 +10,6 @@ MARKET = Market(
     id_label="client_id",
     key_label="client_secret",
     hint="Личный кабинет Avito → Настройки → Профиль → API",
-    # Заказы — в общем разделе «/orders»; своё у Avito — рабочее место.
-    home="/avito/pack",
-    prefixes=("/avito",),
     tables=("avito_orders", "avito_order_items"),
     router=routes.router,
     get_client=client.get_client,
@@ -20,7 +17,6 @@ MARKET = Market(
     probe=client.probe,
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
-    nav=routes.nav_items,
     stats=routes.settings_stats,
     schema=store.SCHEMA,
     raw_tables=("avito_orders",),

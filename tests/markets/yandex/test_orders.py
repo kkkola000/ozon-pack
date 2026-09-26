@@ -11,7 +11,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import accounts, board, db, labels
-from app.markets import yandex as yandex_market
 from app.markets.yandex import client as yandex
 from app.main import app
 from app.markets.yandex import pack as yandex_pack
@@ -33,10 +32,6 @@ def client(market):
         test_client.headers["X-CSRF-Token"] = re.search(
             r'name="csrf-token" content="([^"]*)"', page.text
         ).group(1)
-        switched = test_client.post(
-            "/api/account/switch", json={"account_id": market["id"], "next": "/yandex"}
-        )
-        assert switched.status_code == 200, switched.text
         yield test_client
 
 
@@ -170,7 +165,8 @@ def test_pages_open_and_nav_shows_market(client):
     assert 'href="/orders"' in page.text
     assert "Заказы Маркета" not in page.text
     assert "Заказы FBS" not in page.text
-    pack = client.get("/yandex/pack")
+    assert client.get("/yandex/pack").headers["location"] == "/pack"
+    pack = client.get("/pack")
     assert pack.status_code == 200
     assert 'id="label-gate"' in pack.text
     assert 'id="scan-panel"' in pack.text
@@ -191,20 +187,17 @@ def test_shared_sections_open_in_a_market_cabinet(client):
     assert client.get("/pack").status_code == 200
 
 
-def test_switch_lands_on_market_pack_page(client, market):
-    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/avito"})
-    assert response.json()["redirect"] == "/yandex/pack"
-    # «Заказы» общие — переключение оставляет на месте.
-    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/orders"})
-    assert response.json()["redirect"] == "/orders"
-    response = client.post("/api/account/switch", json={"account_id": market["id"], "next": "/reports"})
-    assert response.json()["redirect"] == "/reports"
+def test_there_is_no_cabinet_switcher(client, market):
+    """Переключателя кабинетов нет: ни списка в шапке, ни адреса переключения."""
+    page = client.get("/pack").text
+    assert 'id="cabinet-select"' not in page
+    assert client.post("/api/account/switch", json={"account_id": market["id"], "next": "/orders"}).status_code in (404, 405)
 
 
-def test_home_redirects_to_market_pack(client):
+def test_home_redirects_to_the_shared_pack(client):
     response = client.get("/")
     assert response.status_code == 303
-    assert response.headers["location"] == "/yandex/pack"
+    assert response.headers["location"] == "/pack"
 
 
 def test_only_a_manager_can_unmark_a_packed_order(client, market, user, other_user):
@@ -315,7 +308,6 @@ def test_returns_section_is_closed_for_the_market(client, market):
 
     Отказ должен быть понятным: это не поломка, а «у этой площадки такого нет».
     """
-    assert not any(item.tab == "returns" for item in yandex_market.MARKET.nav(market))
     # В фильтре «Возвратов» кабинета Маркета нет, а его адрес — это «Все кабинеты».
     response = client.get(f"/returns?shop={market['id']}")
     assert response.status_code == 200

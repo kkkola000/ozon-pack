@@ -94,7 +94,7 @@ def test_marking_returns_taken_is_gone(client):
 def test_label_pdf(client):
     login(client)
     number = db.query_one("SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' LIMIT 1")["posting_number"]
-    response = client.get(f"/api/label/{number}.pdf")
+    response = client.get(f"/api/pack/label/ozon/{number}.pdf")
     assert response.status_code == 200
     assert response.content[:4] == b"%PDF"
 
@@ -169,22 +169,15 @@ def test_last_cabinet_cannot_be_deleted(client):
     assert response.status_code == 400
 
 
-def test_switching_cabinet_changes_section(client):
+def test_sections_are_shared_by_every_cabinet(client):
+    """«Сборка» и «Заказы» — одни на все кабинеты, старые адреса площадок ведут туда же."""
     from app.core import accounts
 
-    csrf = login(client)
-    avito_id = accounts.create("avito", "Avito магазин")
-    response = client.post(
-        "/api/account/switch", json={"account_id": avito_id, "next": "/orders"}, headers={"X-CSRF-Token": csrf}
-    )
-    assert response.status_code == 200, response.text
-    # «Заказы» — один раздел на все кабинеты: переключение оставляет на месте,
-    # а старый адрес «Заказов Avito» ведёт туда же.
-    assert response.json()["redirect"] == "/orders"
+    login(client)
+    assert accounts.create("avito", "Avito магазин")
     assert client.get("/orders").status_code == 200
     assert client.get("/avito").headers["location"] == "/orders?status=packaging"
-    # «Сборка» одна на все площадки: её адрес открывается в любом кабинете и
-    # кабинет не переключает — сборка идёт по фильтру, а не по шапке.
+    assert client.get("/avito/pack").headers["location"] == "/pack"
     assert client.get("/pack").status_code == 200
 
 
@@ -237,21 +230,6 @@ def test_login_keeps_internal_next(client, target):
         "/login", data={"login": "admin", "password": "test-admin-pass", "next": target}
     )
     assert response.headers["location"] == target
-
-
-def test_switch_account_does_not_redirect_outside(client):
-    from app.core import accounts
-
-    csrf = login(client)
-    account_id = accounts.default_account()["id"]
-    response = client.post(
-        "/api/account/switch",
-        json={"account_id": account_id, "next": "//evil.com"},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert response.status_code == 200, response.text
-    # Запасной адрес переключения — корень панели, а не чужой домен
-    assert response.json()["redirect"] == "/"
 
 
 def test_login_page_does_not_redirect_outside(client):
@@ -385,7 +363,7 @@ def test_label_header_survives_hostile_filename(client, monkeypatch):
     number = db.query_one(
         "SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' LIMIT 1"
     )["posting_number"]
-    response = client.get(f"/api/label/{number}.pdf")
+    response = client.get(f"/api/pack/label/ozon/{number}.pdf")
     assert response.status_code == 200
     disposition = response.headers["content-disposition"]
     assert disposition == 'inline; filename="a_filename_evil.exe"', disposition
@@ -563,20 +541,12 @@ def test_all_cabinets_sheet_ignores_current_cabinet_filters(client, many_cabinet
 
 
 def test_sheet_works_from_avito_cabinet(client, many_cabinets):
-    """Раздел возвратов один: из кабинета Avito открываются оба листа.
+    """Лист по кабинету Avito открывается так же, как по кабинету Ozon.
 
-    Обычный — по текущему кабинету, общий — сразу по всем. Раньше из Avito
-    первый отвечал отказом: лист умел только Ozon.
+    Раньше лист умел только Ozon, и из кабинета Avito первый отвечал отказом.
     """
-    csrf = login(client)
-    switched = client.post(
-        "/api/account/switch",
-        json={"account_id": many_cabinets["avito"]["id"], "next": "/avito"},
-        headers={"X-CSRF-Token": csrf},
-    )
-    assert switched.status_code == 200, switched.text
-
-    own = client.get("/returns/print")
+    login(client)
+    own = client.get(f"/returns/print?shop={many_cabinets['avito']['id']}")
     assert own.status_code == 200
     assert "Кабинет Avito" in own.text
     assert client.get("/returns/print?scope=all").status_code == 200

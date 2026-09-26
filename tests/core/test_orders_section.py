@@ -38,12 +38,6 @@ def client(cabinets):
         yield enter(test_client)
 
 
-def switch(client, account):
-    response = client.post("/api/account/switch", json={"account_id": account["id"], "next": "/orders"})
-    assert response.status_code == 200, response.text
-    assert response.json()["redirect"] == "/orders", "«Заказы» общие — переключение оставляет на месте"
-
-
 def numbers(page: str) -> list[str]:
     return re.findall(r'data-number="([^"]+)"', page)
 
@@ -125,17 +119,6 @@ def test_counts_are_crossed(client, cabinets):
     assert badge(page, "Все заказы") == sum(n for (_id, key), n in counts.items() if key == "deliver")
 
 
-def test_the_header_cabinet_changes_nothing(client, cabinets):
-    """Стоим в Ozon, в Avito, в Маркете — «Заказы» одни и те же."""
-    pages = []
-    for account in cabinets.values():
-        switch(client, account)
-        response = client.get("/orders?status=deliver")
-        assert response.status_code == 200
-        pages.append(numbers(response.text))
-    assert pages[0] and pages[0] == pages[1] == pages[2]
-
-
 def test_search_narrows_rows_and_counts(client, cabinets):
     yandex = cabinets["yandex"]
     order = one_of("yandex_orders", yandex, "substatus = 'STARTED'")
@@ -152,19 +135,15 @@ def test_old_tab_names_still_open_their_status(client):
 
 def test_nav_has_one_orders_item_with_counts_over_all_cabinets(client, cabinets):
     counts = board.counts(board.shops())
-    for account in cabinets.values():
-        switch(client, account)
-        page = client.get("/logs").text
-        assert 'href="/orders"' in page
-        for gone in ("Заказы FBS", "Заказы Avito", "Заказы Маркета"):
-            assert gone not in page
-        waiting = sum(n for (_id, key), n in counts.items() if key == "packaging")
-        assert f'title="Ожидает сборки">{waiting}</span>' in page
-        # «Заказы» — сразу за «Сборкой».
-        nav = page[page.index("<nav>"):page.index("</nav>")]
-        assert nav.index("Сборка") < nav.index("Заказы")
-        if "Возвраты" in nav:
-            assert nav.index("Заказы") < nav.index("Возвраты")
+    page = client.get("/logs").text
+    assert 'href="/orders"' in page
+    for gone in ("Заказы FBS", "Заказы Avito", "Заказы Маркета"):
+        assert gone not in page
+    waiting = sum(n for (_id, key), n in counts.items() if key == "packaging")
+    assert f'title="Ожидает сборки">{waiting}</span>' in page
+    # «Заказы» — сразу за «Сборкой», перед «Возвратами».
+    nav = page[page.index("<nav>"):page.index("</nav>")]
+    assert nav.index("Сборка") < nav.index("Заказы") < nav.index("Возвраты")
 
 
 def test_bulk_buttons_follow_the_rows_on_screen(client, cabinets):
@@ -211,7 +190,6 @@ def test_a_packer_with_orders_opens_the_section(cabinets):
 # ------------------------------------------------------------------ действия
 def test_ship_in_ozon_goes_to_the_orders_cabinet_not_the_header(client, cabinets):
     """Стоим в Маркете — «Собрать в Ozon» всё равно уходит в кабинет Ozon."""
-    switch(client, cabinets["yandex"])
     number = one_of("postings", cabinets["ozon"], "status = 'awaiting_packaging'")["posting_number"]
     response = client.post("/api/orders/action", json={
         "account_id": cabinets["ozon"]["id"], "action": "ship", "ids": [number]})
@@ -245,7 +223,6 @@ def test_actions_check_the_cabinet_and_the_order(client, cabinets):
 
 def test_labels_come_from_the_orders_cabinet(client, cabinets):
     """Наклейки печатаются по кабинету заказа: стоим в Avito — стикер Ozon."""
-    switch(client, cabinets["avito"])
     number = one_of("postings", cabinets["ozon"], "status = 'awaiting_deliver'")["posting_number"]
     response = client.post("/api/orders/labels.pdf", json={"account_id": cabinets["ozon"]["id"], "ids": [number]})
     assert response.status_code == 200, response.text

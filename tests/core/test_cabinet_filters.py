@@ -100,3 +100,17 @@ def test_a_market_without_returns_has_no_chip(client, cabinets):
     page = client.get("/returns").text
     assert f'/returns?shop={cabinets["avito"]["id"]}' in page
     assert f'/returns?shop={cabinets["yandex"]["id"]}"' not in page
+
+
+# ------------------------------------------------------------------ шапка
+def test_header_has_no_switcher_and_counts_cabinets_without_keys(client, cabinets):
+    page = client.get("/orders").text
+    assert 'id="cabinet-select"' not in page
+    assert "БЕЗ КЛЮЧЕЙ" not in page
+    accounts.create("avito", "Новый Avito")          # без ключей
+    page = client.get("/orders").text
+    assert "БЕЗ КЛЮЧЕЙ: 1" in page
+    # Меню одно: «Сборка», «Заказы», «Возвраты» — у любых кабинетов.
+    nav = page[page.index("<nav>"):page.index("</nav>")]
+    for item in ('href="/pack"', 'href="/orders"', 'href="/returns"'):
+        assert item in nav, item
