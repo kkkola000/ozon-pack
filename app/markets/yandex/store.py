@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS yandex_orders (
     print_count     INTEGER NOT NULL DEFAULT 0,
     -- Отметка о выгрузке ярлыка на компьютер — см. postings.label_saved_at.
     label_saved_at  TEXT,
+    -- Когда панель впервые увидела заказ в «Ожидает отгрузки» (core/labels.py).
+    -- Наклейка считается скачанной, только если её скачали после этого.
+    deliver_since   TEXT,
     first_seen_at   TEXT,
     updated_at      TEXT,
     PRIMARY KEY (account_id, id)
@@ -104,11 +107,9 @@ def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) ->
     Локальное состояние сборки (packed_at, кто взял в работу, выгружен ли ярлык)
     принадлежит панели: площадка о нём не знает и затирать его нельзя.
 
-    Одно исключение — переход в «Ожидает отгрузки». На «Сборку» нужен ярлык,
-    скачанный в этом статусе: коробки заказа окончательно известны, когда его
-    отмечают готовым к отгрузке. Ярлык, скачанный раньше (до 1.51.1 выгрузка
-    брала и «Ожидает сборки»), не в счёт — отметку сбрасываем, и сборка
-    запирается, пока ярлык не скачают заново.
+    Ярлык, скачанный до перехода в «Ожидает отгрузки», в счёт не идёт — это
+    решает отметка deliver_since, которую ставит ядро после синхронизации
+    (core/labels.note_deliver), одинаково для всех площадок.
     """
     order_id = _text(raw.get("orderId"))
     if not order_id:
@@ -143,10 +144,7 @@ def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) ->
             notes = excluded.notes, total = excluded.total, items_count = excluded.items_count,
             positions_count = excluded.positions_count, created_at_api = excluded.created_at_api,
             updated_at_api = excluded.updated_at_api, raw = excluded.raw,
-            updated_at = excluded.updated_at,
-            label_saved_at = CASE
-                WHEN excluded.substatus = ? AND yandex_orders.substatus IS NOT ? THEN NULL
-                ELSE yandex_orders.label_saved_at END
+            updated_at = excluded.updated_at
         """,
         (
             account_id,
@@ -170,8 +168,6 @@ def upsert_yandex_order(conn: sqlite3.Connection, account_id: int, raw: dict) ->
             json.dumps(raw, ensure_ascii=False),
             (existing["first_seen_at"] if existing else now) or now,
             now,
-            READY_TO_SHIP,
-            READY_TO_SHIP,
         ),
     )
 

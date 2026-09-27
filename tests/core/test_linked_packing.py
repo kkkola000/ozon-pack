@@ -16,7 +16,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import catalog, db, linked, pack_state, product_links, product_sets
+from app.core import catalog, db, labels, linked, pack_state, product_links, product_sets
 from app.core import packing as core_packing
 from app.main import app
 from app.markets.avito import pack as avito_pack
@@ -69,7 +69,9 @@ def test_barcode_of_linked_card_opens_ozon_posting(account, ozon_item, yandex_ac
     assert before["state"]["active"] is None
 
     link(ozon_item["card"], market_card)
-    # Скан идёт через общее рабочее место: кабинет находит ядро.
+    # Скан идёт через общее рабочее место: кабинет находит ядро. Сначала —
+    # наклейки: без них общее рабочее место новый заказ не откроет.
+    labels.mark_saved("postings", account["id"], ozon_pack.pending_labels(account["id"]), "posting_number")
     result = core_packing.scan(core_packing.shops(), user, FOREIGN)
     assert result["action"] == "posting_selected", result["message"]
     assert result["market"] == "ozon"

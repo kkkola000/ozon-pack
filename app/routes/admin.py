@@ -34,6 +34,7 @@ EVENT_LABELS = {
     "scan_no_candidates": "Товар не нужен",
     "scan_choice": "Выбор отправления",
     "scan_unknown": "Неизвестный код",
+    "scan_labels_locked": "Скан до скачивания наклеек",
     "scan_unknown_posting": "Отправление не найдено",
     "label_print": "Печать стикера",
     "printers_saved": "Настройка принтеров",

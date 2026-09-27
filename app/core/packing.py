@@ -248,6 +248,34 @@ def _run(shop: dict, call, *args) -> dict:
     return result
 
 
+def _labels_locked(where: list[dict], user: dict, code: str) -> dict | None:
+    """Наклейки не скачаны — новый заказ не открываем. None — можно работать.
+
+    Замок держит не только страница (она прячет поле сканирования), но и
+    сервер: страница узнаёт о новых заказах раз в 30 секунд, и в этот промежуток
+    сборщик успел бы открыть заказ без наклейки. Начатую сборку замок не
+    трогает — её можно завершить или отменить, новую начать нельзя.
+    """
+    from . import labels as core_labels
+
+    waiting = core_labels.pending_everywhere(where)
+    if not waiting:
+        return None
+    gate = core_labels.state_everywhere(waiting)
+    shops = ", ".join(f"{shop['title']} — {shop['count']}" for shop in gate["shops"])
+    db.log_event("scan_labels_locked", level="warn", user=user, barcode=code,
+                 message=f"Наклейки не скачаны: {shops}")
+    return {
+        "status": "error",
+        "message": f"Сначала скачайте наклейки ({shops}): новые заказы ждут отгрузки.",
+        "action": "labels_locked",
+        "sound": "error",
+        "state": {"active": None, "items": [], "done": 0, "total": 0, "complete": False},
+        "market": None,
+        "labels": gate,
+    }
+
+
 def scan(where: list[dict], user: dict, code: str) -> dict:
     """Один скан рабочего места. Кабинет выбирается по коду, а не по шапке."""
     code = (code or "").strip()
@@ -257,6 +285,10 @@ def scan(where: list[dict], user: dict, code: str) -> dict:
         if stranger is not None:
             return stranger
         return _run(open_shop, _workspace(open_shop).scan, user, code)
+
+    locked = _labels_locked(where, user, code)
+    if locked is not None:
+        return locked
 
     target = owner_of(where, user, code) or _home(where)
     if target is None:

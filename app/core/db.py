@@ -734,6 +734,11 @@ def init_db() -> None:
             for market in _registry().all_markets():
                 if market.migrate:
                     market.migrate(conn)
+            # После правок площадок: отметка «в «Ожидает отгрузки» с …» для
+            # заказов, лежавших там до обновления (core/labels.py).
+            from . import labels as core_labels
+
+            core_labels.note_deliver_once(conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

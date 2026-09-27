@@ -136,10 +136,17 @@ def page(request: Request,
 
 # ------------------------------------------------------------------ сканирование
 def _answer(request: Request, result: dict) -> dict:
-    """Дописать к ответу плитки очереди — они считаются по фильтру."""
+    """Дописать к ответу плитки очереди и замок наклеек — они считаются по фильтру.
+
+    Замок — в каждом ответе, а не только в опросе раз в 30 секунд: сборку
+    завершили или отменили, и если новые наклейки не скачаны, поле
+    сканирования должно закрыться сразу, а не через полминуты.
+    """
     picked = _picked(request)
-    _tiles, counters = core_packing.tiles(picked, core_packing.shops(picked))
+    where = core_packing.shops(picked)
+    _tiles, counters = core_packing.tiles(picked, where)
     result["counters"] = counters
+    result.setdefault("labels", core_labels.state_everywhere(core_labels.pending_everywhere(where)))
     return result
 
 

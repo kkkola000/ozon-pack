@@ -256,3 +256,105 @@ def test_opening_an_ozon_posting_frees_a_held_avito_order(warehouse, user):
     assert db.query_one("SELECT claim_login FROM avito_orders WHERE id = ?", (held,))["claim_login"] is None
     assert db.query_one("SELECT account_id, posting_number FROM pack_state WHERE user_id = ?",
                         (user["id"],))["posting_number"] == number
+
+
+# ------------------------------------------------- переход в «Ожидает отгрузки»
+def test_label_saved_before_deliver_does_not_count(warehouse):
+    """Наклейка считается, только если скачана после того, как заказ стал «Ожидает отгрузки»."""
+    from app.core import db, labels
+    from app.markets.ozon import store as ozon_store
+
+    ozon = warehouse["ozon"]
+    number = ozon_pack.pending_labels(ozon["id"])[0]
+    labels.note_deliver(ozon)
+    db.execute("UPDATE postings SET label_saved_at = '2026-01-01T00:00:00+00:00' WHERE posting_number = ?", (number,))
+    assert number in ozon_pack.pending_labels(ozon["id"]), "скачана раньше перехода — не в счёт"
+
+    labels.mark_saved("postings", ozon["id"], [number], "posting_number")
+    assert number not in ozon_pack.pending_labels(ozon["id"])
+
+    # Вернулся в «Ожидает сборки» и снова пришёл в «Ожидает отгрузки» — нужна новая.
+    db.execute("UPDATE postings SET status = ? WHERE posting_number = ?",
+               (ozon_store.STATUS_AWAITING_PACKAGING, number))
+    labels.note_deliver(ozon)
+    assert db.query_one("SELECT deliver_since FROM postings WHERE posting_number = ?", (number,))["deliver_since"] is None
+    db.execute("UPDATE postings SET status = ?, label_saved_at = '2026-01-01T00:00:00+00:00' "
+               "WHERE posting_number = ?", (ozon_store.STATUS_AWAITING_DELIVER, number))
+    labels.note_deliver(ozon)
+    assert number in ozon_pack.pending_labels(ozon["id"])
+
+
+def test_sync_notes_the_moment_for_every_market(warehouse):
+    """Отметку ставит обычная синхронизация — у всех площадок одинаково."""
+    from app.core import db, sync
+
+    for code, table in (("ozon", "postings"), ("avito", "avito_orders"), ("yandex", "yandex_orders")):
+        sync.sync_account(warehouse[code])
+        waiting = pending(warehouse)[code]
+        assert waiting, code
+        rows = db.query(f"SELECT deliver_since FROM {table} WHERE account_id = ? AND label_saved_at IS NULL",
+                        (warehouse[code]["id"],))
+        assert any(row["deliver_since"] for row in rows), f"{code}: синхронизация не отметила переход"
+
+
+def test_orders_already_waiting_keep_their_labels_after_update(warehouse):
+    """Первый запуск новой версии: скачанное до неё заново качать не нужно."""
+    from app.core import db, labels
+
+    ozon = warehouse["ozon"]
+    saved = ozon_pack.pending_labels(ozon["id"])[:2]
+    labels.mark_saved("postings", ozon["id"], saved, "posting_number")
+    db.execute("UPDATE postings SET deliver_since = NULL")
+    db.execute("DELETE FROM kv WHERE key = ?", (labels.KV_DELIVER_NOTED,))
+    with db.write() as conn:
+        labels.note_deliver_once(conn)
+    after = ozon_pack.pending_labels(ozon["id"])
+    assert not set(saved) & set(after), "скачанные до обновления остаются скачанными"
+    assert after, "нескачанные по-прежнему ждут"
+
+
+# ------------------------------------------------- замок держит и сервер
+def test_server_does_not_open_an_order_before_labels(client, warehouse):
+    """Страница узнаёт о новых заказах раз в 30 секунд — сервер не ждёт её и не открывает заказ."""
+    from app.core import db
+
+    code = db.query_one(
+        "SELECT pb.barcode FROM product_barcodes pb JOIN posting_items i ON i.sku = pb.sku "
+        "AND i.account_id = pb.account_id JOIN postings p ON p.posting_number = i.posting_number "
+        "AND p.account_id = i.account_id WHERE p.status = 'awaiting_deliver' LIMIT 1")["barcode"]
+    locked = client.post("/api/pack/scan", json={"code": code}).json()
+    assert locked["action"] == "labels_locked"
+    assert "Сначала скачайте наклейки" in locked["message"]
+    assert locked["labels"]["locked"] is True
+    assert client.get("/api/pack/state").json()["state"]["active"] is None, "заказ не открыт"
+
+
+def test_open_packing_can_be_finished_then_the_gate_closes(client, warehouse, user):
+    """Начатую сборку замок не прерывает: её завершают или отменяют, а новую начать нельзя."""
+    from app.core import db, labels
+    from tests.conftest import pick_posting
+
+    for code in ("ozon", "avito", "yandex"):
+        source = {"ozon": ("postings", "posting_number"), "avito": ("avito_orders", "id"),
+                  "yandex": ("yandex_orders", "id")}[code]
+        labels.mark_saved(source[0], warehouse[code]["id"], pending(warehouse)[code], source[1])
+    posting = pick_posting()
+    opened = client.post("/api/pack/scan", json={"code": posting["posting_number"]}).json()
+    assert opened["action"] == "posting_selected", opened["message"]
+
+    # Посреди сборки подъехал новый заказ «Ожидает отгрузки».
+    other = db.query_one("SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' "
+                         "AND posting_number != ? AND local_state = 'new' LIMIT 1", (posting["posting_number"],))
+    db.execute("UPDATE postings SET label_saved_at = NULL WHERE posting_number = ?", (other["posting_number"],))
+
+    item = posting["items"][0]
+    barcode = db.query_one("SELECT barcode FROM product_barcodes WHERE sku = ? LIMIT 1", (item["sku"],))["barcode"]
+    going = client.post("/api/pack/scan", json={"code": barcode}).json()
+    assert going["action"] != "labels_locked", "начатую сборку замок не прерывает"
+    assert going["labels"]["locked"] is True, "но в ответе уже видно, что наклейки ждут"
+
+    released = client.post("/api/pack/release").json()
+    assert released["labels"]["locked"] is True, "после отмены поле закрывается сразу, без ожидания опроса"
+    again = client.post("/api/pack/scan", json={"code": posting["posting_number"]}).json()
+    assert again["action"] == "labels_locked", "новую сборку до скачивания не начать"
+

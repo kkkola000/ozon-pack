@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 from app.core import db
+from app.core import sync as core_sync
 from app.main import app
 from app.markets.yandex import client as yandex
 from app.markets.yandex import sync as yandex_sync
@@ -250,11 +251,13 @@ def test_label_saved_before_ready_to_ship_does_not_count(client, market):
     «Ожидает отгрузки» — сборка должна запереться, пока ярлык не скачают заново."""
     started = work_ids(market, yandex.SUBSTATUS_STARTED)[0]
     client.post(f"/api/pack/labels.zip?shop={market['id']}")
-    db.execute("UPDATE yandex_orders SET label_saved_at = ? WHERE id = ?", (db.now_iso(), started))
+    # Скачан давно, ещё в «Ожидает сборки».
+    db.execute("UPDATE yandex_orders SET label_saved_at = '2026-01-01T00:00:00+00:00' WHERE id = ?", (started,))
 
     fake = yandex.get_client(market)
     fake._orders[started]["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
-    yandex_sync.sync_yandex(market)
+    # Через общую синхронизацию: после неё ядро и отмечает переход в «Ожидает отгрузки».
+    core_sync.sync_account(market)
 
     gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
     assert gate["locked"] is True and gate["pending"] == 1
@@ -265,7 +268,7 @@ def test_label_saved_before_ready_to_ship_does_not_count(client, market):
 def test_label_saved_in_ready_to_ship_survives_the_next_sync(client, market):
     """Обычное обновление заказов отметку не трогает — иначе замок падал бы каждые пять минут."""
     assert client.post(f"/api/pack/labels.zip?shop={market['id']}").status_code == 200
-    yandex_sync.sync_yandex(market)
+    core_sync.sync_account(market)
     assert client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]["locked"] is False
 
 

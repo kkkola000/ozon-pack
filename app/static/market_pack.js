@@ -252,6 +252,9 @@ function applyResult(result, code, printWindow = null) {
   beep(result.sound || result.status);
   renderActive(result.state || { active: null });
   if (result.counters) applyCounters(result.counters);
+  /* Замок — сразу по ответу: сборку завершили или отменили, а новые наклейки
+     не скачаны — поле закрывается сейчас, а не при следующем опросе. */
+  if (result.labels) applyGate(result.labels);
   if (code) pushHistory(code, result);
   /* Печатать наклейку умеет не всякая площадка, и ключ у каждой свой. Берём
      ту, чей заказ только что открылся: renderActive уже поставил её выше. */
@@ -293,8 +296,8 @@ function applyGate(state) {
   gate.hidden = !locked;
   scanPanel.hidden = locked;
   if (!locked) {
-    const notice = `Подъехали новые заказы (${pending}). Закройте текущий — `
-                 + 'дальше понадобится скачать наклейки.';
+    const notice = `Подъехали новые заказы (${pending}). Завершите или отмените текущую сборку — `
+                 + 'затем скачайте наклейки.';
     // Опрос идёт каждые 30 секунд: говорим один раз, а не встряхиваем рамку
     // и не затираем итог скана при каждом опросе.
     if (pending && hasActive && banner.querySelector('.text').textContent !== notice) {

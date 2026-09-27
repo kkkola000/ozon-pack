@@ -45,6 +45,11 @@ def sync_account(account: dict, *, returns: bool = True) -> dict:
     if market is None:
         raise RuntimeError(f"Кабинет «{account.get('title')}»: неизвестная площадка {account['marketplace']!r}")
     result = market.sync(account, returns_too=returns)
+    # Статус заказа панель узнаёт только здесь — здесь же и запоминает, когда
+    # заказ попал в «Ожидает отгрузки»: с этого момента нужна новая наклейка.
+    from . import labels as core_labels
+
+    core_labels.note_deliver(account)
     db.kv_set(f"{KV_ACCOUNT_SYNC}:{account['id']}", db.now_iso())
     return result
 

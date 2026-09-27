@@ -176,14 +176,79 @@ def waiting(account_id: int, *, table: str, key: str, status_sql: str) -> list[s
     не «Ожидает сборки» (их собирать рано, даже если площадка наклейку уже
     отдаёт, как Маркет) и не «Собран» (его закрыли сканом наклейки — она уже
     на коробке).
+
+    Выгруженной считается только наклейка, скачанная после того, как панель
+    увидела заказ в «Ожидает отгрузки» (deliver_since, см. note_deliver).
+    Скачанная раньше — например, в «Ожидает сборки» — не в счёт.
     """
     rows = db.query(
         f"SELECT o.{key} AS number FROM {table} o "
-        f"WHERE o.account_id = ? AND ({status_sql}) = 'deliver' AND o.label_saved_at IS NULL "
+        f"WHERE o.account_id = ? AND ({status_sql}) = 'deliver' "
+        f"AND (o.label_saved_at IS NULL "
+        f"     OR (o.deliver_since IS NOT NULL AND o.label_saved_at < o.deliver_since)) "
         f"ORDER BY o.{key}",
         (account_id,),
     )
     return [str(row["number"]) for row in rows]
+
+
+def _sources(account: dict | None = None):
+    """(площадка, таблица, выражение статуса) — у кого есть и наклейки, и «Заказы»."""
+    from ..markets import registry
+
+    markets = [registry.get(account["marketplace"])] if account else registry.all_markets()
+    for market in markets:
+        if market is not None and market.labels is not None and market.orders is not None:
+            yield market, market.labels.table, market.orders.status_sql
+
+
+def note_deliver(account: dict) -> None:
+    """Запомнить, когда панель впервые увидела заказ кабинета в «Ожидает отгрузки».
+
+    Зовётся после каждой синхронизации кабинета: статус заказа панель узнаёт
+    только от площадки. Заказ вернулся в «Ожидает сборки» — отметка снимается,
+    и следующий переход снова потребует скачать наклейку.
+    """
+    now = db.now_iso()
+    for _market, table, status_sql in _sources(account):
+        with db.write() as conn:
+            conn.execute(
+                f"UPDATE {table} AS o SET deliver_since = ? "
+                f"WHERE o.account_id = ? AND ({status_sql}) = 'deliver' AND o.deliver_since IS NULL",
+                (now, account["id"]),
+            )
+            conn.execute(
+                f"UPDATE {table} AS o SET deliver_since = NULL "
+                f"WHERE o.account_id = ? AND ({status_sql}) = 'packaging' AND o.deliver_since IS NOT NULL",
+                (account["id"],),
+            )
+
+
+KV_DELIVER_NOTED = "labels_deliver_since_noted"
+
+
+def note_deliver_once(conn) -> None:
+    """Первый запуск после обновления: отметка для заказов, уже лежащих в «Ожидает отгрузки».
+
+    Когда они туда попали, панель не знает. Считаем, что с момента скачанной
+    наклейки, а без наклейки — с сейчас: иначе после обновления пришлось бы
+    заново качать наклейки всех заказов в работе, хотя они уже на руках.
+    Ярлыки Маркета, скачанные ещё в «Ожидает сборки», к этому моменту сняла
+    его разовая правка (markets/yandex/migrations.py) — они снова ждут выгрузки.
+    """
+    if conn.execute("SELECT 1 FROM kv WHERE key = ?", (KV_DELIVER_NOTED,)).fetchone():
+        return
+    now = db.now_iso()
+    for _market, table, status_sql in _sources():
+        conn.execute(
+            f"UPDATE {table} AS o SET deliver_since = COALESCE(o.label_saved_at, ?) "
+            f"WHERE ({status_sql}) = 'deliver' AND o.deliver_since IS NULL",
+            (now,),
+        )
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (KV_DELIVER_NOTED, now),
+    )
 
 
 def state(pending: list[str]) -> dict:
