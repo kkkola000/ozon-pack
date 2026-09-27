@@ -1,4 +1,5 @@
-/* Страница «Принтеры»: для каждого документа — размер листа и принтер.
+/* Страница «Принтеры»: для каждого документа — размер листа, принтер и
+   ориентация печати.
 
    Строки рисует сервер. Здесь — список принтеров из QZ Tray этого компьютера,
    добавление и удаление размеров у документа, пробная печать и сохранение.
@@ -43,8 +44,15 @@
     syncTest(row);
   }
 
+  /* Пробная печать и ориентация — только у принтера QZ Tray: через браузер
+     PDF печатается как есть, ориентацию там выбирает окно печати. */
   function syncTest(row) {
-    row.querySelector('.btn-test').disabled = !row.querySelector('.printer-select').value;
+    const viaQz = Boolean(row.querySelector('.printer-select').value);
+    row.querySelector('.btn-test').disabled = !viaQz;
+    const orientation = row.querySelector('.orientation-select');
+    orientation.disabled = !viaQz;
+    orientation.title = viaQz ? 'Как печатать на этом принтере'
+      : 'Через браузер ориентацию выбирают в окне печати';
   }
 
   function syncAdd(kind) {
@@ -79,7 +87,8 @@
     const printer = copy.querySelector('.printer-select');
     printer.dataset.saved = '';
     printer.value = '';
-    copy.cells[4].innerHTML = '<button class="btn small btn-remove" title="Убрать этот размер">×</button>';
+    copy.querySelector('.orientation-select').value = '';
+    copy.cells[5].innerHTML = '<button class="btn small btn-remove" title="Убрать этот размер">×</button>';
     rows[rows.length - 1].after(copy);
     bind(copy);
     fillRow(copy);
@@ -99,8 +108,11 @@
       if (!printer) return;
       event.target.disabled = true;
       try {
+        const orientation = row.querySelector('.orientation-select');
         await QZ.printTest(printer, size.value,
-                           `${row.dataset.title} · ${size.options[size.selectedIndex].text}`);
+                           `${row.dataset.title} · ${size.options[size.selectedIndex].text}`
+                           + ` · ${orientation.options[orientation.selectedIndex].text}`,
+                           orientation.value);
         toast(`Пробная страница ушла на «${printer}»`, 'ok');
       } catch (error) {
         toast(`QZ Tray: ${error.message}`, 'error', 10000);
@@ -121,6 +133,7 @@
       kind: row.dataset.kind,
       size: row.querySelector('.size-select').value,
       printer: row.querySelector('.printer-select').value,
+      orientation: row.querySelector('.orientation-select').value,
     }));
     event.target.disabled = true;
     try {

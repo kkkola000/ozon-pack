@@ -20,13 +20,20 @@
     именем там нет, лист напечатается через браузер. Если у документа несколько размеров, панель
     смотрит, какого размера пришёл файл, и печатает на принтер этого размера.
   </p>
+  <p class="muted small" style="margin:0 0 12px">
+    <b>Ориентация</b> — вертикальная или горизонтальная печать на этом принтере: например, когда
+    наклейка выходит повёрнутой или обрезанной. «Как в файле» — панель ориентацию не задаёт, как
+    раньше. Работает при печати через QZ Tray; через браузер PDF печатается как есть, и ориентацию
+    там выбирают в окне печати или в настройках драйвера принтера.
+  </p>
 
   <table id="printer-table">
     <thead>
       <tr>
         <th>Документ</th>
         <th style="width:160px">Размер листа</th>
-        <th style="width:320px">Принтер</th>
+        <th style="width:300px">Принтер</th>
+        <th style="width:170px">Ориентация</th>
         <th style="width:150px"></th>
         <th style="width:44px"></th>
       </tr>
@@ -34,7 +41,7 @@
     <tbody>
       {% for doc in documents %}
       {% if loop.first or doc.section != documents[loop.index0 - 1].section %}
-      <tr class="printer-section"><td colspan="5"><b>{{ doc.section }}</b></td></tr>
+      <tr class="printer-section"><td colspan="6"><b>{{ doc.section }}</b></td></tr>
       {% endif %}
       {% for row in doc.rows %}
       <tr class="printer-row" data-kind="{{ doc.kind }}" data-title="{{ doc.title }}">
@@ -57,13 +64,21 @@
             {% if row.printer %}<option value="{{ row.printer }}" selected>{{ row.printer }}</option>{% endif %}
           </select>
         </td>
+        <td>
+          <select class="orientation-select" {{ 'disabled' if not row.printer }}
+                  title="{{ 'Через браузер ориентацию выбирают в окне печати' if not row.printer else 'Как печатать на этом принтере' }}">
+            {% for code, title in orientations %}
+            <option value="{{ code }}" {{ 'selected' if code == row.orientation }}>{{ title }}</option>
+            {% endfor %}
+          </select>
+        </td>
         <td><button class="btn small btn-test" style="white-space:nowrap" {{ 'disabled' if not row.printer }}>Пробная печать</button></td>
         <td>{% if not loop.first %}<button class="btn small btn-remove" title="Убрать этот размер">×</button>{% endif %}</td>
       </tr>
       {% endfor %}
       <tr class="printer-add" data-kind="{{ doc.kind }}">
         <td></td>
-        <td colspan="4">
+        <td colspan="5">
           <button class="btn small btn-add" {{ 'hidden' if doc.rows | length >= limit }}>+ ещё размер</button>
         </td>
       </tr>

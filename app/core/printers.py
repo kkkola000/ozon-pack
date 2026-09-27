@@ -65,7 +65,16 @@ PAPER: dict[str, tuple[str, int, int]] = {
     "a4": ("A4", 210, 297),
 }
 
-KV_ROWS = "printers"              # JSON: [{"kind", "size", "printer"}, …]
+# Ориентация печати: код -> подпись. Пусто — как в файле, панель её не задаёт
+# (так было всегда). Задаётся принтеру через QZ Tray: при печати через браузер
+# PDF печатается как есть, ориентацию там выбирает окно печати или драйвер.
+ORIENTATION: dict[str, str] = {
+    "": "Как в файле",
+    "portrait": "Вертикальная",
+    "landscape": "Горизонтальная",
+}
+
+KV_ROWS = "printers"              # JSON: [{"kind", "size", "printer", "orientation"}, …]
 KV_LEGACY = "printer"             # 1.42.0: printer:label и printer:a4
 ROWS_PER_KIND = 4                 # больше размеров у одного документа не бывает
 NAME_LIMIT = 200                  # имя принтера длиннее — это уже не имя
@@ -111,7 +120,9 @@ def _clean_row(row, known: set[str]) -> dict | None:
     kind, size = str(row.get("kind") or ""), str(row.get("size") or "")
     if kind not in known or size not in PAPER:
         return None
-    return {"kind": kind, "size": size, "printer": " ".join(str(row.get("printer") or "").split())}
+    orientation = str(row.get("orientation") or "")
+    return {"kind": kind, "size": size, "printer": " ".join(str(row.get("printer") or "").split()),
+            "orientation": orientation if orientation in ORIENTATION else ""}
 
 
 def _saved(known: set[str]) -> list[dict] | None:
@@ -135,7 +146,7 @@ def _legacy(docs: list[dict]) -> list[dict]:
     for doc in docs:
         printer = sheet if doc["kind"].startswith("returns:") else label
         if printer:
-            out.append({"kind": doc["kind"], "size": doc["size"], "printer": printer})
+            out.append({"kind": doc["kind"], "size": doc["size"], "printer": printer, "orientation": ""})
     return out
 
 
@@ -149,14 +160,14 @@ def rows() -> list[dict]:
     out: list[dict] = []
     for doc in docs:
         mine = [row for row in saved if row["kind"] == doc["kind"]]
-        out.extend(mine or [{"kind": doc["kind"], "size": doc["size"], "printer": ""}])
+        out.extend(mine or [{"kind": doc["kind"], "size": doc["size"], "printer": "", "orientation": ""}])
     return out
 
 
 def save(wanted) -> list[dict]:
     """Сохранить строки. Ошибка — ValueError с текстом для человека."""
     if not isinstance(wanted, list):
-        raise ValueError("Нужен список: документ, размер листа, принтер")
+        raise ValueError("Нужен список: документ, размер листа, принтер, ориентация")
     docs = {doc["kind"]: doc for doc in documents()}
     clean: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -173,13 +184,16 @@ def save(wanted) -> list[dict]:
         printer = " ".join(str(item.get("printer") or "").split())
         if len(printer) > NAME_LIMIT:
             raise ValueError(f"Слишком длинное имя принтера у «{title}»")
+        orientation = str(item.get("orientation") or "")
+        if orientation not in ORIENTATION:
+            raise ValueError(f"Неизвестная ориентация печати у «{title}»")
         if (kind, size) in seen:
             raise ValueError(f"У «{title}» размер {PAPER[size][0]} указан дважды")
         seen.add((kind, size))
         per_kind[kind] = per_kind.get(kind, 0) + 1
         if per_kind[kind] > ROWS_PER_KIND:
             raise ValueError(f"У «{title}» слишком много размеров")
-        clean.append({"kind": kind, "size": size, "printer": printer})
+        clean.append({"kind": kind, "size": size, "printer": printer, "orientation": orientation})
     db.kv_set(KV_ROWS, json.dumps(clean, ensure_ascii=False))
     return rows()
 

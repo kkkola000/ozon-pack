@@ -31,6 +31,7 @@ def printers_page(request: Request, user: dict = Depends(current_user)):
             "user": user,
             "documents": core_printers.page(),
             "paper": [(code, title) for code, (title, _w, _h) in core_printers.PAPER.items()],
+            "orientations": list(core_printers.ORIENTATION.items()),
             "limit": core_printers.ROWS_PER_KIND,
             "csrf": request.state.session.get("csrf"),
             "active_tab": "printers",
@@ -40,7 +41,7 @@ def printers_page(request: Request, user: dict = Depends(current_user)):
 
 @router.post("/api/printers")
 def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
-    """Сохранить строки «документ — размер листа — принтер». Пусто — «через браузер»."""
+    """Сохранить строки «документ — размер листа — принтер — ориентация». Пусто — «через браузер»."""
     check_csrf(request)
     try:
         saved = core_printers.save(payload.get("rows"))
@@ -50,6 +51,7 @@ def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(c
     summary = "; ".join(
         f"{titles.get(row['kind'], row['kind'])}, {core_printers.PAPER[row['size']][0]}: "
         f"{row['printer'] or 'браузер'}"
+        + (f", {core_printers.ORIENTATION[row['orientation']].lower()}" if row["orientation"] else "")
         for row in saved
     )
     db.log_event("printers_saved", user=user, message=summary)

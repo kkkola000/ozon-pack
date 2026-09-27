@@ -63,11 +63,16 @@ const QZ = (() => {
 
   /* Параметры бумаги для QZ Tray. Наклейке размер задаём явно: без него драйвер
      термопринтера берёт свой лист по умолчанию. A4 — на то, что стоит в
-     принтере: офисный принтер и так знает свой лист. */
-  function paperFor(size) {
+     принтере: офисный принтер и так знает свой лист.
+
+     Ориентация — из настройки строки: 'portrait' (вертикальная) или
+     'landscape' (горизонтальная). Пусто — не задаём, как было всегда. */
+  function paperFor(size, orientation = '') {
     const mm = (setup().paper || {})[size];
-    if (size === 'a4' || !mm) return { scaleContent: true };
-    return { size: { width: mm[0], height: mm[1] }, units: 'mm', margins: 0, scaleContent: true };
+    const options = (size === 'a4' || !mm) ? { scaleContent: true }
+      : { size: { width: mm[0], height: mm[1] }, units: 'mm', margins: 0, scaleContent: true };
+    if (orientation === 'portrait' || orientation === 'landscape') options.orientation = orientation;
+    return options;
   }
 
   function load() {
@@ -184,7 +189,7 @@ const QZ = (() => {
     const row = pick(kind, pageSize || file.size);
     if (!row || !row.printer) return false;
     const qz = await connect();
-    const config = qz.configs.create(row.printer, paperFor(row.size));
+    const config = qz.configs.create(row.printer, paperFor(row.size, row.orientation));
     try {
       await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data: file.data }]);
     } catch (error) {
@@ -204,9 +209,9 @@ const QZ = (() => {
   }
 
   /* Пробная страница со страницы «Принтеры»: принтер ещё не сохранён — берём выбранный. */
-  async function printTest(printer, size, title) {
+  async function printTest(printer, size, title, orientation = '') {
     const qz = await connect();
-    const config = qz.configs.create(printer, paperFor(size));
+    const config = qz.configs.create(printer, paperFor(size, orientation));
     const stamp = new Date().toLocaleString('ru-RU');
     const html = `<div style="font:14px sans-serif;padding:4mm">
       <b style="font-size:18px">Ozon Pack</b><br>Пробная печать через QZ Tray<br>

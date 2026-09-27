@@ -57,8 +57,8 @@ def save(client, csrf, rows):
     return client.post("/api/printers", json={"rows": rows}, headers={"X-CSRF-Token": csrf})
 
 
-def row(kind, size, printer=""):
-    return {"kind": kind, "size": size, "printer": printer}
+def row(kind, size, printer="", orientation=""):
+    return {"kind": kind, "size": size, "printer": printer, "orientation": orientation}
 
 
 # ------------------------------------------------------------------ документы
@@ -113,7 +113,43 @@ def test_a_forgotten_document_keeps_its_default(client):
     assert table["returns:act"] == row("returns:act", "a4", "")
 
 
+def test_orientation_is_saved_per_row(client):
+    """Горизонтальная или вертикальная печать — своя у каждой строки «документ — размер»."""
+    csrf = enter(client)
+    response = save(client, csrf, [
+        row("yandex:label", "58x40", "Xprinter", "landscape"),
+        row("avito:label", "58x40", "Xprinter", "portrait"),
+        row("avito:label", "100x150", "Zebra"),
+    ])
+    assert response.status_code == 200, response.text
+    table = printers.rows()
+    assert [r["orientation"] for r in table if r["kind"] == "avito:label"] == ["portrait", ""]
+    assert next(r for r in table if r["kind"] == "yandex:label")["orientation"] == "landscape"
+    assert next(r for r in table if r["kind"] == "ozon:label")["orientation"] == "", "по умолчанию — как в файле"
+    # Браузеру — вместе с настройкой: по ней QZ Tray и печатает.
+    setup = response.json()["printers"]
+    assert {r["kind"]: r["orientation"] for r in setup["rows"]}["yandex:label"] == "landscape"
+    event = db.query_one("SELECT message FROM events WHERE kind = 'printers_saved'")["message"]
+    assert "58×40 мм: Xprinter, горизонтальная" in event
+
+
+def test_the_page_offers_orientation(client):
+    enter(client)
+    page = client.get("/printers").text
+    assert "Ориентация" in page
+    for word in ("Как в файле", "Вертикальная", "Горизонтальная"):
+        assert word in page
+    assert 'class="orientation-select" disabled' in page, "через браузер ориентацию не задать"
+
+
+def test_old_rows_without_orientation_still_read():
+    """Настройка, сохранённая до 1.53, ориентации не знает — читается как «как в файле»."""
+    db.kv_set("printers", '[{"kind": "ozon:label", "size": "58x40", "printer": "Xprinter"}]')
+    assert {r["kind"]: r for r in printers.rows()}["ozon:label"] == row("ozon:label", "58x40", "Xprinter")
+
+
 @pytest.mark.parametrize("rows, why", [
+    ([row("ozon:label", "58x40", "Xprinter", "diagonal")], "неизвестная ориентация"),
     ([row("poster", "a4")], "неизвестный документ"),
     ([row("ozon:label", "10x10")], "неизвестный размер"),
     ([row("ozon:label", "58x40"), row("ozon:label", "58x40")], "один размер дважды"),
