@@ -607,3 +607,93 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 /* Карточки площадок под сопоставленным товаром: видно, что это его части. */
 tr.sub td { background: var(--surface); }
 tr.sub td:first-child { border-left: 3px solid var(--accent-soft); }
+
+/* Приёмка возвратов сканером: поле во вкладке «Ждёт подтверждения». Стикер или
+   штрихкод возврата открывает окно отметки, штрихкод товара ставит «Принят». */
+.rscan {
+  display: flex; gap: 16px; align-items: center; margin: 16px 0 18px; padding: 14px 16px;
+  border: 2px solid var(--line-strong); border-radius: var(--radius); background: var(--bg);
+}
+.rscan.focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.rscan.error { border-color: var(--err); box-shadow: 0 0 0 4px var(--err-soft); }
+.rscan-icon {
+  width: 48px; height: 48px; border-radius: 14px; flex: none; display: flex;
+  align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent);
+}
+.rscan.error .rscan-icon { background: var(--err-soft); color: var(--err); }
+.rscan-icon svg { width: 28px; height: 28px; }
+.rscan-body { flex: 1; min-width: 0; }
+.rscan-title { font-weight: 800; font-size: 16px; }
+.rscan-hint { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.rscan-msg { margin-top: 6px; font-size: 13px; font-weight: 700; color: var(--err); }
+.rscan-msg:empty { display: none; }
+.rscan-field { position: relative; flex: 0 1 460px; min-width: 260px; margin: 0; }
+.rscan-field input, .rmark-input {
+  width: 100%; padding: 13px 76px 13px 16px; border: 1.5px solid var(--line-strong); border-radius: 12px;
+  font: 600 18px/1.2 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: .03em;
+  background: var(--surface);
+}
+.rscan-field input::placeholder, .rmark-input::placeholder {
+  font: 500 15px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: 0; color: #9aa6b2;
+}
+.rscan.focus .rscan-field input { border-color: var(--accent); background: var(--bg); outline: none; }
+.rscan-field kbd {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  font: 600 12px/1 ui-monospace, Menlo, monospace; padding: 4px 7px; border-radius: 6px;
+  border: 1px solid var(--line-strong); border-bottom-width: 2px; background: var(--bg); color: var(--muted);
+}
+@media (max-width: 900px) {
+  .rscan { flex-wrap: wrap; }
+  .rscan-field { flex: 1 1 100%; }
+}
+
+/* Окно отметки, открытое сканом: карточка возврата и шаг «отсканируйте товар». */
+#mark-modal.scan-mode .modal-box { max-width: 620px; }
+.rmark-card { display: flex; gap: 14px; margin-top: 14px; padding: 12px; border-radius: 14px; background: var(--bg); }
+.rmark-photo {
+  width: 72px; height: 72px; border-radius: 10px; flex: none; background: #fff; border: 1px solid var(--line);
+  object-fit: contain; padding: 3px; display: flex; align-items: center; justify-content: center;
+  font-size: 26px; color: #b8c1ca;
+}
+.rmark-name { font-weight: 700; font-size: 16px; }
+.rmark-meta { color: var(--muted); font-size: 13px; margin-top: 4px; line-height: 1.5; }
+.rmark-meta b { color: var(--text); font-weight: 600; }
+.rmark-meta b.mono { white-space: nowrap; }
+.rmark-goods { margin-top: 6px; font-size: 13px; }
+.rmark-goods div { display: flex; gap: 8px; }
+.rmark-goods .done { color: var(--ok); font-weight: 700; }
+.rmark-step {
+  margin: 14px 0 0; padding: 16px; border-radius: 14px; border: 2px dashed var(--accent);
+  background: var(--accent-soft); display: flex; gap: 14px; align-items: flex-start;
+}
+.rmark-step .ico {
+  width: 44px; height: 44px; flex: none; border-radius: 12px; background: #fff; color: var(--accent);
+  display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 800;
+}
+.rmark-step .ico svg { width: 28px; height: 28px; }
+.rmark-step .t { font-weight: 800; font-size: 17px; }
+.rmark-step .s { font-size: 13px; color: var(--muted); margin-top: 3px; }
+.rmark-step .s .mono { color: var(--text); }
+.rmark-step .rmark-input { margin-top: 10px; padding-right: 16px; background: var(--bg); font-size: 16px; }
+.rmark-step.ok { border: 2px solid var(--ok); background: var(--ok-soft); }
+.rmark-step.ok .ico { color: var(--ok); }
+.rmark-step.ok .t { color: #00734c; }
+.rmark-step.bad { border: 2px solid var(--err); background: var(--err-soft); }
+.rmark-step.bad .ico, .rmark-step.bad .t { color: var(--err); }
+.rmark-step.warn { border: 2px solid var(--warn); background: var(--warn-soft); }
+.rmark-step.warn .ico, .rmark-step.warn .t { color: var(--warn); }
+.rmark-item {
+  display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px 12px; margin-top: 6px;
+  border: 0; border-radius: 12px; background: var(--bg); text-align: left; font: inherit; color: inherit; cursor: pointer;
+}
+.rmark-item:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.rmark-item .rmark-photo { width: 44px; height: 44px; font-size: 18px; }
+.rmark-item .grow { min-width: 0; }
+.rmark-item.done { background: var(--ok-soft); }
+.rmark-item.bad { background: var(--err-soft); }
+.rmark-count { margin-left: auto; font-weight: 800; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.rmark-item.done .rmark-count { color: var(--ok); }
+.rmark-item.bad .rmark-count { color: var(--err); }
+/* Внутри окна части прячутся атрибутом hidden, а .row и шаг скана — flex:
+   без этой строки «Готово» и решения оставались бы на виду. */
+#mark-modal [hidden] { display: none; }

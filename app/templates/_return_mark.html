@@ -9,29 +9,53 @@
 
     <div class="muted small" style="margin-top:6px" id="mark-subject">—</div>
 
-    {# Комментарий выше кнопок: кнопка теперь сразу сохраняет и закрывает окно,
-       и писать после неё уже некуда. Сначала пишут, потом решают. #}
-    <label class="small muted" for="mark-note" style="display:block; margin-top:16px">Комментарий</label>
-    <textarea id="mark-note" rows="4" maxlength="2000"
-              placeholder="Что не так с возвратом: вскрыта упаковка, нет комплекта, не выдали…"></textarea>
-
-    {# Три кнопки — три решения, и каждая сама сохраняет отметку. Отдельных
-       «Отмена» и «Сохранить» нет: сохранение было вторым нажатием по тому, что
-       уже выбрали, а «Отмена» повторяла крестик в углу. Передумали — крестик
-       или Esc, они ничего не пишут.
-
-       Решения крупные и во всю ширину: по ним попадают не глядя, это главное
-       движение в окне. «Снять отметку» ниже и обычного размера — её жмут редко
-       и не в спешке, а рядом с двумя крупными она в строку не помещалась. #}
-    <div class="row" style="margin-top:18px; gap:10px; flex-wrap:nowrap">
-      <button class="btn big mark-choice" data-mark="bad" style="flex:1">✗ Не принят</button>
-      <button class="btn big mark-choice" data-mark="ok" style="flex:1">✓ Принят</button>
+    {# Приёмка сканером (return_scan.js): карточка возврата и шаг «отсканируйте
+       товар». Окно, открытое кнопкой «Отметить», этого блока не показывает. #}
+    <div id="mark-scan" hidden>
+      <div id="mark-rows"></div>
+      <form class="rmark-step" id="mark-step" autocomplete="off">
+        <div class="ico" id="mark-step-icon" aria-hidden="true"></div>
+        <div class="grow">
+          <div class="t" id="mark-step-title">Отсканируйте штрихкод товара</div>
+          <div class="s" id="mark-step-text"></div>
+          <input class="rmark-input" id="mark-scan-input" name="code" placeholder="Штрихкод товара"
+                 aria-label="Штрихкод товара">
+        </div>
+      </form>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button class="btn" id="mark-clear"
-              title="Убрать отметку и комментарий: возврат снова без решения">
-        Снять отметку
-      </button>
+
+    {# Решение по одному возврату. Когда сканом открыто сразу несколько (все
+       возвраты отправления), решений по одному нет — только «Готово». #}
+    <div id="mark-decide">
+      {# Комментарий выше кнопок: кнопка теперь сразу сохраняет и закрывает окно,
+         и писать после неё уже некуда. Сначала пишут, потом решают. #}
+      <label class="small muted" for="mark-note" style="display:block; margin-top:16px">Комментарий</label>
+      <textarea id="mark-note" rows="4" maxlength="2000"
+                placeholder="Что не так с возвратом: вскрыта упаковка, нет комплекта, не выдали…"></textarea>
+
+      {# Три кнопки — три решения, и каждая сама сохраняет отметку. Отдельных
+         «Отмена» и «Сохранить» нет: сохранение было вторым нажатием по тому, что
+         уже выбрали, а «Отмена» повторяла крестик в углу. Передумали — крестик
+         или Esc, они ничего не пишут.
+
+         Решения крупные и во всю ширину: по ним попадают не глядя, это главное
+         движение в окне. «Снять отметку» ниже и обычного размера — её жмут редко
+         и не в спешке, а рядом с двумя крупными она в строку не помещалась. #}
+      <div class="row" style="margin-top:18px; gap:10px; flex-wrap:nowrap">
+        <button class="btn big mark-choice" data-mark="bad" style="flex:1">✗ Не принят</button>
+        <button class="btn big mark-choice" data-mark="ok" style="flex:1">✓ Принят</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="mark-clear"
+                title="Убрать отметку и комментарий: возврат снова без решения">
+          Снять отметку
+        </button>
+      </div>
+    </div>
+
+    <div class="row" id="mark-done-row" style="margin-top:14px" hidden>
+      <span class="grow"></span>
+      <button class="btn" id="mark-done" type="button">Готово</button>
     </div>
   </div>
 </div>

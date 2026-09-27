@@ -21,7 +21,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from markupsafe import Markup
 
-from ..core import accounts, db, return_acts, returns_pdf, shops, store
+from ..core import accounts, db, return_acts, return_marks, return_scan, returns_pdf, shops, store
 from ..core.deps import check_csrf, require_owner, require_section, templates
 from ..markets.base import MarketError
 
@@ -589,31 +589,44 @@ def api_returns_mark(request: Request, payload: dict = Body(...), user: dict = D
         raise HTTPException(status_code=409, detail=f"Возврат {return_id} есть в нескольких кабинетах — укажите кабинет")
     row = rows[0]
     account = accounts.get(row["account_id"])
+    return return_marks.save(market.returns, account, return_id, row["act_id"], mark, note, user)
 
-    # Пустая отметка без комментария — это «снять»: следов в строке остаться
-    # не должно, иначе в списке будет висеть имя и время неизвестно чего.
-    keeps = bool(mark or note)
-    now = db.now_iso() if keeps else None
-    db.execute(
-        f"UPDATE {table} SET mark = ?, note = ?, mark_at = ?, mark_by = ? WHERE account_id = ? AND id = ?",
-        (mark or None, note or None, now, user["login"] if keeps else None, account["id"], return_id),
-    )
-    db.log_event(
-        "return_mark", account_id=account["id"], user=user,
-        message=f"{return_id}: {store.mark_label(mark) or 'отметка снята'}"
-                + (f" — {note}" if note else ""),
-    )
-    return {
-        "status": "ok",
-        "id": return_id,
-        "mark": mark,
-        "mark_label": store.mark_label(mark),
-        "mark_sign": store.RETURN_MARK_SIGNS.get(mark, ""),
-        "note": note,
-        "mark_by": user["login"] if keeps else "",
-        "mark_at_local": store.local_time(now) if keeps else "",
-        "message": f"Отметка сохранена: {store.mark_label(mark) or 'снята'}",
-        # Возврат из акта: отметка меняет и счётчики шапки, и право подтвердить.
-        # Отдаём их сразу — иначе кнопка появляется только после перезагрузки.
-        "act": return_acts.progress(row["act_id"]) if row["act_id"] else None,
-    }
+
+@router.post("/api/returns/scan")
+def api_returns_scan(request: Request, payload: dict = Body(...),
+                     user: dict = Depends(require_section("returns"))):  # noqa: ARG001 - доступ
+    """Приёмка сканером, шаг первый: стикер или штрихкод возврата.
+
+    Ищем во всех кабинетах с возвратами, а не только под фильтром страницы:
+    пакет в руках — он чей-то, и отвечать «не найден» из-за чипа кабинета
+    значило бы гонять сборщика по фильтрам.
+    """
+    check_csrf(request)
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Пустой скан")
+    try:
+        return return_scan.lookup(returns_shops(), code)
+    except return_scan.Refused as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+@router.post("/api/returns/scan/goods")
+def api_returns_scan_goods(request: Request, payload: dict = Body(...),
+                           user: dict = Depends(require_section("returns"))):
+    """Приёмка сканером, шаг второй: штрихкод товара. Совпал — «Принят».
+
+    Не тот товар — ответ 200 со статусом error: это обычный исход скана, а не
+    сбой запроса, и отметка при нём не меняется.
+    """
+    check_csrf(request)
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="Пустой скан")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="Не указано, какой возврат принимаем")
+    try:
+        return return_scan.check_goods(returns_shops(), rows, code, user)
+    except return_scan.Refused as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc

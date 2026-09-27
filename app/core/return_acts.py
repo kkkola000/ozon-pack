@@ -206,6 +206,11 @@ def _summary(act: dict, sections: list[tuple]) -> dict:
     }
 
 
+def title(act: dict) -> str:
+    """Подпись акта для тех, кто показывает его вне раздела: «Возвраты за 27.09.2026, акт №1 от 10:12»."""
+    return _title(act)
+
+
 def _title(act: dict) -> str:
     """Подпись акта: число получения, номер за это число и время составления.
 

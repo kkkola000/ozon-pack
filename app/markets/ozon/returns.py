@@ -12,6 +12,7 @@ import sqlite3
 
 from ...core import db, return_acts
 from ...core import sync as core_sync
+from ...core.codes import barcode_variants
 from ...core.config import settings
 from ...core.return_acts import NO_SHEET
 from ...core.returns_pdf import barcode_svg, cut, mark_cell
@@ -818,6 +819,66 @@ def quantity(row: dict) -> int:
     return int(row.get("quantity") or 0)
 
 
+# ------------------------------------------------------- приёмка сканером
+def find(account_ids: list[int], code: str) -> list[tuple[int, str]]:
+    """Возвраты по стикеру или штрихкоду возврата: [(кабинет, id)].
+
+    Узнаются штрихкод возврата (наклейка Ozon на пакете возврата), номер
+    возврата, номер отправления и заказа. И ещё стикер FBS, с которым товар
+    уезжал к покупателю: его верхний и нижний штрихкоды лежат в postings, по
+    ним находится отправление, а по отправлению — его возвраты. Штрихкод
+    возврата сравнивается без учёта регистра: «ii…» сканер отдаёт и «II…».
+    """
+    variants = barcode_variants(code)
+    if not variants or not account_ids:
+        return []
+    shops = ",".join("?" for _ in account_ids)
+    marks = ",".join("?" for _ in variants)
+    rows = db.query(
+        f"""
+        SELECT r.account_id, r.id FROM returns r
+         WHERE r.account_id IN ({shops})
+           AND (r.id IN ({marks}) OR UPPER(r.barcode) IN ({marks})
+                OR r.posting_number IN ({marks}) OR r.order_number IN ({marks})
+                OR r.posting_number IN (
+                    SELECT p.posting_number FROM postings p
+                     WHERE p.account_id = r.account_id
+                       AND (p.barcode_upper IN ({marks}) OR p.barcode_lower IN ({marks}))))
+         ORDER BY r.account_id, r.product_name, r.id
+        """,
+        list(account_ids) + variants + [v.upper() for v in variants] + variants * 4,
+    )
+    return [(row["account_id"], row["id"]) for row in rows]
+
+
+def scan_view(row: dict) -> dict:
+    """Возврат в окне приёмки: карточка и товар, который должен в нём лежать."""
+    data = return_view(row)
+    facts = [
+        ("Возврат", data.get("id")),
+        ("Штрихкод", data.get("barcode")),
+        ("Отправление", data.get("posting_number")),
+        ("Артикул", data.get("offer_id")),
+        ("SKU", data.get("sku")),
+        ("Схема", data.get("type") or data.get("scheme")),
+        ("Причина", data.get("return_reason")),
+    ]
+    name = data.get("product_name") or "Без названия"
+    return {
+        "title": name,
+        "number": str(data.get("id")),
+        "facts": [(label, str(value)) for label, value in facts if value],
+        "goods": [{
+            "key": str(data.get("sku") or data.get("id")),
+            "name": name,
+            "need": max(1, int(data.get("quantity") or 1)),
+            "sku": data.get("sku"),
+            "offer_id": data.get("offer_id"),
+            "image": None,
+        }],
+    }
+
+
 def sync(account: dict, full: bool = False) -> dict:
     """Обновить возвраты кабинета и сказать словами, что изменилось."""
     result = sync_returns(account, full=full)
@@ -899,4 +960,6 @@ SOURCE = ReturnsSource(
     received=received_returns,
     claim=claim,
     giveout=giveout,
+    find=find,
+    scan_view=scan_view,
 )

@@ -107,5 +107,6 @@
 {% block scripts %}
 <script src="/static/returns.js?v={{ static_version() }}"></script>
 <script src="/static/return_mark.js?v={{ static_version() }}"></script>
+{% if tab == 'acts' %}<script src="/static/return_scan.js?v={{ static_version() }}"></script>{% endif %}
 <script src="/static/act_admin.js?v={{ static_version() }}"></script>
 {% endblock %}

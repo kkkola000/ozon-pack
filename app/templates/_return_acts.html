@@ -1,5 +1,27 @@
 {# Вкладка «Ждёт подтверждения»: возвраты не списком, а по актам — по одной
    поездке в пункт выдачи. Акт составляет человек за выбранное число. #}
+{# Приёмка сканером (return_scan.js): стикер или штрихкод возврата открывает
+   окно отметки, штрихкод товара ставит «Принят». Поле первое во вкладке и
+   ловит курсор сразу: с ним работают сканером, не глядя в список. #}
+<div class="rscan no-print" id="rscan">
+  <div class="rscan-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
+      <path d="M7 8v8M10 8v8M13 8v8M16 8v8" stroke-width="1.8"/>
+    </svg>
+  </div>
+  <div class="rscan-body">
+    <div class="rscan-title">Приёмка возвратов</div>
+    <div class="rscan-hint">Стикер или штрихкод возврата — откроется отметка. Затем штрихкод товара — и возврат «Принят».</div>
+    <div class="rscan-msg" id="rscan-msg" role="alert"></div>
+  </div>
+  <form class="rscan-field" id="rscan-form" autocomplete="off">
+    <input id="rscan-input" name="code" placeholder="Отсканируйте стикер или штрихкод возврата"
+           aria-label="Стикер или штрихкод возврата" autofocus>
+    <kbd>Enter</kbd>
+  </form>
+</div>
+
 {# Главное действие вкладки: выбрали число — нажали «Составить акт». Сколько
    попадёт, считается при выборе числа, отдельной кнопки для этого нет.
    Составляет тот, кто вернулся из пункта выдачи, — обычно сборщик. #}

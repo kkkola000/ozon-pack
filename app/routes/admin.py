@@ -47,6 +47,7 @@ EVENT_LABELS = {
     "returns_pdf": "Лист возвратов в PDF",
     "orders_sheet": "Лист с заказами",
     "return_mark": "Отметка о возврате",
+    "return_scan_wrong": "Приёмка возврата: не тот товар",
     "return_act_confirm": "Акт возвратов подтверждён",
     "return_act_received": "Составлен акт возвратов",
     "return_act_upload": "Акт возвратов загружен файлом",

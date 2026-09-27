@@ -102,6 +102,14 @@ class ReturnsSource:
     received: Callable[[int, str], list[str]] | None = None   # полученные за день, свободные для акта
     claim: Callable[[Any, str, int, list[str]], int] | None = None   # забрать строки в акт
     giveout: Callable[[dict], bytes] | None = None              # штрихкод на выдачу в ПВЗ (Ozon)
+    # Приёмка сканером (core/return_scan.py). find(кабинеты, код) — какие строки
+    # таблицы узнаются по стикеру или штрихкоду возврата: [(кабинет, id)].
+    # scan_view(строка) — что показать в окне и что в ней лежит:
+    # {"title", "number", "facts": [(подпись, значение)], "goods": [{"key",
+    # "name", "need", "sku", "offer_id", "image"}]} — sku здесь карточка
+    # каталога, по ней ядро берёт штрихкоды товара и сопоставленных карточек.
+    find: Callable[[list[int], str], list[tuple[int, str]]] | None = None
+    scan_view: Callable[[dict], dict] | None = None
 
 
 @dataclass(frozen=True)

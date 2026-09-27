@@ -23,6 +23,7 @@ from typing import Any
 from ...core import board as core_board
 from ...core import labels as core_labels
 from ...core import access, db, linked, pack_state, product_sets, report
+from ...core.codes import barcode_variants  # noqa: F401 - Маркет и Avito берут отсюда
 from ...core.config import settings
 from ...core.product_sets import part_slot
 from . import client as ozon
@@ -45,36 +46,6 @@ class ScanResult(dict):
         **extra: Any,
     ) -> None:
         super().__init__(status=status, message=message, action=action, sound=sound or status, **extra)
-
-
-# ------------------------------------------------------------------ штрихкоды
-def barcode_variants(code: str) -> list[str]:
-    """Варианты одного и того же кода: EAN с ведущим нулём, GTIN из «Честного знака»."""
-    code = (code or "").strip()
-    if not code:
-        return []
-    variants = [code]
-    digits = re.sub(r"\D", "", code)
-
-    # DataMatrix маркировки: 01<GTIN-14>21<серийный номер>...
-    if len(code) >= 16 and code[:2] == "01" and code[2:16].isdigit():
-        gtin = code[2:16]
-        variants += [gtin, gtin.lstrip("0"), gtin[1:] if gtin.startswith("0") else gtin]
-
-    if digits and digits != code:
-        variants.append(digits)
-    if len(digits) == 13 and digits.startswith("0"):
-        variants.append(digits[1:])
-    if len(digits) == 12:
-        variants.append("0" + digits)
-    if len(digits) == 14 and digits.startswith("0"):
-        variants.append(digits[1:])
-
-    seen: list[str] = []
-    for variant in variants:
-        if variant and variant not in seen:
-            seen.append(variant)
-    return seen
 
 
 def classify(account_id: int, code: str) -> tuple[str, Any]:

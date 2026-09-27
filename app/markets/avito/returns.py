@@ -154,6 +154,55 @@ def quantity(row: dict) -> int:
     return int(row.get("items_count") or 0)
 
 
+# ------------------------------------------------------- приёмка сканером
+def find(account_ids: list[int], code: str) -> list[tuple[int, str]]:
+    """Заказы-возвраты по стикеру: номер заказа, трек возврата, трек или номер отправки."""
+    from .pack import code_variants
+
+    variants = code_variants(code)
+    if not variants or not account_ids:
+        return []
+    shops = ",".join("?" for _ in account_ids)
+    marks = ",".join("?" for _ in variants)
+    rows = db.query(
+        f"SELECT account_id, id FROM avito_orders WHERE account_id IN ({shops}) "
+        f"AND (id IN ({marks}) OR marketplace_id IN ({marks}) OR return_tracking IN ({marks}) "
+        f"OR tracking_number IN ({marks}) OR dispatch_number IN ({marks})) ORDER BY account_id, id",
+        list(account_ids) + variants * 5,
+    )
+    return [(row["account_id"], row["id"]) for row in rows]
+
+
+def scan_view(row: dict) -> dict:
+    """Заказ-возврат в окне приёмки: у Avito в нём бывает несколько товаров.
+
+    Карточка позиции в каталоге панели — номер объявления: по нему берутся
+    штрихкоды сопоставленных карточек. Своих штрихкодов товаров у Avito нет.
+    """
+    order = store.avito_view(row)
+    number = str(order.get("marketplace_id") or order["id"])
+    items = order.get("items") or []
+    facts = [
+        ("Заказ", number),
+        ("Трек возврата", order.get("return_tracking")),
+        ("Трек", order.get("tracking_number")),
+        ("Возврат", order.get("return_label") if order.get("return_status") else None),
+    ]
+    return {
+        "title": (items[0].get("title") or "Без названия") if len(items) == 1 else f"Заказ {number}",
+        "number": number,
+        "facts": [(label, str(value)) for label, value in facts if value],
+        "goods": [{
+            "key": str(item["avito_id"]),
+            "name": item.get("title") or "Без названия",
+            "need": max(1, int(item.get("quantity") or 1)),
+            "sku": str(item["avito_id"]),
+            "offer_id": item.get("seller_id"),
+            "image": item.get("image"),
+        } for item in items],
+    }
+
+
 def pdf_table(pdf, orders: list[dict], everywhere: bool) -> None:
     """Таблица заказов Avito на листе PDF — те же колонки, что в HTML-листе."""
     headings = ["№"]
@@ -221,4 +270,6 @@ SOURCE = ReturnsSource(
     sync=sync,
     received=received,
     claim=claim,
+    find=find,
+    scan_view=scan_view,
 )

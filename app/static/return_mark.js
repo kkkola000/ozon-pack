@@ -2,14 +2,22 @@
 
    Отметку ставит человек в пункте выдачи, площадка о ней не знает: у Ozon и
    Avito в статусах есть только «лежит в ПВЗ» и «уехал дальше». Поэтому всё
-   хранится в панели и переживает синхронизацию. */
+   хранится в панели и переживает синхронизацию.
+
+   Окно открывают двумя путями: кнопкой «Отметить» в строке акта и сканом
+   стикера при приёмке (return_scan.js). Второму окно отдаёт ReturnMark:
+   открыть, закрыть и перерисовать строку после отметки, поставленной сканом. */
 const markModal = document.getElementById('mark-modal');
 
 if (markModal) {
   const noteField = document.getElementById('mark-note');
   const subject = document.getElementById('mark-subject');
+  const titleNode = document.getElementById('mark-title');
   const clearButton = document.getElementById('mark-clear');
-  let current = null;   // {button, marketplace, id, mark}
+  const scanBox = document.getElementById('mark-scan');
+  const decide = document.getElementById('mark-decide');
+  const doneRow = document.getElementById('mark-done-row');
+  let current = null;   // {button, marketplace, id, account, mark, note}
 
   /* Что стоит сейчас — видно по подсвеченной кнопке. Нажатие на неё же
      сохраняет: выбор и есть решение, второго нажатия «Сохранить» нет. */
@@ -27,25 +35,52 @@ if (markModal) {
     clearButton.disabled = !mark;
   }
 
-  function openMark(button) {
-    current = {
+  /* Кнопка строки акта — её перекрашивают после отметки. Возврата может не
+     быть на странице (скан нашёл его в акте другого кабинета) — тогда null. */
+  function findButton(marketplace, id, account) {
+    return [...document.querySelectorAll('[data-mark-open]')].find((node) => (
+      (node.dataset.marketplace || 'ozon') === marketplace && node.dataset.id === String(id)
+      && (!account || !node.dataset.account || node.dataset.account === String(account))
+    )) || null;
+  }
+
+  function targetOf(button) {
+    return {
       button,
       marketplace: button.dataset.marketplace || 'ozon',
       id: button.dataset.id,
       // Кабинет строки: возвраты в «Ждёт подтверждения» бывают из разных кабинетов.
       account: button.dataset.account || '',
       mark: button.dataset.mark || '',
+      note: button.dataset.note || '',
+      subject: button.dataset.subject || button.dataset.id,
     };
-    subject.textContent = button.dataset.subject || current.id;
-    noteField.value = button.dataset.note || '';
-    paintChoice(current.mark);
+  }
+
+  /* target — возврат; null — сканом открыто сразу несколько (все возвраты
+     отправления), и решений по одному тогда нет, есть «Готово».
+     options.scan — окно открыл скан: виден блок приёмки, курсор в поле товара. */
+  function openMark(target, options = {}) {
+    current = target
+      ? { ...target, button: target.button || findButton(target.marketplace, target.id, target.account) }
+      : null;
+    titleNode.textContent = options.title || 'Отметка о возврате';
+    subject.textContent = options.subject || (current ? current.subject || current.id : '—');
+    markModal.classList.toggle('scan-mode', Boolean(options.scan));
+    scanBox.hidden = !options.scan;
+    decide.hidden = !current;
+    doneRow.hidden = Boolean(current) || !options.scan;
+    noteField.value = current ? current.note || '' : '';
+    paintChoice(current ? current.mark : '');
     markModal.hidden = false;
-    noteField.focus();
+    (options.scan ? document.getElementById('mark-scan-input') : noteField).focus();
   }
 
   function closeMark() {
+    if (markModal.hidden) return;
     markModal.hidden = true;
     current = null;
+    markModal.dispatchEvent(new CustomEvent('mark:closed'));
   }
 
   /* Строка показывает, что сейчас стоит: так список читается одним взглядом и
@@ -60,6 +95,7 @@ if (markModal) {
       : 'Отметить';
     button.classList.toggle('ok', result.mark === 'ok');
     button.classList.toggle('danger', result.mark === 'bad');
+    button.classList.toggle('primary', !result.mark);
     button.title = result.note || '';
 
     const cell = button.closest('[data-mark-cell]');
@@ -106,6 +142,19 @@ if (markModal) {
     }
   }
 
+  /* Отметка записана — перерисовать строку, шапку акта и само окно, если оно
+     открыто на этом возврате (отметку поставил скан товара). */
+  function paint(target, result) {
+    const button = target.button || findButton(target.marketplace, target.id, target.account);
+    if (button) paintRow(button, result);
+    paintAct(result.act);
+    if (current && current.marketplace === target.marketplace && String(current.id) === String(target.id)) {
+      current.mark = result.mark || '';
+      current.note = result.note || '';
+      paintChoice(current.mark);
+    }
+  }
+
   /* Пока запрос в пути, кнопки окна заперты: нажатие сохраняет сразу, и два
      нажатия подряд ушли бы двумя отметками по одному возврату. */
   function lockModal(locked) {
@@ -117,9 +166,10 @@ if (markModal) {
 
   async function saveMark(mark) {
     if (!current) return;
-    const { button, marketplace, id, account } = current;
+    const target = current;
+    const { button, marketplace, id, account } = target;
     const note = noteField.value.trim();
-    button.disabled = true;
+    if (button) button.disabled = true;
     lockModal(true);
     try {
       const result = await api('/api/returns/mark', {
@@ -130,12 +180,11 @@ if (markModal) {
          сохранена, а открытое окно с ошибкой говорило бы обратное. */
       closeMark();
       toast(result.message, mark === 'bad' ? 'warning' : 'ok');
-      paintRow(button, result);
-      paintAct(result.act);
+      paint(target, result);
     } catch (error) {
       toast(error.message, 'error', 10000);
     } finally {
-      button.disabled = false;
+      if (button) button.disabled = false;
       lockModal(false);
     }
   }
@@ -144,7 +193,7 @@ if (markModal) {
     const opener = event.target.closest('[data-mark-open]');
     if (opener) {
       event.preventDefault();
-      openMark(opener);
+      openMark(targetOf(opener));
       return;
     }
     /* Клик мимо окна закрывает его — как и крестик. */
@@ -160,7 +209,10 @@ if (markModal) {
 
   clearButton.onclick = () => { noteField.value = ''; saveMark(''); };
   document.getElementById('mark-close').onclick = closeMark;
+  document.getElementById('mark-done').onclick = closeMark;
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !markModal.hidden) closeMark();
   });
+
+  window.ReturnMark = { open: openMark, close: closeMark, paint };
 }
