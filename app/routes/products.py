@@ -153,6 +153,46 @@ def catalog_rows(account_ids: list[int] | None = None, q: str = "",
     return rows
 
 
+def _hit(q: str, *values) -> bool:
+    """Подходит ли запись под поиск: подстрока без учёта регистра в любом из полей.
+
+    Списки наборов и совпадений собираются в Python, и искать по ним проще
+    здесь же: lower() в Python знает кириллицу, а LIKE в SQLite — нет.
+    """
+    needle = q.strip().lower()
+    if not needle:
+        return True
+    stack = list(values)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, (list, tuple, set)):
+            stack.extend(value)
+        elif value is not None and needle in str(value).lower():
+            return True
+    return False
+
+
+def _cards_text(cards: list[dict]) -> list:
+    """Что искать у карточек: название, артикул, SKU и штрихкоды."""
+    return [[card.get("name"), card.get("offer_id"), card.get("sku"), card.get("barcodes") or []]
+            for card in cards]
+
+
+def find_sets(sets: list[dict], q: str) -> list[dict]:
+    """Наборы и комплекты под поиском: сам товар или любая его часть."""
+    return [
+        item for item in sets
+        if _hit(q, item.get("title"), item.get("product_name"), item.get("offer_id"), item.get("article"),
+                item.get("sku"), db.json_list(item.get("barcodes")),
+                [[part.get("title"), part.get("barcode"), part.get("part_sku")] for part in item["parts"]])
+    ]
+
+
+def find_suggestions(found: list[dict], q: str) -> list[dict]:
+    """Совпадения по артикулу и отвергнутые артикулы под поиском."""
+    return [item for item in found if _hit(q, item.get("article"), item.get("title"), _cards_text(item["cards"]))]
+
+
 @router.get("/products", response_class=HTMLResponse)
 def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str = "",
                   view: str = "new", user: dict = Depends(require_section("products"))):
@@ -162,7 +202,9 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
     picked = _picked(cab)
     shops = accounts.all_accounts()
     items = catalog_rows(picked, q) if tab == "catalog" else []
-    sets = product_sets.all_sets_everywhere(picked) if tab in ("sets", "catalog") else []
+    # Поиск есть в каждой вкладке: свой у каталога, наборов и сопоставления.
+    all_sets = product_sets.all_sets_everywhere(picked)
+    sets = find_sets(all_sets, q) if tab == "sets" else []
     taken = product_sets.kinds()
     for item in items:
         # Набор действует на всю группу: у сопоставленного товара «Состав»
@@ -185,6 +227,7 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
             "user": user,
             "items": items,
             "sets": sets,
+            "sets_total": len(all_sets),
             "taken": taken,
             "q": q,
             "tab": tab,
@@ -195,9 +238,11 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
             "total": sum(counts.values()),
             "catalog_shops": catalog_accounts(),
             "links": product_links.stats(picked) if tab != "sets" else product_links.stats(),
-            "suggestions": product_links.suggestions(picked) if tab == "match" and view == "new" else [],
+            "suggestions": (find_suggestions(product_links.suggestions(picked), q)
+                            if tab == "match" and view == "new" else []),
             "groups": product_links.groups(picked, q) if tab == "match" and view == "linked" else [],
-            "skipped": product_links.skipped() if tab == "match" and view == "skipped" else [],
+            "skipped": (find_suggestions(product_links.skipped(), q)
+                        if tab == "match" and view == "skipped" else []),
             "jobs": {account["id"]: catalog.job_status(account["id"]) for account in catalog_accounts()},
             "truncated": len(items) >= PAGE_LIMIT,
             "csrf": request.state.session.get("csrf"),

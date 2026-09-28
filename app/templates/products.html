@@ -5,6 +5,18 @@
 <span class="shop"><i class="dot {{ market }}"></i>{{ title }}</span>
 {%- endmacro -%}
 
+{#- Поиск вкладки: у каждой свой, кабинеты фильтра и подвкладка сохраняются. -#}
+{%- macro search_form(tab, ids, q, view, hint) -%}
+<form class="row products-search" method="get" action="/products">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <input type="hidden" name="cab" value="{{ ids | join(',') }}">
+  {% if view %}<input type="hidden" name="view" value="{{ view }}">{% endif %}
+  <input type="search" name="q" value="{{ q }}" placeholder="{{ hint }}" class="grow" autocomplete="off">
+  <button class="btn" type="submit">Найти</button>
+  {% if q %}<a class="btn" href="{{ cab_link(tab, ids, '', view) | trim }}">Сбросить</a>{% endif %}
+</form>
+{%- endmacro -%}
+
 {%- macro cab_link(tab, ids, q, view) -%}
 /products?tab={{ tab }}{% if ids %}&cab={{ ids | join(',') }}{% endif %}
 {%- if q %}&q={{ q | urlencode }}{% endif %}{% if view %}&view={{ view }}{% endif %}
@@ -81,7 +93,7 @@
       Каталог <span class="badge">{{ total }}</span>
     </a>
     <a href="{{ cab_link('sets', picked, '', '') | trim }}" class="{{ 'active' if tab == 'sets' }}">
-      Наборы и комплекты{% if sets %} <span class="badge">{{ sets | length }}</span>{% endif %}
+      Наборы и комплекты{% if sets_total %} <span class="badge">{{ sets_total }}</span>{% endif %}
     </a>
     <a href="{{ cab_link('match', picked, '', 'new') | trim }}" class="{{ 'active' if tab == 'match' }}">
       Сопоставление
@@ -92,16 +104,10 @@
 
   {# ============================================== 1. КАТАЛОГ #}
   {% if tab == 'catalog' %}
-    <form class="row" method="get" action="/products">
-      <input type="hidden" name="cab" value="{{ picked | join(',') }}">
-      <input type="search" name="q" value="{{ q }}" placeholder="Название, артикул или штрихкод"
-             class="grow" autocomplete="off">
-      <button class="btn" type="submit">Найти</button>
-      {% if q %}<a class="btn" href="{{ cab_link('catalog', picked, '', '') | trim }}">Сбросить</a>{% endif %}
-    </form>
+    {{ search_form('catalog', picked, q, '', 'Название, артикул или штрихкод') }}
 
     {% if items %}
-    <table style="margin-top:14px">
+    <table>
       <thead>
         <tr>
           <th style="width:56px">Фото</th>
@@ -273,6 +279,10 @@
       </div>
     </div>
 
+    <div style="margin-top:14px">
+      {{ search_form('sets', picked, q, '', 'Набор, комплект, товар, часть, артикул или штрихкод') }}
+    </div>
+
     {% if sets %}
       {% for s in sets %}
       {%- set kit = s.kind == 'kit' %}
@@ -327,6 +337,8 @@
         </div>
       </details>
       {% endfor %}
+    {% elif q %}
+      <div class="empty">Ничего не нашлось по запросу «{{ q }}».</div>
     {% else %}
       <div class="empty">
         Наборов и комплектов нет. Создайте набор, если какой-то товар на складе собирается из
@@ -343,14 +355,17 @@
       где ещё он продаётся. Панель ничего не связывает сама — решение за вами.
     </div>
 
+    {# Поиск один на все три списка: переходя между ними, запрос не теряется. #}
+    {{ search_form('match', picked, q, view, 'Артикул, название, SKU или штрихкод') }}
+
     <div class="tabs sub-tabs">
-      <a href="{{ cab_link('match', picked, '', 'new') | trim }}" class="{{ 'active' if view == 'new' }}">
+      <a href="{{ cab_link('match', picked, q, 'new') | trim }}" class="{{ 'active' if view == 'new' }}">
         Ждут подтверждения{% if links.suggestions %} <span class="badge warn">{{ links.suggestions }}</span>{% endif %}
       </a>
-      <a href="{{ cab_link('match', picked, '', 'linked') | trim }}" class="{{ 'active' if view == 'linked' }}">
+      <a href="{{ cab_link('match', picked, q, 'linked') | trim }}" class="{{ 'active' if view == 'linked' }}">
         Сопоставленные <span class="badge">{{ links.groups }}</span>
       </a>
-      <a href="{{ cab_link('match', picked, '', 'skipped') | trim }}" class="{{ 'active' if view == 'skipped' }}">
+      <a href="{{ cab_link('match', picked, q, 'skipped') | trim }}" class="{{ 'active' if view == 'skipped' }}">
         Не сопоставлять <span class="badge">{{ links.skipped }}</span>
       </a>
     </div>
@@ -403,6 +418,13 @@
           </table>
         </div>
         {% endfor %}
+      {% elif q %}
+        <div class="empty">
+          Ничего не нашлось по запросу «{{ q }}».
+          <div class="row" style="justify-content:center;margin-top:12px">
+            <button class="btn" id="link-manual">+ Сопоставить вручную</button>
+          </div>
+        </div>
       {% else %}
         <div class="empty">
           Совпадений нет: одинаковых артикулов в разных кабинетах не нашлось или
@@ -495,6 +517,8 @@
           </table>
         </div>
         {% endfor %}
+      {% elif q %}
+        <div class="empty">Ничего не нашлось по запросу «{{ q }}».</div>
       {% else %}
         <div class="empty">
           Сопоставленных товаров нет. Подтвердите совпадения или сведите карточки вручную.
@@ -525,6 +549,8 @@
             {% endfor %}
           </tbody>
         </table>
+      {% elif q %}
+        <div class="empty">Ничего не нашлось по запросу «{{ q }}».</div>
       {% else %}
         <div class="empty">Отвергнутых совпадений нет.</div>
       {% endif %}

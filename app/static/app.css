@@ -474,6 +474,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   font-size: 14px;
 }
 .set-part.ok { opacity: .55; }
+/* Поиск вкладки «Товаров»: отступ до содержимого под ним. */
+.products-search { margin-bottom: 14px; }
 /* Комплект в разделе «Товары»: метка и роли строк состава. */
 .badge.kit { background: #ede4ff; color: #6a3fd1; }
 .role { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 7px;

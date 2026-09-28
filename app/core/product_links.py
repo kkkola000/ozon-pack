@@ -352,9 +352,14 @@ def groups(account_ids: list[int] | None = None, q: str = "", limit: int = 200) 
         conditions.append(f"l.group_id IN (SELECT group_id FROM product_links WHERE account_id IN ({marks}))")
         params += list(account_ids)
     if q.strip():
-        like = f"%{q.strip()}%"
-        conditions.append("(p.name LIKE ? OR p.offer_id LIKE ? OR p.sku LIKE ?)")
-        params += [like, like, like]
+        # Регистр приводим с обеих сторон: LIKE в SQLite не различает его только
+        # у латиницы. Штрихкод — через справочник, как в каталоге.
+        like = f"%{q.strip().lower()}%"
+        conditions.append(
+            "(lower_ru(p.name) LIKE ? OR lower_ru(p.offer_id) LIKE ? OR lower_ru(p.sku) LIKE ? "
+            "OR p.sku IN (SELECT sku FROM product_barcodes WHERE account_id = p.account_id AND barcode LIKE ?))"
+        )
+        params += [like, like, like, like]
     rows = db.query(
         f"SELECT DISTINCT l.group_id FROM product_links l "
         f"JOIN products p ON p.account_id = l.account_id AND p.sku = l.sku "
