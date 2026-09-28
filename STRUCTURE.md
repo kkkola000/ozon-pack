@@ -107,7 +107,7 @@ ozon-pack/
 │   │   │   ├── templates/          — свои куски страниц: returns_list/sheet/act_rows,
 │   │   │   │                         settings_rows, settings_panel
 │   │   │   └── static/             — pack.js (в window.PACKS: что показать в окне сборки —
-│   │   │                             card(state); что ещё отсканировать — left(state))
+│   │   │                             card(state))
 │   │   │
 │   │   ├── avito/                  — Avito: заказы, сборка по этикетке, возвраты внутри заказа
 │   │   │   ├── __init__.py  client.py  store.py  sync.py  pack.py  returns.py  routes.py
@@ -213,7 +213,7 @@ ozon-pack/
 | Каталог товаров новой площадки | `app/markets/<код>/catalog.py`: `pages(account)` отдаёт карточки пачками, сохраняет их ядро |
 | Новое действие над связью карточек | `app/core/product_links.py` + ручка в `app/routes/products.py` |
 | Что сопоставление даёт сборке (штрихкоды, фото) | `app/core/linked.py`; площадка зовёт его из своих `pack.py`/`store.py` |
-| Фото, части набора, срочность и «что осталось» в окне сборки | общие `packPhoto`, `packSetParts`, `packUrgency`, `packLeft` в `app/static/market_pack.js` |
+| Фото, части набора и срочность в окне сборки | общие `packPhoto`, `packSetParts`, `packUrgency` в `app/static/market_pack.js` |
 | Что площадка показывает в окне сборки | `card(state)` в её `static/pack.js`: метки, кнопки, товары, строка внизу |
 | Как площадка узнаёт свой код при скане | `Workspace.owner` в её `routes.py`, сама проверка — в `pack.py` |
-| Слова поля сканирования площадки | `Workspace.title/hint` в её `routes.py`; «что осталось», последний шаг и «Собрано» — `left`, `words.close`, `words.done` в её `static/pack.js` |
+| Слова поля сканирования площадки | `Workspace.title/hint` в её `routes.py`; последний шаг и «Собрано» — `words.close`, `words.done` в её `static/pack.js` |

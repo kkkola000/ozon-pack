@@ -28,9 +28,6 @@ window.PACKS.ozon = {
   activeId: (active) => active.posting_number,
   number: (active) => active.posting_number,
 
-  // Что ещё отсканировать — для подсказки «Следующий — …» в окне сборки.
-  left: (state) => packLeft(state.items, (item) => item.name || 'Без названия'),
-
   /* Что показать в окне сборки. Рамку скана, счёт и «что дальше» рисует ядро;
      здесь — метки отправления, кнопки стикера, товары и строка внизу. */
   card(state) {

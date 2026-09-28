@@ -187,19 +187,19 @@
       <div class="pack-actions" id="pack-actions"></div>
     </div>
 
+    {# Поле скана в окне — как на странице: значок, поле и «Сканер готов» одной
+       строкой, без заливки. Синее на всех шагах; красное — ошибка, и только
+       тогда под полем строка итога. Что делать дальше, говорит само поле и
+       выделенная карточка ниже. #}
     <div class="pack-body" id="pack-work">
       <div class="scan-zone pack-scan is-active" id="pack-scan">
         <div class="scan-head">
           <div class="scan-icon">
             <span id="pack-icon-scan">{{ icon('scanner') }}</span><span id="pack-icon-label" hidden>{{ icon('label') }}</span>
           </div>
-          <div class="grow">
-            <div class="scan-title" id="pack-title"></div>
-            <div class="scan-hint" id="pack-hint"></div>
-          </div>
+          <div class="grow pack-slot" id="pack-slot"></div>
           <div class="scan-state"><i></i><span>Сканер готов</span></div>
         </div>
-        <div class="pack-slot" id="pack-slot"></div>
       </div>
 
       <div class="pack-progress">

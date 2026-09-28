@@ -5,8 +5,8 @@
 переезжает туда. Порядок страницы: шапка → поле с очередью → «Все заказы» →
 «Последние сканы».
 
-Рамку, состояния, окно и «что дальше» рисует market_pack.js, а слова и
-содержимое окна — площадка: под фильтром кабинета поле говорит словами его
+Рамку, состояния, окно и «что дальше» (выделенная карточка, подсказка в поле)
+рисует market_pack.js, а слова и содержимое окна — площадка: под фильтром кабинета поле говорит словами его
 площадки, под «Все заказы» — общими.
 """
 import re
@@ -73,8 +73,13 @@ def test_packing_window_is_on_the_page_and_closed(client):
     modal = _modal(client.get("/pack").text)
     assert modal.startswith('id="pack-modal" hidden')
     for element in ('id="pack-number"', 'id="pack-actions"', 'id="pack-scan"', 'id="pack-slot"',
-                    'id="pack-title"', 'id="pack-items"', 'id="pack-foot"', 'id="pack-done"'):
+                    'id="pack-items"', 'id="pack-foot"', 'id="pack-done"'):
         assert element in modal, element
+    # Поле в окне — как на странице: значок, поле и «Сканер готов» одной строкой,
+    # без заголовка над полем: что дальше, говорят само поле и карточка товара.
+    scan = modal[modal.index('id="pack-scan"'):modal.index('id="pack-items"')]
+    assert 'class="scan-title"' not in scan and 'class="scan-hint"' not in scan
+    assert scan.index('id="pack-slot"') < scan.index("Сканер готов")
     # Крестика нет: окно закрывается, когда заказ собран или сборку отменили.
     assert "✕</button>" not in modal.split('id="pack-slot"')[0]
 
@@ -110,7 +115,6 @@ def test_every_pack_fills_the_window():
         script = (STATIC / "markets" / market.code / "static" / "pack.js").read_text(encoding="utf-8")
         assert re.search(r"\bcard\(state\)", script), f"{market.code}: нет card(state)"
         assert "renderActive" not in script, f"{market.code}: осталась старая карточка на странице"
-        assert re.search(r"\bleft[(:]", script), f"{market.code}: нет left(state)"
         assert "number:" in script, f"{market.code}: нет number(active)"
         assert re.search(r"\btitle: '", script), f"{market.code}: нет названия площадки для окна"
         assert re.search(r"\bclose: '", script), f"{market.code}: нет words.close"

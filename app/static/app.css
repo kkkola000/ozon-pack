@@ -704,19 +704,22 @@ body.pack-open { overflow: hidden; }
 .pack-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pack-body { padding: 18px 24px 22px; }
 
-/* Рамка скана в окне — та же зона сканирования: те же состояния и цвета
-   (ошибка, потерян фокус, встряска), только компактнее. */
-.scan-zone.pack-scan { margin: 0; padding: 14px 16px; border-width: 2px; border-radius: 18px; box-shadow: none; }
-.scan-zone.pack-scan, .scan-zone.pack-scan.is-ok, .scan-zone.pack-scan.is-error { background: var(--zone-soft); }
-.pack-scan .scan-icon { width: 46px; height: 46px; border-radius: 13px; background: #fff; }
-.pack-scan .scan-icon svg { width: 28px; height: 28px; }
-.pack-scan .scan-title { font-size: 20px; }
-.pack-scan .scan-hint { font-size: 14px; }
-.pack-scan .scan-state { font-size: 13px; padding: 6px 12px; background: #fff; }
-.pack-slot { margin-top: 12px; }
-.pack-scan .scan-field input { font-size: 24px; padding: 14px 130px 14px 18px; background: #fff; }
-.pack-scan .scan-field input::placeholder { font-size: 17px; }
-.pack-scan .scan-result { margin-top: 10px; padding: 10px 14px; font-size: 16px; background: #fff; }
+/* Поле скана в окне — та же зона сканирования, что на странице: значок, поле
+   и «Сканер готов» одной строкой. Без заливки, цвет — только у рамки: синяя
+   на всех шагах, красная — ошибка, оранжевый пунктир — сканер не слушает.
+   Итог скана под полем — только при ошибке или предупреждении. */
+.scan-zone.pack-scan { margin: 0; padding: 16px 18px; border-radius: 20px; box-shadow: none; }
+.scan-zone.pack-scan, .scan-zone.pack-scan.is-ok, .scan-zone.pack-scan.is-error,
+.scan-zone.pack-scan.is-warning, .scan-zone.pack-scan.is-lost { background: var(--bg); }
+.pack-scan .scan-head { align-items: flex-start; }
+.pack-scan .scan-icon { width: 60px; height: 60px; border-radius: 16px; margin-top: 4px; }
+.pack-scan .scan-icon svg { width: 34px; height: 34px; }
+.pack-scan .scan-state { margin-top: 17px; font-size: 14px; }
+.pack-slot { min-width: 0; }
+.pack-scan .scan-field input { font-size: 26px; padding: 16px 130px 16px 20px; }
+.pack-scan .scan-field input::placeholder { font-size: 18px; }
+.pack-scan .scan-result { display: none; margin-top: 10px; padding: 10px 14px; font-size: 16px; }
+.pack-scan.is-error .scan-result, .pack-scan.is-warning .scan-result { display: flex; }
 .pack-scan .scan-result .sign { font-size: 20px; width: 22px; }
 .pack-scan .scan-result .code { font-size: 13px; }
 .pack-scan .scan-refocus { font-size: 17px; padding: 12px 16px; }
@@ -732,7 +735,7 @@ body.pack-open { overflow: hidden; }
   border: 1.5px solid var(--line); border-radius: 16px; background: var(--bg);
 }
 .pack-item.next { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.pack-item.done { background: var(--ok-soft); border-color: #bfe8d8; }
+.pack-item.done { border-color: var(--ok); }
 .pack-item .grow { min-width: 0; }
 .pack-item .item-photo { width: 84px; aspect-ratio: 1; padding: 3px; }
 .pack-item .item-photo.blank { font-size: 26px; }
@@ -749,7 +752,13 @@ body.pack-open { overflow: hidden; }
 }
 .pack-qty small { display: block; font: 600 11px system-ui, sans-serif; color: var(--muted); margin-top: 4px; }
 .pack-item.next .pack-qty { border-color: var(--accent); color: var(--accent); }
-.pack-item.done .pack-qty { border-color: var(--ok); color: var(--ok); background: #fff; }
+.pack-item.done .pack-qty { border-color: var(--ok); color: var(--ok); }
+/* Все товары на месте — последняя карточка: наклейте и отсканируйте наклейку. */
+.pack-step-icon {
+  width: 84px; height: 84px; border-radius: 12px; flex: none; display: flex; align-items: center;
+  justify-content: center; background: var(--accent-soft); color: var(--accent);
+}
+.pack-step-icon svg { width: 44px; height: 44px; }
 
 .pack-foot {
   display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 18px; padding-top: 14px;
@@ -775,5 +784,7 @@ body.pack-open { overflow: hidden; }
   .pack-actions { justify-content: flex-start; }
   .pack-body { padding: 14px 16px 18px; }
   .pack-item { flex-wrap: wrap; }
+  .pack-scan .pack-slot { flex-basis: 100%; order: 3; }
+  .pack-scan .scan-state { margin-left: auto; margin-top: 12px; }
   .pack-scan .scan-field input { padding-right: 18px; }
 }

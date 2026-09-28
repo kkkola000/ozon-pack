@@ -24,21 +24,6 @@ window.PACKS.avito = {
   activeId: (active) => active.id,
   number: (active) => active.marketplace_id || active.id,
 
-  /* Что ещё отсканировать. Позиция у Avito — единица товара, поэтому
-     одинаковые строки складываем в одну «×2»; у набора — недостающие части. */
-  left(state) {
-    const rows = new Map();
-    const units = (state.items || []).map((item) => ({ ...item, need: 1, scanned: item.scanned ? 1 : 0 }));
-    for (const row of packLeft(units, (item) => item.title || 'Без названия',
-      (item) => (item.seller_id ? `артикул ${item.seller_id}` : ''))) {
-      const key = `${row.name}\u0000${row.note}`;
-      const same = rows.get(key);
-      if (same) same.count += row.count;
-      else rows.set(key, { ...row });
-    }
-    return [...rows.values()];
-  },
-
   /* Что показать в окне сборки. Позиция — единица товара: у каждой свой
      скан. Печати по скану нет — этикетка открывается ссылкой, как и раньше. */
   card(state) {

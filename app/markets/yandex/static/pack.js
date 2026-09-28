@@ -25,10 +25,6 @@ window.PACKS.yandex = {
   activeId: (active) => active.id,
   number: (active) => active.id,
 
-  // Что ещё отсканировать — для подсказки «Следующий — …» в окне сборки.
-  left: (state) => packLeft(state.items, (item) => item.name || 'Без названия',
-    (item) => (item.barcodes?.length || item.is_set ? '' : 'нет штрихкода в каталоге')),
-
   /* Что показать в окне сборки. Рамку скана, счёт и «что дальше» рисует ядро;
      здесь — метки заказа, кнопки ярлыка, товары и строка внизу. */
   card(state) {
