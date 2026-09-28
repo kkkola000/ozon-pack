@@ -1,0 +1,48 @@
+{# Таблица возвратов Маркета на листе печати. Строки приходят как rows —
+   и для листа к выдаче, и для акта: колонки одни и те же. Штрихкод — номер
+   возврата: он напечатан на посылке, по нему её и выдают. #}
+<table>
+  <thead>
+    <tr>
+      <th class="num">№</th>
+      {% if everywhere %}<th style="width:110px">Кабинет</th>{% endif %}
+      <th style="width:110px">Возврат</th>
+      <th style="width:110px">Штрихкод</th>
+      <th>Товары</th>
+      <th class="qty">Кол-во</th>
+      <th style="width:170px">Пункт выдачи</th>
+      <th class="mark">Отметка</th>
+      <th style="width:120px">Комментарий</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr>
+      <td class="num">{{ loop.index }}</td>
+      {% if everywhere %}<td style="font-size:10px">{{ r.account_title or '—' }}</td>{% endif %}
+      <td class="mono">{{ r.id }}
+        <div style="font-size:10px">{{ r.type_label }}{% if r.order_id %} · заказ {{ r.order_id }}{% endif %}</div>
+      </td>
+      <td>
+        <div class="bc" data-barcode="{{ r.id }}" data-barcode-height="26" data-barcode-module="0.8"></div>
+        <div class="mono" style="font-size:9px">{{ r.id }}</div>
+      </td>
+      <td>
+        {% for good in r.goods %}
+          <div>{{ good.count }} × {{ good.name }}
+            <span style="font-size:10px;color:#444">{{ good.article or '' }}</span>
+          </div>
+        {% endfor %}
+      </td>
+      <td class="qty">{{ r.items_count }}</td>
+      <td style="font-size:10px">
+        {{ r.place_name or '—' }}
+        {% if r.place_address %}<div>{{ r.place_address }}</div>{% endif %}
+        {% if r.pickup_till_local %}<div>забрать до {{ r.pickup_till_local }}</div>{% endif %}
+      </td>
+      <td class="mark">{{ r.mark_sign or '☐' }} {{ r.mark_label }}</td>
+      <td style="font-size:10px">{{ r.note or '' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

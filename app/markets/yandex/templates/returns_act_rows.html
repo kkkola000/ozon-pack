@@ -1,0 +1,43 @@
+{# Строки акта, возвраты Маркета: строка — возврат целиком, с товарами внутри.
+   editable — вкладка «Ждёт подтверждения»; иначе «Отчёты», где акт читается. #}
+{% for r in rows %}
+<tr>
+  <td>
+    <div class="mono">{{ r.id }}</div>
+    <span class="tag">{{ r.type_label }}</span>
+    {% if r.order_id %}<div class="muted small">заказ <span class="mono">{{ r.order_id }}</span></div>{% endif %}
+  </td>
+  <td>
+    {% for good in r.goods %}
+      <div><b>{{ good.count }} ×</b> {{ good.name }}</div>
+    {% endfor %}
+  </td>
+  <td class="small mono">
+    {% for good in r.goods %}<div>{{ good.article or good.offer_id or '—' }}</div>{% endfor %}
+  </td>
+  <td style="font-weight:700">{{ r.items_count }}</td>
+  {% if editable %}
+  <td class="small" data-mark-cell>
+    <button class="btn small {{ 'ok' if r.mark == 'ok' else 'danger' if r.mark == 'bad' else 'primary' }}"
+            data-mark-open data-marketplace="yandex" data-id="{{ r.id }}" data-account="{{ r.account_id }}"
+            data-mark="{{ r.mark or '' }}" data-note="{{ r.note or '' }}"
+            data-subject="Возврат {{ r.id }}"
+            title="{{ r.note or '' }}">
+      {% if r.mark %}{{ r.mark_sign }} {{ r.mark_label }}{% else %}Отметить{% endif %}
+    </button>
+    <div class="muted" data-mark-note style="margin-top:4px">{{ r.note or '' }}</div>
+    <div class="muted" data-mark-who>{% if r.mark_at %}{{ r.mark_by }} · {{ r.mark_at_local }}{% endif %}</div>
+  </td>
+  {% else %}
+  <td>
+    {% if r.mark %}
+      <span class="badge {{ 'ok' if r.mark == 'ok' else 'err' }}">{{ r.mark_sign }} {{ r.mark_label }}</span>
+    {% else %}<span class="muted">—</span>{% endif %}
+  </td>
+  <td class="small">
+    {{ r.note or '' }}
+    {% if r.mark_at %}<div class="muted">{{ r.mark_by }} · {{ r.mark_at_local }}</div>{% endif %}
+  </td>
+  {% endif %}
+</tr>
+{% endfor %}

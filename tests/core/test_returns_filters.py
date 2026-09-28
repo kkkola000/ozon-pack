@@ -78,7 +78,9 @@ def test_status_row_sits_under_cabinets_with_cross_counts(client, cabinets):
     assert '<div class="status-tabs" id="status-tabs">' in top and "Статус:" not in top
     assert _statuses(page) == {"К выдаче": ozon_ready + avito_ready, "Ждёт подтверждения": 0}
     # На кабинете — сколько у него в выбранном статусе.
-    assert _chips(page) == {"Все кабинеты": ozon_ready + avito_ready, "Ozon": ozon_ready, "Avito": avito_ready}
+    # Кабинет Маркета тоже в чипах: возвраты теперь есть у всех площадок.
+    assert _chips(page) == {"Все кабинеты": ozon_ready + avito_ready, "Ozon": ozon_ready, "Avito": avito_ready,
+                            "Маркет": 0}
 
     # Статус считается под выбранным кабинетом.
     one = client.get(f"/returns?shop={cabinets['avito']['id']}").text
@@ -100,7 +102,7 @@ def test_acts_status_counts_acts_on_chips(client, cabinets):
 
     acts = client.get("/returns?tab=acts").text
     assert _statuses(acts)["Ждёт подтверждения"] == 1
-    assert _chips(acts) == {"Все кабинеты": 1, "Ozon": 0, "Avito": 1}
+    assert _chips(acts) == {"Все кабинеты": 1, "Ozon": 0, "Avito": 1, "Маркет": 0}
     # Статус «К выдаче» при этом считает своё — ссылка ведёт обратно на список.
     assert 'href="/returns?shop=all"' in acts
 
@@ -116,7 +118,7 @@ def test_scheme_filter_works_across_every_cabinet(client, cabinets):
         assert return_id not in page, f"FBO {return_id} под «Только FBS»"
     # У Avito схемы нет: под FBS его строк нет, пустой блок не показываем.
     assert _blocks(page) == ["Ozon"]
-    assert _chips(page) == {"Все кабинеты": len(fbs), "Ozon": len(fbs), "Avito": 0}
+    assert _chips(page) == {"Все кабинеты": len(fbs), "Ozon": len(fbs), "Avito": 0, "Маркет": 0}
     assert _statuses(page)["К выдаче"] == len(fbs)
     assert f"Печать листа ({len(fbs)})" in page
     # Лист и PDF — с тем же фильтром.

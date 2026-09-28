@@ -317,12 +317,8 @@ def test_settings_probe_and_test_keys(client, market):
     assert accounts.get(created.json()["account_id"])["marketplace"] == "yandex"
 
 
-def test_returns_section_is_closed_for_the_market(client, market):
-    """Возвраты Маркет в панель не отдаёт — раздел ему не показывается.
-
-    Отказ должен быть понятным: это не поломка, а «у этой площадки такого нет».
-    """
-    # В фильтре «Возвратов» кабинета Маркета нет, а его адрес — это «Все кабинеты».
+def test_returns_section_is_open_for_the_market(client, market):
+    """Возвраты и невыкупы Маркета — в общем разделе «Возвраты», чипом кабинета."""
     response = client.get(f"/returns?shop={market['id']}")
     assert response.status_code == 200
-    assert f'href="/returns?shop={market["id"]}"' not in response.text
+    assert f'href="/returns?shop={market["id"]}"' in response.text

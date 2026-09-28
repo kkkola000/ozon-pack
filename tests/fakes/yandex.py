@@ -1,4 +1,4 @@
-"""Подделка Partner API Яндекс Маркета — только для тестов: заказы, ярлыки, каталог."""
+"""Подделка Partner API Яндекс Маркета — только для тестов: заказы, ярлыки, каталог, возвраты."""
 from __future__ import annotations
 
 import json
@@ -47,6 +47,12 @@ class FakeYandexClient(YandexClient):
         self.catalog = [(offer, name, barcode) for _sku, offer, name, barcode
                         in SAMPLE_PRODUCTS + CATALOG_EXTRA]
         self.archived = [(offer, name, barcode) for _sku, offer, name, barcode in CATALOG_ARCHIVED]
+        # Возвраты и невыкупы магазина: в пункте, выданные магазину и едущие.
+        self._returns: list[dict] = []
+        # Запросы возвратов — параметры как ушли: проверки смотрят, что ушло.
+        self.return_requests: list[dict] = []
+        # Метод магазинов закрыт ключу — панель берёт магазины из заказов.
+        self.campaigns_forbidden = False
         self._generate()
 
     def _generate(self) -> None:
@@ -54,6 +60,46 @@ class FakeYandexClient(YandexClient):
         for index in range(10):
             order = self._make_order(index, now)
             self._orders[str(order["orderId"])] = order
+        statuses = ["READY_FOR_PICKUP", "READY_FOR_PICKUP", "READY_FOR_PICKUP", "PICKED", "PICKED", "IN_TRANSIT"]
+        for index, status in enumerate(statuses):
+            self._returns.append(self._make_return(index, status, now))
+
+    def _make_return(self, index: int, status: str, now: datetime) -> dict:
+        """Возврат в том виде, в каком его отдаёт getReturns."""
+        msk = timezone(timedelta(hours=3))
+        kind = "UNREDEEMED" if index % 2 else "RETURN"
+        _sku, offer, _name, _barcode = SAMPLE_PRODUCTS[index % len(SAMPLE_PRODUCTS)]
+        return_id = 5500000 + self._seed * 1000 + index
+        updated = now - timedelta(hours=2 + index)
+        return {
+            "id": return_id,
+            "orderId": 80000000 + self._seed * 100000 + index,
+            "creationDate": (now - timedelta(days=3)).astimezone(msk).isoformat(timespec="seconds"),
+            "updateDate": updated.astimezone(msk).isoformat(timespec="seconds"),
+            "refundStatus": "REFUND_IN_PROGRESS",
+            "logisticPickupPoint": {
+                "id": 900 + index % 2,
+                "name": "ПВЗ Маркета на Ленина" if index % 2 == 0 else "ПВЗ Маркета на Мира",
+                "address": {"country": "Россия", "city": "Екатеринбург",
+                            "street": "Ленина" if index % 2 == 0 else "Мира", "house": str(5 + index)},
+                "type": "PICKUP_POINT",
+            },
+            "pickupTillDate": (now + timedelta(days=7)).astimezone(msk).isoformat(timespec="seconds"),
+            "shipmentRecipientType": "DELIVERY_SERVICE",
+            "shipmentStatus": status,
+            "amount": {"value": 1990.0 + index, "currencyId": "RUR"},
+            "items": [{
+                "marketSku": 100000 + index,
+                "shopSku": offer,
+                "count": 1 + index % 2,
+                "decisions": [],
+                "instances": [{"stockType": "FIT", "status": "CREATED"}],
+                "tracks": [{"trackCode": f"TRK{return_id}"}] if kind == "RETURN" else [],
+            }],
+            "returnType": kind,
+            "fastReturn": False,
+            "_campaign": 21000000 + self._seed,
+        }
 
     def _make_order(self, index: int, now: datetime) -> dict:
         rnd = self._rnd
@@ -178,6 +224,31 @@ class FakeYandexClient(YandexClient):
         if not pages:
             raise YandexError("Нет заказов для печати", status=404)
         return make_label_pdf(pages)
+
+    def campaigns(self):  # type: ignore[override]
+        if self.campaigns_forbidden:
+            raise YandexError("Нет доступа к методу", status=403, code="FORBIDDEN")
+        return [{"id": 21000000 + self._seed, "domain": "shop.example",
+                 "business": {"id": int(self.business_id), "name": "Кабинет"}, "placementType": "FBS"}]
+
+    def returns(self, campaign_id, *, shipment_status=None, from_date=None, to_date=None,  # type: ignore[override]
+                page_token=None, limit=100):
+        self.return_requests.append({"campaign": str(campaign_id), "shipmentStatuses": shipment_status,
+                                     "fromDate": from_date, "toDate": to_date})
+        rows = []
+        for item in self._returns:
+            if str(item["_campaign"]) != str(campaign_id):
+                continue
+            if shipment_status and not self.ignore_filter and item["shipmentStatus"] != shipment_status:
+                continue
+            day = item["updateDate"][:10]
+            if (from_date and day < from_date) or (to_date and day > to_date):
+                continue
+            rows.append({key: value for key, value in item.items() if not key.startswith("_")})
+        start = int(page_token or 0)
+        chunk = rows[start : start + limit]
+        next_token = str(start + limit) if start + limit < len(rows) else None
+        return json.loads(json.dumps(chunk)), next_token
 
     def ping(self):  # type: ignore[override]
         return {"orders": len(self._orders), "business_id": self.business_id, "fake": True}

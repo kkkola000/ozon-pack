@@ -1,0 +1,44 @@
+{# Вкладка «К выдаче», кабинет Маркета: невыкупы и возвраты, что лежат в пункте.
+   Рамку страницы, фильтры и кнопки печати рисует общий returns.html. #}
+{% if items %}
+<table style="margin-top:10px">
+  <thead>
+    <tr>
+      <th style="width:170px">Возврат</th>
+      <th>Товары</th>
+      <th style="width:70px">Кол-во</th>
+      <th style="width:240px">Пункт выдачи</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in items %}
+    <tr>
+      <td>
+        <div class="mono" style="font-weight:700">{{ r.id }}</div>
+        <span class="tag">{{ r.type_label }}</span>
+        {% if r.order_id %}<div class="muted small">заказ <span class="mono">{{ r.order_id }}</span></div>{% endif %}
+        {% for track in r.track_list %}<div class="muted small mono">{{ track }}</div>{% endfor %}
+      </td>
+      <td>
+        {% for good in r.goods %}
+          <div>
+            <b>{{ good.count }} ×</b> {{ good.name }}
+            {% if good.article %}<span class="muted small mono">({{ good.article }})</span>{% endif %}
+          </div>
+        {% endfor %}
+      </td>
+      <td style="font-weight:700">{{ r.items_count }}</td>
+      {# Отметки тут нет: возврат ещё лежит в пункте, в руках его не держали.
+         Отмечают привезённое — во вкладке «Ждёт подтверждения». #}
+      <td class="small">
+        <div>{{ r.place_name or 'пункт Маркет не прислал' }}</div>
+        {% if r.place_address %}<div class="muted">{{ r.place_address }}</div>{% endif %}
+        {% if r.pickup_till_local %}<div class="muted">забрать до {{ r.pickup_till_local }}</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+  <div class="empty">Возвратов не найдено — забирать нечего.</div>
+{% endif %}

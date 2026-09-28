@@ -96,10 +96,11 @@ def test_acts_for_all_cabinets_make_one_act_per_cabinet(client, cabinets):
     assert f'data-account="{avito_shop["id"]}"' in page
 
 
-def test_a_market_without_returns_has_no_chip(client, cabinets):
+def test_every_market_with_returns_has_a_chip(client, cabinets):
+    """Возвраты теперь у всех площадок: и у Avito, и у Маркета — свой чип."""
     page = client.get("/returns").text
     assert f'/returns?shop={cabinets["avito"]["id"]}' in page
-    assert f'/returns?shop={cabinets["yandex"]["id"]}"' not in page
+    assert f'/returns?shop={cabinets["yandex"]["id"]}"' in page
 
 
 # ------------------------------------------------------------------ шапка

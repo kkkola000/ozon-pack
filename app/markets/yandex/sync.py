@@ -1,4 +1,4 @@
-"""Загрузка данных кабинета Яндекс Маркета: заказы в работе."""
+"""Загрузка данных кабинета Яндекс Маркета: заказы в работе и возвраты."""
 from __future__ import annotations
 
 import logging
@@ -14,9 +14,19 @@ from .client import YandexError
 log = logging.getLogger("yandex.sync")
 
 
-def sync_account(account: dict, *, returns_too: bool = True) -> dict:  # noqa: ARG001 - возвратов у Маркета в панели нет
+def sync_account(account: dict, *, returns_too: bool = True) -> dict:
+    from . import returns
+
     result = sync_yandex(account)
     result.update(sync_products(account))
+    if returns_too:
+        # Возвраты не должны ронять заказы: ключу может быть не выдан доступ к
+        # ним, а сборка от этого останавливаться не должна.
+        try:
+            result.update(returns.sync_returns(account))
+        except YandexError as exc:
+            log.warning("Возвраты Маркета не обновились: %s", exc)
+            result["yandex_returns_error"] = str(exc)
     return result
 
 
@@ -113,8 +123,20 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
         (account_id, limit),
     )
     offers = [row["offer_id"] for row in rows if row["offer_id"]]
+    return {"yandex_products": fill_cards(account, offers)}
+
+
+def fill_cards(account: dict, offers: list[str]) -> int:
+    """Карточки по артикулам, которых ещё нет в каталоге кабинета. Возвращает, сколько записано.
+
+    Нужны и заказам, и возвратам: без карточки у товара нет ни названия, ни
+    штрихкода, и сборщик его не узнает.
+    """
+    account_id = account["id"]
+    known = {row["sku"] for row in db.query("SELECT sku FROM products WHERE account_id = ?", (account_id,))}
+    offers = [offer for offer in dict.fromkeys(offers) if offer and offer not in known]
     if not offers:
-        return {"yandex_products": 0}
+        return 0
 
     client = yandex.get_client(account)
     total = 0
@@ -137,13 +159,13 @@ def sync_products(account: dict | None = None, limit: int = 500) -> dict:
         if missing:
             with db.write() as conn:
                 for offer in missing:
-                    known = db.query_one(
+                    named = db.query_one(
                         "SELECT name FROM yandex_order_items WHERE account_id = ? AND offer_id = ? LIMIT 1",
                         (account_id, offer),
                     )
                     conn.execute(
                         "INSERT OR IGNORE INTO products(account_id, sku, offer_id, name, barcodes, updated_at) "
                         "VALUES(?,?,?,?,?,?)",
-                        (account_id, offer, offer, (known["name"] if known else None), "[]", db.now_iso()),
+                        (account_id, offer, offer, (named["name"] if named else None), "[]", db.now_iso()),
                     )
-    return {"yandex_products": total}
+    return total

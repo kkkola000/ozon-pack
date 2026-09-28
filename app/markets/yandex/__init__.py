@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from ..base import CatalogSource, LabelsSource, Market
-from . import catalog, client, migrations, pack, routes, store, sync
+from . import catalog, client, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="yandex",
@@ -15,8 +15,9 @@ MARKET = Market(
     id_label="businessId",
     key_label="Api-Key",
     hint="Кабинет Маркета → Настройки → API и модули → Токены авторизации. "
-         "Доступы: обработка заказов и, для раздела «Товары», управление товарами и карточками",
-    tables=("yandex_orders", "yandex_order_items"),
+         "Доступы: обработка заказов (в том числе возвраты) и, для раздела «Товары», "
+         "управление товарами и карточками",
+    tables=("yandex_orders", "yandex_order_items", "yandex_returns"),
     router=routes.router,
     get_client=client.get_client,
     reset_client=client.reset_client,
@@ -24,10 +25,10 @@ MARKET = Market(
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
     stats=routes.settings_stats,
-    schema=store.SCHEMA,
+    schema=store.SCHEMA + returns.SCHEMA,
     # Разовые правки своих таблиц: ярлыки, скачанные в «Ожидает сборки».
     migrate=migrations.migrate,
-    raw_tables=("yandex_orders",),
+    raw_tables=("yandex_orders", "yandex_returns"),
     labels=LabelsSource(
         word="ярлыки",
         pending=pack.pending_labels,
@@ -42,6 +43,8 @@ MARKET = Market(
     # Каталог со штрихкодами Маркет отдаёт одним методом — раздел «Товары»
     # открывается и его кабинетам.
     catalog=CatalogSource(pages=catalog.pages),
+    # Возвраты и невыкупы в пункте выдачи: «К выдаче», полученные и акт — как у всех.
+    returns=returns.SOURCE,
     # «Заказы»: ярлыки и снятие отметки — в общем разделе.
     orders=routes.ORDERS,
     workspace=routes.WORKSPACE,

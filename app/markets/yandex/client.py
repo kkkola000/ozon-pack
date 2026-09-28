@@ -5,6 +5,8 @@
   POST /v2/businesses/{businessId}/offer-mappings — каталог товаров со штрихкодами
   GET  /v2/campaigns/{campaignId}/orders/{orderId}/delivery/labels
                                                  — ярлыки на все коробки заказа (generateOrderLabels)
+  GET  /v2/campaigns                             — магазины кабинета: у кого брать возвраты
+  GET  /v2/campaigns/{campaignId}/returns        — возвраты и невыкупы магазина (getReturns)
 
 Авторизация — заголовок `Api-Key: <токен>`; идентификатор кабинета (businessId)
 идёт в пути и в теле, а идентификатор магазина (campaignId) панель не
@@ -54,6 +56,20 @@ def label_format() -> str:
     from ...core import printers
 
     return LABEL_FORMATS.get(printers.size_of("yandex:label") or "", LABEL_FORMAT)
+
+# Возвраты (getReturns): страница не больше сотни — столько Маркет отдаёт всегда.
+RETURNS_PAGE_LIMIT = 100
+# Магазины кабинета — страницами по 50 (GET /v2/campaigns).
+CAMPAIGNS_PAGE_SIZE = 50
+# Логистические статусы возврата (shipmentStatus), с которыми работает панель.
+# Два и фиксированные: лежит в пункте и готов к выдаче магазину — едем
+# забирать; выдан магазину — получили, нужна отметка и акт.
+RETURN_READY = "READY_FOR_PICKUP"
+RETURN_PICKED = "PICKED"
+RETURN_STATUS_LABELS = {RETURN_READY: "Готов к выдаче", RETURN_PICKED: "Выдан магазину"}
+# Вид: невыкуп (покупатель не забрал заказ) или возврат покупателя. Берём оба —
+# в пункт приезжают и те и другие.
+RETURN_TYPE_LABELS = {"UNREDEEMED": "Невыкуп", "RETURN": "Возврат"}
 
 # Статус и этап обработки, по которым заказ попадает на склад.
 STATUS_PROCESSING = "PROCESSING"
@@ -266,6 +282,56 @@ class YandexClient:
         if not response.content.startswith(b"%PDF"):
             raise YandexError(f"Маркет прислал вместо ярлыков заказа {order} не PDF", status=response.status_code)
         return response.content
+
+    # ------------------------------------------------------------------ возвраты
+    def campaigns(self) -> list[dict]:
+        """Магазины кабинета: GET /v2/campaigns, только этого businessId.
+
+        Метод отдаёт все магазины, к которым пускает ключ, — чужие кабинеты
+        отсеиваем по business.id. campaignId у заказа панель берёт из самого
+        заказа, но возвраты бывают и у магазина, заказов которого сейчас нет.
+        """
+        found: list[dict] = []
+        page = 1
+        while page <= 50:
+            data = self.request_json("GET", "/v2/campaigns",
+                                     params={"page": page, "pageSize": CAMPAIGNS_PAGE_SIZE})
+            for campaign in data.get("campaigns") or []:
+                business = (campaign or {}).get("business") or {}
+                if not self.business_id or str(business.get("id") or "") in ("", self.business_id):
+                    found.append(campaign)
+            pager = data.get("pager") or {}
+            if int(pager.get("currentPage") or page) >= int(pager.get("pagesCount") or 1):
+                break
+            page += 1
+        return found
+
+    def returns(self, campaign_id: int | str, *, shipment_status: str | None = None,
+                from_date: str | None = None, to_date: str | None = None,
+                page_token: str | None = None, limit: int = RETURNS_PAGE_LIMIT) -> tuple[list[dict], str | None]:
+        """Страница возвратов и невыкупов магазина и токен следующей.
+
+        GET /v2/campaigns/{campaignId}/returns. Окно дат — fromDate/toDate
+        (ГГГГ-ММ-ДД): прежние from_date и to_date Маркет отключает 12.10.2026,
+        панель их не передаёт. Вид (type) не задаём — нужны и невыкупы, и
+        возвраты. Фильтр по логистическому статусу уходит в запрос, но разбор
+        всё равно отсеивает чужое у себя.
+        """
+        campaign = _positive_int(campaign_id, "магазина (campaignId)")
+        params: dict[str, Any] = {"limit": max(1, min(limit, RETURNS_PAGE_LIMIT))}
+        if shipment_status:
+            params["shipmentStatuses"] = shipment_status
+        if from_date:
+            params["fromDate"] = from_date
+        if to_date:
+            params["toDate"] = to_date
+        if page_token:
+            params["page_token"] = page_token
+        data = self.request_json("GET", f"/v2/campaigns/{campaign}/returns", params=params)
+        result = data.get("result") or {}
+        returns = [item for item in (result.get("returns") or []) if isinstance(item, dict)]
+        next_token = ((result.get("paging") or {}).get("nextPageToken")) or None
+        return returns, next_token
 
     # ------------------------------------------------------------------ проверка
     def ping(self) -> dict:

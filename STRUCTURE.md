@@ -118,9 +118,12 @@ ozon-pack/
 │   │   │   ├── templates/          — returns_list/sheet/act_rows
 │   │   │   └── static/             — pack.js
 │   │   │
-│   │   └── yandex/                 — Яндекс Маркет: заказы, ярлыки, каталог; возвраты площадка в панель не отдаёт
+│   │   └── yandex/                 — Яндекс Маркет: заказы, ярлыки, каталог, возвраты и невыкупы
 │   │       ├── __init__.py  client.py  store.py  sync.py  pack.py  routes.py
 │   │       ├── catalog.py          — каталог одним методом (offer-mappings): ключ товара — артикул продавца
+│   │       ├── returns.py          — возвраты (getReturns): «К выдаче» — READY_FOR_PICKUP, полученные —
+│   │       │                         PICKED, акт; строка — возврат с товарами, штрихкод — номер возврата
+│   │       ├── templates/          — returns_list/sheet/act_rows
 │   │       └── static/             — pack.js
 │   │
 │   ├── routes/                     — разделы, общие для всех площадок
@@ -202,7 +205,7 @@ ozon-pack/
     └── markets/
         ├── ozon/                   — сборка, каталог, наборы, стикеры
         ├── avito/                  — заказы, сборка, этикетки
-        └── yandex/                 — заказы, сборка, каталог
+        └── yandex/                 — заказы, сборка, каталог, возвраты
 ```
 
 ## Куда что добавлять
