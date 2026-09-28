@@ -474,6 +474,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   font-size: 14px;
 }
 .set-part.ok { opacity: .55; }
+/* Добавить карточку в сопоставленный товар — поиск под шапкой группы. */
+.add-card { padding: 10px 14px 12px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
 /* Поиск вкладки «Товаров»: отступ до содержимого под ним. */
 .products-search { margin-bottom: 14px; }
 /* Комплект в разделе «Товары»: метка и роли строк состава. */
@@ -563,6 +565,15 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   padding: 14px 16px; background: var(--surface); border-bottom: 1px solid var(--line); flex-wrap: wrap;
 }
 .match-card table th, .match-card table td { padding: 10px 16px; }
+/* Сопоставленный товар — свёрнутая группа: название щёлкается, стрелка
+   показывает, раскрыта ли. Поиск «+» живёт под шапкой сам по себе. */
+.match-group { margin-bottom: 10px; }
+.match-group .match-title { cursor: pointer; }
+.match-group .match-title::before { content: "▶"; color: var(--muted); font-size: 12px; margin-right: 8px; }
+.match-group.open .match-title::before { content: "▼"; }
+.match-group:not(.open) > .match-head { border-bottom: none; }
+.match-group:not(.open) > .add-card { border-bottom: none; }
+.match-shops { margin-left: 10px; }
 
 /* Действие внутри строки таблицы: кнопка там выглядит тяжелее самой строки. */
 .link-btn {

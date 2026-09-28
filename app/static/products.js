@@ -462,6 +462,19 @@ document.addEventListener('click', (event) => {
     return;
   }
 
+  /* Правка внутри раскрытой группы: после перезагрузки она снова открыта. */
+  const holder = event.target.closest('.match-group');
+  if (holder && event.target.closest('[data-unlink-card], [data-main]')) {
+    history.replaceState(null, '', `#${holder.id}`);
+  }
+
+  /* Щелчок по названию группы раскрывает или сворачивает её карточки. */
+  const toggle = event.target.closest('[data-group-toggle]');
+  if (toggle) {
+    toggleGroup(toggle.closest('.match-group'));
+    return;
+  }
+
   const drop = event.target.closest('[data-unlink-card]');
   if (drop) {
     const chosen = cardKey(drop.dataset.unlinkCard);
@@ -474,8 +487,63 @@ document.addEventListener('click', (event) => {
   if (main) {
     const chosen = cardKey(main.dataset.main);
     act(main, () => api('/api/products/links/main', chosen));
+    return;
+  }
+
+  /* «+ Добавить карточку» в уже сопоставленный товар: открываем поиск под
+     группой. Подсказку заводим один раз — при первом открытии. */
+  const addOpen = event.target.closest('[data-add-open]');
+  if (addOpen) {
+    // «+» группу не раскрывает: он открывает поиск и добавляет карточку в товар.
+    const group = addOpen.dataset.addOpen;
+    const box = document.querySelector(`[data-add-box="${CSS.escape(group)}"]`);
+    box.hidden = !box.hidden;
+    const field = box.querySelector('[data-add-field]');
+    if (!box.dataset.ready) {
+      box.dataset.ready = '1';
+      suggest(field, box.querySelector('[data-add-found]'), async (item) => {
+        addOpen.disabled = true;
+        try {
+          const data = await api(`/api/products/links/${encodeURIComponent(group)}/add`, {
+            cards: [{ account_id: item.account_id, sku: item.sku }],
+          });
+          toast(data.message, 'ok');
+          setTimeout(() => window.location.reload(), 700);
+        } catch (error) {
+          toast(error.message, 'error', 10000);
+          addOpen.disabled = false;
+        }
+      });
+    }
+    if (!box.hidden) field.focus();
   }
 });
+
+/* Карточки сопоставленного товара: показать или скрыть. */
+function toggleGroup(group, open) {
+  if (!group) return;
+  const show = open ?? !group.classList.contains('open');
+  group.classList.toggle('open', show);
+  group.querySelector('[data-group-cards]').hidden = !show;
+}
+
+document.addEventListener('keydown', (event) => {
+  const toggle = event.target.closest?.('[data-group-toggle]');
+  if (toggle && (event.key === 'Enter' || event.key === ' ')) {
+    event.preventDefault();
+    toggleGroup(toggle.closest('.match-group'));
+  }
+});
+
+/* Вернулись после правки внутри группы (#group-…) — она снова раскрыта,
+   остальные свёрнуты, как всегда. */
+if (window.location.hash.startsWith('#group-')) {
+  const opened = document.getElementById(decodeURIComponent(window.location.hash.slice(1)));
+  if (opened && opened.classList.contains('match-group')) {
+    toggleGroup(opened, true);
+    opened.scrollIntoView({ block: 'center' });
+  }
+}
 
 /* «Развернуть» у сопоставленного товара в каталоге: карточки площадок под ним. */
 document.addEventListener('click', (event) => {

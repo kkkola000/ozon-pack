@@ -242,6 +242,46 @@ def link(main: tuple[int, str], others: list[tuple[int, str]], *, user: dict | N
     return result
 
 
+def add_to_group(group_id: str, others: list[tuple[int, str]], *, user: dict | None = None) -> dict:
+    """Добавить карточки в уже сопоставленный товар. Основной остаётся прежним.
+
+    Карточка из другой группы сюда не переезжает молча: это значило бы слить
+    два товара в один, а такое решение человек должен принять сам — отвязать
+    её там и добавить здесь. Уже состоящая в этой группе — просто пропускается.
+    """
+    members = cards_of(group_id)
+    if not members:
+        raise ValueError("Такого сопоставления нет")
+    main = next((card for card in members if card["is_main"]), members[0])
+    inside = {(card["account_id"], str(card["sku"])) for card in members}
+    added = []
+    for account_id, sku in others:
+        card = card_at(account_id, sku)
+        if card is None:
+            raise ValueError(f"Товара {sku} нет в каталоге кабинета")
+        key = (card["account_id"], str(card["sku"]))
+        if key in inside:
+            continue
+        if card["group_id"]:
+            other = cards_of(card["group_id"])
+            head = next((row for row in other if row["is_main"]), other[0] if other else card)
+            raise ValueError(
+                f"«{card.get('name') or card['sku']}» ({card['shop']}) уже сопоставлена с товаром "
+                f"«{head.get('name') or head['sku']}». Сначала отвяжите её там."
+            )
+        inside.add(key)
+        added.append(card)
+    if not added:
+        raise ValueError("Добавлять нечего: эти карточки уже в этом товаре")
+    with db.write() as conn:
+        _write_group(conn, group_id, added, main, user)
+    db.log_event(
+        "products_linked", user=user,
+        message=f"В сопоставление «{main.get('name') or main['sku']}» добавлено карточек: {len(added)}",
+    )
+    return {"group_id": group_id, "cards": cards_of(group_id), "added": len(added)}
+
+
 def card_at(account_id: int, sku: str) -> dict | None:
     row = db.query_one(
         CARD_SQL + " WHERE p.account_id = ? AND p.sku = ?", (int(account_id), str(sku))

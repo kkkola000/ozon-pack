@@ -400,6 +400,25 @@ def api_link(request: Request, payload: dict = Body(...), admin: dict = Depends(
             "message": f"Сопоставлено карточек: {len(result['cards'])}"}
 
 
+@router.post("/api/products/links/{group_id}/add")
+def api_add_to_link(group_id: str, request: Request, payload: dict = Body(...),
+                    admin: dict = Depends(require_manager)):
+    """Добавить карточку в уже сопоставленный товар — ещё один кабинет или площадку."""
+    check_csrf(request)
+    cards = [
+        (int(card.get("account_id") or 0), str(card.get("sku") or ""))
+        for card in (payload.get("cards") or [])
+    ]
+    if not cards:
+        raise HTTPException(status_code=400, detail="Выберите карточку, которую добавить")
+    try:
+        result = product_links.add_to_group(group_id, cards, user=admin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", "group_id": group_id,
+            "message": f"Добавлено в сопоставление: {result['added']}. Карточек теперь {len(result['cards'])}"}
+
+
 @router.delete("/api/products/links/{group_id}")
 def api_unlink(group_id: str, request: Request, admin: dict = Depends(require_manager)):
     """Отменить сопоставление: карточки снова становятся отдельными товарами."""

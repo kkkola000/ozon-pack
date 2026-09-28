@@ -477,20 +477,43 @@
           отдельным товаром, а совпадение по артикулу вернётся в предложения.
         </div>
         {% for group in groups %}
-        <div class="match-card">
+        {# Группа свёрнута: в шапке — что за товар и на каких площадках, и два
+           действия. Карточки раскрываются щелчком по названию. «+» группу не
+           раскрывает — он открывает поиск и добавляет карточку в товар. #}
+        <div class="match-card match-group" id="group-{{ group.group_id }}">
           <div class="match-head">
-            <div>
+            <div class="match-title" data-group-toggle role="button" tabindex="0"
+                 title="Показать или скрыть карточки">
               <span class="mono">{{ group.main.offer_id or '—' }}</span>
               <b style="margin-left:8px">{{ group.title }}</b>
               <span class="badge ok">карточек {{ group.cards | length }}</span>
+              <span class="match-shops">
+                {%- for card in group.cards %}{{ shop_tag(card.market, card.shop) }}{% endfor -%}
+              </span>
             </div>
             <div class="row">
+              <button class="btn small" data-add-open="{{ group.group_id }}"
+                      title="Добавить в этот товар карточку ещё одного кабинета или площадки">
+                + Добавить карточку
+              </button>
               <button class="btn small danger" data-unlink="{{ group.group_id }}">
                 Отменить сопоставление
               </button>
             </div>
           </div>
-          <table>
+          {# Добавить карточку в уже сопоставленный товар: выбрали в подсказке —
+             она сразу в группе, основной товар остаётся прежним. #}
+          <div class="add-card" data-add-box="{{ group.group_id }}" hidden>
+            <label style="position:relative; display:block">
+              <input type="search" data-add-field placeholder="Карточка другого кабинета: название, артикул или штрихкод"
+                     autocomplete="off" style="width:100%">
+              <div class="picker" data-add-found hidden></div>
+            </label>
+            <div class="muted small" style="margin-top:6px">
+              Штрихкоды новой карточки сразу подойдут к заказам всех площадок этого товара.
+            </div>
+          </div>
+          <table data-group-cards hidden>
             <tbody>
               {% for card in group.cards %}
               <tr>
