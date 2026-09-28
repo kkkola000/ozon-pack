@@ -42,12 +42,16 @@ window.PACKS.avito = {
         scanned: item.scanned ? 1 : 0,
         need: 1,
         ok: Boolean(item.ok),
-        meta: (item.seller_id ? `Артикул <b>${escapeHtml(item.seller_id)}</b> · ` : '')
+        // Своих артикула и ШК у объявления может не быть — они берутся у
+        // сопоставленных карточек: артикул основной, ШК всех (article, barcodes).
+        meta: (item.article ? `Артикул <b>${escapeHtml(item.article)}</b> · ` : '')
           + `единица ${item.unit_no}`
-          + (item.barcode ? ` · штрихкод <b>${escapeHtml(item.barcode)}</b>` : '')
-          + (item.is_set ? ` · <span class="tag">Набор из ${item.parts.length}</span>`
-            : item.checked ? ` · <span class="tag" title="Объявление сопоставлено: подходят только штрихкоды ${escapeHtml(item.barcodes.join(', '))}">сверка</span>` : ''),
+          + (item.barcodes?.length ? ` · ШК <b>${escapeHtml(item.barcodes.join(', '))}</b>`
+            : item.barcode ? ` · штрихкод <b>${escapeHtml(item.barcode)}</b>` : '')
+          + (item.is_set && item.kind !== 'kit' ? ` · <span class="tag">Набор из ${item.parts.length}</span>`
+            : item.checked && !item.is_set ? ' · <span class="tag" title="Объявление сопоставлено: подходят только эти штрихкоды">сверка</span>' : ''),
         extra: packSetParts(item),
+        wait: item.waiting,
       })),
       details: [['Заказ', order.marketplace_id || order.id], ['Доставка', service]],
       force: '',

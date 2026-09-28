@@ -150,7 +150,7 @@ def load_state(account: dict, user: dict) -> dict:
         parts = sets.get(str(item.get("offer_id") or ""))
         if parts:
             # Прогресс частей — по позиции заказа: один артикул бывает в нём дважды.
-            got, extra = product_sets.progress(item["item_id"], need, got, parts, scanned)
+            got, extra = product_sets.progress(item["item_id"], need, got, parts, scanned, name=item.get("name"))
         total += need
         done += min(got, need)
         items.append({**item, "need": need, "scanned": got, "ok": got >= need, **extra})
@@ -176,7 +176,8 @@ def missing_items(state: dict) -> list[str]:
             continue
         name = item.get("name") or item.get("offer_id") or item["item_id"]
         parts = product_sets.missing_parts(item)
-        missing.append(f"{name} (набор): {parts}" if parts else f"{name} — {item['need'] - item['scanned']} шт")
+        missing.append(f"{name} ({product_sets.word(item)}): {parts}" if parts
+                       else f"{name} — {item['need'] - item['scanned']} шт")
     return missing
 
 
@@ -220,7 +221,8 @@ def openable(account: dict, user: dict, offers: list[str], code: str) -> list[di
     """
     found = candidates_for_offers(account, offers, user) if offers else []
     seen = {candidate["id"] for candidate in found}
-    for parent in product_sets.parents_of(account["id"], barcodes=barcode_variants(code)):
+    parents = product_sets.parents_of(account["id"], barcodes=barcode_variants(code))
+    for parent in product_sets.openers(parents):
         for candidate in candidates_for_offers(account, [parent["set_sku"]], user):
             if candidate["id"] not in seen:
                 seen.add(candidate["id"])
@@ -328,27 +330,11 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
 
     if active:
         matching = [item for item in state["items"] if item.get("offer_id") in offers]
+        part = _as_set_part(account, user, state, matching, code)
+        if part is not None:
+            return part
         if not matching:
-            # Прежде чем говорить «СТОП»: это может быть часть набора из этого
-            # же заказа — товар с полки, а не чужая позиция.
-            part = _scan_set_part(account, user, code)
-            if part is not None:
-                return part
-            with db.write() as conn:
-                db.log_event(
-                    "scan_wrong_product", level="error", account_id=account["id"], user=user,
-                    posting_number=active["id"], barcode=code, message="Товар не из активного заказа",
-                    conn=conn,
-                )
-                report.record_error(
-                    conn, account, user, "wrong_product", posting_number=active["id"],
-                    barcode=code, name=name, offer_id=offers[0],
-                )
-            return ScanResult(
-                "error",
-                f"СТОП: «{name}» не входит в заказ {active['id']}. Уберите товар.",
-                action="wrong_product", state=state,
-            )
+            return _wrong_product(account, user, state, offers, name, code)
 
         # Один артикул может стоять в заказе двумя позициями — берём незакрытую.
         item = next((i for i in matching if not i["ok"]), matching[0])
@@ -428,6 +414,39 @@ def _scan_product(account: dict, user: dict, offers: list[str], code: str) -> Sc
     return result
 
 
+def _as_set_part(account: dict, user: dict, state: dict, matching: list[dict], code: str) -> ScanResult | None:
+    """Скан — часть набора или вложение комплекта этого заказа? None — нет.
+
+    Прежде чем говорить «СТОП»: товар не из позиций заказа может быть частью
+    его набора — товар с полки, а не чужая позиция. Комплект ждёт вложение —
+    скан идёт в комплект, даже если такой товар стоит в заказе отдельно.
+    """
+    if matching and product_sets.waiting(state["items"]) is None:
+        return None
+    return _scan_set_part(account, user, code)
+
+
+def _wrong_product(account: dict, user: dict, state: dict, offers: list[str], name: str,
+                   code: str) -> ScanResult:
+    """Товар не из открытого заказа: «СТОП» и строка в отчёт о пересорте."""
+    active = state["active"]
+    with db.write() as conn:
+        db.log_event(
+            "scan_wrong_product", level="error", account_id=account["id"], user=user,
+            posting_number=active["id"], barcode=code, message="Товар не из активного заказа",
+            conn=conn,
+        )
+        report.record_error(
+            conn, account, user, "wrong_product", posting_number=active["id"],
+            barcode=code, name=name, offer_id=offers[0],
+        )
+    return ScanResult(
+        "error",
+        f"СТОП: «{name}» не входит в заказ {active['id']}. Уберите товар.",
+        action="wrong_product", state=state,
+    )
+
+
 def _nothing_to_open(account: dict, user: dict, offers: list[str], name: str, code: str,
                      state: dict, locked: list[dict]) -> ScanResult:
     """Товар отсканирован, а открыть нечего: объяснить почему — словами для сборщика."""
@@ -498,7 +517,7 @@ def _scan_set_part(account: dict, user: dict, code: str) -> ScanResult | None:
     state = load_state(account, user)
     active = state["active"]
     if not active:
-        return _open_for_set(account, user, parents, code)
+        return _open_for_set(account, user, product_sets.openers(parents), code)
 
     picked = product_sets.pick_part(state["items"], parents, lambda item: str(item.get("offer_id") or ""))
     if picked is None:
@@ -518,7 +537,8 @@ def _scan_set_part(account: dict, user: dict, code: str) -> ScanResult | None:
             )
         return ScanResult(
             "warning",
-            f"«{part['name']}» для набора «{set_name}» уже набран ({part['need']} шт). Лишнее не кладите.",
+            f"«{part['name']}» для {'комплекта' if item.get('kind') == 'kit' else 'набора'} «{set_name}» "
+            f"уже набран ({part['need']} шт). Лишнее не кладите.",
             action="extra_product", sound="error", state=state,
         )
     return _credit_part(account, user, state, item, part, code)
@@ -557,7 +577,7 @@ def _credit_part(account: dict, user: dict, state: dict, item: dict, part: dict,
     return ScanResult(
         "ok",
         f"«{set_name}»: {part['name']} {scanned[slot]}/{part['need']}. "
-        f"Набор {new_item['scanned']}/{new_item['need']}.{tail}",
+        f"{product_sets.word(new_item).capitalize()} {new_item['scanned']}/{new_item['need']}.{tail}",
         action="set_part_scanned", state=new_state,
     )
 

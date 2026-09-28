@@ -228,6 +228,8 @@ def yandex_items(account_id: int, order_id: str) -> list[dict]:
         )
         # Фото: своё, сопоставленной карточки, а нет их — карточки с тем же артикулом.
         item["image"] = photo or offer_image(offer)
+        # Артикул для сборщика — основной карточки группы, а не offerId Маркета.
+        item["article"] = linked.article(account_id, offer, offer)
         items.append(item)
     return items
 

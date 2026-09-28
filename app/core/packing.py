@@ -276,6 +276,27 @@ def _labels_locked(where: list[dict], user: dict, code: str) -> dict | None:
     }
 
 
+def _kit_order(shop: dict, user: dict, code: str) -> dict | None:
+    """Комплект ждёт вложение, а отсканировали другое. None — скан можно проводить.
+
+    Правило одно для всех площадок (product_sets.check_scan): после основного
+    товара комплекта — только его вложение. Проверяем до площадки, чтобы
+    ничего не засчиталось: ни другой товар, ни та же термокружка второй раз.
+    """
+    from . import product_sets
+
+    state = _workspace(shop).load_state(shop, user)
+    text = product_sets.check_scan(shop["id"], state.get("items") or [], code)
+    if text is None:
+        return None
+    active = state.get("active") or {}
+    db.log_event("scan_kit_order", level="warn", account_id=shop["id"], user=user,
+                 posting_number=str(active.get("posting_number") or active.get("id") or ""),
+                 barcode=code, message=text)
+    return {"status": "error", "message": text, "action": "kit_order", "sound": "error",
+            "state": _sign(state, shop), **_sign({}, shop)}
+
+
 def scan(where: list[dict], user: dict, code: str) -> dict:
     """Один скан рабочего места. Кабинет выбирается по коду, а не по шапке."""
     code = (code or "").strip()
@@ -284,6 +305,9 @@ def scan(where: list[dict], user: dict, code: str) -> dict:
         stranger = _stranger(user, open_shop, code)
         if stranger is not None:
             return stranger
+        blocked = _kit_order(open_shop, user, code)
+        if blocked is not None:
+            return blocked
         return _run(open_shop, _workspace(open_shop).scan, user, code)
 
     locked = _labels_locked(where, user, code)

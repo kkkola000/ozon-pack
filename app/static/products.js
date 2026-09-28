@@ -100,6 +100,57 @@ if (editor) {
 
   let card = null;          // выбранный товар-набор: {account_id, sku}
   let parts = [];
+  let kind = 'set';         // набор или комплект
+
+  /* Набор и комплект редактируются одинаково — составом. Разные только слова:
+     у набора части, у комплекта — вложения к основному товару. */
+  const KIND_WORDS = {
+    set: {
+      heading: 'Новый набор', edit: 'Набор', hint: 'Сборщик сканирует части — набор собран, когда набраны все',
+      product: 'Товар-набор — тот, что продаётся на площадке', title: 'Название набора — необязательно',
+      parts: 'Состав', partsHint: 'Часть можно выбрать из каталога любого кабинета или вписать штрихкодом — '
+        + 'не всё, что лежит в наборе, продаётся отдельно.',
+      part: 'Часть', qty: 'На один набор', search: 'Добавить часть из каталога', save: 'Сохранить набор',
+      chooseProduct: 'Выберите товар-набор', empty: 'Добавьте хотя бы одну часть',
+      emptyRow: 'Пока пусто. Добавьте части — из каталога или штрихкодом.',
+    },
+    kit: {
+      heading: 'Новый комплект', edit: 'Комплект',
+      hint: 'Основной товар сканируют первым, сразу за ним — то, что в него вкладывают',
+      product: 'Основной товар — тот, что продаётся на площадке и лежит на полке',
+      title: 'Название комплекта — необязательно',
+      parts: 'Что вложить', partsHint: 'Вложение можно выбрать из каталога любого кабинета или вписать '
+        + 'штрихкодом. На сборке его сканируют сразу после основного товара.',
+      part: 'Вложение', qty: 'На один комплект', search: 'Добавить вложение из каталога',
+      save: 'Сохранить комплект', chooseProduct: 'Выберите основной товар',
+      empty: 'Добавьте хотя бы одно вложение',
+      emptyRow: 'Пока пусто. Добавьте вложение — из каталога или штрихкодом.',
+    },
+  };
+
+  function setKind(value, editing = false) {
+    kind = value === 'kit' ? 'kit' : 'set';
+    const words = KIND_WORDS[kind];
+    document.getElementById('set-heading').textContent = editing ? words.edit : words.heading;
+    document.getElementById('set-kind-hint').textContent = words.hint;
+    document.getElementById('set-product-label').textContent = words.product;
+    document.getElementById('set-title-label').textContent = words.title;
+    document.getElementById('set-parts-title').textContent = words.parts;
+    document.getElementById('set-parts-hint').textContent = words.partsHint;
+    document.getElementById('set-part-head').textContent = words.part;
+    document.getElementById('set-qty-head').textContent = words.qty;
+    partSearch.placeholder = words.search;
+    document.getElementById('set-save').textContent = words.save;
+    document.querySelectorAll('#set-kind [data-kind]').forEach((chip) => {
+      chip.classList.toggle('active', chip.dataset.kind === kind);
+    });
+    renderParts();
+  }
+
+  document.getElementById('set-kind').addEventListener('click', (event) => {
+    const chip = event.target.closest('[data-kind]');
+    if (chip) setKind(chip.dataset.kind, Boolean(card) && editor.dataset.editing === '1');
+  });
 
   function renderChosen(item) {
     productChosen.innerHTML = item
@@ -111,8 +162,7 @@ if (editor) {
 
   function renderParts() {
     if (!parts.length) {
-      partsBody.innerHTML = '<tr><td colspan="4" class="muted small">'
-        + 'Пока пусто. Добавьте части — из каталога или штрихкодом.</td></tr>';
+      partsBody.innerHTML = `<tr><td colspan="4" class="muted small">${KIND_WORDS[kind].emptyRow}</td></tr>`;
       return;
     }
     partsBody.innerHTML = parts.map((part, index) => `
@@ -141,10 +191,21 @@ if (editor) {
     renderParts();
   });
 
-  suggest(productField, productFound, (item) => {
+  suggest(productField, productFound, async (item) => {
     card = { account_id: item.account_id, sku: item.sku };
     renderChosen(item);
     if (!titleField.value) titleField.value = item.name || '';
+    /* У товара уже есть состав — открываем его, а не пишем поверх: иначе
+       сохранение молча заменило бы набор комплектом или чужим составом. */
+    try {
+      const data = await api(`/api/products/${item.account_id}/${encodeURIComponent(item.sku)}`, undefined, 'GET');
+      if (data.set) {
+        toast(`У товара уже есть ${data.set.kind === 'kit' ? 'комплект' : 'набор'} — открыт он`, 'ok', 6000);
+        load(card);
+      }
+    } catch (error) {
+      message.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
+    }
   });
 
   /* Часть можно взять из каталога любого кабинета. Но SKU у кабинетов свои, и
@@ -184,14 +245,15 @@ if (editor) {
     partTitleField.value = '';
   };
 
-  function open(key) {
+  function open(key, wantedKind = 'set') {
     editor.hidden = false;
     message.textContent = '';
     card = key ? cardKey(key) : null;
     parts = [];
     titleField.value = '';
+    editor.dataset.editing = '';
     renderChosen(null);
-    renderParts();
+    setKind(wantedKind);
     editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     if (card) load(card);
   }
@@ -208,13 +270,16 @@ if (editor) {
         title: part.title || '',
         quantity: part.quantity,
       }));
-      renderParts();
+      // Уже заданный состав открывается своим видом: комплект — комплектом.
+      editor.dataset.editing = data.set ? '1' : '';
+      setKind(data.set ? data.set.kind : kind, Boolean(data.set));
     } catch (error) {
       message.innerHTML = `<span style="color:var(--err)">${escapeHtml(error.message)}</span>`;
     }
   }
 
-  document.getElementById('set-new').onclick = () => open('');
+  document.getElementById('set-new').onclick = () => open('', 'set');
+  document.getElementById('kit-new').onclick = () => open('', 'kit');
   document.getElementById('set-cancel').onclick = () => { editor.hidden = true; };
 
   /* Из каталога сюда приходят ссылкой с готовым товаром: редактор живёт только
@@ -228,12 +293,12 @@ if (editor) {
   });
 
   document.getElementById('set-save').onclick = async (event) => {
-    if (!card) { toast('Выберите товар-набор', 'error'); return; }
-    if (!parts.length) { toast('Добавьте хотя бы одну часть', 'error'); return; }
+    if (!card) { toast(KIND_WORDS[kind].chooseProduct, 'error'); return; }
+    if (!parts.length) { toast(KIND_WORDS[kind].empty, 'error'); return; }
     event.target.disabled = true;
     try {
       const data = await api('/api/products/sets', {
-        account_id: card.account_id, sku: card.sku, title: titleField.value.trim(), parts,
+        account_id: card.account_id, sku: card.sku, title: titleField.value.trim(), parts, kind,
       });
       toast(data.message, 'ok');
       setTimeout(() => { window.location.href = '/products?tab=sets'; }, 700);
@@ -249,7 +314,7 @@ document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-del-set]');
   if (!button) return;
   event.preventDefault();
-  if (!confirm('Убрать набор? Товар останется — он будет собираться по своему штрихкоду.')) return;
+  if (!confirm('Убрать состав? Товар останется — он будет собираться по своему штрихкоду.')) return;
   button.disabled = true;
   try {
     const chosen = cardKey(button.dataset.delSet);

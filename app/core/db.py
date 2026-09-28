@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS product_sets (
     account_id INTEGER NOT NULL,
     sku        TEXT NOT NULL,
     title      TEXT,
+    -- 'set' — набор: собирают из частей; 'kit' — комплект: сам товар и то,
+    -- что в него вкладывают (core/product_sets.py).
+    kind       TEXT NOT NULL DEFAULT 'set',
     active     INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     created_by TEXT,

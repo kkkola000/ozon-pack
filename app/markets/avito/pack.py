@@ -137,12 +137,16 @@ def load_state(account: dict, user: dict) -> dict:
     units = _units(account["id"], row["posting_number"])
     sets = product_sets.parts_for(account["id"], [card_sku(item) for item, _no in units])
     looks: dict[str, tuple[list[str], str | None]] = {}
+    articles: dict[str, str | None] = {}
     items = []
     for index, (item, unit_no) in enumerate(units):
         sku = card_sku(item)
         if sku not in looks:
             looks[sku] = linked.extras(account["id"], sku, image=item.get("image"))
-        items.append(_unit_view(index, item, unit_no, entries, sets.get(sku), looks[sku]))
+            # Артикул — основной карточки группы: у объявления его может не быть.
+            articles[sku] = linked.article(account["id"], sku, item.get("seller_id"))
+        view = _unit_view(index, item, unit_no, entries, sets.get(sku), looks[sku])
+        items.append({**view, "article": articles[sku]})
     done = sum(1 for item in items if item["scanned"])
     return {
         "active": order,
@@ -191,7 +195,8 @@ def _unit_view(index: int, item: dict, unit_no: int, entries: list[dict],
             "barcode": direct, "checked": bool(barcodes) or bool(parts)}
     if parts:
         counts = Counter(product_sets.part_slot(str(index), entry["part"]) for entry in mine if entry.get("part"))
-        got, extra = product_sets.progress(str(index), 1, 1 if direct else 0, parts, counts)
+        got, extra = product_sets.progress(str(index), 1, 1 if direct else 0, parts, counts,
+                                           name=item.get("title"))
         view.update(extra)
         view["scanned"] = got >= 1
     else:
@@ -345,24 +350,27 @@ def _scan_item(account: dict, user: dict, state: dict, code: str) -> ScanResult:
     variants = barcode_variants(code)
     cards = linked.cards_of_code(variants)
     mine = [u for u in state["items"] if linked.card(account["id"], card_sku(u)) in cards]
-    unit = next((u for u in mine if not u["scanned"]), None)
-    if unit is not None:
-        return _credit_unit(account, user, state, unit, code)
-    if mine:
-        # Товар этого заказа, но все его единицы уже набраны: это лишнее, а не
-        # повод записать его в соседнюю единицу без сверки.
-        return _too_many(account, user, state, mine[0].get("title") or "Товар", code,
-                         f"«{mine[0].get('title') or 'Товар'}» уже отсканирован в нужном количестве. "
-                         "Лишнее не кладите.")
+    # Комплект ждёт вложение — скан идёт ему, даже если такой товар есть в заказе.
+    if product_sets.waiting(state["items"]) is None:
+        unit = next((u for u in mine if not u["scanned"]), None)
+        if unit is not None:
+            return _credit_unit(account, user, state, unit, code)
+        if mine:
+            # Товар этого заказа, но все его единицы уже набраны: это лишнее, а не
+            # повод записать его в соседнюю единицу без сверки.
+            return _too_many(account, user, state, mine[0].get("title") or "Товар", code,
+                             f"«{mine[0].get('title') or 'Товар'}» уже отсканирован в нужном количестве. "
+                             "Лишнее не кладите.")
 
     parents = product_sets.parents_of(account["id"], barcodes=variants)
     picked = product_sets.pick_part(state["items"], parents, card_sku) if parents else None
     if picked is not None and not picked[0]["ok"] and not picked[1]["ok"]:
         return _credit_part(account, user, state, picked[0], picked[1], code)
     if picked is not None:
-        part, set_name = picked[1]["name"], picked[0].get("title") or "набор"
+        part, set_name = picked[1]["name"], picked[0].get("title") or product_sets.word(picked[0])
+        whose = "комплекта" if picked[0].get("kind") == "kit" else "набора"
         return _too_many(account, user, state, f"{set_name} — {part}", code,
-                         f"«{part}» для набора «{set_name}» уже набран. Лишнее не кладите.")
+                         f"«{part}» для {whose} «{set_name}» уже набран. Лишнее не кладите.")
 
     unit = next((u for u in state["items"] if not u["scanned"] and not u["checked"]), None)
     if unit is not None:

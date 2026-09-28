@@ -81,7 +81,7 @@
       Каталог <span class="badge">{{ total }}</span>
     </a>
     <a href="{{ cab_link('sets', picked, '', '') | trim }}" class="{{ 'active' if tab == 'sets' }}">
-      Наборы{% if sets %} <span class="badge">{{ sets | length }}</span>{% endif %}
+      Наборы и комплекты{% if sets %} <span class="badge">{{ sets | length }}</span>{% endif %}
     </a>
     <a href="{{ cab_link('match', picked, '', 'new') | trim }}" class="{{ 'active' if tab == 'match' }}">
       Сопоставление
@@ -134,11 +134,17 @@
             {% elif item.has_match %}
               <span class="badge warn" title="Такой же артикул есть в другом кабинете">есть совпадение</span>
             {% endif %}
-            {% if item.set_of %}
+            {% if item.set_kind == 'kit' %}
+              <span class="badge kit" title="{{ 'Комплект задан одной из карточек и действует для всех сопоставленных' if item.linked else 'Основной товар и вложение' }}">комплект</span>
+            {% elif item.set_of %}
               <span class="badge accent" title="{{ 'Состав задан одной из карточек и действует для всех сопоставленных' if item.linked else 'У товара задан состав' }}">набор</span>
             {% endif %}
           </td>
-          <td class="small mono">{{ item.barcodes | join(', ') or '—' }}</td>
+          <td class="small mono">{{ item.barcodes | join(', ') or '—' }}
+            {%- if item.barcode_from %}
+              <div class="muted barcode-from">у основной нет — с карточки
+                {{ shop_tag(item.barcode_from.market, item.barcode_from.shop) }}</div>
+            {%- endif %}</td>
           <td class="small">
             {% if item.cards %}
               {% for card in item.cards %}{{ shop_tag(card.market, card.shop) }}{% endfor %}
@@ -150,7 +156,7 @@
             {# Редактор живёт на вкладке наборов — уводим туда с готовым товаром. #}
             {%- set target = item.set_of or (item.account_id, item.sku) %}
             <a class="btn small" href="/products?tab=sets&edit={{ target[0] }}:{{ target[1] }}">
-              {{ 'Состав' if item.set_of else 'Сделать набором' }}
+              {{ 'Состав' if item.set_of else 'Набор / комплект' }}
             </a>
           </td>
         </tr>
@@ -186,34 +192,47 @@
   {# ============================================== 2. НАБОРЫ #}
   {% elif tab == 'sets' %}
     <div class="note">
-      Набор — товар площадки, который на складе собирают из нескольких вещей со
-      своими штрихкодами. Площадка о составе не знает: в заказе одна позиция, а
+      <p style="margin:0 0 6px"><b>Набор</b> — товар площадки, который на складе собирают из нескольких
+      вещей со своими штрихкодами. Площадка о составе не знает: в заказе одна позиция, а
       наклейки набора на полке нет. Состав задаётся здесь: по нему панель и
-      засчитывает сборку. Набор считается собранным, когда набраны <b>все</b> его части.
+      засчитывает сборку. Набор считается собранным, когда набраны <b>все</b> его части.</p>
+      <p style="margin:0"><b>Комплект</b> — основной товар, в который докладывают ещё один. Сборщик
+      сканирует основной товар, и панель сразу просит отсканировать вложение: пока его нет,
+      товар не засчитан.</p>
     </div>
 
     <div class="row">
-      <button class="btn primary" id="set-new">Создать набор</button>
+      <button class="btn primary" id="set-new" data-kind="set">Создать набор</button>
+      <button class="btn primary" id="kit-new" data-kind="kit">Создать комплект</button>
     </div>
 
     <div id="set-editor" class="act has-popover" style="margin-top:14px" hidden>
       <div class="act-body">
+        {# Вид — набор или комплект: от него зависят подписи и то, как считается сборка. #}
+        <div class="row" style="margin-bottom:12px; flex-wrap:wrap">
+          <b id="set-heading" style="font-size:18px">Новый набор</b>
+          <div class="chips" id="set-kind">
+            <button type="button" class="chip" data-kind="set">Набор</button>
+            <button type="button" class="chip" data-kind="kit">Комплект</button>
+          </div>
+          <span class="muted small" id="set-kind-hint"></span>
+        </div>
         <div class="row" style="flex-wrap:wrap; align-items:flex-start">
           <label class="grow" style="min-width:280px; position:relative">
-            <div class="muted small">Товар-набор — тот, что продаётся на площадке</div>
+            <div class="muted small" id="set-product-label">Товар-набор — тот, что продаётся на площадке</div>
             <input type="search" id="set-product" placeholder="Название, артикул, SKU или штрихкод"
                    autocomplete="off" style="width:100%">
             <div id="set-product-found" class="picker" hidden></div>
             <div id="set-product-chosen" class="small" style="margin-top:6px"></div>
           </label>
           <label style="min-width:220px">
-            <div class="muted small">Название набора — необязательно</div>
+            <div class="muted small" id="set-title-label">Название набора — необязательно</div>
             <input type="text" id="set-title" placeholder="Как называть его в панели" style="width:100%">
           </label>
         </div>
 
-        <h3 style="margin:18px 0 6px; font-size:16px">Состав</h3>
-        <div class="muted small">
+        <h3 style="margin:18px 0 6px; font-size:16px" id="set-parts-title">Состав</h3>
+        <div class="muted small" id="set-parts-hint">
           Часть можно выбрать из каталога любого кабинета или вписать штрихкодом —
           не всё, что лежит в наборе, продаётся отдельно.
         </div>
@@ -221,9 +240,9 @@
         <table style="margin-top:10px" id="set-parts">
           <thead>
             <tr>
-              <th>Часть</th>
+              <th id="set-part-head">Часть</th>
               <th style="width:170px">Штрихкод</th>
-              <th style="width:120px">На один набор</th>
+              <th style="width:140px" id="set-qty-head">На один набор</th>
               <th style="width:60px"></th>
             </tr>
           </thead>
@@ -256,14 +275,18 @@
 
     {% if sets %}
       {% for s in sets %}
+      {%- set kit = s.kind == 'kit' %}
       <details class="act" style="margin-top:12px">
         <summary class="act-head">
           <div class="grow">
-            <div class="act-title">{{ s.title or s.product_name or s.sku }}</div>
+            <div class="act-title">{{ s.title or s.product_name or s.sku }}
+              {% if kit %}<span class="badge kit">комплект</span>{% else %}<span class="badge accent">набор</span>{% endif %}</div>
             <div class="act-sub">
-              Артикул {{ s.offer_id or '—' }}{% if s.sku != s.offer_id %} · SKU {{ s.sku }}{% endif %} ·
+              {% if kit %}Основной товар {{ s.product_name or s.sku }} · {% endif -%}
+              Артикул {{ s.article or s.offer_id or '—' }}{% if s.sku != s.offer_id %} · SKU {{ s.sku }}{% endif %} ·
               {{ shop_tag(s.market, s.shop) }} ·
-              частей {{ s.parts | length }}, всего {{ s.parts_total }} шт.
+              {% if kit %}вложений {{ s.parts | length }}{% else %}частей {{ s.parts | length }}{% endif %},
+              всего {{ s.parts_total }} шт.
             </div>
             {% if s.shared %}
               <div class="act-sub" title="Своего набора у этих карточек нет — их собирают по этому составу">
@@ -278,13 +301,22 @@
         <div class="act-body">
           <table>
             <thead>
-              <tr><th>Часть</th><th style="width:180px">Штрихкод</th>
+              <tr><th>{{ 'Товар' if kit else 'Часть' }}</th><th style="width:180px">Штрихкод</th>
                   <th style="width:150px">SKU</th><th style="width:120px">Кол-во</th></tr>
             </thead>
             <tbody>
+              {% if kit %}
+              <tr>
+                <td>{{ s.product_name or s.sku }} <span class="role main">основной — сканируют первым</span></td>
+                <td class="mono small">{{ s.barcode or '—' }}</td>
+                <td class="mono small">{{ s.sku }}</td>
+                <td style="font-weight:700">1</td>
+              </tr>
+              {% endif %}
               {% for part in s['parts'] %}
               <tr>
-                <td>{{ part.title or part.barcode or part.part_sku or '—' }}</td>
+                <td>{{ part.title or part.barcode or part.part_sku or '—' }}
+                  {%- if kit %} <span class="role put">вложить сразу после основного</span>{% endif %}</td>
                 <td class="mono small">{{ part.barcode or '—' }}</td>
                 <td class="mono small">{{ part.part_sku or 'нет в каталоге' }}</td>
                 <td style="font-weight:700">{{ part.quantity }}</td>
@@ -297,8 +329,9 @@
       {% endfor %}
     {% else %}
       <div class="empty">
-        Наборов нет. Создайте набор, если какой-то товар на складе собирается из
-        нескольких вещей: иначе при сборке их скан будет «товар не из этого заказа».
+        Наборов и комплектов нет. Создайте набор, если какой-то товар на складе собирается из
+        нескольких вещей: иначе при сборке их скан будет «товар не из этого заказа». Комплект —
+        если в товар нужно что-то вложить: панель попросит отсканировать вложение.
       </div>
     {% endif %}
 

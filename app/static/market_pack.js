@@ -150,19 +150,30 @@ function packPhoto(image, name) {
 
 /* Набор на площадке — обычный товар, а на складе это несколько вещей со своими
    штрихкодами. Сборщик сканирует их, поэтому и видеть он должен их, а не одну
-   строку «набор 0/1», по которой непонятно, что ещё брать. */
+   строку «набор 0/1», по которой непонятно, что ещё брать.
+
+   Комплект — сам товар и то, что в него вкладывают: первой строкой товар,
+   под ним вложения. Какое вложение ждут сейчас, подсвечено. Подписей
+   «основной» и «вложить» нет: порядок строк говорит это сам. В каждой
+   строке — название, артикул и штрихкод. */
+function packPartRow(part, name, article, barcode) {
+  const info = [article ? `арт. ${escapeHtml(article)}` : '', barcode ? escapeHtml(barcode) : '']
+    .filter(Boolean).join(' · ');
+  return `
+    <div class="set-part ${part.ok ? 'ok' : part.next ? 'next' : ''}">
+      <span class="qty">${part.scanned} / ${part.need}</span>
+      <span class="grow">${escapeHtml(name || '—')}${info ? `<span class="muted mono"> · ${info}</span>` : ''}</span>
+      ${part.ok ? '<span class="check">✔</span>' : ''}
+    </div>`;
+}
+
 function packSetParts(item) {
   if (!item.is_set) return '';
   return `
     <div class="set-parts">
-      ${item.parts.map((part) => `
-        <div class="set-part ${part.ok ? 'ok' : ''}">
-          <span class="qty">${part.scanned} / ${part.need}</span>
-          <span class="grow">${escapeHtml(part.name)}
-            ${part.barcode ? `<span class="muted mono"> · ${escapeHtml(part.barcode)}</span>` : ''}
-          </span>
-          ${part.ok ? '<span class="check">✔</span>' : ''}
-        </div>`).join('')}
+      ${item.parts.map((part) => (part.main
+        ? packPartRow(part, item.name || item.title, item.article, (item.barcodes || [])[0])
+        : packPartRow(part, part.name, part.article, part.barcode))).join('')}
     </div>`;
 }
 
@@ -232,13 +243,15 @@ function showDone(finished) {
    за которым идти к полке, выделен — он первый из несобранных. */
 function packItem(item, next) {
   const mark = item.ok ? 'done' : next ? 'next' : '';
+  // Комплект ждёт вложение — флажок называет, что вложить.
+  const flag = item.wait ? `Вложите «${escapeHtml(item.wait)}» и отсканируйте его` : 'Сканируйте этот товар';
   return `
     <div class="pack-item ${mark}">
       ${packPhoto(item.image, item.name)}
       <div class="grow">
         <div class="pack-name">${escapeHtml(item.name || 'Без названия')}</div>
         ${item.meta ? `<div class="pack-meta">${item.meta}</div>` : ''}
-        ${next ? '<span class="pack-flag">Сканируйте этот товар</span>' : ''}
+        ${next ? `<span class="pack-flag">${flag}</span>` : ''}
         ${item.extra || ''}
       </div>
       <div class="pack-qty">${item.ok ? '✓ ' : ''}${item.scanned} / ${item.need}<small>${item.ok ? 'собрано' : 'шт'}</small></div>
@@ -281,12 +294,15 @@ function paintModal(state) {
   const complete = Boolean(state.complete) && total > 0;
   document.getElementById('pack-icon-scan').hidden = complete;
   document.getElementById('pack-icon-label').hidden = !complete;
-  input.placeholder = complete ? `${pack.words.close || 'Отсканируйте наклейку'}…` : 'Сканируйте товар…';
+  // Комплект ждёт вложение — сервер пропустит только его, и поле так и говорит.
+  const items = card.items || [];
+  const waiting = items.findIndex((item) => item.wait);
+  input.placeholder = complete ? `${pack.words.close || 'Отсканируйте наклейку'}…`
+    : waiting >= 0 ? `Вложите «${items[waiting].wait}» и отсканируйте его…` : 'Сканируйте товар…';
   document.getElementById('pack-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
   document.getElementById('pack-count').textContent = `${done} из ${total}`;
 
-  const items = card.items || [];
-  const next = items.findIndex((item) => !item.ok);
+  const next = waiting >= 0 ? waiting : items.findIndex((item) => !item.ok);
   document.getElementById('pack-items').innerHTML = items.map((item, index) => packItem(item, index === next)).join('')
     + (complete ? packStep(pack.words, done, total) : '');
 

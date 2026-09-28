@@ -132,7 +132,8 @@ def load_state(account: dict, user: dict) -> dict:
         got = int(scanned.get(item["sku"], 0))
         row_extra: dict = {}
         if sets.get(item["sku"]):
-            got, row_extra = product_sets.progress(item["sku"], need, got, sets[item["sku"]], scanned)
+            got, row_extra = product_sets.progress(item["sku"], need, got, sets[item["sku"]], scanned,
+                                                   name=item.get("name"))
         total += need
         done += min(got, need)
         items.append({**item, "need": need, "scanned": got, "ok": got >= need, **row_extra})
@@ -161,7 +162,7 @@ def missing_items(state: dict) -> list[str]:
         name = item.get("name") or item.get("sku")
         parts = product_sets.missing_parts(item)
         if parts:
-            missing.append(f"{name} (набор): {parts}")
+            missing.append(f"{name} ({product_sets.word(item)}): {parts}")
             continue
         missing.append(f"{name} — {item['need'] - item['scanned']} шт")
     return missing
@@ -208,7 +209,8 @@ def openable(account: dict, user: dict, sku: str | None, code: str) -> list[dict
         found += [{**candidate, "matched_sku": one} for candidate in candidates_for_sku(account, one, user)]
     found.sort(key=lambda c: (c.get("shipment_date") is None, c.get("shipment_date") or ""))
     seen = {c["posting_number"] for c in found}
-    for parent in product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code)):
+    parents = product_sets.parents_of(account["id"], sku=sku, barcodes=barcode_variants(code))
+    for parent in product_sets.openers(parents):
         for candidate in candidates_for_sku(account, parent["set_sku"], user):
             if candidate["posting_number"] not in seen:
                 seen.add(candidate["posting_number"])
@@ -347,7 +349,7 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
     state = load_state(account, user)
     active = state["active"]
     if not active:
-        return _pick_posting_for_set(account, user, parents, code, sku)
+        return _pick_posting_for_set(account, user, product_sets.openers(parents), code, sku)
 
     # Часть может входить в несколько наборов. Берём тот, что есть в этом
     # отправлении и ещё не собран: иначе скан уйдёт в уже закрытую позицию.
@@ -373,7 +375,8 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
             )
         return ScanResult(
             "warning",
-            f"«{name}» для набора «{set_name}» уже набран ({part['need']} шт). Лишнее не кладите.",
+            f"«{name}» для {'комплекта' if item.get('kind') == 'kit' else 'набора'} «{set_name}» "
+            f"уже набран ({part['need']} шт). Лишнее не кладите.",
             action="extra_product", sound="error", state=state,
         )
 
@@ -415,7 +418,7 @@ def _scan_set_part(account: dict, user: dict, code: str, *, sku: str | None) -> 
     return ScanResult(
         "ok",
         f"«{set_name}»: {name} {scanned[slot]}/{part['need']}. "
-        f"Набор {new_item['scanned']}/{new_item['need']}.{tail}",
+        f"{product_sets.word(new_item).capitalize()} {new_item['scanned']}/{new_item['need']}.{tail}",
         action="set_part_scanned", state=new_state,
     )
 
@@ -498,13 +501,15 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
     if active:
         required = {item["sku"]: item["need"] for item in state["items"]}
         by_sku = {item["sku"]: item for item in state["items"]}
-        if sku not in required:
+        if sku not in required or product_sets.waiting(state["items"]):
             # Прежде чем говорить «СТОП»: это может быть часть набора из этого
             # же отправления. Сборщик берёт с полки части, а не набор — на
-            # складе такой наклейки просто нет.
+            # складе такой наклейки просто нет. Комплект ждёт вложение — оно
+            # идёт в комплект, даже если такой же товар стоит отдельной позицией.
             part = _scan_set_part(account, user, code, sku=sku)
             if part is not None:
                 return part
+        if sku not in required:
             with db.write() as conn:
                 db.log_event(
                     "scan_wrong_product",

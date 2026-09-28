@@ -474,6 +474,17 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   font-size: 14px;
 }
 .set-part.ok { opacity: .55; }
+/* Комплект в разделе «Товары»: метка и роли строк состава. */
+.badge.kit { background: #ede4ff; color: #6a3fd1; }
+.role { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 7px;
+  margin-left: 6px; vertical-align: 1px; background: var(--surface-2); color: var(--muted); }
+.role.main { background: var(--accent-soft); color: var(--accent); }
+.role.put { background: #ede4ff; color: #6a3fd1; }
+.barcode-from { font-family: system-ui, sans-serif; font-size: 12px; margin-top: 3px; }
+/* Вложение комплекта, которое ждут сейчас. */
+.set-part.next { background: var(--accent-soft); color: var(--accent); font-weight: 700;
+  outline: 1.5px solid var(--accent); }
+.set-part.next .muted { color: var(--accent); }
 .set-part .qty { font-weight: 800; min-width: 52px; }
 .set-part .check { color: var(--ok); font-weight: 800; }
 

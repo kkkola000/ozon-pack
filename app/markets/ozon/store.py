@@ -305,7 +305,8 @@ def posting_items(account_id: int, posting_number: str) -> list[dict]:
     """Состав отправления со штрихкодами и фото — своими и сопоставленных карточек.
 
     Сопоставленная карточка — та же коробка: её штрихкод сканируется так же,
-    а её фото годится, когда своего у товара нет.
+    а её фото годится, когда своего у товара нет. Артикул (article) — основной
+    карточки группы: сборщик видит один артикул, а не тот, что завёл Ozon.
     """
     rows = db.query(
         """
@@ -321,6 +322,8 @@ def posting_items(account_id: int, posting_number: str) -> list[dict]:
         item["barcodes"], item["image"] = linked.extras(
             account_id, item.get("sku"), image=item.get("image"), barcodes=db.json_list(item.get("barcodes"))
         )
+        # Артикул для сборщика — основной карточки группы, а не свой.
+        item["article"] = linked.article(account_id, item.get("sku"), item.get("offer_id"))
         items.append(item)
     return items
 

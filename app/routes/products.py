@@ -7,7 +7,8 @@
 
 Три вкладки:
   каталог        — что вообще есть на складе: фото, артикул, название, штрихкод;
-  наборы         — из каких частей собирается товар площадки;
+  наборы         — из каких частей собирается товар площадки и что вкладывают
+                   в комплект;
   сопоставление  — какие карточки разных кабинетов на самом деле один товар.
 
 Каталог панель тянет у площадки сама, править его здесь нечего. Смотреть —
@@ -113,6 +114,10 @@ def catalog_rows(account_ids: list[int] | None = None, q: str = "",
 
     Смысл сопоставления как раз в этом: на складе одна коробка — в списке одна
     строка, а карточки площадок под ней, если их захотят посмотреть.
+
+    Артикул и штрихкод строки — основной карточки. Нет штрихкода у основной —
+    берём у любой сопоставленной и говорим, у какой (barcode_from): у Avito
+    своих штрихкодов нет вовсе, а основной бывает и его объявление.
     """
     found = search(account_ids, q, limit)
     # Совпадения по артикулу считаем один раз: по ним в каталоге видно, где ещё
@@ -131,7 +136,15 @@ def catalog_rows(account_ids: list[int] | None = None, q: str = "",
             # Нет фото у основной карточки — берём у любой сопоставленной: у
             # Avito фото в каталоге нет совсем, у Маркета бывает не у всех.
             image = main.get("image") or next((card["image"] for card in cards if card.get("image")), None)
-            rows.append({**main, "image": image, "group_id": group_id, "cards": cards, "linked": len(cards)})
+            article = main.get("offer_id") or next((card["offer_id"] for card in cards if card.get("offer_id")), None)
+            barcodes, barcode_from = list(main.get("barcodes") or []), None
+            if not barcodes:
+                donor = next((card for card in cards if card.get("barcodes")), None)
+                if donor is not None:
+                    barcodes, barcode_from = donor["barcodes"], donor
+            rows.append({**main, "image": image, "offer_id": article, "barcodes": barcodes,
+                         "barcode_from": barcode_from, "group_id": group_id, "cards": cards,
+                         "linked": len(cards)})
             continue
         rows.append({
             **item, "cards": [], "linked": 0,
@@ -150,12 +163,13 @@ def products_page(request: Request, q: str = "", tab: str = "catalog", cab: str 
     shops = accounts.all_accounts()
     items = catalog_rows(picked, q) if tab == "catalog" else []
     sets = product_sets.all_sets_everywhere(picked) if tab in ("sets", "catalog") else []
-    taken = product_sets.set_keys()
+    taken = product_sets.kinds()
     for item in items:
         # Набор действует на всю группу: у сопоставленного товара «Состав»
         # ведёт к той карточке, которой он задан, — основной первой.
         members = [(card["account_id"], card["sku"]) for card in item["cards"]] or [(item["account_id"], item["sku"])]
         item["set_of"] = next((key for key in members if key in taken), None)
+        item["set_kind"] = taken.get(item["set_of"]) if item["set_of"] else None
     counts = {
         account["id"]: db.query_one(
             "SELECT COUNT(*) AS c FROM products WHERE account_id = ? AND archived = 0",
@@ -269,6 +283,7 @@ def api_save_set(request: Request, payload: dict = Body(...),
     account_id = int(payload.get("account_id") or 0)
     if not account_id:
         raise HTTPException(status_code=400, detail="Не указан кабинет товара")
+    kind = product_sets.kind_of(payload.get("kind"))
     try:
         saved = product_sets.save(
             account_id,
@@ -276,24 +291,29 @@ def api_save_set(request: Request, payload: dict = Body(...),
             list(payload.get("parts") or []),
             title=str(payload.get("title") or ""),
             user=admin,
+            kind=kind,
         )
     except product_sets.SetError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    count = len(saved["parts"])
     return {
         "status": "ok",
         "set": saved,
-        "message": f"Набор сохранён: частей {len(saved['parts'])}",
+        "message": (f"Комплект сохранён: вложений {count}" if kind == product_sets.KIT
+                    else f"Набор сохранён: частей {count}"),
     }
 
 
 @router.delete("/api/products/sets/{account_id}/{sku}")
 def api_delete_set(account_id: int, sku: str, request: Request,
                    admin: dict = Depends(require_manager)):
-    """Убрать набор. Товар остаётся — просто собирается по своему штрихкоду."""
+    """Убрать набор или комплект. Товар остаётся — просто собирается по своему штрихкоду."""
     check_csrf(request)
+    found = product_sets.get(account_id, sku)
     if not product_sets.delete(account_id, sku, user=admin):
         raise HTTPException(status_code=404, detail="Набор не найден")
-    return {"status": "ok", "message": "Набор удалён: товар снова обычный"}
+    return {"status": "ok",
+            "message": f"{product_sets.word(found or {}).capitalize()} удалён: товар снова обычный"}
 
 
 # ------------------------------------------------------------------ сопоставление

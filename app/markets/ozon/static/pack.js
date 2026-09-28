@@ -51,11 +51,13 @@ window.PACKS.ozon = {
         scanned: item.scanned,
         need: item.need,
         ok: item.ok,
-        meta: `Артикул <b>${escapeHtml(item.offer_id || '—')}</b> · SKU <b>${escapeHtml(item.sku)}</b>`
+        // Артикул — основной карточки группы (article), ШК — всех сопоставленных.
+        meta: `Артикул <b>${escapeHtml(item.article || item.offer_id || '—')}</b> · SKU <b>${escapeHtml(item.sku)}</b>`
           + (item.barcodes?.length ? ` · ШК <b>${escapeHtml(item.barcodes.join(', '))}</b>` : '')
           + (item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : '')
-          + (item.is_set ? ` · <span class="tag">Набор из ${item.parts.length}</span>` : ''),
+          + (item.is_set && item.kind !== 'kit' ? ` · <span class="tag">Набор из ${item.parts.length}</span>` : ''),
         extra: packSetParts(item),
+        wait: item.waiting,
       })),
       details: [
         ['Отгрузка до', posting.shipment_date_local || posting.shipment_date],
