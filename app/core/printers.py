@@ -91,8 +91,8 @@ def documents() -> list[dict]:
     """Что печатает панель. Наклейки — у каждой площадки свои, из реестра.
 
     Размер по умолчанию — то, что панель печатала до настройки: наклейка
-    75×120, лист возвратов и акт — A4. Пока человек не выбрал своё, ничего не
-    меняется.
+    75×120, листы (с заказами, возвратов) и акт — A4. Пока человек не выбрал
+    своё, ничего не меняется.
     """
     from ..markets import registry
 
@@ -107,6 +107,8 @@ def documents() -> list[dict]:
             "size": "75x120",
             "hint": market.labels.size_hint,
         })
+    out.append({"kind": "pack:sheet", "section": "Сборка и заказы",
+                "title": "Лист с заказами", "size": "a4", "hint": ""})
     out.append({"kind": "returns:sheet", "section": "Возвраты",
                 "title": "Лист возвратов для пункта выдачи", "size": "a4", "hint": ""})
     out.append({"kind": "returns:act", "section": "Возвраты",
@@ -144,7 +146,7 @@ def _legacy(docs: list[dict]) -> list[dict]:
     sheet = db.kv_get(f"{KV_LEGACY}:a4", "") or ""
     out = []
     for doc in docs:
-        printer = sheet if doc["kind"].startswith("returns:") else label
+        printer = sheet if doc["size"] == "a4" else label
         if printer:
             out.append({"kind": doc["kind"], "size": doc["size"], "printer": printer, "orientation": ""})
     return out

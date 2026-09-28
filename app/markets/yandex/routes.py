@@ -114,7 +114,6 @@ def _pack_counters(account: dict) -> dict:
 WORKSPACE = Workspace(
     title="Сканируйте товар или ярлык заказа",
     hint="Панель сама найдёт заказ Маркета и отправит ярлык на печать",
-    kinds=(("product", "Штрихкод товара"), ("label", "Ярлык заказа")),
     load_state=yandex_pack.load_state,
     count_queue=lambda account: _pack_counters(account),
     counters=(

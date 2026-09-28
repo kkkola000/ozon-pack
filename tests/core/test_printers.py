@@ -63,9 +63,9 @@ def row(kind, size, printer="", orientation=""):
 
 # ------------------------------------------------------------------ документы
 def test_every_document_has_its_own_row():
-    """Наклейки каждой площадки — отдельно, плюс лист и акт возвратов."""
+    """Наклейки каждой площадки — отдельно, плюс лист с заказами, лист и акт возвратов."""
     kinds = [doc["kind"] for doc in printers.documents()]
-    assert {"ozon:label", "avito:label", "yandex:label", "returns:sheet", "returns:act"} <= set(kinds)
+    assert {"ozon:label", "avito:label", "yandex:label", "pack:sheet", "returns:sheet", "returns:act"} <= set(kinds)
     titles = {doc["kind"]: doc["title"] for doc in printers.documents()}
     assert titles["ozon:label"] == "Ozon: стикеры"
     assert titles["avito:label"] == "Avito: этикетки"
@@ -176,6 +176,7 @@ def test_the_old_setting_is_carried_over():
     table = {r["kind"]: r for r in printers.rows()}
     assert table["ozon:label"]["printer"] == "Zebra" and table["avito:label"]["printer"] == "Zebra"
     assert table["returns:sheet"]["printer"] == "HP" and table["returns:act"]["printer"] == "HP"
+    assert table["pack:sheet"]["printer"] == "HP", "лист с заказами — тоже A4"
 
 
 # ------------------------------------------------------------------ доступ

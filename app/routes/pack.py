@@ -39,11 +39,10 @@ router = APIRouter()
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
 ALL = core_packing.ALL
 
-# Подписи зоны сканирования, когда фильтра нет: кабинет заранее неизвестен.
+# Подписи поля сканирования, когда фильтра нет: кабинет заранее неизвестен.
 ALL_WORDS = {
     "title": "Сканируйте товар или наклейку заказа",
     "hint": "Панель сама найдёт заказ в любом кабинете и отправит наклейку на печать",
-    "kinds": (("product", "Штрихкод товара"), ("label", "Наклейка заказа")),
 }
 
 
@@ -74,11 +73,11 @@ def shops_filter(path: str, orders: list[dict], picked: str) -> list[dict]:
 
 
 def _words(picked: str, where: list[dict]) -> dict:
-    """Подписи зоны сканирования: под фильтром — слова площадки кабинета, иначе общие."""
+    """Подписи поля сканирования: под фильтром — слова площадки кабинета, иначе общие."""
     workspace = core_packing.workspace_of(where[0]) if picked != ALL and where else None
     if workspace is None:
         return ALL_WORDS
-    return {"title": workspace.title, "hint": workspace.hint, "kinds": workspace.kinds}
+    return {"title": workspace.title, "hint": workspace.hint}
 
 
 def _freshened(where: list[dict]) -> str | None:
@@ -212,14 +211,18 @@ def api_state(request: Request, user: dict = Depends(require_section("pack"))):
 
 
 # ------------------------------------------------------------------ лист с заказами
-@router.post("/api/pack/orders-sheet.pdf")
+@router.get("/api/pack/orders-sheet.pdf")
 def api_orders_sheet(request: Request, user: dict = Depends(require_section("pack"))):
     """«Лист с заказами»: кабинет, фото, товар, артикул и количество — под заказы к сборке.
 
     Кабинеты — те, что под фильтром «Сборки»; заказы — «К сборке», как в
     плитке очереди. Одинаковый товар кабинета — одной строкой.
+
+    Лист сразу уходит на печать: через QZ Tray, если для него выбран принтер
+    («Принтеры» → «Лист с заказами»), иначе окном печати браузера. Оба берут
+    файл простой ссылкой, поэтому GET, а файл — inline: с attachment браузер
+    скачал бы его вместо печати.
     """
-    check_csrf(request)
     picked = _picked(request)
     where = core_packing.shops(picked)
     scope = "все кабинеты" if picked == ALL else (where[0]["title"] if where else "—")
@@ -234,7 +237,7 @@ def api_orders_sheet(request: Request, user: dict = Depends(require_section("pac
         content=pdf,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{safe_filename(orders_sheet.filename(picked))}"',
+            "Content-Disposition": f'inline; filename="{safe_filename(orders_sheet.filename(picked))}"',
             "Cache-Control": "no-store",
         },
     )

@@ -1,8 +1,8 @@
 /* Сборка Ozon: чем её рабочее место отличается от общего.
 
-   Общее — в /static/market_pack.js: сканы, замок, история, счётчики, печать.
-   Здесь только своё: печать стикера, слова и карточка открытой сборки — у Ozon
-   в ней фото товара, наборы и «Честный знак».
+   Общее — в /static/market_pack.js: сканы, замок, история, счётчики, печать и
+   само окно сборки. Здесь только своё: печать стикера, слова и что показать в
+   окне — у Ozon это фото товара, наборы и «Честный знак».
 
    Карточки всех площадок подключены к странице сразу: открытый заказ может
    оказаться из любого кабинета, и рисует его та площадка, чей он. */
@@ -14,6 +14,7 @@ window.PACKS.ozon = {
     // Адрес общий: кабинет заказа ищет ядро, а тот, что в шапке, тут ни при чём.
     url: (number) => `/api/pack/label/ozon/${encodeURIComponent(number)}.pdf`,
   },
+  title: 'Ozon',
   words: {
     // Слова замка на наклейки здесь не объявляются: выгрузка общая на все
     // кабинеты, и говорить в ней «стикеры» про ярлыки Маркета было бы неверно.
@@ -22,85 +23,51 @@ window.PACKS.ozon = {
     confirmRelease: null,
     confirmComplete: 'Завершить отправление без сканирования стикера? Действие попадёт в журнал.',
     close: 'Наклейте и отсканируйте стикер отправления',   // все товары на месте
+    done: 'Отправление собрано',
   },
   activeId: (active) => active.posting_number,
   number: (active) => active.posting_number,
 
-  // Что ещё отсканировать — для оранжевого списка в зоне сканирования.
+  // Что ещё отсканировать — для подсказки «Следующий — …» в окне сборки.
   left: (state) => packLeft(state.items, (item) => item.name || 'Без названия'),
 
-  renderActive(state) {
+  /* Что показать в окне сборки. Рамку скана, счёт и «что дальше» рисует ядро;
+     здесь — метки отправления, кнопки стикера, товары и строка внизу. */
+  card(state) {
     const posting = state.active;
-    const percent = state.total ? Math.round((state.done / state.total) * 100) : 0;
-
-    const urgency = () => {
-      const map = { overdue: 'Просрочено', urgent: 'Срочно', soon: 'Сегодня', ok: '' };
-      const text = map[posting.urgency];
-      if (!text) return '';
-      return `<span class="tag ${posting.urgency}">${text} · ${escapeHtml(hoursLeftText(posting.hours_left))}</span>`;
+    return {
+      tags: [
+        packUrgency(posting),
+        posting.is_express ? '<span class="tag express">Express</span>' : '',
+        posting.requires_mark ? '<span class="tag mark">Требуется маркировка</span>' : '',
+        posting.is_multibox ? `<span class="tag">Многоместное: ${posting.multi_box_qty}</span>` : '',
+        posting.printed_at ? '<span class="tag">Стикер печатался</span>' : '',
+      ].join(''),
+      actions: `
+        <button class="btn" id="btn-print">Печать стикера</button>
+        <a class="btn" id="btn-open-label" href="/api/pack/label/ozon/${encodeURIComponent(posting.posting_number)}.pdf"
+           target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>`,
+      // Фото и части набора рисует общий market_pack.js: они есть у любой площадки.
+      items: state.items.map((item) => ({
+        name: item.name,
+        image: item.image,
+        scanned: item.scanned,
+        need: item.need,
+        ok: item.ok,
+        meta: `Артикул <b>${escapeHtml(item.offer_id || '—')}</b> · SKU <b>${escapeHtml(item.sku)}</b>`
+          + (item.barcodes?.length ? ` · ШК <b>${escapeHtml(item.barcodes.join(', '))}</b>` : '')
+          + (item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : '')
+          + (item.is_set ? ` · <span class="tag">Набор из ${item.parts.length}</span>` : ''),
+        extra: packSetParts(item),
+      })),
+      details: [
+        ['Отгрузка до', posting.shipment_date_local || posting.shipment_date],
+        ['Куда', [posting.region, posting.city].filter(Boolean).join(', ')],
+        ['Склад', posting.warehouse_name],
+        ['Заказ', posting.order_number],
+      ],
+      force: 'Завершить без скана стикера',
+      forceHint: 'Не читается стикер? Можно и ввести номер отправления в поле сканирования вручную.',
     };
-
-    // Фото и части набора рисует общий market_pack.js: они есть у любой площадки.
-    const items = state.items.map((item) => `
-      <div class="item-row ${item.ok ? 'ok' : ''}">
-        <div class="qty">${item.scanned} / ${item.need}</div>
-        ${packPhoto(item.image, item.name)}
-        <div class="name">
-          ${escapeHtml(item.name || 'Без названия')}
-          <div class="meta">
-            Артикул: ${escapeHtml(item.offer_id || '—')} · SKU: ${escapeHtml(item.sku)}
-            ${item.barcodes?.length ? ' · ШК: ' + escapeHtml(item.barcodes.join(', ')) : ''}
-            ${item.mandatory_mark ? ' · <span class="tag mark">Честный знак</span>' : ''}
-            ${item.is_set ? ' · <span class="tag">Набор из ' + item.parts.length + '</span>' : ''}
-          </div>
-          ${packSetParts(item)}
-        </div>
-        ${item.ok ? '<div class="check">✔</div>' : ''}
-      </div>`).join('');
-
-    return `
-      <div class="panel">
-        <div class="row between">
-          <div>
-            <div class="muted small">Собирается отправление</div>
-            <div style="font-size:26px;font-weight:800" class="mono">${escapeHtml(posting.posting_number)}</div>
-            <div class="tags" style="margin-top:6px">
-              ${urgency()}
-              ${posting.is_express ? '<span class="tag express">Express</span>' : ''}
-              ${posting.requires_mark ? '<span class="tag mark">Требуется маркировка</span>' : ''}
-              ${posting.is_multibox ? `<span class="tag">Многоместное: ${posting.multi_box_qty}</span>` : ''}
-              ${posting.printed_at ? '<span class="tag">Стикер печатался</span>' : ''}
-            </div>
-          </div>
-          <div class="row">
-            <button class="btn" id="btn-print">Печать стикера</button>
-            <a class="btn" id="btn-open-label" href="/api/pack/label/ozon/${encodeURIComponent(posting.posting_number)}.pdf"
-               target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>
-            <button class="btn danger" id="btn-release">Отменить сборку</button>
-          </div>
-        </div>
-
-        <div class="row" style="margin:14px 0 6px">
-          <div class="grow progress"><div style="width:${percent}%"></div></div>
-          <div style="font-weight:800;font-size:18px">${state.done} / ${state.total}</div>
-        </div>
-
-        <div style="margin-top:10px">${items}</div>
-
-        <dl class="kv" style="margin-top:16px">
-          <dt>Отгрузка до</dt><dd>${escapeHtml(posting.shipment_date_local || posting.shipment_date || '—')}</dd>
-          <dt>Куда</dt><dd>${escapeHtml([posting.region, posting.city].filter(Boolean).join(', ') || '—')}</dd>
-          <dt>Способ</dt><dd>${escapeHtml(posting.delivery_method || '—')} ${posting.tpl_provider ? '· ' + escapeHtml(posting.tpl_provider) : ''}</dd>
-          <dt>Склад</dt><dd>${escapeHtml(posting.warehouse_name || '—')}</dd>
-          <dt>Оплата</dt><dd>${escapeHtml(posting.payment_type || '—')}</dd>
-          <dt>Заказ</dt><dd class="mono">${escapeHtml(posting.order_number || '—')}</dd>
-        </dl>
-
-        <div class="row" style="margin-top:14px">
-          <span class="muted small">Не читается стикер? Введите номер отправления в поле сканирования вручную.</span>
-          <span class="grow"></span>
-          <button class="btn small" id="btn-force">Завершить без скана стикера</button>
-        </div>
-      </div>`;
   },
 };

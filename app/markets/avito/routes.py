@@ -248,7 +248,6 @@ def api_avito_return_raw(order_id: str, admin: dict = Depends(require_manager)):
 WORKSPACE = Workspace(
     title="Сканируйте стикер отправления",
     hint="Откроется заказ — затем сканируйте штрихкоды его товаров",
-    kinds=(("label", "Стикер отправления"), ("product", "Штрихкод товара")),
     load_state=avito_pack.load_state,
     count_queue=lambda account: _pack_counters(account),
     counters=(

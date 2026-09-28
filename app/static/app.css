@@ -234,19 +234,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 }
 .scan-field .clear:hover { color: var(--text); }
 
-.scan-kinds { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; font-size: 14px; }
-.scan-kinds .label { color: var(--muted); }
-.scan-kind {
-  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px;
-  border-radius: 10px; background: var(--surface-2); font-weight: 600;
-}
-.scan-kind svg { width: 22px; height: 22px; }
-.scan-kinds .manual { margin-left: auto; color: var(--muted); }
-.scan-kinds kbd {
-  font: 600 12px/1 ui-monospace, Menlo, monospace; padding: 3px 6px; border-radius: 6px;
-  border: 1px solid var(--line-strong); border-bottom-width: 2px; background: var(--bg); color: var(--text);
-}
-
 /* Итог скана: знак, слова сервера, справа — код и время. */
 .scan-result {
   margin-top: 16px; padding: 16px 20px; border-radius: 14px; display: flex; align-items: center; gap: 14px;
@@ -259,27 +246,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .scan-result.error { background: var(--err-soft); color: #c4003e; }
 .scan-result.warning { background: var(--warn-soft); color: var(--warn); }
 .scan-result.busy { background: var(--accent-soft); color: var(--accent); }
-
-/* Идёт сборка: номер заказа и сколько отсканировано. */
-.scan-steps { display: none; margin-top: 14px; gap: 12px; align-items: center; font-size: 15px; font-weight: 600; }
-.scan-zone.is-active .scan-steps { display: flex; }
-.scan-steps .bar { flex: 1; max-width: 360px; height: 10px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
-.scan-steps .bar > div { height: 100%; background: var(--ok); transition: width .2s; }
-
-/* Что ещё осталось — внизу, оранжевым: взгляд сразу падает на то, чего не хватает. */
-.scan-left:empty { display: none; }
-.scan-left { margin-top: 16px; }
-.scan-left-title { font-size: 14px; font-weight: 700; color: var(--warn); margin-bottom: 8px; }
-.scan-left-row {
-  display: flex; align-items: center; gap: 14px; padding: 12px 16px; margin-top: 6px;
-  border-radius: 12px; background: var(--warn-soft); border-left: 5px solid #f1a33c;
-  font-size: 17px; font-weight: 600; color: #7a4a00;
-}
-.scan-left-row .count {
-  flex: none; min-width: 52px; text-align: center; padding: 4px 8px; border-radius: 8px;
-  background: #f1a33c; color: #fff; font-weight: 800;
-}
-.scan-left-note { color: var(--warn); font-size: 13px; font-weight: 500; margin-top: 2px; }
 
 /* Поле потеряло фокус: коды сканера уходят в никуда. Кнопка — вернуть. */
 .scan-refocus {
@@ -318,7 +284,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   .scan-title { font-size: 21px; }
   .scan-field input { font-size: 24px; padding-right: 24px; }
   .scan-field .clear { display: none; }
-  .scan-kinds .manual { margin-left: 0; }
 }
 
 .banner {
@@ -336,15 +301,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .progress { height: 10px; background: var(--surface-2); border-radius: 6px; overflow: hidden; }
 .progress > div { height: 100%; background: var(--ok); transition: width .2s; }
 
-.item-row { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
-.item-row:last-child { border-bottom: none; }
-.item-row .qty {
-  font-size: 22px; font-weight: 800; min-width: 96px; text-align: center;
-  background: var(--surface); border-radius: 12px; padding: 10px 6px; border: 2px solid var(--line);
-}
-.item-row.ok .qty { background: var(--ok-soft); border-color: var(--ok); color: var(--ok); }
-.item-row .name { flex: 1; font-size: 16px; font-weight: 600; }
-.item-row .meta { color: var(--muted); font-size: 13px; font-weight: 400; margin-top: 4px; }
 /* Фото товара в сборочном задании: 3:4 и достаточно крупно, чтобы сборщик
    опознал товар, не беря его в руки. contain, а не cover — важно видеть товар
    целиком, а не обрезанным по краям. */
@@ -374,7 +330,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
   position: absolute; bottom: 18px; left: 0; right: 0; text-align: center;
   color: #fff; font-size: 15px; font-weight: 600; text-shadow: 0 1px 4px rgba(0,0,0,.6);
 }
-.item-row .check { font-size: 26px; color: var(--ok); }
 
 /* Акт получения возвратов: одна поездка в пункт выдачи — один блок */
 .act { border: 1px solid var(--line-strong); border-radius: 16px; margin-bottom: 14px; overflow: hidden; }
@@ -439,7 +394,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .tag.fbs { background: var(--accent-soft); color: var(--accent); }
 
 /* «Очередь»: обновление заказов и под ним — лист с заказами, по правому краю. */
-.queue-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .stat { min-width: 120px; }
 .stat .value { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
 .stat .value.ok { color: var(--ok); }
@@ -447,7 +401,8 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .stat .value.warn { color: #b06a00; }
 
 /* ---------- Всплывающие сообщения ---------- */
-#toasts { position: fixed; right: 20px; bottom: 20px; display: grid; gap: 10px; z-index: 100; max-width: 460px; }
+/* Над окном сборки: «стикер отправлен на печать» должно быть видно и из него. */
+#toasts { position: fixed; right: 20px; bottom: 20px; display: grid; gap: 10px; z-index: 250; max-width: 460px; }
 .toast {
   background: var(--bg); border: 1px solid var(--line); border-left: 4px solid var(--accent);
   padding: 14px 18px; border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 26, 52, .14); font-size: 14px;
@@ -697,3 +652,128 @@ tr.sub td:first-child { border-left: 3px solid var(--accent-soft); }
 /* Внутри окна части прячутся атрибутом hidden, а .row и шаг скана — flex:
    без этой строки «Готово» и решения оставались бы на виду. */
 #mark-modal [hidden] { display: none; }
+
+/* ---------- «Сборка»: поле и очередь одним блоком ----------
+   На странице от зоны сканирования — значок, поле, «Сканер готов» и строка
+   очереди. Сама сборка идёт во всплывающем окне, поле переезжает туда. Итог
+   скана на странице виден только при ошибке: удачный скан открывает окно. */
+.scan-zone.compact { padding: 18px 22px 16px; }
+.scan-zone.compact .scan-head { align-items: flex-start; }
+.scan-zone.compact .scan-icon { margin-top: 8px; }
+.scan-zone.compact .scan-state { margin-top: 23px; }
+.scan-home { min-width: 0; }
+.scan-unit .scan-field { margin-top: 0; }
+.scan-zone.compact .scan-result { display: none; margin-top: 12px; padding: 10px 14px; font-size: 16px; }
+.scan-zone.compact.is-error .scan-result, .scan-zone.compact.is-warning .scan-result { display: flex; }
+.scan-zone.compact .scan-result .sign { font-size: 20px; width: 22px; }
+.scan-zone.compact .scan-result .code { font-size: 13px; }
+
+.scan-queue {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.scan-queue .kicker {
+  font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); margin-right: 4px;
+}
+.queue-tile { display: flex; align-items: center; gap: 10px; padding: 8px 16px; border-radius: 12px; background: var(--surface); }
+.queue-tile .value { font-size: 26px; font-weight: 800; line-height: 1; letter-spacing: -.02em; }
+.queue-tile .value.ok { color: var(--ok); }
+.queue-tile .value.warn { color: #b06a00; }
+.queue-tile .label { font-size: 14px; color: var(--muted); }
+.queue-sync { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+
+/* ---------- Окно сборки ----------
+   Поверх всего, у самого верха экрана. Над ним — только увеличенное фото
+   (#photo-zoom) и всплывающие сообщения. */
+.pack-modal {
+  position: fixed; inset: 0; z-index: 190; display: flex; align-items: flex-start; justify-content: center;
+  padding: 12px 20px 24px; background: rgba(0, 26, 52, .55); overflow-y: auto;
+}
+.pack-modal[hidden], .pack-modal [hidden] { display: none; }
+body.pack-open { overflow: hidden; }
+.pack-box {
+  width: min(1040px, 100%); background: var(--bg); border-radius: 22px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .35); overflow: hidden;
+}
+.pack-head { display: flex; gap: 16px; align-items: flex-start; padding: 18px 24px 14px; border-bottom: 1px solid var(--line); }
+.pack-kicker { font-size: 13px; color: var(--muted); }
+.pack-number { font-size: 30px; font-weight: 800; line-height: 1.15; margin-top: 4px; overflow-wrap: anywhere; }
+.pack-head .tags { margin-top: 8px; }
+.pack-head .tags:empty { display: none; }
+.pack-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.pack-body { padding: 18px 24px 22px; }
+
+/* Рамка скана в окне — та же зона сканирования: те же состояния и цвета
+   (ошибка, потерян фокус, встряска), только компактнее. */
+.scan-zone.pack-scan { margin: 0; padding: 14px 16px; border-width: 2px; border-radius: 18px; box-shadow: none; }
+.scan-zone.pack-scan, .scan-zone.pack-scan.is-ok, .scan-zone.pack-scan.is-error { background: var(--zone-soft); }
+.pack-scan .scan-icon { width: 46px; height: 46px; border-radius: 13px; background: #fff; }
+.pack-scan .scan-icon svg { width: 28px; height: 28px; }
+.pack-scan .scan-title { font-size: 20px; }
+.pack-scan .scan-hint { font-size: 14px; }
+.pack-scan .scan-state { font-size: 13px; padding: 6px 12px; background: #fff; }
+.pack-slot { margin-top: 12px; }
+.pack-scan .scan-field input { font-size: 24px; padding: 14px 130px 14px 18px; background: #fff; }
+.pack-scan .scan-field input::placeholder { font-size: 17px; }
+.pack-scan .scan-result { margin-top: 10px; padding: 10px 14px; font-size: 16px; background: #fff; }
+.pack-scan .scan-result .sign { font-size: 20px; width: 22px; }
+.pack-scan .scan-result .code { font-size: 13px; }
+.pack-scan .scan-refocus { font-size: 17px; padding: 12px 16px; }
+
+.pack-progress { display: flex; gap: 14px; align-items: center; margin: 18px 0 6px; }
+.pack-progress .bar { flex: 1; height: 12px; border-radius: 7px; background: var(--surface-2); overflow: hidden; }
+.pack-progress .bar > div { height: 100%; background: var(--ok); transition: width .2s; }
+.pack-progress b { font-size: 20px; white-space: nowrap; }
+
+.pack-items { display: grid; gap: 10px; margin-top: 12px; }
+.pack-item {
+  display: flex; gap: 16px; align-items: center; padding: 12px 14px;
+  border: 1.5px solid var(--line); border-radius: 16px; background: var(--bg);
+}
+.pack-item.next { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.pack-item.done { background: var(--ok-soft); border-color: #bfe8d8; }
+.pack-item .grow { min-width: 0; }
+.pack-item .item-photo { width: 84px; aspect-ratio: 1; padding: 3px; }
+.pack-item .item-photo.blank { font-size: 26px; }
+.pack-name { font-weight: 700; font-size: 17px; }
+.pack-meta { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.pack-meta b { color: var(--text); font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+.pack-flag {
+  display: inline-block; margin-top: 6px; font-size: 12px; font-weight: 700; padding: 3px 9px;
+  border-radius: 8px; background: var(--accent-soft); color: var(--accent);
+}
+.pack-qty {
+  margin-left: auto; min-width: 92px; text-align: center; padding: 10px 12px; border-radius: 14px;
+  border: 2px solid var(--line-strong); font: 800 24px/1 ui-monospace, Menlo, monospace; white-space: nowrap;
+}
+.pack-qty small { display: block; font: 600 11px system-ui, sans-serif; color: var(--muted); margin-top: 4px; }
+.pack-item.next .pack-qty { border-color: var(--accent); color: var(--accent); }
+.pack-item.done .pack-qty { border-color: var(--ok); color: var(--ok); background: #fff; }
+
+.pack-foot {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 18px; padding-top: 14px;
+  border-top: 1px solid var(--line); font-size: 13px; color: var(--muted);
+}
+.pack-foot b { color: var(--text); font-weight: 600; }
+.pack-foot .grow { flex: 1; }
+
+.pack-done { padding: 56px 24px 60px; text-align: center; }
+.pack-done .big {
+  width: 96px; height: 96px; margin: 0 auto; border-radius: 50%; background: var(--ok-soft); color: var(--ok);
+  display: flex; align-items: center; justify-content: center; font-size: 54px; font-weight: 900;
+}
+.pack-done h2 { margin: 18px 0 6px; font-size: 26px; }
+.pack-done p { margin: 0; color: var(--muted); }
+
+@media (max-width: 720px) {
+  .pack-modal { padding: 0; }
+  .pack-box { border-radius: 0; min-height: 100%; }
+  .pack-head { flex-wrap: wrap; padding: 14px 16px; }
+  /* Кнопки — под номером: иначе номер отправления рвётся посередине. */
+  .pack-head > .grow { flex-basis: 100%; }
+  .pack-actions { justify-content: flex-start; }
+  .pack-body { padding: 14px 16px 18px; }
+  .pack-item { flex-wrap: wrap; }
+  .pack-scan .scan-field input { padding-right: 18px; }
+}

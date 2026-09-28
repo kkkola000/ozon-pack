@@ -39,97 +39,77 @@
   </div>
 </div>
 
-{#- Значки зоны сканирования: сканер, штрихкод товара, наклейка заказа. -#}
+{#- Значки: сканер (поле и окно сборки) и наклейка — «все товары на месте,
+    осталось отсканировать наклейку». -#}
 {%- macro icon(kind) -%}
 {%- if kind == 'scanner' -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
   <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/>
   <path d="M7 8v8M10 8v8M13 8v8M16 8v8" stroke-width="1.8"/></svg>
-{%- elif kind == 'label' -%}
+{%- else -%}
 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
   <rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M7 8h6M7 11h4" stroke-linecap="round"/>
   <path d="M7 14.5v2.5M9 14.5v2.5M11 14.5v2.5M13 14.5v2.5M15 14.5v2.5M17 14.5v2.5" stroke-linecap="round"/></svg>
-{%- else -%}
-<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-  <path d="M4 6v12M7 6v12M9.5 6v12M13 6v12M15.5 6v12M18 6v12M20 6v12"/></svg>
 {%- endif -%}
 {%- endmacro -%}
 
-{# Зона сканирования. Цвет рамки — состояние: зелёная — сканер готов, синяя —
-   идёт сборка заказа, красная — ошибка, оранжевый пунктир — поле потеряло
-   фокус и коды сканера сейчас никуда не попадают. Итог скана — здесь же, а
-   не отдельной полосой: смотреть надо в одно место. Внизу, оранжевым, — что
-   ещё осталось отсканировать, когда товаров в заказе несколько. #}
-<div class="scan-zone" id="scan-panel" data-title="{{ scan.title }}" data-hint="{{ scan.hint }}">
+{# Зона сканирования. На странице — только то, с чего сборка начинается:
+   поле и очередь. Сама сборка идёт во всплывающем окне (#pack-modal), и поле
+   переезжает туда же: сканер — это клавиатура, поле у него одно.
+
+   Цвет рамки — состояние: зелёная — сканер готов, красная — ошибка, оранжевый
+   пунктир — поле потеряло фокус и коды сканера сейчас никуда не попадают.
+   Итог скана на странице виден только при ошибке: удачный скан открывает окно
+   сборки, и смотрят уже туда. Что сканировать, подсказывает само поле. #}
+<div class="scan-zone compact" id="scan-panel">
   <div class="scan-head">
-    <div class="scan-icon">{{ icon('scanner') }}</div>
-    <div class="grow">
-      <div class="scan-title" id="scan-title">{{ scan.title }}</div>
-      <div class="scan-hint" id="scan-hint">{{ scan.hint }}</div>
+    <div class="scan-icon" title="{{ scan.hint }}">{{ icon('scanner') }}</div>
+    <div class="grow scan-home" id="scan-home">
+      {# Поле, итог скана и «вернуть фокус» — одним куском: он и переезжает в окно. #}
+      <div class="scan-unit" id="scan-unit">
+        <div class="scan-field">
+          <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                 placeholder="{{ scan.title }}…" title="{{ scan.hint }}. Нет сканера — введите код и нажмите Enter"
+                 aria-label="{{ scan.title }}" autofocus>
+          <button class="clear" type="button" id="btn-clear" title="Очистить поле">Очистить ✕</button>
+        </div>
+        <div class="scan-result idle" id="banner" role="status" aria-live="polite">
+          <span class="sign">›</span><span class="text">Здесь появится результат скана</span><span class="code"></span>
+        </div>
+        <button type="button" class="scan-refocus" id="scan-refocus">Нажмите сюда — и сканируйте дальше</button>
+      </div>
     </div>
     <div class="scan-state" id="scan-state"><i></i><span>Сканер готов</span></div>
   </div>
 
-  <div class="scan-steps" id="scan-steps"></div>
-
-  <div class="scan-field">
-    <input id="scan" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="Поднесите сканер к штрихкоду…" autofocus>
-    <button class="clear" type="button" id="btn-clear" title="Очистить поле">Очистить ✕</button>
-  </div>
-
-  <div class="scan-kinds">
-    <span class="label">Что сканировать:</span>
-    {% for kind, word in scan.kinds %}
-    <span class="scan-kind">{{ icon(kind) }} {{ word }}</span>
-    {% endfor %}
-    <span class="manual">Нет сканера — введите код и нажмите <kbd>Enter</kbd></span>
-  </div>
-
-  <div class="scan-result idle" id="banner" role="status" aria-live="polite">
-    <span class="sign">›</span><span class="text">Здесь появится результат скана</span><span class="code"></span>
-  </div>
-  <button type="button" class="scan-refocus" id="scan-refocus">Нажмите сюда — и сканируйте дальше</button>
-
-  <div class="scan-left" id="scan-left"></div>
-</div>
-
-<div id="active-panel"></div>
-
-<div class="panel" id="idle-panel">
-  <div class="row between">
-    <h2 style="margin:0">Очередь</h2>
-    {# Лист с заказами — под кнопкой обновления: сначала свежие заказы, потом
-       лист по ним. Заказы «К сборке» под тем же фильтром кабинетов. #}
-    <div class="queue-actions">
-      <div class="row small muted">
-        <span>Обновлено: <span id="sync-time">{{ synced_at or "—" }}</span></span>
-        <button class="btn small" id="btn-sync">Обновить заказы</button>
-      </div>
-      <button class="btn small" id="btn-sheet"
-              title="PDF по заказам «К сборке»: кабинет, фото, название товара, артикул и количество">
-        Скачать «Лист с заказами»</button>
-    </div>
-  </div>
-  <div class="row" style="margin-top:12px; gap:22px">
+  {# Очередь — нижней строкой той же рамки: три числа и две кнопки. Лист с
+     заказами — после «Обновить заказы»: сначала свежие заказы, потом лист по
+     ним. Заказы «К сборке» под тем же фильтром кабинетов; лист сразу уходит
+     на печать — принтер для него выбирают на странице «Принтеры». #}
+  <div class="scan-queue" id="queue">
+    <span class="kicker">Очередь</span>
     {% for element_id, key, label, css in tiles %}
-    <div class="stat">
-      <div class="muted small">{{ label }}</div>
-      <div class="value {{ css }}" id="{{ element_id }}" data-key="{{ key }}">{{ counters.get(key, 0) }}</div>
+    <div class="queue-tile">
+      <span class="value {{ css }}" id="{{ element_id }}" data-key="{{ key }}">{{ counters.get(key, 0) }}</span>
+      <span class="label">{{ label }}</span>
     </div>
     {% endfor %}
+    <span class="grow"></span>
+    <div class="queue-sync">
+      <span>Обновлено: <span id="sync-time">{{ synced_at or "—" }}</span></span>
+      <button class="btn small" id="btn-sync">Обновить заказы</button>
+      <button class="btn small" id="btn-sheet"
+              title="Печать листа по заказам «К сборке»: кабинет, фото, название товара, артикул и количество">
+        Лист с заказами</button>
+    </div>
   </div>
 </div>
 
-<div class="panel">
-  <h2 style="margin:0">Последние сканы</h2>
-  <div id="history" class="small muted" style="margin-top:10px">Пока пусто.</div>
-</div>
-
-{# Заказы всех кабинетов сразу. Очередь выше — только текущего магазина, и это
-   верно: собирают по одному. Но видеть, что горит у соседнего, нужно, не
-   переключая кабинеты по очереди. Строки собирает ядро из объявлений площадок,
-   поэтому здесь нет ни одной развилки «если это Ozon». #}
+{# Заказы всех кабинетов сразу — сразу под полем: что горит, видно без
+   прокрутки. Очередь выше считает только кабинеты под фильтром, а здесь видно
+   и соседние, не переключая фильтр. Строки собирает ядро из объявлений
+   площадок, поэтому здесь нет ни одной развилки «если это Ozon». Последние
+   сканы — ниже: туда смотрят, только чтобы убедиться, что скан прошёл. #}
 <div class="panel">
   <div class="row between">
     <h2 style="margin:0">Все заказы</h2>
@@ -183,6 +163,59 @@
     Заказов нет ни в одном кабинете. Нажмите «Обновить заказы» — или проверьте ключи в «Настройках».
   </div>
   {% endif %}
+</div>
+
+<div class="panel">
+  <h2 style="margin:0">Последние сканы</h2>
+  <div id="history" class="small muted" style="margin-top:10px">Пока пусто.</div>
+</div>
+
+{# Окно сборки. Открывается само, когда скан открыл заказ, и закрывается,
+   когда заказ собран или сборку отменили. Крестика нет: закрыть окно, не
+   решив судьбу заказа, значило бы сканировать мимо — а поле сейчас здесь.
+
+   Шапку, товары и строку внизу даёт площадка заказа (pack.card в её pack.js),
+   рамку скана, прогресс и «Собрано» — market_pack.js. #}
+<div class="pack-modal no-print" id="pack-modal" hidden>
+  <div class="pack-box" role="dialog" aria-modal="true" aria-labelledby="pack-number">
+    <div class="pack-head">
+      <div class="grow">
+        <div class="pack-kicker"><i class="dot" id="pack-dot"></i><span id="pack-kicker"></span></div>
+        <div class="pack-number mono" id="pack-number"></div>
+        <div class="tags" id="pack-tags"></div>
+      </div>
+      <div class="pack-actions" id="pack-actions"></div>
+    </div>
+
+    <div class="pack-body" id="pack-work">
+      <div class="scan-zone pack-scan is-active" id="pack-scan">
+        <div class="scan-head">
+          <div class="scan-icon">
+            <span id="pack-icon-scan">{{ icon('scanner') }}</span><span id="pack-icon-label" hidden>{{ icon('label') }}</span>
+          </div>
+          <div class="grow">
+            <div class="scan-title" id="pack-title"></div>
+            <div class="scan-hint" id="pack-hint"></div>
+          </div>
+          <div class="scan-state"><i></i><span>Сканер готов</span></div>
+        </div>
+        <div class="pack-slot" id="pack-slot"></div>
+      </div>
+
+      <div class="pack-progress">
+        <div class="bar"><div id="pack-bar"></div></div>
+        <b id="pack-count"></b>
+      </div>
+      <div class="pack-items" id="pack-items"></div>
+      <div class="pack-foot" id="pack-foot"></div>
+    </div>
+
+    <div class="pack-done" id="pack-done" hidden>
+      <div class="big">✓</div>
+      <h2 id="pack-done-title"></h2>
+      <p id="pack-done-text"></p>
+    </div>
+  </div>
 </div>
 {% endblock %}
 

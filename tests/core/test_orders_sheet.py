@@ -1,6 +1,7 @@
 """«Лист с заказами» на «Сборке»: что взять с полки под заказы к сборке.
 
-Кнопка в блоке «Очередь», под «Обновить заказы». Лист — PDF: кабинет, фото,
+Кнопка в строке очереди, после «Обновить заказы», и лист сразу уходит на
+печать. Лист — PDF: кабинет, фото,
 название товара, артикул и количество. Заказы — «К сборке» под фильтром
 кабинетов; одинаковый товар кабинета — одной строкой с общим количеством.
 
@@ -11,6 +12,7 @@
 import base64
 import io
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -196,18 +198,19 @@ def test_photo_is_downloaded_with_a_size_limit(monkeypatch):
 
 
 # ------------------------------------------------------------------ кнопка
-def test_button_is_under_refresh_in_the_queue(client):
+def test_button_is_after_refresh_in_the_queue(client):
     page = client.get("/pack").text
-    queue = page[page.index('id="idle-panel"'):page.index("Последние сканы")]
+    queue = page[page.index('id="queue"'):page.index("Все заказы</h2>")]
     assert queue.index('id="btn-sync"') < queue.index('id="btn-sheet"')
     assert "Лист с заказами" in queue
 
 
-def test_sheet_is_downloaded_as_pdf(client, cabinets):
-    response = client.post(f"/api/pack/orders-sheet.pdf?shop={cabinets['ozon']['id']}")
+def test_sheet_goes_to_print(client, cabinets):
+    """Лист сразу печатается: файл отдаётся inline — с attachment браузер скачал бы его."""
+    response = client.get(f"/api/pack/orders-sheet.pdf?shop={cabinets['ozon']['id']}")
     assert response.status_code == 200, response.text
     assert response.headers["content-type"] == "application/pdf"
-    assert re.search(r'attachment; filename="list-zakazov-kabinet-\d+-[\d_-]+\.pdf"',
+    assert re.search(r'inline; filename="list-zakazov-kabinet-\d+-[\d_-]+\.pdf"',
                      response.headers["content-disposition"])
     text = text_of(response.content)
     assert "Лист с заказами · Ozon" in text
@@ -215,15 +218,26 @@ def test_sheet_is_downloaded_as_pdf(client, cabinets):
     assert db.query_one("SELECT 1 FROM events WHERE kind = 'orders_sheet'")
 
 
-def test_sheet_needs_csrf(client):
-    response = client.post("/api/pack/orders-sheet.pdf", headers={"X-CSRF-Token": "wrong-token"})
-    assert response.status_code == 403
+def test_sheet_prints_through_its_own_printer_row():
+    """На странице «Принтеры» у листа своя строка: A4, раздел «Сборка и заказы»."""
+    from app.core import printers
+
+    doc = next(doc for doc in printers.documents() if doc["kind"] == "pack:sheet")
+    assert doc["title"] == "Лист с заказами" and doc["size"] == "a4"
+    assert doc["section"] == "Сборка и заказы"
+    script = (Path(__file__).resolve().parents[2] / "app" / "static" / "market_pack.js").read_text(encoding="utf-8")
+    assert "kind: 'pack:sheet'" in script, "кнопка печатает не по строке листа"
+
+
+def test_sheet_needs_a_login():
+    with TestClient(app, follow_redirects=False) as anonymous:
+        assert anonymous.get("/api/pack/orders-sheet.pdf").status_code in (302, 303, 401)
 
 
 def test_no_orders_answers_with_a_message(client):
     db.execute("UPDATE postings SET local_state = 'packed'")
     db.execute("UPDATE avito_orders SET local_state = 'packed'")
-    response = client.post("/api/pack/orders-sheet.pdf")
+    response = client.get("/api/pack/orders-sheet.pdf")
     assert response.status_code == 400
     assert "Заказов к сборке нет" in response.json()["detail"]
 

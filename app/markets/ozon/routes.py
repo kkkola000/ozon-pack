@@ -120,7 +120,6 @@ ORDERS = OrdersBoard(
 WORKSPACE = Workspace(
     title="Сканируйте товар или стикер отправления",
     hint="Панель сама найдёт отправление и отправит стикер на печать",
-    kinds=(("product", "Штрихкод товара"), ("label", "Стикер отправления")),
     load_state=packing.load_state,
     count_queue=lambda account: _counters(account),
     counters=(

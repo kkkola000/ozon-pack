@@ -5,15 +5,26 @@
    запросов тоже общие: кабинет в шапке больше ничего не решает, а какому
    кабинету принадлежит отсканированный код, разбирается сервер.
 
-   Площадки отличаются словами и тем, как выглядит карточка открытой сборки.
-   Каждая объявляет своё в markets/<код>/static/pack.js и кладёт в
-   window.PACKS[код]; подключены сразу все, потому что открытый заказ может
-   оказаться из любого кабинета. Ничего «если это Ozon» здесь быть не должно. */
+   Сборка идёт во всплывающем окне (#pack-modal): открывается само, когда скан
+   открыл заказ, и закрывается, когда заказ собран или сборку отменили. Поле
+   сканирования одно — сканер это клавиатура — и переезжает в окно и обратно
+   вместе с итогом скана.
+
+   Площадки отличаются словами и тем, что показать в окне: шапку, товары,
+   строку внизу. Каждая объявляет своё в markets/<код>/static/pack.js
+   (pack.card) и кладёт в window.PACKS[код]; подключены сразу все, потому что
+   открытый заказ может оказаться из любого кабинета. Ничего «если это Ozon»
+   здесь быть не должно. */
 const PACKS = window.PACKS || {};
 
 const input = document.getElementById('scan');
 const banner = document.getElementById('banner');
-const activePanel = document.getElementById('active-panel');
+/* Поле с итогом скана и его два места: на странице и в окне сборки. */
+const unit = document.getElementById('scan-unit');
+const home = document.getElementById('scan-home');
+const modal = document.getElementById('pack-modal');
+const slot = document.getElementById('pack-slot');
+const packScan = document.getElementById('pack-scan');
 /* Фильтр кабинета уезжает в адрес запроса: он задаёт границы сборки — и какие
    заказы сканируются, и чьи наклейки считать. */
 const SHOP_FILTER = new URLSearchParams(window.location.search).get('shop') || 'all';
@@ -31,6 +42,7 @@ const historyBox = document.getElementById('history');
 let busy = false;
 let hasActive = false;   // открыта ли сборка — при открытой наклейка не печатается
 let pack = null;         // площадка открытого заказа: её слова и её карточка
+let opened = null;       // состояние открытой сборки — для «Собрано» после неё
 const history = [];
 
 /* ---------- Зона сканирования ----------
@@ -38,7 +50,6 @@ const history = [];
    курсор не в поле, коды пропадают, а Enter в конце кода ещё и нажимает
    кнопку, на которой стоит фокус. Поэтому «сканер не слушает» видно сразу. */
 const zone = document.getElementById('scan-panel');
-const zoneState = document.querySelector('#scan-state span');
 const SIGNS = { ok: '✓', error: '✕', warning: '!', busy: '…', idle: '›' };
 const STATE_WORDS = {
   lost: 'Сканер не слушает', busy: 'Проверяем…', error: 'Ошибка скана', warning: 'Проверьте', ready: 'Сканер готов',
@@ -52,14 +63,24 @@ function listening() {
   return document.hasFocus() && document.activeElement === input;
 }
 
+/* Рамка, которая говорит о сканере, — та, где сейчас поле: в окне сборки
+   или на странице. Вторая молчит: под окном страница сборку только ждёт. */
+function fieldBox() {
+  return unit.parentElement === slot ? packScan : zone;
+}
+
 function paintZone() {
-  if (!zone) return;
-  zone.classList.toggle('is-lost', lost);
-  zone.classList.toggle('is-active', hasActive);
-  for (const kind of ['busy', 'ok', 'error', 'warning']) {
-    zone.classList.toggle(`is-${kind}`, !lost && flash === kind);
+  const here = fieldBox();
+  for (const box of [zone, packScan]) {
+    if (!box) continue;
+    const mine = box === here;
+    box.classList.toggle('is-lost', mine && lost);
+    for (const kind of ['busy', 'ok', 'error', 'warning']) {
+      box.classList.toggle(`is-${kind}`, mine && !lost && flash === kind);
+    }
+    const word = box.querySelector('.scan-state span');
+    if (word) word.textContent = mine ? STATE_WORDS[lost ? 'lost' : flash in STATE_WORDS ? flash : 'ready'] : 'Идёт сборка';
   }
-  zoneState.textContent = STATE_WORDS[lost ? 'lost' : flash in STATE_WORDS ? flash : 'ready'];
 }
 
 /* Фокус ушёл — ждём полсекунды: клик по кнопке или печать уводят его на миг,
@@ -108,58 +129,18 @@ function setBanner(kind, message, code = '') {
   flash = kind === 'idle' ? null : kind;
   if (flash === 'ok') flashTimer = setTimeout(() => { flash = null; paintZone(); }, 1500);
   if (flash === 'error' || flash === 'warning') {
-    zone?.classList.remove('is-shake');
-    void zone?.offsetWidth;   // перезапуск встряски при повторной ошибке
-    zone?.classList.add('is-shake');
+    const box = fieldBox();
+    box.classList.remove('is-shake');
+    void box.offsetWidth;   // перезапуск встряски при повторной ошибке
+    box.classList.add('is-shake');
   }
   paintZone();
 }
 
-/* Идёт сборка: номер заказа, сколько отсканировано и — оранжевым внизу — что
-   ещё осталось. Список нужен, когда товаров несколько: с одним всё сказано
-   заголовком. Что осталось, знает площадка (pack.left): у Ozon это ещё и части
-   наборов, у Avito — единицы товара. */
-function paintSteps(state) {
-  const title = document.getElementById('scan-title');
-  const hint = document.getElementById('scan-hint');
-  const steps = document.getElementById('scan-steps');
-  const left = document.getElementById('scan-left');
-  if (!title || !steps || !left) return;
-  if (!hasActive) {
-    title.textContent = zone.dataset.title;
-    hint.textContent = zone.dataset.hint;
-    steps.innerHTML = '';
-    left.innerHTML = '';
-    paintZone();
-    return;
-  }
-  const rest = pack.left ? pack.left(state) : [];
-  const total = state.total || 0;
-  const done = state.done || 0;
-  const percent = total ? Math.round((done / total) * 100) : 0;
-  title.textContent = rest.length ? 'Сканируйте следующий товар'
-    : pack.words.close || 'Отсканируйте наклейку — заказ закроется';
-  hint.textContent = rest.length ? 'Сверяйте товар с карточкой заказа ниже' : 'Все товары на месте';
-  steps.innerHTML = `
-    <span>Заказ <b class="mono">${escapeHtml((pack.number || pack.activeId)(state.active))}</b> · отсканировано</span>
-    <div class="bar"><div style="width:${percent}%"></div></div>
-    <b>${done} из ${total}</b>`;
-  const pieces = rest.reduce((sum, row) => sum + row.count, 0);
-  left.innerHTML = total > 1 && rest.length ? `
-    <div class="scan-left-title">Осталось отсканировать: ${pieces} шт</div>
-    ${rest.map((row) => `
-      <div class="scan-left-row">
-        <span class="count">×${row.count}</span>
-        <span class="grow">${escapeHtml(row.name)}
-          ${row.note ? `<div class="scan-left-note">${escapeHtml(row.note)}</div>` : ''}</span>
-      </div>`).join('')}` : '';
-  paintZone();
-}
-
-/* Общие куски карточки сборки: фото, части набора, что осталось отсканировать.
-   Площадки зовут их из своих pack.js при рисовании — к этому времени файл уже
-   загружен. Фото и наборы теперь бывают у любой площадки: их даёт
-   сопоставленная карточка другого кабинета. */
+/* Общие куски окна сборки: фото, части набора, срочность, что осталось
+   отсканировать. Площадки зовут их из своих pack.js при рисовании — к этому
+   времени файл уже загружен. Фото и наборы теперь бывают у любой площадки: их
+   даёт сопоставленная карточка другого кабинета. */
 function packPhoto(image, name) {
   if (!image) return '<div class="item-photo blank">🖼</div>';
   return `<img class="item-photo" src="${escapeHtml(image)}" alt="${escapeHtml(name || '')}"
@@ -185,8 +166,15 @@ function packSetParts(item) {
     </div>`;
 }
 
-/* Что ещё отсканировать — для оранжевого списка. У набора называем
-   недостающие части, а не сам набор: к полке идут за ними. */
+/* Срок отгрузки — меткой в шапке окна: «Срочно · осталось 3 часа». */
+function packUrgency(active) {
+  const text = { overdue: 'Просрочено', urgent: 'Срочно', soon: 'Сегодня' }[active.urgency];
+  if (!text) return '';
+  return `<span class="tag ${active.urgency}">${text} · ${escapeHtml(hoursLeftText(active.hours_left))}</span>`;
+}
+
+/* Что ещё отсканировать — для подсказки «Следующий — …» в окне. У набора
+   называем недостающие части, а не сам набор: к полке идут за ними. */
 function packLeft(items, nameOf, noteOf = () => '') {
   const rows = [];
   for (const item of items || []) {
@@ -203,32 +191,150 @@ function packLeft(items, nameOf, noteOf = () => '') {
   return rows;
 }
 
-/* Карточку сборки рисует площадка открытого заказа, кнопки на ней — общие:
-   печать, отмена, завершение без скана. Каких кнопок у площадки нет, те она
-   просто не рисует.
+/* ---------- Окно сборки ----------
+   Поле переезжает туда, где идёт работа: открыли заказ — в окно, закрыли —
+   обратно на страницу. Фокус возвращаем сразу: перенос его снимает, а
+   следующий код сканера должен попасть в поле. Не переехало — фокус не
+   трогаем: опрос сервера не должен выдёргивать курсор из поиска по заказам. */
+function moveField(target) {
+  if (unit.parentElement === target) return;
+  target.appendChild(unit);
+  input.focus();
+}
 
-   Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
+let doneTimer = null;   // «Собрано» на экране — через две секунды окно закроется
+const DONE_MS = 2000;
+
+function showWork() {
+  clearTimeout(doneTimer);
+  doneTimer = null;
+  document.getElementById('pack-work').hidden = false;
+  document.getElementById('pack-done').hidden = true;
+  if (modal.hidden) {
+    modal.hidden = false;
+    modal.scrollTop = 0;
+    document.body.classList.add('pack-open');
+  }
+  moveField(slot);
+}
+
+function closeModal() {
+  clearTimeout(doneTimer);
+  doneTimer = null;
+  if (modal.hidden && unit.parentElement === home) return;
+  modal.hidden = true;
+  document.body.classList.remove('pack-open');
+  moveField(home);
+  paintZone();
+}
+
+/* Заказ собран: окно говорит это крупно и закрывается само. Поле уже на
+   странице — следующий скан откроет следующую сборку, не дожидаясь. */
+function showDone(finished) {
+  document.getElementById('pack-work').hidden = true;
+  document.getElementById('pack-done').hidden = false;
+  document.getElementById('pack-actions').innerHTML = '';
+  document.getElementById('pack-done-title').textContent = finished.words.done || 'Собрано';
+  document.getElementById('pack-done-text').textContent =
+    `${finished.number} · отсканировано ${finished.done} из ${finished.total} шт · окно закроется через 2 с`;
+  modal.hidden = false;
+  document.body.classList.add('pack-open');
+  moveField(home);
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(closeModal, DONE_MS);
+}
+
+/* Товар в окне: фото, название, подробности от площадки и счёт. Следующий,
+   за которым идти к полке, выделен — он первый из несобранных. */
+function packItem(item, next) {
+  const mark = item.ok ? 'done' : next ? 'next' : '';
+  return `
+    <div class="pack-item ${mark}">
+      ${packPhoto(item.image, item.name)}
+      <div class="grow">
+        <div class="pack-name">${escapeHtml(item.name || 'Без названия')}</div>
+        ${item.meta ? `<div class="pack-meta">${item.meta}</div>` : ''}
+        ${next ? '<span class="pack-flag">Сканируйте этот товар</span>' : ''}
+        ${item.extra || ''}
+      </div>
+      <div class="pack-qty">${item.ok ? '✓ ' : ''}${item.scanned} / ${item.need}<small>${item.ok ? 'собрано' : 'шт'}</small></div>
+    </div>`;
+}
+
+/* «Следующий — «Гель для стирки» ×2 · всего осталось 3 шт». */
+function nextHint(rest) {
+  const first = rest[0];
+  const pieces = rest.reduce((sum, row) => sum + row.count, 0);
+  let text = `Следующий — «${first.name}»${first.count > 1 ? ` ×${first.count}` : ''}`;
+  if (first.note) text += ` (${first.note})`;
+  if (pieces > first.count) text += ` · всего осталось ${pieces} шт`;
+  return text;
+}
+
+/* Окно рисуют двое. Площадка открытого заказа даёт шапку, товары и строку
+   внизу (pack.card), ядро — рамку скана, счёт и «что дальше»: они одинаковые
+   у всех. Кнопки общие — печать, отмена, завершение без скана; каких у
+   площадки нет, те она просто не рисует. */
+function paintModal(state) {
+  const card = pack.card(state);
+  const active = state.active;
+  document.getElementById('pack-dot').className = `dot ${state.market}`;
+  document.getElementById('pack-kicker').textContent =
+    [pack.title, state.shop ? `кабинет «${state.shop}»` : ''].filter(Boolean).join(' · ');
+  document.getElementById('pack-number').textContent = (pack.number || pack.activeId)(active);
+  document.getElementById('pack-tags').innerHTML = card.tags || '';
+  document.getElementById('pack-actions').innerHTML =
+    `${card.actions || ''}<button class="btn danger" id="btn-release">Отменить сборку</button>`;
+
+  const rest = pack.left ? pack.left(state) : [];
+  const done = state.done || 0;
+  const total = state.total || 0;
+  const complete = total > 0 && !rest.length;
+  packScan.classList.toggle('is-active', !complete);
+  document.getElementById('pack-icon-scan').hidden = complete;
+  document.getElementById('pack-icon-label').hidden = !complete;
+  document.getElementById('pack-title').textContent = complete
+    ? pack.words.close || 'Отсканируйте наклейку — заказ закроется'
+    : done ? 'Сканируйте следующий товар' : 'Сканируйте товары заказа';
+  document.getElementById('pack-hint').textContent = complete ? 'Все товары на месте'
+    : rest.length ? nextHint(rest) : '';
+  document.getElementById('pack-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  document.getElementById('pack-count').textContent = `${done} из ${total}`;
+
+  const items = card.items || [];
+  const next = items.findIndex((item) => !item.ok);
+  document.getElementById('pack-items').innerHTML = items.map((item, index) => packItem(item, index === next)).join('');
+
+  const foot = document.getElementById('pack-foot');
+  const details = (card.details || []).filter(([, value]) => value)
+    .map(([label, value]) => `<span>${escapeHtml(label)} <b>${escapeHtml(value)}</b></span>`).join('');
+  foot.innerHTML = `${details}<span class="grow"></span>${card.force
+    ? `<button class="btn small" id="btn-force" title="${escapeHtml(card.forceHint || '')}">${escapeHtml(card.force)}</button>`
+    : ''}`;
+  foot.hidden = !details && !card.force;
+
+  const print = document.getElementById('btn-print');
+  if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
+  document.getElementById('btn-release').onclick = releaseActive;
+  const force = document.getElementById('btn-force');
+  if (force) force.onclick = forceComplete;
+}
+
+/* Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
    открыться в любом кабинете, и гадать по шапке нельзя. */
 function renderActive(state) {
   pack = PACKS[state?.market] || null;
   hasActive = Boolean(state?.active) && pack !== null;
-  const idle = document.getElementById('idle-panel');
-  paintSteps(state);
+  opened = hasActive ? state : null;
   if (!hasActive) {
-    activePanel.innerHTML = '';
-    idle.style.display = '';
+    // «Собрано» дожидается своих двух секунд — закроет его таймер.
+    if (!doneTimer) closeModal();
+    paintZone();
     return;
   }
-  idle.style.display = 'none';
-  activePanel.innerHTML = pack.renderActive(state);
-
-  const active = state.active;
-  const print = document.getElementById('btn-print');
-  if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
-  const release = document.getElementById('btn-release');
-  if (release) release.onclick = releaseActive;
-  const force = document.getElementById('btn-force');
-  if (force) force.onclick = forceComplete;
+  showWork();
+  paintModal(state);
+  paintZone();
 }
 
 function pushHistory(code, result) {
@@ -248,9 +354,17 @@ function pushHistory(code, result) {
 
 function applyResult(result, code, printWindow = null) {
   document.getElementById('photo-zoom')?.classList.remove('open');
+  /* Заказ закрылся — запоминаем, что именно, до того как окно перерисуется. */
+  const finished = opened && result.action === 'completed'
+    ? { words: pack.words, number: (pack.number || pack.activeId)(opened.active),
+        done: opened.done || 0, total: opened.total || 0 }
+    : null;
+  // Новый скан во время «Собрано» — сразу к нему: ждать две секунды незачем.
+  if (doneTimer) closeModal();
+  renderActive(result.state || { active: null });
+  if (finished) showDone(finished);
   setBanner(result.status, result.message, code || '');
   beep(result.sound || result.status);
-  renderActive(result.state || { active: null });
   if (result.counters) applyCounters(result.counters);
   /* Замок — сразу по ответу: сборку завершили или отменили, а новые наклейки
      не скачаны — поле закрывается сейчас, а не при следующем опросе. */
@@ -327,7 +441,7 @@ function unitWord(count) {
 /* Плитки очереди рисует сервер по фильтру: у каждой в data-key лежит имя
    числа, которое в неё идёт. Так JS не знает, чьи это плитки и сколько их. */
 function applyCounters(counters) {
-  for (const element of document.querySelectorAll('#idle-panel .value[data-key]')) {
+  for (const element of document.querySelectorAll('#queue .value[data-key]')) {
     const value = counters[element.dataset.key];
     if (value !== undefined) element.textContent = value;
   }
@@ -362,6 +476,8 @@ async function releaseActive() {
     const result = await api(RELEASE_URL, {});
     applyResult(result);
     setBanner('idle', words.released || 'Сборка отменена.');
+    // Окно закрылось, итог на странице виден только при ошибке — говорим всплывашкой.
+    toast(words.released || 'Сборка отменена.', 'ok');
   } catch (error) {
     toast(error.message, 'error');
   }
@@ -453,12 +569,24 @@ document.getElementById('btn-sync').onclick = async (event) => {
 };
 
 /* «Лист с заказами» — PDF по заказам «К сборке» под фильтром кабинетов: что
-   взять с полки. Фото сервер скачивает сам, поэтому лист собирается не
-   мгновенно — кнопка на это время говорит «Скачиваем…». */
+   взять с полки. Уходит сразу на печать: на принтер QZ Tray, если он выбран
+   для листа на странице «Принтеры», иначе окном печати браузера. Фото сервер
+   скачивает сам, поэтому лист собирается не мгновенно — кнопка на это время
+   говорит «Готовим лист…». */
 document.getElementById('btn-sheet').onclick = async (event) => {
   const button = event.currentTarget;
-  if (await downloadArchive(SHEET_URL, button, 'list-zakazov.pdf')) toast('Лист с заказами скачан', 'ok');
-  input.focus();
+  const was = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Готовим лист…';
+  try {
+    if (await printPdf(SHEET_URL, { name: 'Лист с заказами', kind: 'pack:sheet' })) {
+      toast('Лист с заказами отправлен на печать', 'ok');
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = was;
+    input.focus();
+  }
 };
 
 document.getElementById('btn-labels').onclick = async (event) => {
