@@ -825,8 +825,9 @@ def find(account_ids: list[int], code: str) -> list[tuple[int, str]]:
 
     Узнаются штрихкод возврата (наклейка Ozon на пакете возврата), номер
     возврата, номер отправления и заказа. И ещё стикер FBS, с которым товар
-    уезжал к покупателю: его верхний и нижний штрихкоды лежат в postings, по
-    ним находится отправление, а по отправлению — его возвраты. Штрихкод
+    уезжал к покупателю: его штрихкоды лежат в postings (верхний и нижний у
+    старой этикетки, scanit у новой), по ним находится отправление, а по
+    отправлению — его возвраты. Штрихкод
     возврата сравнивается без учёта регистра: «ii…» сканер отдаёт и «II…».
     """
     variants = barcode_variants(code)
@@ -843,10 +844,11 @@ def find(account_ids: list[int], code: str) -> list[tuple[int, str]]:
                 OR r.posting_number IN (
                     SELECT p.posting_number FROM postings p
                      WHERE p.account_id = r.account_id
-                       AND (p.barcode_upper IN ({marks}) OR p.barcode_lower IN ({marks}))))
+                       AND (p.barcode_upper IN ({marks}) OR p.barcode_lower IN ({marks})
+                            OR p.scanit IN ({marks}))))
          ORDER BY r.account_id, r.product_name, r.id
         """,
-        list(account_ids) + variants + [v.upper() for v in variants] + variants * 4,
+        list(account_ids) + variants + [v.upper() for v in variants] + variants * 5,
     )
     return [(row["account_id"], row["id"]) for row in rows]
 

@@ -138,6 +138,8 @@ class FakeOzonClient(OzonClient):
             "is_multibox": False,
             "multi_box_qty": 1,
             "barcodes": {"upper_barcode": f"%03{index:05d}", "lower_barcode": f"OZN{index:09d}"},
+            # Штрихкод новой этикетки FBS — отдельное поле отправления.
+            "scanit": f"SCN{index:010d}",
             "analytics_data": {
                 "region": region,
                 "city": city,
@@ -229,7 +231,9 @@ class FakeOzonClient(OzonClient):
     def posting_by_barcode(self, barcode):  # type: ignore[override]
         for posting in self._postings.values():
             codes = posting.get("barcodes") or {}
-            if barcode in {codes.get("upper_barcode"), codes.get("lower_barcode"), posting["posting_number"]}:
+            known = {codes.get("upper_barcode"), codes.get("lower_barcode"), posting.get("scanit"),
+                     posting["posting_number"]}
+            if barcode in known:
                 return json.loads(json.dumps(posting))
         return None
 

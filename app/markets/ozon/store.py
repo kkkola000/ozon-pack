@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS postings (
     multi_box_qty    INTEGER DEFAULT 0,
     barcode_upper    TEXT,
     barcode_lower    TEXT,
+    -- Штрихкод новой этикетки FBS (поле scanit в ответе Ozon, с осени 2026).
+    -- Сканер читает с неё именно его, а не верхний и нижний штрихкоды старой.
+    scanit           TEXT,
     region           TEXT,
     city             TEXT,
     delivery_type    TEXT,
@@ -144,6 +147,19 @@ def _price(product: dict) -> tuple[str | None, str | None]:
     return _text(price), _text(product.get("currency_code"))
 
 
+def _scanit(raw: dict) -> str | None:
+    """Штрихкод новой этикетки FBS: поле scanit отправления.
+
+    Ozon добавил его в /v4/posting/fbs/list, /v3/posting/fbs/get и
+    /v4/posting/fbs/unfulfilled/list. Берём только простое значение — строку
+    или число: гадать, что лежит внутри чего-то другого, панель не должна.
+    """
+    value = raw.get("scanit")
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    return _text(value)
+
+
 def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     """Сохранить отправление, не затирая локальное состояние сборки."""
     number = raw.get("posting_number")
@@ -177,10 +193,10 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
         INSERT INTO postings (
             account_id, posting_number, order_id, order_number, status, substatus, in_process_at, shipment_date,
             delivering_date, delivery_method, warehouse_id, warehouse_name, tpl_provider, tracking_number,
-            is_express, is_multibox, multi_box_qty, barcode_upper, barcode_lower, region, city,
+            is_express, is_multibox, multi_box_qty, barcode_upper, barcode_lower, scanit, region, city,
             delivery_type, payment_type, is_premium, requires_mark, requires_gtd, items_count,
             positions_count, cancel_reason, raw, local_state, first_seen_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(account_id, posting_number) DO UPDATE SET
             order_id = excluded.order_id,
             order_number = excluded.order_number,
@@ -199,6 +215,9 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             multi_box_qty = excluded.multi_box_qty,
             barcode_upper = excluded.barcode_upper,
             barcode_lower = excluded.barcode_lower,
+            -- Не в каждом ответе он есть (get-by-barcode его не отдаёт) —
+            -- пустым известный штрихкод этикетки не затираем.
+            scanit = COALESCE(excluded.scanit, postings.scanit),
             region = excluded.region,
             city = excluded.city,
             delivery_type = excluded.delivery_type,
@@ -233,6 +252,7 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
             int(raw.get("multi_box_qty") or 0),
             _text(barcodes.get("upper_barcode")),
             _text(barcodes.get("lower_barcode")),
+            _scanit(raw),
             _text(analytics.get("region")),
             _text(analytics.get("city")),
             _text(analytics.get("delivery_type")),

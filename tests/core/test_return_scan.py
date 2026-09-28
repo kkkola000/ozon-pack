@@ -90,11 +90,12 @@ def test_fbs_sticker_finds_the_returns_of_its_posting(client):
     """Стикер FBS, с которым товар уезжал, — по нему находится отправление, а по нему возврат."""
     row = ozon_act()[0]
     db.execute(
-        "INSERT OR REPLACE INTO postings(account_id, posting_number, barcode_upper, barcode_lower, status) "
-        "VALUES(?,?,?,?,?)",
-        (row["account_id"], row["posting_number"], "%0399999", "OZN999999999", "delivered"),
+        "INSERT OR REPLACE INTO postings(account_id, posting_number, barcode_upper, barcode_lower, scanit, status) "
+        "VALUES(?,?,?,?,?,?)",
+        (row["account_id"], row["posting_number"], "%0399999", "OZN999999999", "SCANIT-999", "delivered"),
     )
-    for code in ("OZN999999999", "%0399999", row["posting_number"]):
+    # Верхний и нижний штрихкоды старой этикетки, scanit новой и номер.
+    for code in ("OZN999999999", "%0399999", "SCANIT-999", row["posting_number"]):
         response = scan(client, code)
         assert response.status_code == 200, (code, response.text)
         assert str(row["id"]) in [found["id"] for found in response.json()["rows"]]

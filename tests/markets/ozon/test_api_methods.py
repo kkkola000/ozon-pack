@@ -104,6 +104,7 @@ V4_POSTING = {
                        "is_premium": True, "payment_type_group_name": "Банковская карта",
                        "tpl_provider": "Доставка Ozon", "warehouse": "Софьино", "warehouse_id": 17023},
     "barcodes": {"lower_barcode": "601302481800001", "upper_barcode": "601302481800001"},
+    "scanit": "601302481800001-SCANIT",
     "cancellation": {"cancel_reason": ""},
     "delivery_method": {"id": 20605650762000, "name": "Доставка Ozon самостоятельно, Софьино",
                         "tpl_provider": "Доставка Ozon", "warehouse": "17023", "warehouse_id": 20605650762000},
@@ -125,6 +126,8 @@ def test_v4_posting_is_parsed(account):
     # В /v4 в delivery_method.warehouse — номер; название склада берётся из аналитики.
     assert row["warehouse_name"] == "Софьино"
     assert row["requires_gtd"] == 1
+    # Штрихкод новой этикетки FBS — поле scanit отправления.
+    assert row["scanit"] == "601302481800001-SCANIT"
     items = {r["sku"]: dict(r) for r in db.query(
         "SELECT sku, price, currency, quantity FROM posting_items WHERE posting_number = ?",
         (V4_POSTING["posting_number"],))}

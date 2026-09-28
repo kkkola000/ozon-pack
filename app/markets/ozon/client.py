@@ -6,7 +6,8 @@
   POST /v4/posting/fbs/ship            — сборка отправления (в «Ожидает отгрузки»)
   POST /v3/posting/fbs/package-label/create — задание на стикеры отправлений
   POST /v2/posting/fbs/package-label/get    — готово ли задание и ссылка на PDF
-  POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера
+  POST /v2/posting/fbs/get-by-barcode  — отправление по штрихкоду стикера: из barcodes
+                                         старой этикетки или scanit новой
   POST /v3/product/list                — каталог кабинета (артикулы, архив)
   POST /v3/product/info/list           — карточки товаров (штрихкоды, фото)
   POST /v1/returns/list                — возвраты FBO и FBS
@@ -15,6 +16,10 @@
 Стикеры — только через задание: синхронный /v2/posting/fbs/package-label
 Ozon отключает 2 ноября 2026 года, а /v2/.../create и /v1/.../get заменены
 на /v3/.../create и /v2/.../get.
+
+У новой этикетки FBS свой штрихкод — поле scanit отправления в
+/v4/posting/fbs/list и /v3/posting/fbs/get. Его и читает сканер; панель
+хранит его рядом с верхним и нижним штрихкодами старой этикетки.
 """
 from __future__ import annotations
 

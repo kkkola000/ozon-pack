@@ -61,10 +61,12 @@ def classify(account_id: int, code: str) -> tuple[str, Any]:
         WHERE account_id = ?
           AND (posting_number IN ({placeholders})
                OR barcode_upper IN ({placeholders})
-               OR barcode_lower IN ({placeholders}))
+               OR barcode_lower IN ({placeholders})
+               OR scanit IN ({placeholders}))
         LIMIT 1
         """,
-        [account_id] + variants * 3,
+        # scanit — штрихкод новой этикетки FBS; верхний и нижний — старой.
+        [account_id] + variants * 4,
     )
     if posting:
         return "posting", posting
