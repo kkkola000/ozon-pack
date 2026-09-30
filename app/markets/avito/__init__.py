@@ -26,8 +26,8 @@ MARKET = Market(
         pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         table="avito_orders",
         key="id",
-        size_hint="Размер этикетки зависит от службы доставки — бывает 58×40 и 100×150. "
-                  "Добавьте оба размера: панель посмотрит размер файла и выберет принтер.",
+        size_hint="Размер этикетки выбирает Avito по службе доставки — 58×40 или 100×150. "
+                  "Добавьте бумагу на оба: панель посмотрит размер файла и выберет строку.",
     ),
     # «Товары»: объявления кабинета — номер и название из /core/v1/items.
     catalog=CatalogSource(pages=catalog.pages),

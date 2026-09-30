@@ -51,11 +51,27 @@ LABEL_FORMATS = {"58x40": "A9_HORIZONTALLY", "75x120": "A7", "100x150": "A7", "a
 PAGE_FORMATS = ("A9_HORIZONTALLY", "A9", "A7", "A4")
 
 
-def label_format() -> str:
-    """Формат ярлыка для запроса к Маркету — по настройке принтеров."""
+# Ярлык, который панель просит у Маркета, — на «Принтерах», отдельно от бумаги.
+LABEL_CHOICES = (
+    ("A9_HORIZONTALLY", "58×40 горизонтальный"),
+    ("A9", "40×58 вертикальный"),
+    ("A7", "75×120"),
+    ("A4", "A4"),
+)
+
+
+def default_label_format() -> str:
+    """Пока ярлык не выбран — как раньше: по бумаге ярлыков Маркета."""
     from ...core import printers
 
     return LABEL_FORMATS.get(printers.size_of("yandex:label") or "", LABEL_FORMAT)
+
+
+def label_format() -> str:
+    """Формат ярлыка для запроса к Маркету — «Ярлык от Маркета» на «Принтерах»."""
+    from ...core import printers
+
+    return printers.label_format("yandex:label") or default_label_format()
 
 # Возвраты (getReturns): страница не больше сотни — столько Маркет отдаёт всегда.
 RETURNS_PAGE_LIMIT = 100

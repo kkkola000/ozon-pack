@@ -37,8 +37,11 @@ MARKET = Market(
         files=lambda account, _user, keys: pack.label_files(account, keys)[0],
         table="yandex_orders",
         key="id",
-        size_hint="Выбранный размер — это и формат, в котором панель запрашивает ярлык у Маркета: "
-                  "58×40, 75×120 или лист A4.",
+        size_hint="Какой ярлык просить у Маркета — выбирается здесь. "
+                  "Бумага для печати — отдельно, в строке принтера.",
+        formats=client.LABEL_CHOICES,
+        format_title="Ярлык от Маркета",
+        format_default=client.default_label_format,
     ),
     # Каталог со штрихкодами Маркет отдаёт одним методом — раздел «Товары»
     # открывается и его кабинетам.

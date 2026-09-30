@@ -53,7 +53,7 @@ const QZ = (() => {
       const slack = setup().match_mm || 5;
       const near = (a, b) => Math.abs(a - b) <= slack;
       const fits = rows.find((row) => {
-        const [w, h] = paper[row.size] || [];
+        const [w, h] = paperOf(row, paper);
         return (near(w, width) && near(h, height)) || (near(w, height) && near(h, width));
       });
       if (fits) return fits;
@@ -61,18 +61,50 @@ const QZ = (() => {
     return rows[0];
   }
 
+  /* Бумага строки в мм: свой размер («custom», ширина и высота) или готовый. */
+  function paperOf(row, paper = setup().paper || {}) {
+    if (row.size === 'custom') return [Number(row.width) || 0, Number(row.height) || 0];
+    return paper[row.size] || [];
+  }
+
   /* Параметры бумаги для QZ Tray. Наклейке размер задаём явно: без него драйвер
      термопринтера берёт свой лист по умолчанию. A4 — на то, что стоит в
      принтере: офисный принтер и так знает свой лист.
 
+     Зазор строки (⚙) добавляется к длине листа: страницу панель удлинила на
+     столько же (fit), и принтер протягивает ленту до следующей этикетки.
+
      Ориентация — из настройки строки: 'portrait' (вертикальная) или
      'landscape' (горизонтальная). Пусто — не задаём, как было всегда. */
-  function paperFor(size, orientation = '') {
-    const mm = (setup().paper || {})[size];
-    const options = (size === 'a4' || !mm) ? { scaleContent: true }
-      : { size: { width: mm[0], height: mm[1] }, units: 'mm', margins: 0, scaleContent: true };
-    if (orientation === 'portrait' || orientation === 'landscape') options.orientation = orientation;
+  function paperFor(row) {
+    const [width, height] = paperOf(row);
+    const options = (row.size === 'a4' || !width || !height) ? { scaleContent: true }
+      : { size: { width, height: height + (Number(row.gap) || 0) }, units: 'mm', margins: 0, scaleContent: true };
+    if (row.orientation === 'portrait' || row.orientation === 'landscape') options.orientation = row.orientation;
     return options;
+  }
+
+  /* Подгонка строки (⚙): зазор и сдвиг. Сдвигает сервер — прямо в PDF: QZ Tray
+     сам умеет только поля внутрь, и то сжимая этикетку. Без подгонки файл
+     уходит как есть, лишнего запроса нет. */
+  const SIDES = ['top', 'right', 'bottom', 'left'];
+  function fitOf(row) {
+    const shift = row.shift || {};
+    const values = { gap: Number(row.gap) || 0 };
+    for (const side of SIDES) values[side] = Number(shift[side]) || 0;
+    return values;
+  }
+
+  async function fit(data, row) {
+    const values = fitOf(row);
+    if (!Object.values(values).some(Boolean)) return data;
+    try {
+      return (await api('/api/printers/fit', { pdf: data, ...values })).pdf;
+    } catch (error) {
+      const failure = new Error(`подгонка печати не удалась — ${error.message}`);
+      failure.fromServer = true;
+      throw failure;
+    }
   }
 
   function load() {
@@ -188,10 +220,11 @@ const QZ = (() => {
     const file = await fetchPdf(url);
     const row = pick(kind, pageSize || file.size);
     if (!row || !row.printer) return false;
+    const data = await fit(file.data, row);
     const qz = await connect();
-    const config = qz.configs.create(row.printer, paperFor(row.size, row.orientation));
+    const config = qz.configs.create(row.printer, paperFor(row));
     try {
-      await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data: file.data }]);
+      await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data }]);
     } catch (error) {
       throw plain(error, row.printer);
     }
@@ -208,18 +241,21 @@ const QZ = (() => {
     return error instanceof Error ? error : new Error(text);
   }
 
-  /* Пробная страница со страницы «Принтеры»: принтер ещё не сохранён — берём выбранный. */
-  async function printTest(printer, size, title, orientation = '') {
+  /* Пробная печать со страницы «Принтеры» — строкой, как она сейчас на экране
+     (ещё не сохранённой): её принтер, бумага, ориентация и подгонка. Печатается
+     пробная этикетка панели — рамка в 1 мм от края бумаги: по ней видно, куда
+     уехала печать. */
+  async function printTest(row, title) {
+    const [width, height] = paperOf(row);
+    const query = new URLSearchParams({ width, height, title });
+    const file = await fetchPdf(`/api/printers/sample.pdf?${query}`);
+    const data = await fit(file.data, row);
     const qz = await connect();
-    const config = qz.configs.create(printer, paperFor(size, orientation));
-    const stamp = new Date().toLocaleString('ru-RU');
-    const html = `<div style="font:14px sans-serif;padding:4mm">
-      <b style="font-size:18px">Ozon Pack</b><br>Пробная печать через QZ Tray<br>
-      ${escapeHtml(title)}<br>${escapeHtml(printer)}<br>${escapeHtml(stamp)}</div>`;
+    const config = qz.configs.create(row.printer, paperFor(row));
     try {
-      await qz.print(config, [{ type: 'pixel', format: 'html', flavor: 'plain', data: html }]);
+      await qz.print(config, [{ type: 'pixel', format: 'pdf', flavor: 'base64', data }]);
     } catch (error) {
-      throw plain(error, printer);
+      throw plain(error, row.printer);
     }
   }
 

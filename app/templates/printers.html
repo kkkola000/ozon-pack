@@ -14,11 +14,18 @@
     </div>
   </div>
   <p class="muted small" style="margin:8px 0 12px">
-    Для каждого документа — размер листа и принтер. «Через браузер» — печать как сейчас, с окном
+    Для каждого документа — бумага и принтер. «Через браузер» — печать как сейчас, с окном
     печати. Принтер из списка QZ Tray — лист уходит на него сразу. Список принтеров берётся из
     QZ Tray этого компьютера. Если на каком-то компьютере QZ Tray не запущен или принтера с таким
     именем там нет, лист напечатается через браузер. Если у документа несколько размеров, панель
     смотрит, какого размера пришёл файл, и печатает на принтер этого размера.
+  </p>
+  <p class="muted small" style="margin:0 0 12px">
+    <b>Наклейка от площадки и бумага — разные настройки.</b> Под названием документа выбирается,
+    какую наклейку панель просит у площадки (у Ozon — маленький или большой стикер, у Маркета —
+    формат ярлыка). В строке — бумага, на которую печатать: готовый размер или свой, в миллиметрах.
+    <b>⚙</b> — подгонка принтера: зазор между этикетками и сдвиг печати. Работает при печати через
+    QZ Tray; через браузер печать не меняется.
   </p>
   <p class="muted small" style="margin:0 0 12px">
     <b>Ориентация</b> — вертикальная или горизонтальная печать на этом принтере: например, когда
@@ -31,10 +38,10 @@
     <thead>
       <tr>
         <th>Документ</th>
-        <th style="width:160px">Размер листа</th>
+        <th style="width:180px">Бумага для печати</th>
         <th style="width:300px">Принтер</th>
         <th style="width:170px">Ориентация</th>
-        <th style="width:150px"></th>
+        <th style="width:200px"></th>
         <th style="width:44px"></th>
       </tr>
     </thead>
@@ -49,15 +56,30 @@
           {%- if loop.first %}
           <b>{{ doc.title }}</b>
           {%- if doc.hint %}<div class="muted small">{{ doc.hint }}</div>{% endif %}
+          {%- if doc.formats %}
+          {# Какую наклейку просить у площадки — у документа одна на все строки. #}
+          <label class="label-format">{{ doc.format_title }}:
+            <select class="format-select" data-kind="{{ doc.kind }}">
+              {% for code, title in doc.formats %}
+              <option value="{{ code }}" {{ 'selected' if code == doc.format }}>{{ title }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          {%- endif %}
           {%- endif %}
         </td>
-        <td>
+        <td><div class="paper-cell">
           <select class="size-select">
             {% for code, title in paper %}
             <option value="{{ code }}" {{ 'selected' if code == row.size }}>{{ title }}</option>
             {% endfor %}
+            <option value="{{ custom }}" {{ 'selected' if row.size == custom }}>Свой размер…</option>
           </select>
-        </td>
+          <div class="paper-custom" {{ 'hidden' if row.size != custom }}>
+            <input class="paper-w" inputmode="decimal" value="{{ row.mm.width }}" title="Ширина, мм"> ×
+            <input class="paper-h" inputmode="decimal" value="{{ row.mm.height }}" title="Высота, мм"> мм
+          </div>
+        </div></td>
         <td>
           <select class="printer-select" data-saved="{{ row.printer }}">
             <option value="">Через браузер (как сейчас)</option>
@@ -72,7 +94,14 @@
             {% endfor %}
           </select>
         </td>
-        <td><button class="btn small btn-test" style="white-space:nowrap" {{ 'disabled' if not row.printer }}>Пробная печать</button></td>
+        <td class="test-cell">
+          <button class="btn small btn-test" {{ 'disabled' if not row.printer }}>Пробная печать</button>
+          <button class="btn small btn-fit {{ 'set' if row.fit }}" title="Подгонка печати: зазор и сдвиг"
+                  data-gap="{{ row.mm.gap }}" data-top="{{ row.mm.top }}" data-right="{{ row.mm.right }}"
+                  data-bottom="{{ row.mm.bottom }}" data-left="{{ row.mm.left }}"
+                  {{ 'disabled' if not row.printer }}>⚙</button>
+          <div class="fit-note">{{ row.fit }}</div>
+        </td>
         <td>{% if not loop.first %}<button class="btn small btn-remove" title="Убрать этот размер">×</button>{% endif %}</td>
       </tr>
       {% endfor %}
@@ -87,6 +116,51 @@
   </table>
   <div class="row" style="margin-top:12px">
     <button class="btn primary" id="btn-save-printers">Сохранить</button>
+  </div>
+
+  {# ⚙ — подгонка принтера строки: зазор между этикетками и сдвиг печати крестом. #}
+  <div id="fit-modal" class="modal" hidden>
+    <div class="modal-box fit-box" role="dialog" aria-modal="true" aria-labelledby="fit-title">
+      <div class="row between">
+        <h2 id="fit-title" style="margin:0">Подгонка печати</h2>
+        <button class="btn small" id="fit-close" title="Закрыть (Esc)">✕</button>
+      </div>
+      <div class="muted small" id="fit-subject" style="margin-top:6px"></div>
+
+      <div class="fit-sec">
+        <h3>Зазор между этикетками</h3>
+        <div class="fit-gap"><input id="fit-gap" inputmode="decimal"> мм</div>
+        <div class="fit-hint">Если драйвер считает ленту сплошной и печать с каждой этикеткой уезжает
+          дальше, впишите зазор — панель добавит его к длине страницы. Драйвер уже знает зазор —
+          оставьте 0.</div>
+      </div>
+
+      <div class="fit-sec">
+        <h3>Сдвиг печати, мм</h3>
+        <div class="fit-cross">
+          <span></span>
+          <label class="fit-cell"><b>Вверх</b><input data-side="top" inputmode="decimal"></label>
+          <span></span>
+          <label class="fit-cell"><b>Влево</b><input data-side="left" inputmode="decimal"></label>
+          <div class="fit-preview" title="Пунктир — бумага, синяя рамка — куда ляжет печать">
+            <div class="fit-label" id="fit-label">Этикетка<small id="fit-summary"></small></div>
+          </div>
+          <label class="fit-cell"><b>Вправо</b><input data-side="right" inputmode="decimal"></label>
+          <span></span>
+          <label class="fit-cell"><b>Вниз</b><input data-side="bottom" inputmode="decimal"></label>
+          <span></span>
+        </div>
+        <div class="fit-hint">На сколько миллиметров сдвинуть печать в эту сторону. Действует при
+          печати через QZ Tray на этот принтер; печать через браузер не меняется.</div>
+      </div>
+
+      <div class="row" style="margin-top:20px">
+        <button class="btn" id="fit-test">Пробная печать</button>
+        <button class="btn" id="fit-reset">Сбросить</button>
+        <span class="grow"></span>
+        <button class="btn primary" id="fit-save">Сохранить</button>
+      </div>
+    </div>
   </div>
 
   <h3 style="margin:22px 0 6px">Сертификат для QZ Tray</h3>

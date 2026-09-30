@@ -74,11 +74,28 @@ class OzonError(MarketError):
         return " | ".join(parts)
 
 
+# Стикер, который панель просит у Ozon: задание на стикеры Ozon делает на обе
+# этикетки, маленькую и обычную, — выбор на «Принтерах».
+LABEL_FORMATS = (("small", "Маленький 58×40"), ("big", "Большой 75×120"))
+
+
 def label_size() -> str | None:
-    """Размер ленты для стикеров Ozon со страницы «Принтеры»."""
+    """Бумага для стикеров Ozon со страницы «Принтеры» — первой строки."""
     from ...core import printers
 
     return printers.size_of("ozon:label")
+
+
+def default_label_format() -> str:
+    """Пока стикер не выбран — как раньше: под ленту 58×40 маленький, иначе обычный."""
+    return "small" if label_size() in SMALL_LABEL_SIZES else "big"
+
+
+def label_format() -> str:
+    """Какой стикер просить у Ozon: выбранный на «Принтерах»."""
+    from ...core import printers
+
+    return printers.label_format("ozon:label") or default_label_format()
 
 
 def iso_moment(dt: datetime) -> str:
@@ -252,8 +269,8 @@ class OzonClient:
         """Создать задание на стикеры: /v3/posting/fbs/package-label/create.
 
         Ozon может вернуть несколько заданий — на обычную и на маленькую
-        этикетку. Берём то, что подходит к ленте для стикеров Ozon на странице
-        «Принтеры»; не нашлось подходящего — первое.
+        этикетку. Берём ту, что выбрана на странице «Принтеры» («Стикер от
+        Ozon»); не нашлось подходящего — первое.
         """
         if not posting_numbers:
             raise OzonError("Не передано ни одного отправления")
@@ -262,7 +279,7 @@ class OzonClient:
         tasks = [task for task in (body.get("tasks") or []) if isinstance(task, dict) and task.get("task_id")]
         if not tasks:
             raise OzonError("Ozon не вернул задание на стикеры")
-        wanted = "small" if label_size() in SMALL_LABEL_SIZES else "big"
+        wanted = label_format()
         chosen = next((task for task in tasks if wanted in str(task.get("task_type") or "").lower()), tasks[0])
         return int(chosen["task_id"])
 
