@@ -173,8 +173,8 @@ bash "$SSL_SH" "${SSL_ARGS[@]}" || SSL_OK=0
 # сайта и сам проверяет, что панель не осталась открытой мимо nginx.
 if [ -n "$VPN_SUBNET" ] && [ -f "$APP_DIR/deploy/vpn-only.sh" ]; then
   head "Доступ только из сети VPN"
-  bash "$APP_DIR/deploy/vpn-only.sh" --subnet "$VPN_SUBNET" --yes ||
-    warn "Ограничение доступа не встало — проверьте: sudo bash $APP_DIR/deploy/vpn-only.sh --status"
+  bash "$APP_DIR/deploy/vpn-only.sh" --apply --yes ||
+    die "Ограничение nginx не подтверждено. Установка не завершена; проверьте deploy/vpn-only.sh --status"
 fi
 
 
@@ -218,3 +218,4 @@ elif [ "$SSL_OK" = "1" ]; then
 fi
 printf '\nОбновление в будущем — этой же командой ещё раз.\n\n'
 [ "$SSL_OK" = "1" ]
+

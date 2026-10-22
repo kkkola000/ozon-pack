@@ -11,9 +11,9 @@ Type=simple
 User=ozon
 Group=ozon
 WorkingDirectory=/opt/ozon-pack
-# Умолчания на случай, если .env не завели: панель откроется по адресу сервера.
+# Умолчания: панель доступна только через локальный nginx или SSH-туннель.
 # EnvironmentFile идёт следом, поэтому значения из .env перекрывают эти.
-Environment=HOST=0.0.0.0
+Environment=HOST=127.0.0.1
 Environment=PORT=8080
 Environment=FORWARDED_ALLOW_IPS=127.0.0.1
 EnvironmentFile=/opt/ozon-pack/.env
@@ -33,3 +33,4 @@ ReadWritePaths=/opt/ozon-pack/data
 
 [Install]
 WantedBy=multi-user.target
+

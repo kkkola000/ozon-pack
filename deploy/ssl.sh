@@ -52,7 +52,7 @@ HTTPS для панели Ozon Pack.
   --self-signed      самоподписанный сертификат (браузер будет предупреждать)
   --staging          тестовый сервер Let's Encrypt (без лимитов, но недоверенный)
   --hsts             включить HSTS (браузеры запомнят https на 180 дней)
-  --keep-open        оставить прямой доступ к панели по http на её порту
+  --keep-open        больше не поддерживается: прямой порт должен быть закрыт
   --dir PATH         каталог установки (по умолчанию /opt/ozon-pack)
   -h, --help         эта справка
 USAGE
@@ -69,7 +69,7 @@ while [ $# -gt 0 ]; do
     --self-signed) SELF_SIGNED=1; shift ;;
     --staging) STAGING=1; shift ;;
     --hsts) HSTS=1; shift ;;
-    --keep-open) KEEP_OPEN=1; shift ;;
+    --keep-open) die "--keep-open отключён: доступ к панели должен проходить через nginx" ;;
     --dir) APP_DIR=$2; shift 2 ;;
     -h|--help) usage ;;
     *) die "Неизвестный аргумент: $1 (--help для справки)" ;;
@@ -133,7 +133,7 @@ if [ -f /proc/net/if_inet6 ]; then HAS_IPV6=1; else HAS_IPV6=0; info "IPv6 не 
 step "nginx"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq nginx curl openssl >/dev/null
+apt-get install -y -qq nginx curl openssl python3 iproute2 >/dev/null
 mkdir -p "$WEBROOT"
 
 # Отдельная директива http2 появилась в nginx 1.25.1; в более старых версиях
@@ -155,41 +155,9 @@ fi
 ACCESS_SNIPPET=/etc/nginx/snippets/ozon-pack-access.conf
 
 ensure_access_snippet() {
-  # Правило доступа к панели живёт отдельным файлом: его меняет vpn-only.sh,
-  # а конфиг сайта только подключает — поэтому ограничение переживает
-  # повторный запуск этого скрипта.
-  mkdir -p "$(dirname "$ACCESS_SNIPPET")"
-  [ -f "$ACCESS_SNIPPET" ] && return
-
-  # Панель уже настроена на список адресов (установка с --vpn-subnet): нельзя
-  # создавать правило разрешающим — nginx открыл бы то, что панель закрывает,
-  # и оператор увидел бы 403 из панели вместо честного отказа на входе.
-  local app_list=""
-  if [ -f "$APP_DIR/.env" ]; then
-    app_list=$(awk -F= '/^IP_ALLOWLIST=/{sub(/^IP_ALLOWLIST=/, ""); print}' "$APP_DIR/.env" | tail -1 | tr -d ' ')
-  fi
-  if [ -n "$app_list" ]; then
-    {
-      echo "# Создано ssl.sh по списку IP_ALLOWLIST из $APP_DIR/.env."
-      echo "# Открыть панель всем: sudo bash $APP_DIR/deploy/vpn-only.sh --off"
-      echo "allow 127.0.0.1;"
-      echo "allow ::1;"
-      printf '%s\n' "$app_list" | tr ',' '\n' | while read -r entry; do
-        entry=$(printf '%s' "$entry" | tr -d ' ')
-        case "$entry" in ""|127.0.0.1|::1) continue ;; esac
-        echo "allow $entry;"
-      done
-      echo "deny all;"
-    } > "$ACCESS_SNIPPET"
-    info "правило доступа создано по IP_ALLOWLIST: $app_list"
-    return
-  fi
-
-  cat > "$ACCESS_SNIPPET" <<'CONF'
-# Кто может открывать панель. Закрыть доступ всем, кроме VPN:
-#   sudo bash /opt/ozon-pack/deploy/vpn-only.sh
-allow all;
-CONF
+  # IP_ALLOWLIST — только вход для nginx. Старый список переносится без расширения доступа.
+  python3 "$APP_DIR/deploy/nginx-access.py" --app-dir "$APP_DIR" --snippet "$ACCESS_SNIPPET" ||
+    die "Не удалось подготовить правило nginx"
 }
 
 write_nginx() {
@@ -252,7 +220,7 @@ CONF
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$remote_addr;
         # По этому заголовку панель понимает, что соединение защищено,
         # и помечает куку сессии как Secure
         proxy_set_header X-Forwarded-Proto \$scheme;
@@ -269,7 +237,7 @@ CONF
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
@@ -415,11 +383,13 @@ info "nginx слушает 443"
 # Адреса, на которых порт панели слушает не localhost. Пусто — снаружи напрямую
 # не подключиться. Код 2 — проверить нечем (нет ss).
 listening_outside() {
-  local port=$1
+  local port=$1 sockets
   command -v ss >/dev/null 2>&1 || return 2
-  ss -ltnH 2>/dev/null | awk '{print $4}' |
-    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
-  return 0
+  sockets=$(ss -ltnH 2>/dev/null) || return 2
+  printf '%s\n' "$sockets" | awk -v port="$port" '
+    $4 ~ ("[:.]" port "$") && substr($4, 1, 4) != "127." &&
+      substr($4, 1, 6) != "[::1]:" && substr($4, 1, 4) != "::1:" { print $4 }
+  '
 }
 
 # Записать KEY=value в .env, не плодя повторяющихся строк.
@@ -470,6 +440,7 @@ if [ "$KEEP_OPEN" = "0" ]; then
       [ -n "$OUTSIDE" ] && [ "$OUTSIDE" != "?" ] || break
     done
     if [ "$OUTSIDE" = "?" ]; then
+      DIRECT_OPEN=1
       warn "Не нашёл команду ss — проверить прямой доступ нечем, сверьте вручную:"
       warn "  sudo ss -ltnp | grep :$APP_PORT"
     elif [ -n "$OUTSIDE" ]; then
@@ -565,4 +536,5 @@ ${RED}${BOLD}Внимание: панель осталась доступна в
 SUMMARY
 fi
 echo
-[ "$HEALTHY" = "1" ] || exit 1
+[ "$HEALTHY" = "1" ] && [ "$DIRECT_OPEN" = "0" ] || exit 1
+

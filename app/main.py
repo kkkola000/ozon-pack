@@ -34,15 +34,15 @@ def _warn_about_spoofable_client_ip() -> None:
     """Предупредить, если панель верит X-Forwarded-For от кого угодно.
 
     Со звёздочкой uvicorn берёт адрес посетителя прямо из заголовка запроса, а
-    значит его подделает любой, кто дотянется до порта: IP_ALLOWLIST перестаёт
-    ограничивать, счётчик попыток входа обнуляется каждым запросом, а в журнале
+    значит его подделает любой, кто дотянется до порта: счётчик попыток входа
+    обнуляется каждым запросом, а в журнале
     оказываются выдуманные адреса. Указывать нужно адрес своего прокси.
     """
     if os.getenv("FORWARDED_ALLOW_IPS", "").strip() != "*":
         return
     log.warning(
         "FORWARDED_ALLOW_IPS=* — адрес посетителя подделывается заголовком "
-        "X-Forwarded-For: IP_ALLOWLIST и защита от подбора пароля не работают. "
+        "X-Forwarded-For: защита от подбора пароля и журнал получают неверный IP. "
         "Укажите адрес обратного прокси (за nginx на том же сервере — 127.0.0.1)."
     )
 
@@ -126,10 +126,6 @@ async def error_response(request: Request, exc: StarletteHTTPException):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    client_ip = request.client.host if request.client else None
-    if not security.ip_allowed(client_ip):
-        return Utf8JSONResponse({"detail": "Доступ с этого IP запрещён"}, status_code=403)
-
     session = security.read_session(request.cookies.get(security.SESSION_COOKIE))
     request.state.session = session
     request.state.user = security.session_user(session)
@@ -193,3 +189,4 @@ app.include_router(products.router)
 app.include_router(reports.router)
 app.include_router(admin.router)
 app.include_router(printers.router)
+

@@ -79,7 +79,6 @@ class Settings:
     admin_login: str = field(default_factory=lambda: os.getenv("ADMIN_LOGIN", "admin").strip())
     admin_password: str = field(default_factory=lambda: os.getenv("ADMIN_PASSWORD", "").strip())
     session_ttl_hours: int = field(default_factory=lambda: _int("SESSION_TTL_HOURS", 24))
-    ip_allowlist: list[str] = field(default_factory=lambda: _list("IP_ALLOWLIST", ""))
 
     # --- Синхронизация ---
     sync_interval: int = field(default_factory=lambda: _int("SYNC_INTERVAL", 60))
@@ -123,3 +122,4 @@ class Settings:
 
 
 settings = Settings()
+

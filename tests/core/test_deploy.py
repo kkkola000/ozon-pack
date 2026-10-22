@@ -315,7 +315,7 @@ def test_service_unit_takes_address_from_env():
     assert "--port ${PORT}" in exec_line[0], exec_line[0]
 
     # Умолчания на случай отсутствующего .env, и он же подключён следом
-    assert "Environment=HOST=0.0.0.0" in unit
+    assert "Environment=HOST=127.0.0.1" in unit
     assert unit.index("Environment=HOST=") < unit.index("EnvironmentFile=")
 
 
@@ -351,8 +351,8 @@ def test_only_one_way_to_install():
         assert not (BASE_DIR / gone).exists(), f"{gone} вернулся"
     # update-libs.sh — не второй способ установки: он обновляет библиотеки уже
     # поставленного сервера и сам ничего не разворачивает.
-    assert sorted(p.name for p in (BASE_DIR / "deploy").iterdir()) == [
-        "install.sh", "ozon-pack.service", "setup.sh", "ssl.sh", "update-libs.sh", "vpn-only.sh"
+    assert sorted(p.name for p in (BASE_DIR / "deploy").iterdir() if p.is_file()) == [
+        "install.sh", "nginx-access.py", "ozon-pack.service", "setup.sh", "ssl.sh", "update-libs.sh", "vpn-only.sh"
     ]
 
 
@@ -395,8 +395,8 @@ def test_vpn_only_closes_direct_port_and_checks_it(tmp_path, port_sandbox):
     proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "HOST=127.0.0.1" in (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "прямой доступ закрыт" in proc.stdout
-    assert "панель доступна только через VPN" in proc.stdout
+    assert "прямой порт закрыт" in proc.stdout
+    assert "правило nginx применено" in proc.stdout
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
@@ -496,9 +496,7 @@ def test_readme_warns_that_restart_alone_is_not_enough():
 
 
 # ---------------------------------------------------------------- только из VPN
-# Ограничение должно стоять на двух уровнях сразу: правило nginx и список
-# адресов в самой панели. Один nginx — единственная точка отказа: конфиг сайта
-# может потерять строку include, и панель молча откроется всем.
+# IP-фильтр выполняет nginx; список в .env используется скриптами развёртывания.
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
 def test_vpn_only_closes_panel_itself_too(tmp_path, port_sandbox):
@@ -514,7 +512,7 @@ def test_vpn_only_closes_panel_itself_too(tmp_path, port_sandbox):
     assert "10.8.0.0/24" in allowlist
     assert "203.0.113.10" in allowlist
     # Свой сервер в списке обязателен: через него ходят проверки и путь по SSH
-    assert "127.0.0.1" in allowlist
+    assert "Ограничение в самой панели" not in proc.stdout
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
@@ -540,8 +538,8 @@ def test_vpn_only_status_reports_both_levels(tmp_path, port_sandbox):
 
     proc = _run(DEPLOY / "vpn-only.sh", ["--status"], env)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "Ограничение в самой панели" in proc.stdout
-    assert "IP_ALLOWLIST=127.0.0.1,10.8.0.0/24" in proc.stdout
+    assert "Ограничение в самой панели" not in proc.stdout
+    assert "nginx" in proc.stdout
 
 
 def test_install_vpn_subnet_closes_panel(tmp_path):
@@ -560,7 +558,7 @@ def test_install_vpn_subnet_closes_panel(tmp_path):
 
     result = (tmp_path / ".env").read_text(encoding="utf-8")
     assert re.search(r"^HOST=127\.0\.0\.1$", result, re.M)
-    assert re.search(r"^IP_ALLOWLIST=127\.0\.0\.1,10\.8\.0\.0/24$", result, re.M)
+    assert re.search(r"^IP_ALLOWLIST=10\.8\.0\.0/24$", result, re.M)
     # Значения оператора не тронуты, дублей нет
     assert re.search(r"^OZON_CLIENT_ID=123$", result, re.M)
     assert len(re.findall(r"^HOST=", result, re.M)) == 1
@@ -579,6 +577,8 @@ def test_ssl_creates_restrictive_rule_when_allowlist_is_set(tmp_path):
     (tmp_path / ".env").write_text(
         "HOST=127.0.0.1\nIP_ALLOWLIST=127.0.0.1,10.8.0.0/24,203.0.113.10\n", encoding="utf-8"
     )
+    (tmp_path / "deploy").mkdir()
+    shutil.copy(DEPLOY / "nginx-access.py", tmp_path / "deploy" / "nginx-access.py")
     snippet = tmp_path / "access.conf"
     script = textwrap.dedent(f"""
         set -eu
@@ -601,6 +601,8 @@ def test_ssl_creates_restrictive_rule_when_allowlist_is_set(tmp_path):
 def test_ssl_keeps_rule_open_without_allowlist(tmp_path):
     """Установка без VPN не должна внезапно закрываться."""
     (tmp_path / ".env").write_text("HOST=0.0.0.0\nIP_ALLOWLIST=\n", encoding="utf-8")
+    (tmp_path / "deploy").mkdir()
+    shutil.copy(DEPLOY / "nginx-access.py", tmp_path / "deploy" / "nginx-access.py")
     snippet = tmp_path / "access.conf"
     script = textwrap.dedent(f"""
         set -eu
@@ -661,49 +663,29 @@ def sandbox_without_nginx(tmp_path):
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
 def test_without_nginx_panel_still_closes(tmp_path, sandbox_without_nginx):
-    (tmp_path / ".env").write_text("HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=\n", encoding="utf-8")
-
+    original = "HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=\n"
+    (tmp_path / ".env").write_text(original)
     proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], sandbox_without_nginx)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    allowlist = re.search(r"^IP_ALLOWLIST=(.*)$", env_text, re.M).group(1)
-    assert "10.8.0.0/24" in allowlist and "127.0.0.1" in allowlist
-
-    # HOST не трогаем: без прокси панель обязана слушать адрес сервера, иначе
-    # до неё не дойти и из туннеля
-    assert re.search(r"^HOST=0\.0\.0\.0$", env_text, re.M), env_text
-    assert "nginx не установлен" in proc.stdout
+    assert proc.returncode != 0
+    assert "nginx не установлен" in proc.stdout + proc.stderr
+    assert (tmp_path / ".env").read_text() == original
+    assert not (tmp_path / "access.conf").exists()
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
 def test_without_nginx_status_does_not_cry_wolf(tmp_path, sandbox_without_nginx):
-    """Открытый порт без nginx — не дыра, если панель сама сверяет адрес."""
-    (tmp_path / ".env").write_text(
-        "HOST=0.0.0.0\nPORT=8080\nIP_ALLOWLIST=127.0.0.1,10.8.0.0/24\n", encoding="utf-8"
-    )
     proc = _run(DEPLOY / "vpn-only.sh", ["--status"], sandbox_without_nginx)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "IP_ALLOWLIST=127.0.0.1,10.8.0.0/24" in proc.stdout
-    assert "панель открыта со всех адресов" not in proc.stdout
-    assert "можно зайти по адресу сервера без VPN" not in proc.stdout
+    assert proc.returncode == 0
+    assert "Ограничение IP не действует без nginx" in proc.stdout
 
 
 @pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
 def test_says_when_panel_became_unreachable(tmp_path, sandbox_without_nginx):
-    """HOST=127.0.0.1 без nginx — панель не видна ниоткуда, и это надо сказать.
-
-    Само по себе это выглядит как «страница не открывается»: ни в браузере, ни
-    в выводе скрипта причины не видно, и человек ищет её в списке адресов или
-    в настройках туннеля.
-    """
-    (tmp_path / ".env").write_text("HOST=127.0.0.1\nPORT=8080\nIP_ALLOWLIST=\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("HOST=127.0.0.1\n")
     proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.66.66.0/24", "--yes"], sandbox_without_nginx)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "до панели сейчас никто не дойдёт" in proc.stdout
-    assert "HOST=0.0.0.0" in proc.stdout, "нет подсказки, как починить"
-    # Список при этом всё равно записан — правка HOST его не отменяет
-    assert "10.66.66.0/24" in (tmp_path / ".env").read_text(encoding="utf-8")
+    assert proc.returncode != 0
+    assert "nginx не установлен" in proc.stdout + proc.stderr
+    assert "HOST=0.0.0.0" not in proc.stdout
 
 
 def test_install_warns_about_unreachable_panel():
@@ -711,7 +693,76 @@ def test_install_warns_about_unreachable_panel():
     assert "warn_if_unreachable" in text
     body = text[text.index("warn_if_unreachable() {"):]
     body = body[:body.index("\n}\n")]
-    assert "nginx" in body and "HOST=0.0.0.0" in body
+    assert "nginx" in body and "SSH-туннель" in body
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_failed_nginx_validation_restores_files(tmp_path, sandbox):
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    snippet.write_text("allow 192.0.2.5;\ndeny all;\n")
+    before_rule = snippet.read_text()
+    site = tmp_path / "sites-enabled" / "ozon-pack"
+    before_site = site.read_text()
+    (sandbox / "nginx").write_text("#!/bin/sh\nexit 1\n")
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode != 0
+    assert snippet.read_text() == before_rule
+    assert site.read_text() == before_site
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_unprotected_second_location_aborts_and_rolls_back(tmp_path, sandbox):
+    env, snippet, _ = _sandbox_env(tmp_path, sandbox)
+    snippet.write_text("allow 192.0.2.5;\ndeny all;\n")
+    before_rule = snippet.read_text()
+    site = tmp_path / "sites-enabled" / "ozon-pack"
+    text = site.read_text().replace("    location / {", "    location /api/ {\n        proxy_pass http://127.0.0.1:8080;\n    }\n    location / {")
+    site.write_text(text)
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode != 0
+    assert site.read_text() == text
+    assert snippet.read_text() == before_rule
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="скрипт работает только от root")
+def test_failed_socket_inspection_is_not_success(tmp_path, port_sandbox):
+    env, _, _ = _sandbox_env(tmp_path, port_sandbox)
+    (tmp_path / ".env").write_text("HOST=127.0.0.1\nPORT=8080\n")
+    (port_sandbox / "ss").write_text("#!/bin/sh\nexit 2\n")
+    proc = _run(DEPLOY / "vpn-only.sh", ["--subnet", "10.8.0.0/24", "--yes"], env)
+    assert proc.returncode != 0
+    assert "Готово:" not in proc.stdout
+
+
+def test_installer_migrates_acl_before_service_restart():
+    text = (DEPLOY / "install.sh").read_text()
+    assert text.index("\nprepare_nginx_access\n") < text.index('  systemctl restart "$SERVICE"')
+    migration = _shell_function(DEPLOY / "install.sh", "prepare_nginx_access")
+    assert migration.index("install_service_unit") < migration.index('bash "$APP_DIR/deploy/vpn-only.sh"')
+
+
+def test_ssl_cannot_leave_direct_port_open():
+    proc = _run(DEPLOY / "ssl.sh", ["--keep-open"], os.environ)
+    assert proc.returncode != 0
+    assert "--keep-open отключён" in proc.stdout + proc.stderr
+
+
+@pytest.mark.parametrize("script", ["ssl.sh", "vpn-only.sh"])
+@pytest.mark.parametrize("address,outside", [
+    ("127.0.0.1:8080", False), ("127.12.0.2:8080", False),
+    ("[::1]:8080", False), ("::1:8080", False),
+    ("0.0.0.0:8080", True), ("[::]:8080", True),
+    ("192.0.2.5:8080", True), ("[2001:db8::1]:8080", True),
+    ("0.0.0.0:8081", False),
+])
+def test_listener_check_distinguishes_loopback(script, address, outside):
+    env = dict(os.environ, SOCKETS=f"LISTEN 0 511 {address} 0.0.0.0:*")
+    code = 'ss() { printf "%s\\n" "$SOCKETS"; };\n'
+    code += _shell_function(DEPLOY / script, "listening_outside")
+    code += '\nlistening_outside 8080\n'
+    proc = subprocess.run(["bash", "-c", code], env=env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert bool(proc.stdout.strip()) == outside
 
 
 @pytest.mark.parametrize(
@@ -915,3 +966,4 @@ def test_libs_checks_the_panel_even_when_nothing_is_outdated(server):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "pip install --quiet -r" in _calls(server)
     assert "systemctl restart" not in _calls(server), "зря перезапустили панель"
+

@@ -41,6 +41,7 @@ usage() {
   (без флагов)     закрыть панель: пускать только из сети WireGuard
   --off            открыть панель для всех адресов
   --status         показать текущее состояние и кто заходил
+  --apply          проверить и применить существующее правило nginx
   --subnet СЕТЬ    указать сеть VPN вручную вместо поиска по wg0
   --allow АДРЕС    дополнительно разрешить адрес или сеть
   --yes            не задавать вопросов
@@ -65,10 +66,7 @@ USAGE
 # нормализованные строки. Если python3 почему-то нет, пропускаем значение
 # как есть — ошибку тогда поймает nginx.
 normalize_targets() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' "$1"
-    return 0
-  fi
+  command -v python3 >/dev/null 2>&1 || return 1
   python3 - "$1" <<'ADDR'
 import ipaddress, sys
 
@@ -93,6 +91,7 @@ ADDR
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --apply) MODE=apply; shift ;;
     --off) MODE=off; shift ;;
     --status) MODE=status; shift ;;
     --subnet|--allow)
@@ -113,12 +112,13 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "Запустите с правами root: sudo bash $0"
-# Без nginx скрипт раньше просто умирал. Но ограничение по адресу живёт и в
-# самой панели, а она работает и без прокси, — значит закрыть вход можно всё
-# равно. Отказываться тут значит оставлять панель открытой всему интернету,
-# хотя починить это в одну строку.
 HAVE_NGINX=1
 command -v nginx >/dev/null 2>&1 || HAVE_NGINX=0
+if [ "$MODE" != "status" ]; then
+  [ "$HAVE_NGINX" = "1" ] || die "nginx не установлен: ограничение IP выполняет только nginx. Сначала запустите deploy/ssl.sh."
+  command -v python3 >/dev/null 2>&1 || die "Нужен python3 для проверки адресов"
+fi
+ACCESS_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nginx-access.py"
 
 # ------------------------------------------------------------------ сеть VPN
 network_of() {
@@ -167,11 +167,13 @@ wg_port() {
 # Адреса, на которых порт панели слушает не localhost. Пустой вывод — снаружи
 # к панели напрямую не подключиться. Код 2 — проверить нечем (нет ss).
 listening_outside() {
-  local port=$1
+  local port=$1 sockets
   command -v ss >/dev/null 2>&1 || return 2
-  ss -ltnH 2>/dev/null | awk '{print $4}' |
-    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
-  return 0
+  sockets=$(ss -ltnH 2>/dev/null) || return 2
+  printf '%s\n' "$sockets" | awk -v port="$port" '
+    $4 ~ ("[:.]" port "$") && substr($4, 1, 4) != "127." &&
+      substr($4, 1, 6) != "[::1]:" && substr($4, 1, 4) != "::1:" { print $4 }
+  '
 }
 
 # Записать KEY=value в .env, не плодя повторяющихся строк.
@@ -240,7 +242,7 @@ check_direct_port() {
   if [ "$probed" = "0" ]; then
     warn "Проверить результат нечем. Сверьте сами:  sudo ss -ltnp | grep :$port"
     warn "В выводе должен остаться только адрес 127.0.0.1."
-    return 0
+    return 1
   fi
 
   # На слово не верим: панель могла не перезапуститься, .env — оказаться не тем,
@@ -249,7 +251,7 @@ check_direct_port() {
   while [ "$attempt" -lt "$VERIFY_TRIES" ]; do
     attempt=$((attempt + 1))
     sleep "$VERIFY_DELAY"
-    outside=$(listening_outside "$port") || outside=""
+    outside=$(listening_outside "$port") || return 1
     [ -n "$outside" ] || break
   done
   if [ -n "$outside" ]; then
@@ -299,12 +301,7 @@ check_direct_port_note() {
     warn "нет команды ss — проверить прямой доступ к порту $port нечем"
     return 0
   fi
-  if [ -n "$outside" ] && [ "$HAVE_NGINX" = "0" ]; then
-    # Без прокси панель и должна слушать адрес сервера — иначе до неё не дойти
-    # даже из туннеля. Посторонних отсекает список адресов в самой панели.
-    info "панель слушает $(echo "$outside" | tr '\n' ' ') — так и надо без nginx"
-    info "посторонних отсекает IP_ALLOWLIST, проверьте его выше"
-  elif [ -n "$outside" ]; then
+  if [ -n "$outside" ]; then
     warn "${RED}панель слушает мимо nginx: $(echo "$outside" | tr '\n' ' ')${OFF}"
     warn "в неё можно зайти по адресу сервера без VPN — запустите скрипт без --status"
   else
@@ -322,7 +319,7 @@ show_status() {
 
   if [ "$HAVE_NGINX" = "0" ]; then
     info "nginx не установлен — правилу прокси взяться неоткуда"
-    info "вход ограничивает сама панель, см. следующий раздел"
+    warn "Ограничение IP не действует без nginx; приложение список IP не проверяет"
   elif [ ! -f "$SNIPPET" ]; then
     warn "выключено — файл $SNIPPET не создан, панель открыта со всех адресов"
   elif ! grep -q '^ *deny all;' "$SNIPPET"; then
@@ -342,18 +339,6 @@ show_status() {
 
   if [ -n "$site" ]; then
     info "конфиг сайта: $site"
-  fi
-
-  step "Ограничение в самой панели"
-  # Второй уровень, не зависящий от nginx: панель сверяет адрес посетителя сама.
-  local app_list=""
-  if [ -f "$APP_DIR/.env" ]; then
-    app_list=$(awk -F= '/^IP_ALLOWLIST=/{sub(/^IP_ALLOWLIST=/, ""); print}' "$APP_DIR/.env" | tail -1 | tr -d ' ')
-  fi
-  if [ -z "$app_list" ]; then
-    warn "IP_ALLOWLIST пуст — панель адрес не проверяет, всё держится на nginx"
-  else
-    info "${GREEN}включено${OFF} — IP_ALLOWLIST=$app_list"
   fi
 
   step "WireGuard"
@@ -389,37 +374,16 @@ show_status() {
 
 # ------------------------------------------------------------------ запись правила
 write_snippet() {
-  mkdir -p "$(dirname "$SNIPPET")"
-  local backup=""
-  if [ -f "$SNIPPET" ]; then
-    backup=$(mktemp)
-    cp "$SNIPPET" "$backup"
+  local value="" net
+  if [ "$MODE" = "apply" ]; then
+    [ -f "$SNIPPET" ] || die "Не найдено правило nginx: $SNIPPET"
+    return 0
   fi
-
-  if [ "$MODE" = "off" ]; then
-    cat > "$SNIPPET" <<'CONF'
-# Создано deploy/vpn-only.sh: панель открыта со всех адресов.
-allow all;
-CONF
-  else
-    {
-      echo "# Создано deploy/vpn-only.sh: панель доступна только через VPN."
-      echo "# Открыть обратно: sudo bash $APP_DIR/deploy/vpn-only.sh --off"
-      echo "allow 127.0.0.1;"
-      echo "allow ::1;"
-      for net in "${SUBNETS[@]}"; do echo "allow $net;"; done
-      for net in "${EXTRA[@]}"; do echo "allow $net;"; done
-      echo "deny all;"
-    } > "$SNIPPET"
+  if [ "$MODE" = "on" ]; then
+    for net in "${SUBNETS[@]}" "${EXTRA[@]}"; do value="${value:+$value,}$net"; done
   fi
-
-  if ! nginx -t >/dev/null 2>&1; then
-    nginx -t || true
-    if [ -n "$backup" ]; then cp "$backup" "$SNIPPET"; fi
-    die "nginx отверг конфигурацию — правило откачено, ничего не изменилось"
-  fi
-  if [ -n "$backup" ]; then rm -f "$backup"; fi
-  return 0
+  python3 "$ACCESS_HELPER" --app-dir "$APP_DIR" --snippet "$SNIPPET" --allow "$value" ||
+    die "Не удалось записать правило nginx"
 }
 
 if [ "$MODE" = "on" ]; then
@@ -444,193 +408,106 @@ if [ "$MODE" = "on" ]; then
   fi
 fi
 
-# Ограничение только в nginx — одна точка отказа: конфиг сайта может потерять
-# строку include, и панель молча откроется всем. Поэтому тот же список адресов
-# кладём в .env, откуда его читает сама панель (IP_ALLOWLIST).
-apply_app_allowlist() {
-  local value=$1 restart=${2:-1}
-  [ -f "$APP_DIR/.env" ] || { warn "Нет $APP_DIR/.env — панель адрес проверять не будет"; return 1; }
-  set_env_var "$APP_DIR/.env" IP_ALLOWLIST "$value" || return 1
-  if [ -n "$value" ]; then
-    info "в $APP_DIR/.env записано IP_ALLOWLIST=$value — панель проверяет адрес сама"
-  else
-    info "в $APP_DIR/.env очищен IP_ALLOWLIST — панель больше не ограничивает по адресу"
+step "Правило nginx"
+# Откат файлов при ошибке: следующий reload не должен применить непроверенное правило.
+CHANGE_BACKUP=$(mktemp -d)
+RESTORE_TARGETS=()
+RESTORE_COPIES=()
+HAD_SNIPPET=0
+if [ -f "$SNIPPET" ]; then cp "$SNIPPET" "$CHANGE_BACKUP/snippet"; HAD_SNIPPET=1; fi
+finish_changes() {
+  local code=$? i
+  if [ "$code" != "0" ]; then
+    if [ "$HAD_SNIPPET" = "1" ]; then
+      cp "$CHANGE_BACKUP/snippet" "$SNIPPET"
+    else
+      rm -f "$SNIPPET"
+    fi
+    for ((i=0; i<${#RESTORE_TARGETS[@]}; i++)); do
+      cp "${RESTORE_COPIES[$i]}" "${RESTORE_TARGETS[$i]}"
+    done
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
   fi
-  [ "$restart" = "1" ] || return 0
-  if panel_in_systemd; then
-    systemctl restart "$SERVICE" 2>/dev/null || true
-  elif panel_in_docker; then
-    (cd "$APP_DIR" && docker compose up -d >/dev/null 2>&1) ||
-      warn "docker compose up -d не отработал — перезапустите панель вручную в $APP_DIR"
-  fi
-  return 0
+  rm -rf "$CHANGE_BACKUP"
 }
-
-if [ "$HAVE_NGINX" = "1" ]; then
-  step "Правило nginx"
-  write_snippet
-  info "файл: $SNIPPET"
-else
-  step "nginx не установлен"
-  warn "Правило для прокси не пишем — писать его некуда."
-  warn "Вход закроем на уровне самой панели: она сверяет адрес посетителя сама."
-  if [ "$MODE" = "on" ]; then
-    warn "Панель при этом отвечает по http, без сертификата. Внутри туннеля"
-    warn "WireGuard трафик всё равно шифруется, но в браузере будет http://"
-    warn "Поставить https: sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА"
-  fi
-fi
-
-step "Ограничение в самой панели"
-if [ "$MODE" = "off" ]; then
-  # Снимаем с обоих уровней сразу: иначе nginx открыт, а панель закрыта, и это
-  # выглядит как поломка, причину которой ищут в nginx.
-  apply_app_allowlist "" || true
-else
-  ALLOW_LIST="127.0.0.1"
-  for net in "${SUBNETS[@]}"; do ALLOW_LIST="$ALLOW_LIST,$net"; done
-  for net in "${EXTRA[@]}"; do ALLOW_LIST="$ALLOW_LIST,$net"; done
-  apply_app_allowlist "$ALLOW_LIST" || true
-fi
+trap finish_changes EXIT
+write_snippet
+info "файл: $SNIPPET"
 
 # Конфиг сайта мог быть создан прежней версией ssl.sh — без include правило
 # не сработает, поэтому дописываем его сами.
 ensure_include() {
-  local target backup
-  target=$(site_config) || {
-    warn "Не нашёл конфиг сайта панели в $NGINX_SITES (порт $(app_port))"
-    return 1
-  }
-  # Строка уже на месте (конфиг создан свежим ssl.sh или прошлым запуском)
-  grep -qs "include $SNIPPET;" "$target" && return 0
-  backup=$(mktemp)
-  cp "$target" "$backup"
-  # Строка идёт первой в каждый location / — проверка Let's Encrypt описана
-  # отдельным location и ограничения не получает.
-  awk -v snippet="$SNIPPET" '
-    { print }
-    /^[[:space:]]*location \/ \{[[:space:]]*$/ { print "        include " snippet ";" }
-  ' "$backup" > "$target"
-
-  if nginx -t >/dev/null 2>&1; then
-    info "в $target добавлена строка include"
+  local target backup found=0
+  # Проверяем каждый файл, проксирующий на панель, включая HTTP и HTTPS.
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
+    found=1
+    backup=$(mktemp)
+    cp "$target" "$backup"
+    RESTORE_TARGETS+=("$target")
+    RESTORE_COPIES+=("$CHANGE_BACKUP/site-${#RESTORE_COPIES[@]}")
+    cp "$target" "${RESTORE_COPIES[${#RESTORE_COPIES[@]}-1]}"
+    if ! grep -qs "include $SNIPPET;" "$target"; then
+      awk -v snippet="$SNIPPET" '
+        { print }
+        /^[[:space:]]*location \/ \{[[:space:]]*$/ { print "        include " snippet ";" }
+      ' "$backup" > "$target"
+    fi
+    if ! python3 "$ACCESS_HELPER" --app-dir "$APP_DIR" --snippet "$SNIPPET" \
+        --site "$target" --port "$(app_port)" || ! nginx -t; then
+      cp "$backup" "$target"
+      rm -f "$backup"
+      return 1
+    fi
     rm -f "$backup"
-    return 0
-  fi
-  nginx -t || true
-  cp "$backup" "$target"
-  rm -f "$backup"
-  warn "Не удалось добавить include — конфиг сайта возвращён как был"
-  return 1
+  done < <(
+    for target in "$NGINX_SITES"/* "$NGINX_CONFD"/*.conf; do
+      [ -e "$target" ] || continue
+      if grep -qs "proxy_pass http://127.0.0.1:$(app_port)" "$target"; then readlink -f "$target"; fi
+    done | sort -u
+  )
+  [ "$found" = "1" ] || { warn "Не найден конфиг nginx для панели"; return 1; }
 }
 
-if [ "$HAVE_NGINX" = "1" ]; then
-  if ! ensure_include; then
-    warn "Правило записано, но конфиг сайта его не подключает: обновите панель"
-    warn "и перезапустите deploy/ssl.sh — он добавит include сам."
-  fi
-  systemctl reload nginx 2>/dev/null || systemctl restart nginx || die "nginx не перезапустился"
-  info "nginx перечитал конфигурацию"
+ensure_include || die "Правило nginx не применяется ко всем location панели — запуск остановлен"
+nginx -t || die "nginx отверг конфигурацию"
+systemctl reload nginx 2>/dev/null || systemctl restart nginx || die "nginx не перезапустился"
+info "nginx перечитал конфигурацию"
+
+# Для журнала и защиты входа доверяем IP-заголовкам только локального прокси.
+if [ -f "$APP_DIR/.env" ] && panel_in_systemd; then
+  set_env_var "$APP_DIR/.env" HOST 127.0.0.1
+  set_env_var "$APP_DIR/.env" FORWARDED_ALLOW_IPS 127.0.0.1
+  systemctl restart "$SERVICE" || die "Не удалось перезапустить панель"
 fi
 
 step "Проверка"
 PORT=$(app_port)
-DIRECT_OPEN=0
-# Панель на localhost без прокси недостижима ниоткуда — это надо сказать вслух,
-# иначе человек видит только не открывающуюся страницу.
-PANEL_UNREACHABLE=0
-ENV_HOST=""
-# Без «|| true» отсутствующий .env роняет скрипт целиком: set -e и pipefail
-# считают провал awk ошибкой всего прохода.
-if [ -f "$APP_DIR/.env" ]; then
-  ENV_HOST=$(awk -F= '/^HOST=/{print $2}' "$APP_DIR/.env" | tail -1 | tr -d ' ' || true)
-fi
-if [ "$HAVE_NGINX" = "0" ] && [ "$MODE" = "on" ]; then
-  case "$ENV_HOST" in 127.0.0.1|::1|localhost) PANEL_UNREACHABLE=1 ;; esac
-fi
-if [ "$MODE" = "on" ] && [ "$HAVE_NGINX" = "1" ]; then
-  # Порт закрываем только когда перед панелью есть прокси. Без него панель
-  # слушает адрес сервера сама — загнав её на localhost, мы отрезали бы вход
-  # вообще, вместе с сотрудниками в туннеле.
-  check_direct_port "$PORT" || DIRECT_OPEN=1
-  check_firewall
-fi
-if curl -fsS --max-time 5 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-  info "${GREEN}панель работает${OFF} (проверено на самом сервере)"
-else
-  warn "Панель не ответила на http://127.0.0.1:$PORT/healthz — проверьте службу ozon-pack"
+HEALTHY=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
+    HEALTHY=1
+    break
+  fi
+  sleep 1
+done
+[ "$HEALTHY" = "1" ] || die "Панель не ответила на localhost:$PORT"
+check_direct_port "$PORT" || die "Прямой доступ к панели не закрыт или не проверен"
+check_firewall
+
+# В .env хранится только настройка развёртывания. Приложение список не читает.
+if [ "$MODE" != "apply" ] && [ -f "$APP_DIR/.env" ]; then
+  value=""
+  if [ "$MODE" = "on" ]; then
+    for net in "${SUBNETS[@]}" "${EXTRA[@]}"; do value="${value:+$value,}$net"; done
+  fi
+  set_env_var "$APP_DIR/.env" IP_ALLOWLIST "$value"
 fi
 
 if [ "$MODE" = "off" ]; then
-  cat <<SUMMARY
-
-${GREEN}${BOLD}Готово: панель снова открыта со всех адресов.${OFF}
-SUMMARY
-elif [ "$HAVE_NGINX" = "0" ] && [ "$PANEL_UNREACHABLE" = "1" ]; then
-  cat <<SUMMARY
-
-${RED}${BOLD}Список адресов записан, но до панели сейчас никто не дойдёт.${OFF}
-  Она слушает только $ENV_HOST, а nginx, который принимал бы запросы снаружи,
-  не установлен. В браузере это выглядит как «страница не открывается», и
-  причину по такому виду не угадать.
-
-  Дальше одно из двух:
-    поставить nginx и сертификат, панель останется на localhost:
-      sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА
-    или работать без прокси, по адресу сервера в туннеле:
-      sudo sed -i 's#^HOST=.*#HOST=0.0.0.0#' $APP_DIR/.env
-      sudo systemctl restart $SERVICE
-    Во втором случае вход ограничивает список адресов, который уже записан.
-SUMMARY
-elif [ "$HAVE_NGINX" = "0" ]; then
-  cat <<SUMMARY
-
-${GREEN}${BOLD}Готово: вход в панель только из сети VPN.${OFF}
-  Панель сверяет адрес посетителя сама — постороннему она отвечает 403 ещё до
-  формы входа. Проверьте снаружи, без VPN: страница открываться не должна.
-
-${YELLOW}nginx не установлен${OFF}, поэтому панель отвечает по http и на своём порту
-  $PORT. Внутри туннеля WireGuard трафик шифруется, так что пароль по открытой
-  сети не идёт, но в браузере будет http:// и адрес с портом.
-
-  Поставить https и убрать порт из адреса:
-    sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА
-    sudo bash $APP_DIR/deploy/vpn-only.sh --subnet ВАША-СЕТЬ
-SUMMARY
-elif [ "$DIRECT_OPEN" = "1" ]; then
-  cat <<SUMMARY
-
-${RED}${BOLD}Правило nginx включено, но прямой доступ к панели остался открыт.${OFF}
-  Через nginx (порты 80 и 443) пускаются только адреса из сети VPN, однако
-  сама панель по-прежнему слушает внешний адрес на порту $PORT — зайти в неё
-  можно в обход VPN, минуя это правило и https.
-
-  Что сделать:
-    служба systemd   HOST=127.0.0.1 в $APP_DIR/.env, затем
-                     sudo systemctl restart $SERVICE
-    Docker           BIND_ADDR=127.0.0.1 в $APP_DIR/.env, затем
-                     cd $APP_DIR && sudo docker compose up -d
-  Проверить:
-    sudo ss -ltnp | grep :$PORT      # адрес должен быть только 127.0.0.1
-SUMMARY
+  info "Готово: nginx принимает все IP; вход по логину и паролю. Прямой порт закрыт."
 else
-  cat <<SUMMARY
-
-${GREEN}${BOLD}Готово: панель доступна только через VPN.${OFF}
-  Проверить снаружи (без VPN) — должно быть 403:
-    curl -sI https://ВАШ-ДОМЕН | head -1
-  Посмотреть состояние и адреса заходивших:
-    sudo bash $APP_DIR/deploy/vpn-only.sh --status
-  Открыть обратно:
-    sudo bash $APP_DIR/deploy/vpn-only.sh --off
-
-${YELLOW}Если панель не открывается и через VPN${OFF} — значит nginx видит не тот адрес.
-Посмотрите, с какого адреса пришёл запрос, и разрешите именно его:
-    sudo tail -5 /var/log/nginx/access.log
-    sudo bash $APP_DIR/deploy/vpn-only.sh --allow ЭТОТ-АДРЕС
-SUMMARY
+  info "Готово: правило nginx применено, прямой порт закрыт, панель отвечает."
+  info "Проверьте с рабочего места: разрешённый IP открывает вход, посторонний получает 403."
 fi
-echo
-# Ненулевой код, пока прямой доступ открыт: правило nginx стоит, но панель
-# всё ещё пускает мимо VPN, и молча считать это успехом нельзя.
-[ "$DIRECT_OPEN" = "0" ] || exit 1
+
