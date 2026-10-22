@@ -387,7 +387,8 @@ listening_outside() {
   command -v ss >/dev/null 2>&1 || return 2
   sockets=$(ss -ltnH 2>/dev/null) || return 2
   printf '%s\n' "$sockets" | awk -v port="$port" '
-    $4 ~ ("[:.]" port "$") && $4 !~ /^127\\./ && $4 !~ /^\\[?::1\\]?:/ { print $4 }
+    $4 ~ ("[:.]" port "$") && substr($4, 1, 4) != "127." &&
+      substr($4, 1, 6) != "[::1]:" && substr($4, 1, 4) != "::1:" { print $4 }
   '
 }
 

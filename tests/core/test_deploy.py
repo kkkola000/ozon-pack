@@ -747,6 +747,24 @@ def test_ssl_cannot_leave_direct_port_open():
     assert "--keep-open отключён" in proc.stdout + proc.stderr
 
 
+@pytest.mark.parametrize("script", ["ssl.sh", "vpn-only.sh"])
+@pytest.mark.parametrize("address,outside", [
+    ("127.0.0.1:8080", False), ("127.12.0.2:8080", False),
+    ("[::1]:8080", False), ("::1:8080", False),
+    ("0.0.0.0:8080", True), ("[::]:8080", True),
+    ("192.0.2.5:8080", True), ("[2001:db8::1]:8080", True),
+    ("0.0.0.0:8081", False),
+])
+def test_listener_check_distinguishes_loopback(script, address, outside):
+    env = dict(os.environ, SOCKETS=f"LISTEN 0 511 {address} 0.0.0.0:*")
+    code = 'ss() { printf "%s\\n" "$SOCKETS"; };\n'
+    code += _shell_function(DEPLOY / script, "listening_outside")
+    code += '\nlistening_outside 8080\n'
+    proc = subprocess.run(["bash", "-c", code], env=env, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert bool(proc.stdout.strip()) == outside
+
+
 @pytest.mark.parametrize(
     "domain, email",
     [
