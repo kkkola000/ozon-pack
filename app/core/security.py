@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import secrets
 import time
 from typing import Any
@@ -116,40 +115,6 @@ def clear_attempts(key: str) -> None:
     _attempts.pop(key, None)
 
 
-def ip_allowed(client_ip: str | None) -> bool:
-    """Белый список IP/подсетей (IP_ALLOWLIST). Пустой — пускаем всех.
-
-    Заполненный список — это «только из сети VPN»: его ставит
-    deploy/vpn-only.sh вместе с правилом nginx. Проверка живёт и здесь, а не
-    только в прокси, потому что конфиг сайта может потерять строку include —
-    именно так панель однажды и оказалась открыта всему интернету.
-    """
-    if not settings.ip_allowlist:
-        return True
-    if not client_ip:
-        return False
-    try:
-        addr = ipaddress.ip_address(client_ip)
-    except ValueError:
-        return False
-    # Свой же сервер пускаем всегда, какой бы список ни стоял. Через localhost
-    # ходят проверка здоровья контейнера и скрипты развёртывания, а туннель по
-    # SSH остаётся способом починить панель, если VPN отвалится. Отдельного
-    # доступа это не даёт: чтобы прийти с localhost, нужен вход на сервер.
-    if addr.is_loopback:
-        return True
-    for entry in settings.ip_allowlist:
-        try:
-            if "/" in entry:
-                if addr in ipaddress.ip_network(entry, strict=False):
-                    return True
-            elif addr == ipaddress.ip_address(entry):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
 def session_user(session: dict[str, Any] | None) -> dict[str, Any] | None:
     """Пользователь сессии — или None, если она больше не действует.
 
@@ -174,3 +139,4 @@ def session_user(session: dict[str, Any] | None) -> dict[str, Any] | None:
     user = dict(row)
     user.pop("password_hash", None)
     return user
+

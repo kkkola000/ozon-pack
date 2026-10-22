@@ -101,7 +101,7 @@ apt-get update -qq
 # fonts-dejavu-core — шрифт с кириллицей для листа возвратов в PDF: встроенные
 # в PDF шрифты русские буквы не показывают. Пакет крошечный и без зависимостей.
 apt-get install -y -qq python3 python3-venv python3-pip git curl ca-certificates sqlite3 \
-  fonts-dejavu-core >/dev/null
+  fonts-dejavu-core iproute2 >/dev/null
 info "python $(python3 -V 2>&1 | awk '{print $2}'), git $(git --version | awk '{print $3}')"
 
 # ------------------------------------------------------------------ ветка
@@ -233,30 +233,43 @@ PYEOF
 fi
 chmod 600 "$APP_DIR/.env"
 
-# Установка с VPN: панель слушает только localhost и сверяет адрес посетителя
-# сама. Вызывается после обеих веток выше, поэтому работает и на обновлении.
-# 127.0.0.1 в списке обязателен: через localhost ходят проверка здоровья и
-# скрипты развёртывания, и он же остаётся путём восстановления через SSH.
+# Внешние запросы принимает nginx. Прямой порт не открываем даже без HTTPS.
 apply_vpn_settings() {
-  local target="$APP_DIR/.env" subnet=$1 key value line
-  [ -n "$subnet" ] || return 0
-  [ -f "$target" ] || { warn "Нет $target — настройки VPN не записаны"; return 1; }
-  for key in HOST IP_ALLOWLIST; do
-    case "$key" in
-      HOST) value="127.0.0.1" ;;
-      IP_ALLOWLIST) value="127.0.0.1,$subnet" ;;
-    esac
-    line="$key=$value"
-    if grep -q "^$key=" "$target"; then
-      sed -i "s#^$key=.*#$line#" "$target"
-    else
-      printf '%s\n' "$line" >> "$target"
-    fi
-  done
-  info "доступ только из сети $subnet: HOST=127.0.0.1, IP_ALLOWLIST задан"
+  local target="$APP_DIR/.env" subnet=$1
+  [ -f "$target" ] || return 1
+  APP_ENV="$target" REQUESTED_SUBNET="$subnet" python3 - <<'PY'
+import os
+from pathlib import Path
+path = Path(os.environ["APP_ENV"])
+changes = {"HOST": "127.0.0.1", "FORWARDED_ALLOW_IPS": "127.0.0.1"}
+if os.environ["REQUESTED_SUBNET"]:
+    changes["IP_ALLOWLIST"] = os.environ["REQUESTED_SUBNET"]
+lines = path.read_text().splitlines()
+for key, value in changes.items():
+    lines = [line for line in lines if not line.startswith(key + "=")]
+    lines.append(key + "=" + value)
+path.write_text("\n".join(lines) + "\n")
+PY
 }
 
 apply_vpn_settings "$VPN_SUBNET"
+
+# Подготовить nginx ДО перезапуска версии без проверки IP в приложении.
+# При обновлении сохраняется пересечение старых ограничений nginx и приложения.
+prepare_nginx_access() {
+  local snippet="${SNIPPET:-/etc/nginx/snippets/ozon-pack-access.conf}" restricted=0
+  python3 "$APP_DIR/deploy/nginx-access.py" --app-dir "$APP_DIR" --snippet "$snippet" ||
+    die "Не удалось перенести список IP в nginx — обновление остановлено до перезапуска"
+  grep -q '^deny all;' "$snippet" && restricted=1
+  if [ "$UPDATE" = "1" ] && [ "$restricted" = "1" ]; then
+    command -v nginx >/dev/null 2>&1 ||
+      die "Для обновления закрытой панели нужен nginx. Настройте deploy/ssl.sh и повторите установку."
+    SNIPPET="$snippet" APP_DIR="$APP_DIR" APP_PORT="$PORT" SERVICE="$SERVICE" \
+      bash "$APP_DIR/deploy/vpn-only.sh" --apply --yes ||
+      die "Ограничение nginx не подтверждено — обновление остановлено до перезапуска"
+  fi
+}
+prepare_nginx_access
 
 # HOST=127.0.0.1 имеет смысл только когда перед панелью есть nginx. Без него
 # панель слушает саму себя, и до неё не дойти ни из туннеля, ни откуда — а
@@ -271,9 +284,9 @@ warn_if_unreachable() {
   warn "Дальше одно из двух:"
   warn "  поставить nginx и сертификат:"
   warn "    sudo bash $APP_DIR/deploy/ssl.sh --domain ВАШ-ДОМЕН --email ПОЧТА"
-  warn "  или работать без прокси, по адресу сервера в туннеле:"
-  warn "    HOST=0.0.0.0 в $APP_DIR/.env и sudo systemctl restart $SERVICE"
-  warn "    (вход при этом ограничивает IP_ALLOWLIST)"
+  warn "  или использовать локальный доступ через SSH-туннель:"
+  warn "    SSH-туннель: ssh -L 8080:127.0.0.1:$PORT пользователь@сервер"
+  warn "    Ограничение IP применяется только в nginx."
 }
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 
@@ -382,3 +395,4 @@ if [ "${SERVICE_INSTALLED:-0}" = "1" ]; then
 SUMMARY
 fi
 echo
+

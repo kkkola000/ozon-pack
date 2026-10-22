@@ -436,7 +436,7 @@ def test_startup_warns_about_spoofable_client_ip(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="app"):
         _warn_about_spoofable_client_ip()
     assert "FORWARDED_ALLOW_IPS=*" in caplog.text
-    assert "IP_ALLOWLIST" in caplog.text
+    assert "защита от подбора" in caplog.text
 
     caplog.clear()
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "127.0.0.1")
@@ -619,71 +619,23 @@ def test_all_cabinets_sheet_is_quiet_when_everything_fits(client, many_cabinets)
     assert "поместилась только часть возвратов" not in page.text
 
 
-# ---------------------------------------------------------------- вход только из VPN
-# Заполненный IP_ALLOWLIST — это «панель отвечает только из сети туннеля».
-# Проверка стоит в middleware до разбора сессии, поэтому закрыты и /login,
-# и /healthz, и статика: снаружи не видно даже формы входа.
-
-@pytest.fixture
-def vpn_only(monkeypatch):
-    from app.core.config import settings
-
-    monkeypatch.setattr(settings, "ip_allowlist", ["127.0.0.1", "10.8.0.0/24"])
-    return settings
-
-
-def _client_from(ip, sample):
+# IP-фильтр принадлежит nginx. Прямой клиент приложения всё равно должен войти.
+@pytest.mark.parametrize("ip", ["203.0.113.7", "10.8.0.5", "127.0.0.1", "::1"])
+def test_application_authentication_is_independent_of_ip(sample_data, monkeypatch, ip):
     from app.main import app
-
-    return TestClient(app, follow_redirects=False, client=(ip, 40000))
-
-
-@pytest.mark.parametrize("path", ["/login", "/healthz", "/pack", "/static/app.js", "/favicon.ico"])
-def test_outside_vpn_sees_nothing(sample_data, vpn_only, path):
-    with _client_from("203.0.113.7", sample_data) as outside:
-        response = outside.get(path)
-    assert response.status_code == 403, path
-    assert "Доступ с этого IP запрещён" in response.text
+    monkeypatch.setenv("IP_ALLOWLIST", "10.8.0.0/24")
+    with TestClient(app, follow_redirects=False, client=(ip, 40000)) as connection:
+        assert connection.get("/login").status_code == 200
+        assert connection.get("/api/pack/state").status_code == 401
+        response = connection.post("/login", data={
+            "login": "admin", "password": "test-admin-pass", "next": "/pack"})
+        assert response.status_code == 303
+        assert connection.get("/pack").status_code == 200
 
 
-@pytest.mark.parametrize("ip", ["10.8.0.5", "10.8.0.254"])
-def test_inside_vpn_can_log_in(sample_data, vpn_only, ip):
-    with _client_from(ip, sample_data) as inside:
-        assert inside.get("/login").status_code == 200
-        response = inside.post(
-            "/login", data={"login": "admin", "password": "test-admin-pass", "next": "/pack"}
-        )
-        assert response.status_code == 303, response.text
-        assert inside.get("/pack").status_code == 200
+def test_settings_no_longer_expose_application_ip_filter():
+    from app.core.config import Settings
+    from app.core import security
+    assert not hasattr(Settings(), "ip_allowlist")
+    assert not hasattr(security, "ip_allowed")
 
-
-@pytest.mark.parametrize("ip", ["127.0.0.1", "::1"])
-def test_localhost_stays_open_even_when_not_listed(sample_data, monkeypatch, ip):
-    """Свой сервер пускаем всегда, даже если в списке только сеть VPN.
-
-    Через localhost ходят проверка здоровья контейнера и скрипты развёртывания,
-    и он же остаётся путём восстановления по SSH, если туннель отвалится. Без
-    этого исключения список, набранный руками, тихо ломал бы HEALTHCHECK.
-    """
-    from app.core.config import settings
-
-    monkeypatch.setattr(settings, "ip_allowlist", ["10.8.0.0/24"])
-    with _client_from(ip, sample_data) as local:
-        assert local.get("/healthz").status_code == 200
-        assert local.get("/login").status_code == 200
-
-
-def test_foreign_address_cannot_pretend_to_be_vpn(sample_data, vpn_only):
-    """Заголовку X-Forwarded-For панель верит только от своего прокси."""
-    with _client_from("203.0.113.7", sample_data) as outside:
-        response = outside.get("/login", headers={"X-Forwarded-For": "10.8.0.5"})
-    assert response.status_code == 403
-
-
-def test_empty_allowlist_lets_everyone_in(sample_data, monkeypatch):
-    """Без списка ограничения нет — установка без VPN работает как прежде."""
-    from app.core.config import settings
-
-    monkeypatch.setattr(settings, "ip_allowlist", [])
-    with _client_from("203.0.113.7", sample_data) as anyone:
-        assert anyone.get("/login").status_code == 200
