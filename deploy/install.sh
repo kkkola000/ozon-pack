@@ -359,7 +359,8 @@ IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 cat <<SUMMARY
 
 ${GREEN}${BOLD}Готово.${OFF}
-  Адрес:    ${BOLD}http://${IP:-IP-сервера}:$PORT${OFF}
+  Локально: ${BOLD}http://127.0.0.1:$PORT${OFF}
+  Снаружи:  через nginx; настройка HTTPS — deploy/ssl.sh
   Версия:   $BUILD
   Каталог:  $APP_DIR
   Настройки: $APP_DIR/.env

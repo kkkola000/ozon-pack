@@ -97,6 +97,8 @@ def write_policy(app_dir: Path, snippet: Path, requested: str | None = None) -> 
 def verify_site(site: Path, snippet: Path, port: str) -> None:
     """Fail closed on unprotected/custom proxy locations; do not guess nginx inheritance."""
     text = re.sub(r"#.*", "", site.read_text())
+    if re.search(r"\bsatisfy\s+any\s*;", text):
+        raise ValueError(f"{site}: satisfy any может обходить ограничение IP")
     stack: list[list[str]] = [[]]
     found = False
     for token in re.split(r"([{};])", text):
@@ -116,10 +118,14 @@ def verify_site(site: Path, snippet: Path, port: str) -> None:
                     raise ValueError(f"{site}: location панели не подключает {snippet}")
                 if any(d.startswith(("allow ", "deny ", "satisfy ")) for d in block):
                     raise ValueError(f"{site}: дополнительные директивы меняют правило доступа")
+                if any(d.startswith("include ") and d != f"include {snippet}" for d in block):
+                    raise ValueError(f"{site}: содержимое дополнительного include нужно проверить вручную")
         elif token != ";":
             stack[-1].append(token)
     if not found:
         raise ValueError(f"{site}: не найден proxy_pass на порт {port}")
+    if len(stack) != 1:
+        raise ValueError(f"{site}: незакрытые скобки в конфигурации nginx")
 
 
 def main() -> None:

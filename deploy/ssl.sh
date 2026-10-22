@@ -383,11 +383,12 @@ info "nginx слушает 443"
 # Адреса, на которых порт панели слушает не localhost. Пусто — снаружи напрямую
 # не подключиться. Код 2 — проверить нечем (нет ss).
 listening_outside() {
-  local port=$1
+  local port=$1 sockets
   command -v ss >/dev/null 2>&1 || return 2
-  ss -ltnH 2>/dev/null | awk '{print $4}' |
-    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
-  return 0
+  sockets=$(ss -ltnH 2>/dev/null) || return 2
+  printf '%s\n' "$sockets" | awk -v port="$port" '
+    $4 ~ ("[:.]" port "$") && $4 !~ /^127\\./ && $4 !~ /^\\[?::1\\]?:/ { print $4 }
+  '
 }
 
 # Записать KEY=value в .env, не плодя повторяющихся строк.

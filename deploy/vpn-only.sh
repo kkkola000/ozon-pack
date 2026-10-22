@@ -167,11 +167,12 @@ wg_port() {
 # Адреса, на которых порт панели слушает не localhost. Пустой вывод — снаружи
 # к панели напрямую не подключиться. Код 2 — проверить нечем (нет ss).
 listening_outside() {
-  local port=$1
+  local port=$1 sockets
   command -v ss >/dev/null 2>&1 || return 2
-  ss -ltnH 2>/dev/null | awk '{print $4}' |
-    grep -E "[:.]${port}\$" | grep -Ev '^(127\.|\[::1\])' || true
-  return 0
+  sockets=$(ss -ltnH 2>/dev/null) || return 2
+  printf '%s\n' "$sockets" | awk -v port="$port" '
+    $4 ~ ("[:.]" port "$") && $4 !~ /^127\\./ && $4 !~ /^\\[?::1\\]?:/ { print $4 }
+  '
 }
 
 # Записать KEY=value в .env, не плодя повторяющихся строк.
@@ -407,6 +408,28 @@ if [ "$MODE" = "on" ]; then
 fi
 
 step "Правило nginx"
+# Откат файлов при ошибке: следующий reload не должен применить непроверенное правило.
+CHANGE_BACKUP=$(mktemp -d)
+RESTORE_TARGETS=()
+RESTORE_COPIES=()
+HAD_SNIPPET=0
+if [ -f "$SNIPPET" ]; then cp "$SNIPPET" "$CHANGE_BACKUP/snippet"; HAD_SNIPPET=1; fi
+finish_changes() {
+  local code=$? i
+  if [ "$code" != "0" ]; then
+    if [ "$HAD_SNIPPET" = "1" ]; then
+      cp "$CHANGE_BACKUP/snippet" "$SNIPPET"
+    else
+      rm -f "$SNIPPET"
+    fi
+    for ((i=0; i<${#RESTORE_TARGETS[@]}; i++)); do
+      cp "${RESTORE_COPIES[$i]}" "${RESTORE_TARGETS[$i]}"
+    done
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
+  fi
+  rm -rf "$CHANGE_BACKUP"
+}
+trap finish_changes EXIT
 write_snippet
 info "файл: $SNIPPET"
 
@@ -420,6 +443,9 @@ ensure_include() {
     found=1
     backup=$(mktemp)
     cp "$target" "$backup"
+    RESTORE_TARGETS+=("$target")
+    RESTORE_COPIES+=("$CHANGE_BACKUP/site-${#RESTORE_COPIES[@]}")
+    cp "$target" "${RESTORE_COPIES[${#RESTORE_COPIES[@]}-1]}"
     if ! grep -qs "include $SNIPPET;" "$target"; then
       awk -v snippet="$SNIPPET" '
         { print }
@@ -456,10 +482,17 @@ fi
 
 step "Проверка"
 PORT=$(app_port)
+HEALTHY=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
+    HEALTHY=1
+    break
+  fi
+  sleep 1
+done
+[ "$HEALTHY" = "1" ] || die "Панель не ответила на localhost:$PORT"
 check_direct_port "$PORT" || die "Прямой доступ к панели не закрыт или не проверен"
 check_firewall
-curl -fsS --max-time 5 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 ||
-  die "Панель не ответила на localhost:$PORT"
 
 # В .env хранится только настройка развёртывания. Приложение список не читает.
 if [ "$MODE" != "apply" ] && [ -f "$APP_DIR/.env" ]; then

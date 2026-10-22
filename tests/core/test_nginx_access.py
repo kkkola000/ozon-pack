@@ -45,7 +45,7 @@ def test_disjoint_policies_never_become_allow_all(tmp_path):
     assert snippet.read_text().endswith("deny all;\n")
 
 
-@pytest.mark.parametrize("bad", ["bad-address", "10.8.0.0/24\ndeny all", "10.8.0.0/99"])
+@pytest.mark.parametrize("bad", ["bad-address", "10.8.0.0/24;deny all", "10.8.0.0/99"])
 def test_invalid_policy_does_not_overwrite_existing_rule(tmp_path, bad):
     snippet = setup_policy(tmp_path, bad, "allow all;\n")
     with pytest.raises(ValueError):
