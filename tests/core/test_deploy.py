@@ -737,6 +737,8 @@ def test_failed_socket_inspection_is_not_success(tmp_path, port_sandbox):
 def test_installer_migrates_acl_before_service_restart():
     text = (DEPLOY / "install.sh").read_text()
     assert text.index("\nprepare_nginx_access\n") < text.index('  systemctl restart "$SERVICE"')
+    migration = _shell_function(DEPLOY / "install.sh", "prepare_nginx_access")
+    assert migration.index("install_service_unit") < migration.index('bash "$APP_DIR/deploy/vpn-only.sh"')
 
 
 def test_ssl_cannot_leave_direct_port_open():

@@ -254,6 +254,15 @@ PY
 
 apply_vpn_settings "$VPN_SUBNET"
 
+install_service_unit() {
+  # Обновить юнит без запуска: старый мог игнорировать HOST из .env.
+  sed -e "s#/opt/ozon-pack#$APP_DIR#g" \
+      -e "s#^User=.*#User=$APP_USER#" \
+      -e "s#^Group=.*#Group=$APP_USER#" \
+      "$APP_DIR/deploy/ozon-pack.service" > "/etc/systemd/system/$SERVICE.service"
+  systemctl daemon-reload
+}
+
 # Подготовить nginx ДО перезапуска версии без проверки IP в приложении.
 # При обновлении сохраняется пересечение старых ограничений nginx и приложения.
 prepare_nginx_access() {
@@ -264,6 +273,9 @@ prepare_nginx_access() {
   if [ "$UPDATE" = "1" ] && [ "$restricted" = "1" ]; then
     command -v nginx >/dev/null 2>&1 ||
       die "Для обновления закрытой панели нужен nginx. Настройте deploy/ssl.sh и повторите установку."
+    if [ "$SKIP_SERVICE" != "1" ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+      install_service_unit
+    fi
     SNIPPET="$snippet" APP_DIR="$APP_DIR" APP_PORT="$PORT" SERVICE="$SERVICE" \
       bash "$APP_DIR/deploy/vpn-only.sh" --apply --yes ||
       die "Ограничение nginx не подтверждено — обновление остановлено до перезапуска"
@@ -310,11 +322,7 @@ else
   # Юнит из репозитория, подставляем каталог и пользователя. Адрес и порт
   # не трогаем: юнит берёт их из .env (HOST и PORT), иначе правка HOST,
   # которой ssl.sh и vpn-only.sh закрывают прямой доступ, ни на что не влияла бы.
-  sed -e "s#/opt/ozon-pack#$APP_DIR#g" \
-      -e "s#^User=.*#User=$APP_USER#" \
-      -e "s#^Group=.*#Group=$APP_USER#" \
-      "$APP_DIR/deploy/ozon-pack.service" > "/etc/systemd/system/$SERVICE.service"
-  systemctl daemon-reload
+  install_service_unit
   systemctl enable "$SERVICE" >/dev/null 2>&1 || true
   systemctl restart "$SERVICE"
   SERVICE_INSTALLED=1

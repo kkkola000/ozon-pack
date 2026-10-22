@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-security-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     runs-on: ubuntu-24.04
