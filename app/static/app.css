@@ -876,7 +876,6 @@ body.pack-open { overflow: hidden; }
 
 /* Архив стикеров: общие поля и кнопки, упорядоченные строки фильтров. */
 .stickers-header h2 { margin: 0; }
-.stickers-header p { margin: 8px 0 0; line-height: 1.6; }
 .sticker-filters {
   display: grid; grid-template-columns: minmax(160px, 1fr) minmax(280px, 1.4fr) minmax(220px, 1.5fr) auto; gap: 16px;
   margin: 20px 0; padding-bottom: 20px; border-bottom: 1px solid var(--line);
@@ -891,7 +890,15 @@ body.pack-open { overflow: hidden; }
 .sticker-check { width: 42px; }
 .sticker-table input[type=checkbox] { display: block; margin: 0; }
 .sticker-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.sticker-pagination { margin-top: 20px; justify-content: flex-end; }
+.sticker-pagination { margin-top: 20px; justify-content: center; }
+.sticker-saved-date { color: var(--accent); }
+.sticker-date-control { position: relative; }
+.sticker-date-control input { color: var(--accent); }
+.sticker-date-control input[data-empty="true"]:not(:focus) { color: transparent; }
+.sticker-date-control input[data-empty="true"]:not(:focus)::-webkit-datetime-edit { color: transparent; }
+.sticker-date-placeholder { display: none; position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--accent); pointer-events: none; }
+.sticker-date-control input[data-empty="true"]:not(:focus) + .sticker-date-placeholder { display: block; }
+#stickers-more[aria-disabled="true"] { opacity: .6; cursor: wait; }
 @media (max-width: 1000px) {
   .sticker-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sticker-period, .sticker-filter-actions { grid-column: auto; }

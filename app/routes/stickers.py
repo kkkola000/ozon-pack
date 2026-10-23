@@ -25,18 +25,22 @@ def _date(value: str) -> str:
 
 
 @router.get('/reports/stickers', response_class=HTMLResponse)
-def archive_page(request: Request, account_id: int | None = None, market: str = '', q: str = '',
-                 since: str = '', until: str = '', state: str = '', page: int = Query(1, ge=1, le=1000000),
+def archive_page(request: Request, account_id: str = '', market: str = '', q: str = '',
+                 since: str = '', until: str = '', state: str = 'saved', page: int = Query(1, ge=1, le=1000000),
                  user: dict = Depends(require_section('stickers'))):
+    try:
+        chosen = int(account_id) if account_id else None
+    except ValueError as exc:
+        raise HTTPException(400, 'Неверный кабинет') from exc
     since, until = _date(since), _date(until)
     if since and until and since > until:
         raise HTTPException(400, 'Начало периода позже окончания')
-    items, total = sticker_archive.search(account_id=account_id, market=market, q=q.strip(), since=since,
+    items, total = sticker_archive.search(account_id=chosen, market=market, q=q.strip(), since=since,
                                          until=until, state=state, page=page)
-    filters = dict(account_id=account_id or '', market=market, q=q, since=since, until=until, state=state)
+    filters = dict(account_id=chosen or '', market=market, q=q, since=since, until=until, state=state)
 
     def page_url(number):
-        return '/reports/stickers?' + urlencode({**filters, 'page': number})
+        return '/reports/stickers?' + urlencode({key: value for key, value in {**filters, 'page': number}.items() if value != ''})
 
     # Архив содержит снимок названия кабинета: он остаётся понятным и после переименования.
     return templates.TemplateResponse(request, 'stickers.html', {

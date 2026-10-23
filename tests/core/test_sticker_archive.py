@@ -281,3 +281,31 @@ def test_date_filter_uses_the_same_local_day_as_the_page(account, monkeypatch):
     db.execute('UPDATE sticker_versions SET saved_at = ? WHERE id = ?', ('2026-10-22T22:30:00+00:00', saved))
     assert archive.search(since='2026-10-23', until='2026-10-23')[1] == 1
     assert archive.search(until='2026-10-22')[1] == 0
+
+
+def test_latest_thirty_saved_files_and_more_link(account):
+    import html
+
+    body = pdf()
+    for number in range(65):
+        archive.save(queued(account, f'file-{number:03}'), body)
+    queued(account, 'not-a-file-yet')
+    with TestClient(app, follow_redirects=False) as client:
+        sign_in(client)
+        first = client.get('/reports/stickers?account_id=&since=&until=&q=')
+        assert first.status_code == 200
+        rows = re.findall(r'data-archive-id="(\d+)"', first.text)
+        assert len(rows) == 30 and 'not-a-file-yet' not in first.text
+        assert 'file-064' in first.text and 'file-000' not in first.text
+        assert 'автоматически сохраняются' not in first.text
+        assert 'value="" data-empty="true"' in first.text
+        link = re.search(r'id="stickers-more" href="([^"]+)"', first.text)
+        second = client.get(html.unescape(link.group(1)))
+        assert second.status_code == 200, second.text
+        second_rows = re.findall(r'data-archive-id="(\d+)"', second.text)
+        assert len(second_rows) == 30 and not set(rows) & set(second_rows)
+        link = re.search(r'id="stickers-more" href="([^"]+)"', second.text)
+        last = client.get(html.unescape(link.group(1)))
+        assert len(re.findall(r'data-archive-id="(\d+)"', last.text)) == 5
+        assert 'id="stickers-more"' not in last.text
+        assert 'file-000' in last.text

@@ -19,7 +19,7 @@ from .config import settings
 log = logging.getLogger(__name__)
 MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_ZIP_BYTES = 100 * 1024 * 1024
-PAGE_SIZE = 50
+PAGE_SIZE = 30
 # За один проход берём ограниченную очередь каждого кабинета. Сначала новые
 # заказы, затем ошибки и проверки изменённых стикеров уже сохранённых заказов.
 PER_PASS = 50

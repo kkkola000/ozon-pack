@@ -4,17 +4,14 @@
 <div class="panel stickers-panel">
   <div class="stickers-header">
     <h2>Стикеры</h2>
-    <p class="muted small">Стикеры всех кабинетов автоматически сохраняются, когда заказ ожидает отгрузки. Полные комплекты и версии файлов доступны в течение шести месяцев с момента сохранения.</p>
-    <p class="muted small">До включения архива старые стикеры могли не сохраняться.</p>
-    {% if not sync_enabled %}<p class="badge warn">Фоновая загрузка отключена. Сохранённые стикеры доступны.</p>{% endif %}
   </div>
   <form class="sticker-filters" method="get">
     <label class="sticker-filter"><span>Кабинет</span>
       <select name="account_id"><option value="">Все кабинеты</option>{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if filters.account_id == a.id }}>{{ a.title }}</option>{% endfor %}</select>
     </label>
     <div class="sticker-period">
-      <label class="sticker-filter"><span>Дата с</span><input type="date" name="since" value="{{ filters.since }}"></label>
-      <label class="sticker-filter"><span>Дата по</span><input type="date" name="until" value="{{ filters.until }}"></label>
+      <label class="sticker-filter"><span>Дата с</span><div class="sticker-date-control"><input type="date" name="since" value="{{ filters.since }}" data-empty="{{ 'false' if filters.since else 'true' }}"><span class="sticker-date-placeholder" aria-hidden="true">—</span></div></label>
+      <label class="sticker-filter"><span>Дата по</span><div class="sticker-date-control"><input type="date" name="until" value="{{ filters.until }}" data-empty="{{ 'false' if filters.until else 'true' }}"><span class="sticker-date-placeholder" aria-hidden="true">—</span></div></label>
     </div>
     <label class="sticker-filter"><span>Поиск</span>
       <input type="search" name="q" value="{{ filters.q }}" placeholder="Номер заказа / отправления">
@@ -25,15 +22,15 @@
   </form>
   <div class="row between sticker-toolbar">
     <button type="button" class="btn primary" id="stickers-download" disabled>Скачать выбранные ZIP</button>
-    <span class="muted small">Заказов: {{ total }}</span>
+    <span class="muted small">Файлов: {{ total }}</span>
   </div>
   <div class="sticker-table">
   <table>
     <thead><tr><th class="sticker-check"><input type="checkbox" id="stickers-all" aria-label="Выбрать все на странице" {{ 'disabled' if not items | selectattr('version_id') | list }}></th><th>Сохранён</th><th>Площадка / кабинет</th><th>Заказ</th><th>Состояние</th><th>Действия</th></tr></thead>
-    <tbody>{% for item in items %}
-      <tr>
+    <tbody id="sticker-rows">{% for item in items %}
+      <tr data-archive-id="{{ item.id }}">
         <td>{% if item.version_id %}<input type="checkbox" class="sticker-select" value="{{ item.version_id }}" aria-label="Выбрать заказ {{ item.order_number }}">{% endif %}</td>
-        <td class="small">{{ item.saved_at | local_dt('%d.%m.%Y %H:%M') if item.saved_at else '—' }}</td>
+        <td class="small sticker-saved-date">{{ item.saved_at | local_dt('%d.%m.%Y %H:%M') if item.saved_at else '—' }}</td>
         <td>{{ marketplace_title(item.marketplace) }} · {{ item.shop_title }}</td>
         <td class="mono">{{ item.order_number }}{% if item.order_id != item.order_number %}<div class="small muted">{{ item.order_id }}</div>{% endif %}</td>
         <td>{% if item.error %}<span class="badge err">Ошибка загрузки</span><div class="small muted">{{ item.error }}</div>{% elif item.version_id %}<span class="badge ok">Сохранён</span>{% else %}<span class="badge warn">Ожидает загрузки</span>{% endif %}
@@ -51,8 +48,8 @@
     {% else %}<tr><td colspan="6" class="empty">Стикеров по выбранным условиям нет. Новые появятся после синхронизации заказов «Ожидает отгрузки».</td></tr>{% endfor %}</tbody>
   </table>
   </div>
-  {% if pages > 1 or page > 1 %}
-  <div class="row sticker-pagination">{% if page > 1 %}<a class="btn" href="{{ previous }}">Назад</a>{% endif %}<span>Страница {{ page }} из {{ pages }}</span>{% if page < pages %}<a class="btn" href="{{ following }}">Далее</a>{% endif %}</div>
+  {% if page < pages %}
+  <div class="row sticker-pagination"><a class="btn" id="stickers-more" href="{{ following }}">Ещё</a></div>
   {% endif %}
 </div>
 {% endblock %}
