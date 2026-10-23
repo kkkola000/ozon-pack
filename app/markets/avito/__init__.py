@@ -23,6 +23,7 @@ MARKET = Market(
     labels=LabelsSource(
         word="этикетки",
         pending=pack.pending_labels,
+        items=store.label_items,
         pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         table="avito_orders",
         key="id",

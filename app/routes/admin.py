@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 
 from urllib.parse import urlencode
 
-from ..core import access, accounts, db, report, security, shops, sync
+from ..core import access, accounts, db, product_labels, report, security, shops, sync
 from ..core.deps import check_csrf, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
@@ -176,6 +176,7 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "stats": stats,
             "cabinets": cabinets,
             "marketplaces": registry.MARKETS,
+            "product_barcodes_enabled": product_labels.enabled(),
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
             "roles": [r for r in access.ROLES if access.may_set_role(user, r[0])],
@@ -433,3 +434,15 @@ def api_report_cutoff(request: Request, payload: dict = Body(...), admin: dict =
         "message": f"Отчётный день закрывается в {value}. Сканы после этого времени идут в следующий день.",
         "cutoff": value,
     }
+
+
+@router.post('/api/settings/product-barcodes')
+def api_product_barcodes(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
+    check_csrf(request)
+    enabled = payload.get('enabled')
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, 'Укажите, включена ли печать ШК товара')
+    db.kv_set(product_labels.KV_ENABLED, '1' if enabled else '0')
+    message = 'Печать ШК товара перед стикером включена' if enabled else 'Печатается только стикер отправления'
+    db.log_event('product_barcodes_changed', user=admin, message=message)
+    return {'status': 'ok', 'message': message, 'enabled': enabled}

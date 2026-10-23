@@ -497,7 +497,7 @@ async function forceComplete() {
 async function printLabel(id, printWindow = null) {
   if (!pack?.print) return;
   const ok = await printLabelDocument({
-    pdfUrl: pack.print.url(id),
+    pdfUrl: `${pack.print.url(id)}?with_products=true`,
     name: `${pack.words.label} ${id}`,
     window: printWindow,
     kind: pack.print.kind,

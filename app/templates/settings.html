@@ -126,6 +126,10 @@
     Куда и на какой лист печатается каждый документ: через браузер или через QZ Tray.
     Страница доступна всем сотрудникам, включая сборщиков, — ссылка «Принтеры» есть в шапке.
   </p>
+  <div class="row" style="margin-top:16px">
+    <label class="check"><input type="checkbox" id="print-product-barcodes" {{ 'checked' if product_barcodes_enabled }}> Печатать ШК товара перед стикером отправления</label>
+  </div>
+  <p class="muted small" style="margin:8px 0 0">Без галочки печатается только стикер отправления. При отсутствии подходящего ШК товарная этикетка пропускается.</p>
 </div>
 
 <div class="panel">
@@ -385,6 +389,18 @@ document.querySelectorAll('[data-password]').forEach((button) => {
     const password = prompt(`Новый пароль для ${button.dataset.login} (от 12 символов):`);
     if (password) updateUser(button.dataset.password, { password });
   };
+});
+const printProductBarcodes = document.getElementById('print-product-barcodes');
+printProductBarcodes.addEventListener('change', async () => {
+  const enabled = printProductBarcodes.checked;
+  printProductBarcodes.disabled = true;
+  try {
+    const result = await api('/api/settings/product-barcodes', { enabled });
+    toast(result.message, 'ok');
+  } catch (error) {
+    printProductBarcodes.checked = !enabled;
+    toast(error.message, 'error');
+  } finally { printProductBarcodes.disabled = false; }
 });
 </script>
 {% endblock %}

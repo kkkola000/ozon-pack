@@ -245,7 +245,7 @@ def api_orders_sheet(request: Request, user: dict = Depends(require_section("pac
 
 # ------------------------------------------------------------------ наклейки
 @router.get("/api/pack/label/{code}/{order_id}.pdf")
-def api_label(code: str, order_id: str, user: dict = Depends(require_section("pack"))):
+def api_label(code: str, order_id: str, with_products: bool = False, user: dict = Depends(require_section("pack"))):
     """Наклейка одного заказа на печать — из того кабинета, где заказ лежит.
 
     Кабинет в шапке тут ни при чём: сборщик печатает наклейку того заказа, что
@@ -270,6 +270,13 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
     from ..core import sticker_archive
 
     sticker_archive.remember_batch(shop, [order_id], pdf)
+    if with_products:
+        from ..core import product_labels
+
+        try:
+            pdf = product_labels.prepend(shop, order_id, pdf)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return pdf_response(pdf, filename)
 
 

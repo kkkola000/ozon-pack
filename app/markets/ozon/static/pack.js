@@ -42,7 +42,7 @@ window.PACKS.ozon = {
       ].join(''),
       actions: `
         <button class="btn" id="btn-print">Печать стикера</button>
-        <a class="btn" id="btn-open-label" href="/api/pack/label/ozon/${encodeURIComponent(posting.posting_number)}.pdf"
+        <a class="btn" id="btn-open-label" href="/api/pack/label/ozon/${encodeURIComponent(posting.posting_number)}.pdf?with_products=true"
            target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>`,
       // Фото и части набора рисует общий market_pack.js: они есть у любой площадки.
       items: state.items.map((item) => ({

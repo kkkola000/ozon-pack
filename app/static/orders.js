@@ -70,7 +70,6 @@
     else done();
   }
 
-  /* По кабинетам — и ещё на части, если площадка столько за раз не отдаёт. */
   function batches(list) {
     const out = [];
     byShop(list).forEach((group) => {
@@ -80,14 +79,14 @@
     return out;
   }
 
-  /* Наклейки: файл на кабинет, не больше, чем площадка отдаёт за раз. Каждый
-     следующий файл ждёт, пока напечатается предыдущий. */
+  /* По одному заказу: его товарные ШК, затем все стикеры отправления.
+     Следующее задание ждёт завершения предыдущего, чтобы заказы не смешались. */
   async function printLabels(list, button) {
     const targets = list.filter((row) => row.dataset.label === '1');
     if (!targets.length) return;
     const done = busy(button, 'Печатаем…');
     try {
-      for (const group of batches(targets)) {
+      for (const group of (window.PRINT_PRODUCT_BARCODES ? targets.map((row) => [row]) : batches(targets))) {
         const first = group[0];
         const name = group.length > 1
           ? `${first.dataset.shopTitle}: наклейки (${group.length} шт)`
@@ -96,7 +95,7 @@
           const response = await fetch('/api/orders/labels.pdf', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-            body: JSON.stringify({ account_id: Number(first.dataset.shop), ids: group.map((row) => row.dataset.id) }),
+            body: JSON.stringify({ account_id: Number(first.dataset.shop), ids: group.map((row) => row.dataset.id), with_products: true }),
           });
           if (!response.ok) {
             const data = await response.json().catch(() => ({}));

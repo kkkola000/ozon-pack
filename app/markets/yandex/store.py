@@ -312,3 +312,11 @@ def board_card(row) -> dict:
         "label": dict(row).get("board") != "packaging",
         "actions": [],
     }
+
+
+def label_items(account_id: int, order_id: str) -> list[dict]:
+    """Исходные карточки товаров заказа для печати товарных ШК."""
+    return [dict(row) for row in db.query(
+        'SELECT offer_id AS sku, quantity FROM yandex_order_items '
+        'WHERE account_id = ? AND order_id = ? ORDER BY offer_id', (account_id, order_id),
+    )]

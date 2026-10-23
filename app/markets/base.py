@@ -149,6 +149,9 @@ class LabelsSource:
     format_default: Callable[[], str] | None = None
     # Дополнительные номера и штрихкоды для поиска сохранённых стикеров.
     aliases: Callable[[int], dict[str, list[str]]] | None = None
+    # Исходные позиции заказа: sku этой площадки и quantity, без чужих ШК.
+    items: Callable[[int, str], list[dict]] | None = None
+    barcode_prefix: str = ""
 
 
 @dataclass(frozen=True)

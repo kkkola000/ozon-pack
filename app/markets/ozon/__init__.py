@@ -35,6 +35,8 @@ MARKET = Market(
     labels=LabelsSource(
         word="стикеры",
         pending=pack.pending_labels,
+        items=store.posting_items,
+        barcode_prefix="OZN",
         aliases=store.label_aliases,
         # Выгрузка — это скачивание: печать не отмечается, ставится «скачано».
         pdf=lambda account, _user, keys: pack.label_batch(account, keys),

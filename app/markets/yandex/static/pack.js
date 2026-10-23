@@ -37,7 +37,7 @@ window.PACKS.yandex = {
       ].join(''),
       actions: `
         <button class="btn" id="btn-print">Печать ярлыка</button>
-        <a class="btn" id="btn-open-label" href="/api/pack/label/yandex/${encodeURIComponent(order.id)}.pdf"
+        <a class="btn" id="btn-open-label" href="/api/pack/label/yandex/${encodeURIComponent(order.id)}.pdf?with_products=true"
            target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>`,
       items: state.items.map((item) => ({
         name: item.name,

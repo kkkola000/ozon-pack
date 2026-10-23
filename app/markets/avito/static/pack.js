@@ -32,9 +32,9 @@ window.PACKS.avito = {
     return {
       tags: service ? `<span class="tag">${escapeHtml(service)}</span>` : '',
       actions: `
-        <a class="btn" href="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf"
+        <a class="btn" href="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf?with_products=true"
            target="_blank" rel="noopener"
-           data-print-pdf="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf"
+           data-print-pdf="/api/pack/label/avito/${encodeURIComponent(order.id)}.pdf?with_products=true"
            data-print-kind="avito:label" data-print-name="Этикетка">Этикетка</a>`,
       items: state.items.map((item) => ({
         name: item.title,

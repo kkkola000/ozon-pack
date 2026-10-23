@@ -32,6 +32,8 @@ MARKET = Market(
     labels=LabelsSource(
         word="ярлыки",
         pending=pack.pending_labels,
+        items=store.label_items,
+        barcode_prefix="MRKT",
         pdf=lambda account, user, keys: pack.labels(account, user, keys, mark=False)[0],
         # Маркет отдаёт ярлыки по заказу — в архиве файл на заказ со всеми коробками.
         files=lambda account, _user, keys: pack.label_files(account, keys)[0],

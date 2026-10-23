@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from ..core import board as core_board
+from ..core import product_labels
 from ..core import store as core_store
 from ..core import sync as core_sync
 from ..core.deps import check_csrf, pdf_response, require_manager, require_section, templates
@@ -130,11 +131,22 @@ def api_labels(request: Request, payload: dict = Body(...), user: dict = Depends
             detail=f"Заказ {early[0]}{more} ещё «Ожидает сборки» — наклейки печатаются с «Ожидает отгрузки»",
         )
     try:
+        if payload.get('with_products') is True and product_labels.enabled():
+            from ..core import sticker_archive
+
+            documents = []
+            for order_id in ids:
+                original, filename = board.labels(shop, user, [order_id])
+                sticker_archive.remember_batch(shop, [order_id], original)
+                documents.append(product_labels.prepend(shop, order_id, original))
+            return pdf_response(product_labels.merge(documents), filename)
         pdf, filename = board.labels(shop, user, ids)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейки: {exc.message}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     from ..core import sticker_archive
 
     sticker_archive.remember_batch(shop, ids, pdf)
