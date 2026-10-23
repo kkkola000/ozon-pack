@@ -270,8 +270,22 @@ function hoursLeftText(hours) {
   return `осталось ${Math.round(hours)} ${plural(Math.round(hours), 'час', 'часа', 'часов')}`;
 }
 
-// Закрыть выпадающее меню при выборе, клике снаружи или Escape.
+// Мышь открывает меню наведением; на сенсорных устройствах работает native details.
 for (const menu of document.querySelectorAll('.reports-menu')) {
+  const mouseHover = window.matchMedia('(hover: hover) and (pointer: fine)');
+  menu.addEventListener('pointerenter', (event) => {
+    if (mouseHover.matches && event.pointerType === 'mouse') menu.open = true;
+  });
+  menu.addEventListener('pointerleave', (event) => {
+    if (mouseHover.matches && event.pointerType === 'mouse' && !menu.contains(document.activeElement)) {
+      menu.open = false;
+    }
+  });
+  menu.addEventListener('focusout', () => {
+    requestAnimationFrame(() => {
+      if (!menu.contains(document.activeElement) && !menu.matches(':hover')) menu.open = false;
+    });
+  });
   document.addEventListener('click', (event) => {
     if (!menu.contains(event.target) || event.target.closest('a')) menu.open = false;
   });

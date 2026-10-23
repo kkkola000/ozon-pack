@@ -843,11 +843,62 @@ body.pack-open { overflow: hidden; }
 
 /* Общее меню отчётов, журнала и архива стикеров. */
 .reports-menu { position: relative; }
-.reports-menu > summary { cursor: pointer; color: var(--muted); padding: 18px 14px; border-bottom: 2px solid transparent; font-weight: 600; }
-.reports-menu.active > summary, .reports-menu[open] > summary { color: var(--text); border-bottom-color: var(--accent); }
-.reports-menu-items { position: absolute; left: 0; top: 100%; min-width: 180px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 6px; z-index: 60; }
-.topbar nav .reports-menu-items a { padding: 10px 12px; border: 0; border-radius: 6px; }
-.topbar nav .reports-menu-items a:hover, .reports-menu-items a[aria-current] { background: var(--accent-soft); color: var(--accent); }
-.sticker-filters { flex-wrap: wrap; margin: 16px 0; }
+.reports-menu > summary {
+  display: flex; align-items: center; gap: 8px; list-style: none;
+  cursor: pointer; color: var(--muted); padding: 18px 14px;
+  border-bottom: 2px solid transparent; font-weight: 600; font-size: 15px;
+}
+.reports-menu > summary::-webkit-details-marker { display: none; }
+.reports-menu > summary::after {
+  content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor; transform: rotate(45deg); margin-top: -3px;
+}
+.reports-menu[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
+.reports-menu.active > summary, .reports-menu[open] > summary {
+  color: var(--text); border-bottom-color: var(--accent);
+}
+.reports-menu > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.reports-menu-items {
+  position: absolute; left: 0; top: calc(100% + 8px); min-width: 184px;
+  display: flex; flex-direction: column; gap: 4px; padding: 8px;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow); z-index: 60;
+}
+.reports-menu:not([open]) .reports-menu-items { display: none; }
+/* Мостик сохраняет наведение при переходе через отступ к пунктам меню. */
+.reports-menu-items::before { content: ''; position: absolute; left: 0; right: 0; top: -9px; height: 9px; }
+.topbar nav .reports-menu-items a {
+  padding: 10px 12px; border: 0; border-radius: 6px;
+  font-size: 14px; line-height: 20px; white-space: nowrap;
+}
+.topbar nav .reports-menu-items a:hover { background: var(--surface); color: var(--text); }
+.topbar nav .reports-menu-items a[aria-current] { background: var(--accent-soft); color: var(--accent); }
+
+/* Архив стикеров: общие поля и кнопки, упорядоченные строки фильтров. */
+.stickers-header h2 { margin: 0; }
+.stickers-header p { margin: 8px 0 0; line-height: 1.6; }
+.sticker-filters {
+  display: grid; grid-template-columns: minmax(160px, 1fr) minmax(280px, 1.4fr) minmax(220px, 1.5fr) auto; gap: 16px;
+  margin: 20px 0; padding-bottom: 20px; border-bottom: 1px solid var(--line);
+}
+.sticker-filter { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sticker-filter > span { color: var(--muted); font-size: 13px; font-weight: 600; }
+.sticker-filter input, .sticker-filter select { width: 100%; min-height: 43px; }
+.sticker-period { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.sticker-filter-actions { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; }
+.sticker-toolbar { margin-bottom: 16px; }
 .sticker-table { overflow-x: auto; }
+.sticker-check { width: 42px; }
+.sticker-table input[type=checkbox] { display: block; margin: 0; }
 .sticker-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sticker-pagination { margin-top: 20px; justify-content: flex-end; }
+@media (max-width: 1000px) {
+  .sticker-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sticker-period, .sticker-filter-actions { grid-column: auto; }
+}
+@media (max-width: 600px) {
+  .sticker-filters { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .sticker-period { gap: 12px; }
+  .sticker-filter-actions { justify-content: flex-start; }
+  .sticker-toolbar { align-items: flex-start; }
+}
