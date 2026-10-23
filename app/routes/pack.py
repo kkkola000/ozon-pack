@@ -267,6 +267,9 @@ def api_label(code: str, order_id: str, user: dict = Depends(require_section("pa
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except MarketError as exc:
         raise HTTPException(status_code=502, detail=f"Площадка не отдала наклейку: {exc.message}") from exc
+    from ..core import sticker_archive
+
+    sticker_archive.remember_batch(shop, [order_id], pdf)
     return pdf_response(pdf, filename)
 
 

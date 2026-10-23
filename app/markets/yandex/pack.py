@@ -893,6 +893,11 @@ def labels(account: dict, user: dict, order_ids: list[str], *, mark: bool = True
         order_id, reason = next(iter(failed.items()))
         more = f" (и ещё {len(failed) - 1})" if len(failed) > 1 else ""
         raise YandexError(f"Ярлык заказа {order_id}{more}: {reason}")
+    # Пока файлы ещё раздельные, сохраняем полный комплект каждого заказа.
+    # После объединения многостраничные ярлыки уже нельзя надёжно разделить.
+    from ...core import sticker_archive
+
+    sticker_archive.remember(account, files)
     pdf = _merge([files[order_id] for order_id in ids])
     if mark:
         core_board.mark_printed(account, user, ids, event="yandex_label_print",

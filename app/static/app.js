@@ -25,9 +25,7 @@ async function api(url, body, method = 'POST') {
   return data;
 }
 
-/* Скачать архив на компьютер. Панель стикеры у себя не хранит: файл уезжает в
-   браузер и живёт там, поэтому ответ сразу отдаём в «Загрузки», а не держим в
-   памяти вкладки. Имя берём из заголовка ответа — его составил сервер. */
+/* Скачать архив в «Загрузки». Имя берём из заголовка ответа сервера. */
 async function downloadArchive(url, button, fallbackName = 'archive.zip') {
   const was = button.textContent;
   button.disabled = true;
@@ -270,4 +268,14 @@ function hoursLeftText(hours) {
   if (hours < 0) return `просрочено на ${Math.round(-hours)} ч`;
   if (hours < 1) return `осталось ${Math.round(hours * 60)} мин`;
   return `осталось ${Math.round(hours)} ${plural(Math.round(hours), 'час', 'часа', 'часов')}`;
+}
+
+// Закрыть выпадающее меню при выборе, клике снаружи или Escape.
+for (const menu of document.querySelectorAll('.reports-menu')) {
+  document.addEventListener('click', (event) => {
+    if (!menu.contains(event.target) || event.target.closest('a')) menu.open = false;
+  });
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { menu.open = false; menu.querySelector('summary').focus(); }
+  });
 }

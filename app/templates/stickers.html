@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Стикеры · Ozon Pack{% endblock %}
+{% block content %}
+<div class="panel">
+  <h2 style="margin:0">Стикеры</h2>
+  <p class="muted small">Архив за последние шесть месяцев с момента сохранения. Стикеры заказов «Ожидает отгрузки» сохраняются автоматически, со всеми листами. Изменённые файлы хранятся отдельными версиями. До включения архива старые стикеры могли не сохраняться.</p>
+  {% if not sync_enabled %}<p class="badge warn">Фоновая загрузка отключена. Сохранённые стикеры доступны.</p>{% endif %}
+  <form class="row sticker-filters" method="get">
+    <label>Кабинет <select name="account_id"><option value="">Все кабинеты</option>{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if filters.account_id == a.id }}>{{ a.title }}</option>{% endfor %}</select></label>
+    <label>Площадка <select name="market"><option value="">Все площадки</option>{% for m in markets %}<option value="{{ m.code }}" {{ 'selected' if filters.market == m.code }}>{{ m.title }}</option>{% endfor %}</select></label>
+    <label>Сохранены с <input type="date" name="since" value="{{ filters.since }}"></label>
+    <label>по <input type="date" name="until" value="{{ filters.until }}"></label>
+    <label>Состояние <select name="state"><option value="">Все</option>{% for value, title in [('saved', 'Сохранены'), ('pending', 'Ожидают загрузки'), ('error', 'Не удалось сохранить')] %}<option value="{{ value }}" {{ 'selected' if filters.state == value }}>{{ title }}</option>{% endfor %}</select></label>
+    <input name="q" value="{{ filters.q }}" placeholder="Номер заказа / отправления" aria-label="Поиск по номеру заказа">
+    <button class="btn" type="submit">Найти</button><a class="btn" href="/reports/stickers">Сбросить</a>
+  </form>
+  <div class="row between"><button type="button" class="btn primary" id="stickers-download" disabled>Скачать выбранные ZIP</button><span class="muted small">Заказов: {{ total }}</span></div>
+  <div class="sticker-table">
+  <table>
+    <thead><tr><th><input type="checkbox" id="stickers-all" aria-label="Выбрать все на странице"></th><th>Сохранён</th><th>Площадка / кабинет</th><th>Заказ</th><th>Состояние</th><th>Действия</th></tr></thead>
+    <tbody>{% for item in items %}
+      <tr>
+        <td>{% if item.version_id %}<input type="checkbox" class="sticker-select" value="{{ item.version_id }}" aria-label="Выбрать заказ {{ item.order_number }}">{% endif %}</td>
+        <td class="small">{{ item.saved_at | local_dt('%d.%m.%Y %H:%M') if item.saved_at else '—' }}</td>
+        <td>{{ marketplace_title(item.marketplace) }} · {{ item.shop_title }}</td>
+        <td class="mono">{{ item.order_number }}{% if item.order_id != item.order_number %}<div class="small muted">{{ item.order_id }}</div>{% endif %}</td>
+        <td>{% if item.error %}<span class="badge err">Ошибка загрузки</span><div class="small muted">{{ item.error }}</div>{% elif item.version_id %}<span class="badge ok">Сохранён</span>{% else %}<span class="badge warn">Ожидает загрузки</span>{% endif %}
+          {% if item.history %}<details><summary class="small">Версии: {{ item.versions }}</summary>{% for v in item.history %}<div><a href="/api/stickers/{{ v.id }}.pdf" target="_blank" rel="noopener">{{ v.saved_at | local_dt('%d.%m.%Y %H:%M:%S') }} · №{{ v.id }}</a></div>{% endfor %}</details>{% endif %}
+        </td>
+        <td><div class="sticker-actions">
+          {% if item.version_id %}
+          <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf" target="_blank" rel="noopener">Просмотр</a>
+          <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf?download=true">Скачать</a>
+          <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf" target="_blank" rel="noopener" data-print-pdf="/api/stickers/{{ item.version_id }}.pdf" data-print-kind="{{ item.marketplace }}:label" data-print-name="Стикер {{ item.order_number }}">Печать</a>
+          {% endif %}
+          {% if sync_enabled %}<button class="btn small sticker-retry" type="button" data-id="{{ item.id }}">{{ 'Обновить' if item.version_id else 'Повторить' }}</button>{% endif %}
+        </div></td>
+      </tr>
+    {% else %}<tr><td colspan="6" class="muted">Стикеров по выбранным условиям нет. Новые появятся после синхронизации заказов «Ожидает отгрузки».</td></tr>{% endfor %}</tbody>
+  </table>
+  </div>
+  <div class="row" style="margin-top:16px">{% if page > 1 %}<a class="btn" href="{{ previous }}">Назад</a>{% endif %}<span>Страница {{ page }} из {{ pages }}</span>{% if page < pages %}<a class="btn" href="{{ following }}">Далее</a>{% endif %}</div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/stickers.js?v={{ static_version() }}"></script>{% endblock %}

@@ -840,3 +840,14 @@ body.pack-open { overflow: hidden; }
 .fit-label small { font: 600 10px ui-monospace, monospace; color: var(--muted); margin-top: 4px;
   text-align: center; padding: 0 8px; }
 .fit-hint { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+
+/* Общее меню отчётов, журнала и архива стикеров. */
+.reports-menu { position: relative; }
+.reports-menu > summary { cursor: pointer; color: var(--muted); padding: 18px 14px; border-bottom: 2px solid transparent; font-weight: 600; }
+.reports-menu.active > summary, .reports-menu[open] > summary { color: var(--text); border-bottom-color: var(--accent); }
+.reports-menu-items { position: absolute; left: 0; top: 100%; min-width: 180px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow); padding: 6px; z-index: 60; }
+.topbar nav .reports-menu-items a { padding: 10px 12px; border: 0; border-radius: 6px; }
+.topbar nav .reports-menu-items a:hover, .reports-menu-items a[aria-current] { background: var(--accent-soft); color: var(--accent); }
+.sticker-filters { flex-wrap: wrap; margin: 16px 0; }
+.sticker-table { overflow-x: auto; }
+.sticker-actions { display: flex; flex-wrap: wrap; gap: 6px; }

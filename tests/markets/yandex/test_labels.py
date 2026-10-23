@@ -166,6 +166,14 @@ def test_printing_several_orders_is_one_pdf_in_the_asked_order(client, market):
     assert sorted(order for _c, order, _f in fake.label_requests) == sorted(ids)
     printed = db.query(f"SELECT print_count FROM yandex_orders WHERE id IN ({','.join('?' * 3)})", ids)
     assert all(row["print_count"] == 1 for row in printed)
+    # В архиве каждый заказ остаётся отдельным, со всеми его коробками.
+    from app.core import sticker_archive
+
+    for key in ids:
+        items, total = sticker_archive.search(account_id=market["id"], q=key)
+        assert total == 1
+        saved = sticker_archive.version(items[0]["version_id"])
+        assert pages(saved["pdf"]) == (2 if key == ids[1] else 1)
 
 
 def test_half_a_print_is_refused_and_not_marked(client, market, monkeypatch):

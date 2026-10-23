@@ -50,6 +50,9 @@ def sync_account(account: dict, *, returns: bool = True) -> dict:
     from . import labels as core_labels
 
     core_labels.note_deliver(account)
+    from . import sticker_archive
+
+    sticker_archive.enqueue(account)
     db.kv_set(f"{KV_ACCOUNT_SYNC}:{account['id']}", db.now_iso())
     return result
 

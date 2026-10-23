@@ -1,9 +1,9 @@
 """Выгрузка наклеек на компьютер — одним архивом, до начала сборки.
 
-Наклейка это стикер Ozon, этикетка Avito или ярлык Маркета. Панель их не
-хранит: файл уезжает в браузер и живёт там, на диске сервера не остаётся
-ничего. В базе только отметка `label_saved_at` — по ней видно, выгружена ли
-наклейка, и по ней же запирается сборка.
+Наклейка это стикер Ozon, этикетка Avito или ярлык Маркета. Файлы выдаются
+в браузер, а копии сохраняются в core/sticker_archive.py. Отметка
+`label_saved_at` по-прежнему означает именно выгрузку сборщиком и запирает
+сборку независимо от фонового сохранения в архив.
 
 Зачем запирать. Площадка отдаёт наклейку, пока заказ ждёт отгрузки; после
 отгрузки её уже не взять. Не выгруженная вовремя пропадает навсегда — поэтому
@@ -315,16 +315,30 @@ def archive_everywhere(waiting: list[dict], user: dict | None = None) -> tuple[b
         keys = item["keys"][:MAX_AT_ONCE]
         source = market.labels
         folder = account["title"] if by_folders else ""
+        from . import sticker_archive
+
+        def fetch_files(batch, account=account, source=source):
+            got = source.files(account, user or {}, batch)
+            sticker_archive.remember(account, got or {})
+            return got
+
+        def fetch_pdf(batch, account=account, source=source):
+            got = source.pdf(account, user or {}, batch)
+            pdf, missing = got if isinstance(got, tuple) else (got, [])
+            done = [key for key in batch if key not in missing]
+            sticker_archive.remember_batch(account, done, pdf)
+            return got
+
         if source.files:
             part, saved = collect_files(
                 keys,
-                lambda batch, account=account, source=source: source.files(account, user or {}, batch),
+                fetch_files,
                 prefix=source.word, folder=folder,
             )
         else:
             part, saved = collect(
                 keys,
-                lambda batch, account=account, source=source: source.pdf(account, user or {}, batch),
+                fetch_pdf,
                 prefix=source.word, folder=folder,
             )
         if not saved:

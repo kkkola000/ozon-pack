@@ -222,6 +222,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_shipped_unit
 CREATE INDEX IF NOT EXISTS idx_shipped_day ON shipped_items(report_date, account_id, status);
 CREATE INDEX IF NOT EXISTS idx_shipped_posting ON shipped_items(account_id, posting_number);
 
+-- Архив стикеров: состояние загрузки заказа и оригинальные PDF по версиям.
+CREATE TABLE IF NOT EXISTS sticker_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_id INTEGER NOT NULL,
+    marketplace TEXT NOT NULL,
+    shop_title TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    order_number TEXT NOT NULL,
+    deliver_since TEXT,
+    created_at TEXT NOT NULL,
+    checked_at TEXT,
+    error TEXT,
+    UNIQUE(account_id, order_id)
+);
+CREATE TABLE IF NOT EXISTS sticker_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    archive_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    saved_at TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    pdf BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sticker_versions_saved ON sticker_versions(saved_at);
+CREATE INDEX IF NOT EXISTS idx_sticker_versions_order ON sticker_versions(archive_id, id);
+
 CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -427,6 +452,7 @@ CORE_TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
     "products", "product_barcodes", "product_links", "product_link_skips",
     "product_sets", "product_set_items", "return_acts", "shipped_items",
+    "sticker_orders", "sticker_versions",
 )
 
 
@@ -557,7 +583,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # Таблицы с данными кабинета: чистятся вместе с ним. product_link_skips сюда
 # не входит — в ней решение про артикул, а не про кабинет.
-CORE_DATA_TABLES = ("products", "product_barcodes", "product_links",
+CORE_DATA_TABLES = ("sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
                     "product_sets", "product_set_items")
 
 

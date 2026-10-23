@@ -29,8 +29,16 @@
       <a href="/products" class="{{ 'active' if active_tab == 'products' }}"
          title="Каталог всех кабинетов, наборы и сопоставление товаров">Товары</a>
     {% endif %}
-    {% if can_see(user, 'logs') %}<a href="/logs" class="{{ 'active' if active_tab == 'logs' }}">Журнал</a>{% endif %}
-    {% if can_see(user, 'reports') %}<a href="/reports" class="{{ 'active' if active_tab == 'reports' }}">Отчёты</a>{% endif %}
+    {% if can_see(user, 'reports') or can_see(user, 'logs') or can_see(user, 'stickers') %}
+    <details class="reports-menu {{ 'active' if active_tab in ('reports', 'logs', 'stickers') }}">
+      <summary>Отчёты</summary>
+      <div class="reports-menu-items">
+        {% if can_see(user, 'reports') %}<a href="/reports" {{ 'aria-current=page' if active_tab == 'reports' }}>Отчёты</a>{% endif %}
+        {% if can_see(user, 'logs') %}<a href="/logs" {{ 'aria-current=page' if active_tab == 'logs' }}>Журнал</a>{% endif %}
+        {% if can_see(user, 'stickers') %}<a href="/reports/stickers" {{ 'aria-current=page' if active_tab == 'stickers' }}>Стикеры</a>{% endif %}
+      </div>
+    </details>
+    {% endif %}
     {% if can_see(user, 'settings') %}<a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>{% endif %}
   </nav>
   {% set without_keys = unconfigured() if user else 0 %}
