@@ -55,6 +55,31 @@ def _ready(account: dict) -> list[dict]:
     )]
 
 
+
+def sync_aliases(account: dict, conn) -> None:
+    """Снимок дополнительных номеров сохраняется и после удаления исходного заказа."""
+    market = _source(account)
+    if not market or not market.labels.aliases:
+        return
+    archived = {row['order_id']: row['id'] for row in conn.execute(
+        'SELECT id, order_id FROM sticker_orders WHERE account_id = ? AND marketplace = ?',
+        (account['id'], account['marketplace']),
+    )}
+    if not archived:
+        return
+    existing = {(row['archive_id'], row['alias']) for row in conn.execute(
+        'SELECT archive_id, alias FROM sticker_aliases WHERE account_id = ?', (account['id'],),
+    )}
+    for key, codes in market.labels.aliases(account['id']).items():
+        archive_id = archived.get(str(key))
+        if archive_id is None:
+            continue
+        for code in set(str(value).strip() for value in codes if value):
+            if code and (archive_id, code) not in existing:
+                conn.execute('INSERT OR IGNORE INTO sticker_aliases(archive_id, account_id, alias) VALUES(?,?,?)',
+                             (archive_id, account['id'], code))
+
+
 def enqueue(account: dict, *, wake: bool = True) -> None:
     """Синхронизация только добавляет очередь; обращения к API — в своём потоке."""
     ready = _ready(account)
@@ -74,6 +99,7 @@ def enqueue(account: dict, *, wake: bool = True) -> None:
                 (account['id'], account['marketplace'], account['title'], str(row['order_id']),
                  str(row['order_number'] or row['order_id']), row['deliver_since'], now),
             )
+        sync_aliases(account, conn)
     if wake and _worker:
         _worker.wake.set()
 
@@ -223,6 +249,8 @@ def purge() -> None:
         conn.execute('DELETE FROM sticker_versions WHERE saved_at < ?', (before,))
         conn.execute('DELETE FROM sticker_orders WHERE created_at < ? '
                      'AND NOT EXISTS(SELECT 1 FROM sticker_versions v WHERE v.archive_id = sticker_orders.id)', (before,))
+        conn.execute('DELETE FROM sticker_aliases WHERE NOT EXISTS '
+                     '(SELECT 1 FROM sticker_orders o WHERE o.id = sticker_aliases.archive_id)')
 
 
 def _filters(account_id: int | None, market: str, q: str, since: str, until: str, state: str):
@@ -235,8 +263,10 @@ def _filters(account_id: int | None, market: str, q: str, since: str, until: str
         conditions.append('o.marketplace = ?')
         params.append(market)
     if q:
-        conditions.append('(instr(lower(o.order_id), lower(?)) > 0 OR instr(lower(o.order_number), lower(?)) > 0)')
-        params += [q, q]
+        conditions.append('(instr(lower(o.order_id), lower(?)) > 0 OR instr(lower(o.order_number), lower(?)) > 0 '
+                          'OR EXISTS(SELECT 1 FROM sticker_aliases a WHERE a.archive_id = o.id '
+                          'AND instr(lower(a.alias), lower(?)) > 0))')
+        params += [q, q, q]
     if since:
         conditions.append('date(COALESCE(v.saved_at, o.created_at), ?) >= ?')
         params += [f'{settings.timezone_offset:+d} hours', since]

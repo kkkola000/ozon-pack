@@ -398,3 +398,13 @@ def board_card(row) -> dict:
         "label": board != "packaging",
         "actions": ["ship"] if board == "packaging" else [],
     }
+
+
+def label_aliases(account_id: int) -> dict[str, list[str]]:
+    """Номер заказа, трек-номер, оба штрихкода и scanit новой этикетки FBS."""
+    return {
+        str(row['posting_number']): [str(row[key]) for key in ('order_number', 'tracking_number', 'barcode_upper', 'barcode_lower', 'scanit')
+                                    if row[key]]
+        for row in db.query('SELECT posting_number, order_number, tracking_number, barcode_upper, barcode_lower, scanit '
+                            'FROM postings WHERE account_id = ?', (account_id,))
+    }

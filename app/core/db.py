@@ -236,6 +236,13 @@ CREATE TABLE IF NOT EXISTS sticker_orders (
     error TEXT,
     UNIQUE(account_id, order_id)
 );
+CREATE TABLE IF NOT EXISTS sticker_aliases (
+    archive_id INTEGER NOT NULL,
+    account_id INTEGER NOT NULL,
+    alias TEXT NOT NULL,
+    PRIMARY KEY(archive_id, alias)
+);
+CREATE INDEX IF NOT EXISTS idx_sticker_aliases_account ON sticker_aliases(account_id);
 CREATE TABLE IF NOT EXISTS sticker_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_id INTEGER NOT NULL,
@@ -452,7 +459,7 @@ CORE_TABLES_WITH_NEW_COLUMNS = (
     "accounts", "users", "kv", "events", "pack_state",
     "products", "product_barcodes", "product_links", "product_link_skips",
     "product_sets", "product_set_items", "return_acts", "shipped_items",
-    "sticker_orders", "sticker_versions",
+    "sticker_orders", "sticker_versions", "sticker_aliases",
 )
 
 
@@ -583,7 +590,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # Таблицы с данными кабинета: чистятся вместе с ним. product_link_skips сюда
 # не входит — в ней решение про артикул, а не про кабинет.
-CORE_DATA_TABLES = ("sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
+CORE_DATA_TABLES = ("sticker_aliases", "sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
                     "product_sets", "product_set_items")
 
 
@@ -768,6 +775,11 @@ def init_db() -> None:
             from . import labels as core_labels
 
             core_labels.note_deliver_once(conn)
+            # Обновляем поиск старого архива из имеющихся заказов, без API.
+            from . import sticker_archive
+
+            for account in conn.execute('SELECT id, marketplace FROM accounts').fetchall():
+                sticker_archive.sync_aliases(dict(account), conn)
             _ensure_owner(conn)
             _encrypt_account_keys(conn)
         except Exception:

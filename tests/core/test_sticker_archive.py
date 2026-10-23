@@ -309,3 +309,68 @@ def test_latest_thirty_saved_files_and_more_link(account):
         assert len(re.findall(r'data-archive-id="(\d+)"', last.text)) == 5
         assert 'id="stickers-more"' not in last.text
         assert 'file-000' in last.text
+
+
+@pytest.mark.parametrize('field', ['scanit', 'barcode_upper', 'barcode_lower', 'tracking_number', 'order_number'])
+def test_ozon_sticker_found_by_alternative_number(account, sample_data, field):
+    row = db.query_one('SELECT id, order_id FROM sticker_orders WHERE account_id = ? LIMIT 1', (account['id'],))
+    archive.save(row['id'], pdf())
+    db.execute(f'UPDATE postings SET {field} = ? WHERE account_id = ? AND posting_number = ?',
+               ('ii50082908916', account['id'], row['order_id']))
+    archive.enqueue(account)
+    for query in ['ii50082908916', 'II50082908916', '50082908916']:
+        items, total = archive.search(q=query, state='saved')
+        assert total == 1 and items[0]['id'] == row['id']
+    assert archive.search(q=row['order_id'], state='saved')[1] == 1
+    assert archive.search(q="ii50082908916' OR 1=1 --", state='saved')[1] == 0
+    with TestClient(app, follow_redirects=False) as client:
+        sign_in(client)
+        response = client.get('/reports/stickers?q=ii50082908916')
+        assert response.status_code == 200
+        assert f'data-archive-id="{row["id"]}"' in response.text
+
+
+def test_existing_archive_backfills_ozon_codes_on_upgrade_and_keeps_them(account, sample_data):
+    row = db.query_one('SELECT id, order_id FROM sticker_orders WHERE account_id = ? LIMIT 1', (account['id'],))
+    archive.save(row['id'], pdf())
+    db.execute("UPDATE postings SET scanit = ?, status = 'delivered', local_state = 'packed' "
+               'WHERE account_id = ? AND posting_number = ?', ('ii50082908916', account['id'], row['order_id']))
+    # Старая версия архива ещё не знала штрихкодов. Заказ уже покинул сборку.
+    db.execute('DELETE FROM sticker_aliases')
+    db.init_db()
+    assert archive.search(q='ii50082908916')[1] == 1
+    db.execute('UPDATE postings SET scanit = NULL WHERE account_id = ?', (account['id'],))
+    archive.enqueue(account)
+    assert archive.search(q='ii50082908916')[1] == 1
+    db.execute('DELETE FROM postings WHERE account_id = ?', (account['id'],))
+    db.init_db()
+    assert archive.search(q='ii50082908916')[1] == 1
+
+
+def test_aliases_are_scoped_to_archived_order_and_account(account, sample_data):
+    first = db.query_one('SELECT id, order_id FROM sticker_orders WHERE account_id = ? LIMIT 1', (account['id'],))
+    archive.save(first['id'], pdf())
+    db.execute('UPDATE postings SET scanit = ? WHERE account_id = ? AND posting_number = ?',
+               ('ii50082908916', account['id'], first['order_id']))
+    archive.enqueue(account)
+    other_id = accounts.create('ozon', 'Другой магазин', 'second-client', 'second-key')
+    other = accounts.get(other_id)
+    archive.save(queued(other, first['order_id']), pdf())
+    assert archive.search(account_id=other_id, q='ii50082908916')[1] == 0
+    assert archive.search(account_id=account['id'], q='ii50082908916')[1] == 1
+    # Повторное заполнение не создаёт дублирующих строк и результатов поиска.
+    archive.enqueue(account)
+    assert db.query_one('SELECT COUNT(*) AS n FROM sticker_aliases WHERE alias = ?', ('ii50082908916',))['n'] == 1
+    accounts.delete(account['id'])
+    assert not db.query('SELECT * FROM sticker_aliases WHERE account_id = ?', (account['id'],))
+
+
+def test_aliases_expire_with_the_archived_file(account):
+    order = queued(account)
+    archive.save(order, pdf())
+    db.execute('INSERT INTO sticker_aliases(archive_id,account_id,alias) VALUES(?,?,?)',
+               (order, account['id'], 'ii50082908916'))
+    db.execute("UPDATE sticker_orders SET created_at = '2000-01-01'")
+    db.execute("UPDATE sticker_versions SET saved_at = '2000-01-01'")
+    archive.purge()
+    assert not db.query('SELECT * FROM sticker_aliases')

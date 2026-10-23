@@ -147,6 +147,8 @@ class LabelsSource:
     formats: tuple[tuple[str, str], ...] = ()
     format_title: str = ""
     format_default: Callable[[], str] | None = None
+    # Дополнительные номера и штрихкоды для поиска сохранённых стикеров.
+    aliases: Callable[[int], dict[str, list[str]]] | None = None
 
 
 @dataclass(frozen=True)
