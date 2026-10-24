@@ -1,4 +1,4 @@
-"""Оригинальные стикеры по заказам: фоновая загрузка и шесть месяцев версий.
+"""Оригинальные стикеры по заказам: фоновая загрузка и шесть месяцев хранения.
 
 PDF лежат в SQLite вместе с метаданными: транзакция не оставляет ссылки на
 несохранённый файл, резервная копия базы включает архив. Архив не меняет
@@ -21,10 +21,9 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_ZIP_BYTES = 100 * 1024 * 1024
 PAGE_SIZE = 30
 # За один проход берём ограниченную очередь каждого кабинета. Сначала новые
-# заказы, затем ошибки и проверки изменённых стикеров уже сохранённых заказов.
+# заказы, затем повторные попытки после ошибок.
 PER_PASS = 50
 RETRY_SECONDS = 300
-RECHECK_SECONDS = 6 * 3600
 
 
 def cutoff(now: datetime | None = None) -> str:
@@ -105,7 +104,7 @@ def enqueue(account: dict, *, wake: bool = True) -> None:
 
 
 def save(archive_id: int, pdf: bytes) -> int:
-    """Проверить полный PDF и сохранить только новую версию его содержимого."""
+    """Проверить полный PDF и сохранить один раз; существующий файл не заменяется."""
     if not pdf or not pdf.startswith(b'%PDF') or len(pdf) > MAX_PDF_BYTES:
         raise ValueError('Площадка не отдала допустимый PDF (не больше 20 МБ)')
     from pypdf import PdfReader
@@ -123,7 +122,7 @@ def save(archive_id: int, pdf: bytes) -> int:
             raise ValueError('Заказ архива не найден')
         latest = conn.execute('SELECT id, digest FROM sticker_versions WHERE archive_id = ? ORDER BY id DESC LIMIT 1',
                               (archive_id,)).fetchone()
-        if latest and latest['digest'] == digest:
+        if latest:
             version_id = latest['id']
         else:
             version_id = conn.execute(
@@ -137,6 +136,8 @@ def save(archive_id: int, pdf: bytes) -> int:
 
 def capture(account: dict, archive_id: int, order_id: str) -> None:
     """Один заказ за запрос: многостраничный PDF нельзя делить по предположению."""
+    if db.query_one('SELECT id FROM sticker_versions WHERE archive_id = ? LIMIT 1', (archive_id,)):
+        return
     market = _source(account)
     if not market:
         raise ValueError('Площадка не поддерживает стикеры')
@@ -155,9 +156,9 @@ def _capture_pending(account: dict) -> None:
     enqueue(account, wake=False)
     ready = {str(row['order_id']) for row in _ready(account)}
     rows = db.query(
-        'SELECT o.*, EXISTS(SELECT 1 FROM sticker_versions v WHERE v.archive_id = o.id) AS saved '
-        'FROM sticker_orders o WHERE account_id = ? '
-        'ORDER BY (checked_at IS NOT NULL), saved, checked_at, id', (account['id'],),
+        'SELECT o.* FROM sticker_orders o WHERE account_id = ? '
+        'AND NOT EXISTS(SELECT 1 FROM sticker_versions v WHERE v.archive_id = o.id) '
+        'ORDER BY (checked_at IS NOT NULL), checked_at, id', (account['id'],),
     )
     now = datetime.now(timezone.utc)
     processed = 0
@@ -166,8 +167,7 @@ def _capture_pending(account: dict) -> None:
             return
         if row['order_id'] not in ready:
             continue
-        age = RETRY_SECONDS if row['error'] else RECHECK_SECONDS
-        if row['checked_at'] and datetime.fromisoformat(row['checked_at']) > now - timedelta(seconds=age):
+        if row['checked_at'] and datetime.fromisoformat(row['checked_at']) > now - timedelta(seconds=RETRY_SECONDS):
             continue
         try:
             capture(account, row['id'], row['order_id'])
@@ -290,18 +290,11 @@ def search(*, account_id: int | None = None, market: str = '', q: str = '', sinc
     params = [cutoff()] + params
     total = db.query_one('SELECT COUNT(*) AS n' + join + 'WHERE ' + where, params)['n']
     rows = db.query(
-        'SELECT o.*, v.id AS version_id, v.saved_at, '
-        '(SELECT COUNT(*) FROM sticker_versions WHERE archive_id = o.id AND saved_at >= ?) AS versions'
+        'SELECT o.*, v.id AS version_id, v.saved_at'
         + join + 'WHERE ' + where + ' ORDER BY COALESCE(v.saved_at, o.created_at) DESC, o.id DESC LIMIT ? OFFSET ?',
-        [cutoff()] + params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
+        params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
     )
-    results = [dict(row) for row in rows]
-    for row in results:
-        row['history'] = [dict(v) for v in db.query(
-            'SELECT id, saved_at FROM sticker_versions WHERE archive_id = ? AND saved_at >= ? ORDER BY id DESC',
-            (row['id'], cutoff()),
-        )] if row['versions'] > 1 else []
-    return results, total
+    return [dict(row) for row in rows], total
 
 
 def version(version_id: int) -> dict | None:
@@ -317,6 +310,8 @@ def retry(archive_id: int) -> None:
     account = accounts.get(row['account_id']) if row else None
     if not account or not account['active'] or not accounts.is_configured(account):
         raise ValueError('Кабинет недоступен или его ключи не настроены')
+    if db.query_one('SELECT id FROM sticker_versions WHERE archive_id = ? LIMIT 1', (archive_id,)):
+        raise ValueError('Стикер уже сохранён. Повторная загрузка не требуется.')
     if row['order_id'] not in {str(item['order_id']) for item in _ready(account)}:
         raise ValueError('Заказ больше не ожидает отгрузки. Сохранённые файлы остаются в архиве.')
     db.execute('UPDATE sticker_orders SET checked_at = NULL WHERE id = ?', (archive_id,))

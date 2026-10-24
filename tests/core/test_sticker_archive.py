@@ -37,17 +37,19 @@ def sign_in(client, login='admin', password='test-admin-pass'):
     return re.search(r'name="csrf-token" content="([^"]*)"', page.text).group(1) if page.status_code == 200 else ''
 
 
-def test_versions_preserve_all_pages_and_reversions(account):
+def test_first_file_is_preserved_without_versions(account):
     order = queued(account)
     first, changed = pdf(2), pdf(3)
     one = archive.save(order, first)
     assert archive.save(order, first) == one
     two = archive.save(order, changed)
     three = archive.save(order, first)
-    assert one < two < three
+    assert one == two == three
     assert len(PdfReader(io.BytesIO(archive.version(one)['pdf'])).pages) == 2
     items, total = archive.search()
-    assert total == 1 and items[0]['version_id'] == three and items[0]['versions'] == 3
+    assert total == 1 and items[0]['version_id'] == one
+    assert len(db.query('SELECT id FROM sticker_versions WHERE archive_id = ?', (order,))) == 1
+    assert 'history' not in items[0]
 
 
 @pytest.mark.parametrize('body', [b'not-pdf', b'%PDF-broken'])
@@ -75,11 +77,15 @@ def test_calendar_retention_and_expired_file_access(account):
 def test_expiring_old_version_preserves_new_one(account):
     order = queued(account)
     first = archive.save(order, pdf())
-    second = archive.save(order, pdf(2))
+    # История, созданная старой версией приложения.
+    second = db.execute(
+        'INSERT INTO sticker_versions(archive_id, account_id, saved_at, digest, pdf) VALUES(?,?,?,?,?)',
+        (order, account['id'], db.now_iso(), 'legacy', pdf(2)),
+    ).lastrowid
     db.execute("UPDATE sticker_versions SET saved_at = '2000-01-01' WHERE id = ?", (first,))
     archive.purge()
     assert archive.version(second) and not archive.version(first)
-    assert archive.search()[0][0]['versions'] == 1
+    assert archive.search()[0][0]['version_id'] == second
 
 
 def test_sync_only_enqueues_and_background_captures(account, sample_data, monkeypatch):
@@ -116,7 +122,7 @@ def test_capture_keeps_multibox_original_for_every_market(account, market, monke
         source = replace(source, pdf=lambda *_: body)
     monkeypatch.setattr(archive, '_source', lambda _: replace(registry.get(market), labels=source))
     archive.capture(shop, order, 'order-1')
-    assert archive.search()[0][0]['versions'] == 1
+    assert archive.search()[0][0]['version_id']
     assert db.query_one('SELECT pdf FROM sticker_versions')['pdf'] == body
 
 
@@ -144,7 +150,7 @@ def test_departed_order_is_not_refetched_but_pdf_is_available(account, sample_da
     monkeypatch.setattr(archive, 'capture', lambda *_: pytest.fail('departed order refetched'))
     archive.run_once()
     assert archive.version(saved)
-    with pytest.raises(ValueError, match='больше не ожидает'):
+    with pytest.raises(ValueError, match='уже сохранён'):
         archive.retry(items[0]['id'])
 
 
@@ -374,3 +380,20 @@ def test_aliases_expire_with_the_archived_file(account):
     db.execute("UPDATE sticker_versions SET saved_at = '2000-01-01'")
     archive.purge()
     assert not db.query('SELECT * FROM sticker_aliases')
+
+
+def test_saved_orders_are_never_refetched(account, sample_data, monkeypatch):
+    archive.run_once()
+    db.execute("UPDATE sticker_orders SET checked_at = '2000-01-01T00:00:00+00:00'")
+    monkeypatch.setattr(archive, 'capture', lambda *_: pytest.fail('saved sticker refetched'))
+    archive.run_once()
+    saved = archive.search()[0][0]
+    with pytest.raises(ValueError, match='уже сохранён'):
+        archive.retry(saved['id'])
+
+
+def test_capture_skips_api_for_saved_sticker(account, monkeypatch):
+    order = queued(account)
+    archive.save(order, pdf(2))
+    monkeypatch.setattr(archive, '_source', lambda *_: pytest.fail('saved sticker requested from API'))
+    archive.capture(account, order, 'order-1')

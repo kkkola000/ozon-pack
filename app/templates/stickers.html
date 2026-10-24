@@ -34,7 +34,6 @@
         <td>{{ marketplace_title(item.marketplace) }} · {{ item.shop_title }}</td>
         <td class="mono">{{ item.order_number }}{% if item.order_id != item.order_number %}<div class="small muted">{{ item.order_id }}</div>{% endif %}</td>
         <td>{% if item.error %}<span class="badge err">Ошибка загрузки</span><div class="small muted">{{ item.error }}</div>{% elif item.version_id %}<span class="badge ok">Сохранён</span>{% else %}<span class="badge warn">Ожидает загрузки</span>{% endif %}
-          {% if item.history %}<details><summary class="small">Версии: {{ item.versions }}</summary>{% for v in item.history %}<div><a href="/api/stickers/{{ v.id }}.pdf" target="_blank" rel="noopener">{{ v.saved_at | local_dt('%d.%m.%Y %H:%M:%S') }} · №{{ v.id }}</a></div>{% endfor %}</details>{% endif %}
         </td>
         <td><div class="sticker-actions">
           {% if item.version_id %}
@@ -42,7 +41,7 @@
           <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf?download=true">Скачать</a>
           <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf" target="_blank" rel="noopener" data-print-pdf="/api/stickers/{{ item.version_id }}.pdf" data-print-kind="{{ item.marketplace }}:label" data-print-name="Стикер {{ item.order_number }}">Печать</a>
           {% endif %}
-          {% if sync_enabled %}<button class="btn small sticker-retry" type="button" data-id="{{ item.id }}">{{ 'Обновить' if item.version_id else 'Повторить' }}</button>{% endif %}
+          {% if sync_enabled and not item.version_id %}<button class="btn small sticker-retry" type="button" data-id="{{ item.id }}">Повторить</button>{% endif %}
         </div></td>
       </tr>
     {% else %}<tr><td colspan="6" class="empty">Стикеров по выбранным условиям нет. Новые появятся после синхронизации заказов «Ожидает отгрузки».</td></tr>{% endfor %}</tbody>
