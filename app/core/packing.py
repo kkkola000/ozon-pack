@@ -314,7 +314,7 @@ def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
     number = str(active.get('posting_number') or active.get('id') or '')
     try:
         with order_lock.hold(open_shop['id'], number):
-            marking.prepare(open_shop, number)
+            marking.prepare(open_shop, number, for_scan=True)
             saved = marking.save_scan(open_shop, user, current, code)
     except ValueError as exc:
         return {'status': 'error', 'message': str(exc), 'action': 'marking_error', 'sound': 'error',

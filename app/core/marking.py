@@ -95,13 +95,17 @@ def order(account_id: int, order_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def prepare(account: dict, order_id: str) -> dict | None:
+def prepare(account: dict, order_id: str, *, for_scan: bool = False) -> dict | None:
     provider = source(account)
     if not provider:
         return None
     saved = order(account['id'], order_id)
     # Вызывается под order_lock, чтобы не создать два несовместимых снимка.
-    data = provider.prepare(account, order_id)
+    data = (provider.discover if for_scan and provider.discover else provider.prepare)(account, order_id)
+    if data is None:
+        if needs_validation(saved):
+            raise ValueError('Не удалось подтвердить требования к уже сохранённым ЧЗ заказа')
+        return None
     products = data['products']
     if not products or sum(int(p['quantity']) for p in products) > 500:
         raise ValueError('Не удалось безопасно получить состав экземпляров заказа')

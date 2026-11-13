@@ -697,6 +697,15 @@ def _scan_product(account: dict, user: dict, sku: str, code: str) -> ScanResult:
 
 
 # ------------------------------------------------------------------ выбор отправления
+def _ready_error(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    status = getattr(exc, 'status', None)
+    if status in {401, 403}:
+        return f'Ozon не разрешил проверить заказ (HTTP {status}). Проверьте права ключа кабинета.'
+    return f'Не удалось получить данные заказа из Ozon (HTTP {status or "неизвестен"}). Повторите скан.'
+
+
 def select_posting(account: dict, user: dict, posting_number: str, *, first_sku: str | None = None,
                    scan_code: str | None = None, label_in_hand: bool = False) -> ScanResult:
     """Взять отправление в сборку.
@@ -728,8 +737,8 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
     if posting["status"] in {store.STATUS_AWAITING_PACKAGING, store.STATUS_AWAITING_DELIVER}:
         try:
             deferred, row = readiness.start_and_refresh(account, user, posting_number)
-        except (ValueError, OzonError):
-            return ScanResult("error", "Не удалось подтвердить состав и готовность заказа в Ozon. Повторите скан.",
+        except (ValueError, OzonError) as exc:
+            return ScanResult("error", _ready_error(exc),
                               action="ready_pending", sound="error", state=load_state(account, user))
         posting = store.posting_view(row)
     if posting["status"] != store.STATUS_AWAITING_DELIVER and not (deferred and posting["status"] == store.STATUS_AWAITING_PACKAGING):

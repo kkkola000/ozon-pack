@@ -421,6 +421,8 @@ def test_http_200_without_real_ready_status_does_not_open_order(account, yandex_
     if vendor == 'ozon':
         api, number, _sku = marked_ozon(account)
         api._postings[number]['requirements']['products_requiring_mandatory_mark'] = []
+        with db.write() as conn:
+            ozon_store.upsert_posting(conn, account['id'], api._postings[number])
         monkeypatch.setattr(api, 'ship', lambda *_: {'postings': [number]})
         shop = account
     elif vendor == 'yandex':
@@ -446,6 +448,8 @@ def test_http_200_without_real_ready_status_does_not_open_order(account, yandex_
 def test_ozon_ship_failed_permits_confirmed_retry(account, user, monkeypatch):
     api, number, _sku = marked_ozon(account)
     api._postings[number]['requirements']['products_requiring_mandatory_mark'] = []
+    with db.write() as conn:
+        ozon_store.upsert_posting(conn, account['id'], api._postings[number])
     with monkeypatch.context() as patch:
         patch.setattr(api, 'ship', lambda *_: {'postings': [number]})
         assert scan(account, user, number)['status'] == 'error'

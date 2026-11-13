@@ -3,16 +3,55 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ...core import marking, readiness
+from ...core import db, marking, readiness
 from ..base import MarkingSource
 from . import client, store
 
 
-def prepare(account: dict, order_id: str) -> dict:
+def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
+    raw = client.get_client(account).posting_get(order_id)
+    if not raw or str(raw.get('posting_number') or '') != order_id:
+        raise ValueError('Ozon не подтвердил отправление. Обновите заказы и повторите скан.')
+    if raw.get('status') not in store.WORK_STATUSES:
+        label = store.STATUS_LABELS.get(raw.get('status'), 'вне сборки')
+        raise ValueError(f'Отправление в Ozon уже в статусе «{label}» и недоступно для сборки.')
+    items = store.posting_items(account['id'], order_id)
+    local = {str(i['sku']): int(i['quantity']) for i in items}
+    actual = {str(p.get('sku') or ''): int(p.get('quantity') or 0) for p in raw.get('products') or []}
+    if not local or local != actual:
+        raise ValueError('Состав отправления Ozon изменился. Обновите заказы перед сборкой.')
+    required = {str(s) for s in (raw.get('requirements') or {}).get('products_requiring_mandatory_mark') or []}
+    required.update(str(p['sku']) for p in raw.get('products') or [] if p.get('mandatory_mark'))
+    # Не теряем известное обязательство, если Ozon снял флаг после сборки.
+    required.update(str(i['sku']) for i in items if i.get('mandatory_mark'))
+    with db.write() as conn:
+        store.upsert_posting(conn, account['id'], raw)
+        if required:
+            # Чтение экземпляров ниже может завершиться ошибкой. Не стираем
+            # последнее известное требование до успешного сохранения снимка ЧЗ.
+            conn.execute('UPDATE postings SET requires_mark=1 WHERE account_id=? AND posting_number=?',
+                         (account['id'], order_id))
+            conn.executemany('UPDATE posting_items SET mandatory_mark=1 WHERE account_id=? AND posting_number=? AND sku=?',
+                             [(account['id'], order_id, sku) for sku in required])
+    return raw, local, required
+
+
+def prepare(account: dict, order_id: str, *, discover: bool = False) -> dict | None:
+    _raw, local, required = _posting(account, order_id)
+    saved = marking.order(account['id'], order_id)
+    known = bool(saved and (marking.codes(saved, active=False) or any(
+        p.get('required') or p.get('possible') for p in marking.products(saved))))
+    if not required and not known and not discover:
+        # Обычному заказу не нужны экземпляры: Ozon может их не отдавать,
+        # в том числе когда отправление уже собрано в личном кабинете.
+        return None
+    return _exemplars(account, order_id, local, required)
+
+
+def _exemplars(account: dict, order_id: str, local: dict, required: set[str]) -> dict:
     data = client.get_client(account).exemplars_get(order_id)
     if str(data.get('posting_number') or '') != order_id:
         raise ValueError('Ozon не подтвердил номер отправления экземпляров')
-    local = {str(i['sku']): int(i['quantity']) for i in store.posting_items(account['id'], order_id)}
     products = []
     for product in data.get('products') or []:
         key = str(product.get('product_id') or '')
@@ -22,9 +61,10 @@ def prepare(account: dict, order_id: str) -> dict:
             raise ValueError('Состав экземпляров Ozon не совпадает с заказом. Обновите заказы.')
         if any(not e.get('exemplar_id') for e in exemplars):
             raise ValueError('Ozon не вернул идентификаторы экземпляров')
+        needed = bool(product.get('is_mandatory_mark_needed') or key in required)
         products.append({'key': key, 'sku': key, 'quantity': quantity,
-                         'required': bool(product.get('is_mandatory_mark_needed')),
-                         'possible': bool(product.get('is_mandatory_mark_needed') or product.get('is_mandatory_mark_possible'))})
+                         'required': needed,
+                         'possible': needed or bool(product.get('is_mandatory_mark_possible'))})
     if {p['key'] for p in products} != set(local):
         raise ValueError('Ozon вернул неполный состав экземпляров')
     return {'products': products, 'context': data}
@@ -151,4 +191,5 @@ def finalize(account: dict, order_id: str, _context: dict, codes: list[dict]) ->
         raise ValueError('Отправление Ozon вышло из рабочего статуса')
 
 
-SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('sku') or ''))
+SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('sku') or ''),
+                       discover=lambda account, order_id: prepare(account, order_id, discover=True))

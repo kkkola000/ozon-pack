@@ -208,17 +208,20 @@ class Workspace:
 class MarkingSource:
     """Экземпляры ЧЗ: требования, полная запись, проверка и применение изменений.
 
-    prepare -> {products: [{key, sku, quantity, required, possible}], context}.
+    prepare -> {products: [{key, sku, quantity, required, possible}], context}
+    либо None, если свежие данные заказа не требуют работы с маркировкой.
     poll -> {status: checking/accepted/error, errors: {key: безопасный текст}}.
     Никакой HTTP 200 сам по себе не означает принятия кода.
     """
 
-    prepare: Callable[[dict, str], dict]
+    prepare: Callable[[dict, str], dict | None]
     # dispatch фиксирует неопределённый результат непосредственно перед записью.
     submit: Callable[[dict, str, dict, list[dict], Callable[[], None]], None]
     poll: Callable[[dict, str, dict, list[dict]], dict]
     finalize: Callable[[dict, str, dict, list[dict]], None]
     item_key: Callable[[dict], str]
+    # Уточнение необязательной маркировки только при явном скане ЧЗ.
+    discover: Callable[[dict, str], dict] | None = None
 
 
 @dataclass(frozen=True)
