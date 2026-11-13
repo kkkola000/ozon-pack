@@ -293,3 +293,32 @@ for (const menu of document.querySelectorAll('.reports-menu')) {
     if (event.key === 'Escape') { menu.open = false; menu.querySelector('summary').focus(); }
   });
 }
+
+
+// Аккаунт открывается нажатием; «Отчёты» по-прежнему открываются наведением.
+(() => {
+  const header = document.querySelector('.topbar');
+  const account = header?.querySelector('.account-menu');
+  const toggle = header?.querySelector('.header-menu-toggle');
+  if (!account) return;
+  const reports = header.querySelector('.reports-menu');
+  const closeNavigation = () => {
+    header.classList.remove('mobile-open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  };
+  account.addEventListener('toggle', () => { if (account.open && reports) reports.open = false; });
+  reports?.addEventListener('toggle', () => { if (reports.open) account.open = false; });
+  document.addEventListener('pointerdown', (event) => { if (!account.contains(event.target)) account.open = false; });
+  document.addEventListener('click', (event) => { if (event.target.closest('.account-menu a')) account.open = false; });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (account.open) { account.open = false; account.querySelector('summary').focus(); }
+    closeNavigation();
+  });
+  toggle?.addEventListener('click', () => {
+    const open = header.classList.toggle('mobile-open');
+    toggle.setAttribute('aria-expanded', String(open));
+    account.open = false;
+  });
+  window.addEventListener('resize', () => { if (innerWidth > 960) closeNavigation(); });
+})();

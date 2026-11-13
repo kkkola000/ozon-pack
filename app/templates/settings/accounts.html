@@ -1,0 +1,31 @@
+<div class="panel">
+  <div class="row between settings-panel-heading"><h2>Подключённые кабинеты</h2><button class="btn primary" data-open-dialog="add-account-dialog">Добавить кабинет</button></div>
+  <div class="settings-table"><table><thead><tr><th>Кабинет</th><th>Площадка</th><th>Подключение</th><th>Данные</th><th>Действия</th></tr></thead><tbody>
+  {% for cab in cabinets %}<tr>
+    <td><b>{{ cab.title }}</b><div class="muted small">{{ cab.status.source_label }}</div></td><td>{{ cab.marketplace_title }}</td>
+    <td>{% if not cab.active %}<span class="badge">Выключен</span>{% elif cab.status.configured %}<span class="badge ok">Подключён</span>{% else %}<span class="badge warn">Нет ключей</span>{% endif %}</td>
+    <td class="small">{% for key,value in cab.stats.items() %}{% if loop.index <= 3 %}<span class="settings-stat">{{ key }}: <b>{{ value }}</b></span>{% endif %}{% endfor %}</td>
+    <td><div class="settings-row-actions"><button class="btn small" data-cab-test="{{ cab.id }}">Проверить связь</button><button class="btn small" data-open-dialog="cabinet-{{ cab.id }}">Изменить</button></div></td>
+  </tr>{% endfor %}
+  </tbody></table></div>
+</div>
+{% for cab in cabinets %}
+<dialog class="settings-dialog" id="cabinet-{{ cab.id }}" aria-labelledby="cabinet-title-{{ cab.id }}">
+  <div class="row between"><h2 id="cabinet-title-{{ cab.id }}">Кабинет · {{ cab.marketplace_title }}</h2><button class="btn small" data-close-dialog aria-label="Закрыть">×</button></div>
+  <div class="cabinet-card" data-account="{{ cab.id }}">
+    <p class="muted small">Ключи: {{ cab.status.source_label }}{% if cab.status.api_key_masked %} · {{ cab.status.api_key_masked }}{% endif %}</p>
+    <div class="settings-form">
+      <label>Название кабинета<input type="text" class="cab-title" value="{{ cab.title }}"></label>
+      <label>{{ marketplaces[cab.marketplace].id_label }}<input type="text" class="cab-client-id" data-original="{{ cab.status.client_id if cab.status.source == 'panel' else '' }}" value="{{ cab.status.client_id if cab.status.source == 'panel' else '' }}" autocomplete="off"></label>
+      <label>{{ marketplaces[cab.marketplace].key_label }}<input type="password" class="cab-api-key" autocomplete="new-password" placeholder="Оставьте пустым, если ключ не меняется"></label>
+      <label class="check small muted"><input type="checkbox" class="cab-skip-test"> Сохранить без проверки связи</label>
+    </div>
+    <details class="settings-help"><summary>Где получить ключи</summary><p>{{ marketplaces[cab.marketplace].hint }}</p></details>
+    <div class="settings-dialog-actions"><button class="btn small" data-cab-toggle="{{ cab.id }}" data-active="{{ 1 if cab.active else 0 }}">{{ 'Выключить' if cab.active else 'Включить' }}</button><button class="btn small danger" data-cab-delete="{{ cab.id }}">Удалить кабинет</button><button class="btn primary" data-cab-save="{{ cab.id }}">Сохранить</button></div>
+  </div>
+</dialog>
+{% endfor %}
+<dialog class="settings-dialog" id="add-account-dialog" aria-labelledby="add-account-title"><div class="row between"><h2 id="add-account-title">Добавить кабинет</h2><button class="btn small" data-close-dialog aria-label="Закрыть">×</button></div>
+  <div class="settings-form"><label>Площадка<select id="new-marketplace">{% for code,meta in marketplaces.items() %}<option value="{{ code }}">{{ meta.title }}</option>{% endfor %}</select></label><label>Название<input type="text" id="new-title" placeholder="Например, ANEX"></label><label>Client-Id / идентификатор<input type="text" id="new-client-id" autocomplete="off"></label><label>Api-Key / секрет<input type="password" id="new-api-key" autocomplete="new-password"></label><label class="check small muted"><input type="checkbox" id="new-skip-test"> Добавить без проверки связи</label></div>
+  <div class="settings-dialog-actions"><button class="btn" data-close-dialog>Отмена</button><button class="btn primary" id="btn-add-account">Проверить и добавить</button></div>
+</dialog>

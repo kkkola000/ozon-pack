@@ -1,4 +1,4 @@
-/* Страница «Принтеры»: для каждого документа — наклейка от площадки, бумага,
+/* Вкладка «Сборка и печать»: для каждого документа — наклейка от площадки, бумага,
    принтер, ориентация и подгонка печати (⚙).
 
    Строки рисует сервер. Здесь — список принтеров из QZ Tray этого компьютера,
@@ -11,13 +11,25 @@
   const table = document.getElementById('printer-table');
   const status = document.getElementById('qz-status');
   const LIMIT = window.PRINTER_LIMIT || 4;
+  let dirty = false;
+  const scope = panel.closest('.settings-printing') || panel;
+  const trackEdit = ({ target }) => {
+    // Отсечка сохраняется отдельно, а отменённая правка в ⚙ не меняет строку.
+    if (target.closest('#printer-table') || target.matches('#print-product-barcodes, #print-marking')) dirty = true;
+  };
+  scope.addEventListener('input', trackEdit);
+  scope.addEventListener('change', trackEdit);
+  window.addEventListener('beforeunload', (event) => {
+    if (dirty) { event.preventDefault(); event.returnValue = ''; }
+  });
+  const limitOf = (kind) => kind === 'marking:duplicate' ? 1 : LIMIT;
   let found = [];   // принтеры QZ Tray этого компьютера
 
   const rowsOf = (kind) => [...table.querySelectorAll(`tr.printer-row[data-kind="${CSS.escape(kind)}"]`)];
 
   function setStatus(text, kind) {
     status.textContent = text;
-    status.style.color = kind === 'ok' ? 'var(--ok)' : kind === 'warn' ? '#b06a00' : '';
+    status.style.color = kind === 'ok' ? 'var(--ok)' : kind === 'warn' ? 'var(--warn)' : '';
   }
 
   function option(select, value, label) {
@@ -57,8 +69,8 @@
   }
 
   function syncAdd(kind) {
-    const add = table.querySelector(`tr.printer-add[data-kind="${CSS.escape(kind)}"] .btn-add`);
-    if (add) add.hidden = rowsOf(kind).length >= LIMIT;
+    const add = table.querySelector(`[data-add-kind="${CSS.escape(kind)}"]`);
+    if (add) add.hidden = rowsOf(kind).length >= limitOf(kind);
   }
 
   async function check() {
@@ -69,7 +81,8 @@
       setStatus(`QZ Tray ${version}: подключён, принтеров — ${names.length}`, 'ok');
     } catch (error) {
       found = [];
-      setStatus(`QZ Tray: ${error.message}. Печать через браузер работает как раньше.`, 'warn');
+      setStatus('QZ Tray не запущен — печать через браузер', 'warn');
+      status.title = error.message;
     }
     table.querySelectorAll('tr.printer-row').forEach(fillRow);
   }
@@ -78,9 +91,10 @@
      свободным размером. Пример — этикетки Avito: 58×40 и 100×150. */
   function addRow(kind) {
     const rows = rowsOf(kind);
-    if (!rows.length || rows.length >= LIMIT) return;
+    if (!rows.length || rows.length >= limitOf(kind)) return;
     const copy = rows[0].cloneNode(true);
-    copy.cells[0].innerHTML = '';
+    copy.cells[0].textContent = '↳ Дополнительный размер';
+    copy.querySelector('.btn-add')?.remove();
     const size = copy.querySelector('.size-select');
     const used = new Set(rows.map((row) => row.querySelector('.size-select').value));
     const free = [...size.options].find((item) => !used.has(item.value));
@@ -94,6 +108,7 @@
     syncPaper(copy);
     copy.cells[5].innerHTML = '<button class="btn small btn-remove" title="Убрать этот размер">×</button>';
     rows[rows.length - 1].after(copy);
+    dirty = true;
     bind(copy);
     fillRow(copy);
     syncAdd(kind);
@@ -106,6 +121,7 @@
     row.querySelector('.btn-remove')?.addEventListener('click', () => {
       const kind = row.dataset.kind;
       row.remove();
+      dirty = true;
       syncAdd(kind);
     });
     row.querySelector('.btn-test').addEventListener('click', (event) => testPrint(row, readFit(row), event.target));
@@ -248,10 +264,22 @@
   });
 
   table.querySelectorAll('tr.printer-row').forEach(bind);
-  table.querySelectorAll('tr.printer-add .btn-add').forEach((button) => {
+  table.querySelectorAll('.btn-add').forEach((button) => {
     button.addEventListener('click', () => addRow(button.closest('tr').dataset.kind));
   });
   document.getElementById('btn-qz-check').addEventListener('click', check);
+  for (const toggle of table.querySelectorAll('.format-toggle')) {
+    const editor = toggle.nextElementSibling;
+    toggle.addEventListener('click', () => {
+      editor.hidden = !editor.hidden;
+      toggle.setAttribute('aria-expanded', String(!editor.hidden));
+      if (!editor.hidden) editor.querySelector('select').focus();
+    });
+    editor.querySelector('select').addEventListener('change', (event) => {
+      toggle.querySelector('.format-current').textContent = event.target.selectedOptions[0].textContent;
+    });
+  }
+
 
   async function saveAll(button) {
     const rows = [...table.querySelectorAll('tr.printer-row')].map((row) => rowData(row));
@@ -259,14 +287,22 @@
       .map((select) => [select.dataset.kind, select.value]));
     button.disabled = true;
     try {
-      const result = await api('/api/printers', { rows, formats });
+      const payload = { rows, formats };
+      for (const [id, key] of [['print-product-barcodes', 'print_product_barcodes'], ['print-marking', 'print_marking_duplicates']]) {
+        const checkbox = document.getElementById(id);
+        if (checkbox) payload[key] = checkbox.checked;
+      }
+      const result = await api('/api/printers', payload);
+      dirty = false;
+      window.PRINT_PRODUCT_BARCODES = result.print_product_barcodes;
+      window.PRINT_MARKING_DUPLICATES = result.print_marking_duplicates;
       // Страница уже знает новый выбор — печать с неё идёт по нему сразу.
       window.PRINTERS = result.printers;
       table.querySelectorAll('tr.printer-row').forEach((row) => {
         const select = row.querySelector('.printer-select');
         select.dataset.saved = select.value;
       });
-      toast('Принтеры сохранены', 'ok');
+      toast('Настройки печати сохранены', 'ok');
       return true;
     } catch (error) {
       toast(error.message, 'error', 8000);

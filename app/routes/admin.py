@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse
 from urllib.parse import urlencode
 
 from ..core import access, accounts, db, marking, printers, product_labels, report, security, shops, sync
-from ..core.deps import check_csrf, require_manager, require_section, templates
+from ..core.deps import check_csrf, current_user, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
 
@@ -141,8 +141,26 @@ def logs_page(
     )
 
 
-@router.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, user: dict = Depends(require_section("settings"))):
+@router.get('/settings/printing', response_class=HTMLResponse)
+def printing_settings(request: Request, user: dict = Depends(current_user)):
+    if access.can(user, 'settings'):
+        return _settings_page(request, user, 'printing')
+    # Ключи кабинетов и список сотрудников даже не читаются для сборщика.
+    return templates.TemplateResponse(request, 'settings.html', {
+        'request': request, 'user': user, 'settings_tab': 'printing', 'manage_settings': False,
+        'csrf': request.state.session.get('csrf'), 'active_tab': 'settings', **printers.page_context(),
+    })
+
+
+@router.get('/settings', response_class=HTMLResponse)
+def settings_page(request: Request, user: dict = Depends(require_section('settings'))):
+    tab = request.query_params.get('tab', 'printing')
+    if tab not in {'printing', 'accounts', 'returns', 'staff'}:
+        tab = 'printing'
+    return _settings_page(request, user, tab)
+
+
+def _settings_page(request: Request, user: dict, tab: str):
     users = []
     for row in db.query("SELECT id, login, role, sections, active, created_at FROM users ORDER BY role, login"):
         item = dict(row)
@@ -178,8 +196,6 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "marketplaces": registry.MARKETS,
             "product_barcodes_enabled": product_labels.enabled(),
             'marking_enabled': marking.enabled(),
-            'marking_printer': next(r for r in printers.rows() if r['kind'] == 'marking:duplicate'),
-            'marking_paper': printers.PAPER,
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
             "roles": [r for r in access.ROLES if access.may_set_role(user, r[0])],
@@ -195,6 +211,9 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "sync": sync.status(),
             "csrf": request.state.session.get("csrf"),
             "active_tab": "settings",
+            'settings_tab': tab,
+            'manage_settings': True,
+            **printers.page_context(),
         },
     )
 

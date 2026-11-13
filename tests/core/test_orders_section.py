@@ -142,7 +142,7 @@ def test_nav_has_one_orders_item_with_counts_over_all_cabinets(client, cabinets)
     waiting = sum(n for (_id, key), n in counts.items() if key == "packaging")
     assert f'title="Ожидает сборки">{waiting}</span>' in page
     # «Заказы» — сразу за «Сборкой», перед «Возвратами».
-    nav = page[page.index("<nav>"):page.index("</nav>")]
+    nav = re.search(r'<nav\b[^>]*id="main-navigation"[^>]*>(.*?)</nav>', page, re.S).group(1)
     assert nav.index("Сборка") < nav.index("Заказы") < nav.index("Возвраты")
 
 

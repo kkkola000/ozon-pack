@@ -132,7 +132,7 @@ def test_save_cabinet_keys_from_settings(client):
     assert response.status_code == 200, response.text
     assert accounts.credentials(accounts.get(account_id)) == ("123456", "secret-key-value", "panel")
 
-    page = client.get("/settings")
+    page = client.get("/settings?tab=accounts")
     assert "123456" in page.text
     assert "secret-key-value" not in page.text, "ключ не должен показываться целиком"
 
@@ -451,7 +451,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.64.1"
+    assert get_version() == "1.65.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

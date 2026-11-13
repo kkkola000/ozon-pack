@@ -277,7 +277,7 @@ def test_new_user_gets_the_role_defaults(client):
 def test_settings_page_shows_the_grid(client):
     as_owner(client)
     make_user("pak5", access.PACKER)
-    page = client.get("/settings").text
+    page = client.get("/settings?tab=staff").text
     assert "Сотрудники и доступы" in page
     for _key, label, _url, _hint in access.SECTIONS:
         assert label in page
@@ -287,7 +287,7 @@ def test_settings_page_shows_the_grid(client):
 def test_admin_sees_the_owner_but_no_buttons(client):
     make_user("adm9", access.ADMIN)
     sign_in(client, "adm9", "parol1234567")
-    page = client.get("/settings").text
+    page = client.get("/settings?tab=staff").text
     owner = db.query_one("SELECT id FROM users WHERE login = 'admin'")
     assert "admin" in page
     assert f'data-save-user="{owner["id"]}"' not in page, "администратору предложили менять владельца"

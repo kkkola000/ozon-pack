@@ -331,8 +331,8 @@ def label_format(kind: str) -> str | None:
     return fallback if fallback in codes else codes[0]
 
 
-def save_formats(wanted) -> dict[str, str]:
-    """Сохранить выбор наклеек: {вид документа: код}. Ошибка — ValueError."""
+def validate_formats(wanted) -> dict[str, str]:
+    """Проверить выбор наклеек без записи: {вид документа: код}. Ошибка — ValueError."""
     if wanted is None:
         return {}
     if not isinstance(wanted, dict):
@@ -346,7 +346,13 @@ def save_formats(wanted) -> dict[str, str]:
         if str(code) not in {item for item, _title in source.formats}:
             raise ValueError(f"Неизвестный размер наклейки: {code}")
         clean[str(kind)] = str(code)
-    db.kv_set(KV_FORMATS, json.dumps(clean, ensure_ascii=False))
+    return clean
+
+
+def save_formats(wanted) -> dict[str, str]:
+    clean = validate_formats(wanted)
+    if wanted is not None:
+        db.kv_set(KV_FORMATS, json.dumps(clean, ensure_ascii=False))
     return clean
 
 
@@ -542,3 +548,15 @@ def sign(to_sign: str) -> str:
     key = serialization.load_pem_private_key(_key_path().read_bytes(), password=None)
     signature = key.sign(value.encode("ascii"), padding.PKCS1v15(), hashes.SHA512())
     return base64.b64encode(signature).decode("ascii")
+
+
+def page_context() -> dict:
+    """Общая таблица печати для вкладки настроек, включая доступ сборщика."""
+    return {
+        'documents': page(),
+        'paper': [(code, title) for code, (title, _w, _h) in PAPER.items()],
+        'custom': CUSTOM,
+        'limits': {'paper': PAPER_MM, 'gap': GAP_MAX, 'shift': SHIFT_MAX},
+        'orientations': list(ORIENTATION.items()),
+        'limit': ROWS_PER_KIND,
+    }

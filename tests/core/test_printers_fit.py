@@ -88,7 +88,7 @@ def test_gap_and_shift_are_saved_and_shown(client):
     row = next(r for r in printers.rows() if r["kind"] == "ozon:label")
     assert row["gap"] == 2.0 and row["shift"] == {"right": 2.0, "bottom": 1.0}
     assert printers.fit_title(row) == "зазор 2 · вправо 2 · вниз 1"
-    page = client.get("/printers").text
+    page = client.get("/settings/printing").text
     assert "зазор 2 · вправо 2 · вниз 1" in page
     assert re.search(r'class="btn small btn-fit set"[^>]*data-gap="2"[^>]*data-right="2"', page, re.S)
     assert 'id="fit-modal"' in page and 'data-side="top"' in page and 'data-side="left"' in page
@@ -115,7 +115,7 @@ def test_label_format_is_chosen_apart_from_the_paper(client):
     assert answer.status_code == 200, answer.text
     assert ozon_client.label_format() == "big", "бумага 60×40, а стикер — большой, как выбрали"
     assert yandex_client.label_format() == "A4"
-    page = client.get("/printers").text
+    page = client.get("/settings/printing").text
     assert re.search(r'<select class="format-select" data-kind="ozon:label">.*?'
                      r'<option value="big" selected>', page, re.S)
     assert "Стикер от Ozon" in page and "Ярлык от Маркета" in page
@@ -193,7 +193,7 @@ def test_qz_prints_the_row_paper_with_gap_and_fit():
 
 
 def test_page_has_custom_paper_and_label_choice(client):
-    page = client.get("/printers").text
+    page = client.get("/settings/printing").text
     assert '<option value="custom"' in page and "Свой размер…" in page
     assert page.count('class="format-select"') == 2, "выбор наклейки — у Ozon и у Маркета"
     assert "Бумага для печати" in page

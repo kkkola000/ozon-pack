@@ -41,10 +41,6 @@ a:hover { text-decoration: underline; }
   background: var(--bg); border-bottom: 1px solid var(--line);
   padding: 0 20px; position: sticky; top: 0; z-index: 50;
 }
-.topbar .brand {
-  font-weight: 700; font-size: 18px; margin-right: 22px; white-space: nowrap; letter-spacing: -.02em;
-}
-.topbar .brand span { color: var(--accent); }
 .topbar nav { display: flex; gap: 2px; flex: 1; flex-wrap: wrap; }
 .topbar nav a {
   color: var(--muted); padding: 18px 14px; border-bottom: 2px solid transparent;
@@ -52,8 +48,6 @@ a:hover { text-decoration: underline; }
 }
 .topbar nav a:hover { color: var(--text); text-decoration: none; }
 .topbar nav a.active { color: var(--text); border-bottom-color: var(--accent); }
-.topbar .user { color: var(--muted); font-size: 13px; white-space: nowrap; }
-.topbar .user b { color: var(--text); }
 
 .badge {
   display: inline-block; min-width: 20px; text-align: center; padding: 2px 8px;
@@ -918,3 +912,131 @@ body.pack-open { overflow: hidden; }
 }
 .pack-mark.ok { color: var(--ok); background: var(--ok-soft); }
 .pack-mark.err { color: var(--err); background: var(--err-soft); }
+
+/* Шапка: навигация слева, аккаунт справа. Палитра панели сохраняется. */
+.topbar { gap: 20px; padding: 0 28px; min-height: 61px; }
+.topbar > nav > a:first-child { padding-left: 0; }
+.account-menu { position: relative; flex-shrink: 0; margin-left: auto; }
+.account-menu > summary { display: flex; align-items: center; justify-content: center; list-style: none; width: 42px; height: 42px; border-radius: 10px; color: var(--accent); cursor: pointer; }
+.account-menu > summary::-webkit-details-marker { display: none; }
+.account-menu.active > summary, .account-menu[open] > summary, .account-menu > summary:hover { background: var(--accent-soft); }
+.account-menu > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.account-menu-items { position: absolute; top: calc(100% + 11px); right: 0; min-width: 212px; padding: 7px; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); box-shadow: var(--shadow); z-index: 80; }
+.account-menu:not([open]) .account-menu-items { display: none; }
+.account-menu-caption { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 14px; margin-bottom: 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.account-menu-caption span { color: var(--muted); font-size: 13px; }
+.account-menu-items > a { display: block; padding: 10px 12px; border-radius: 8px; font-size: 14px; color: var(--text); }
+.account-menu-items > a:hover, .account-menu-items > a[aria-current] { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
+.account-menu-items > .account-logout { margin-top: 6px; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; color: var(--accent); }
+.account-menu-items > .account-warning { color: var(--warn); font-size: 13px; }
+.header-menu-toggle { display: none; align-items: center; gap: 8px; border: 0; border-radius: 9px; padding: 8px; background: var(--bg); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+
+/* Настройки: четыре компактные вкладки, редакторы в диалогах. */
+.settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 4px 0 22px; }
+.settings-heading h1 { margin: 0; font-size: 25px; letter-spacing: -.025em; }
+.settings-tabs { margin-bottom: 20px; }
+.settings-panel-heading { margin-bottom: 18px; }
+.settings-panel-heading h2 { margin: 0; }
+.settings-table { overflow-x: auto; }
+.settings-table table { min-width: 700px; }
+.settings-table td { vertical-align: middle; padding-top: 17px; padding-bottom: 17px; }
+.settings-row-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+.settings-stat { display: block; color: var(--muted); margin: 2px 0; }
+.settings-stat b { color: var(--text); }
+.settings-link, .format-toggle { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; text-align: left; }
+.settings-link:hover, .format-toggle:hover { text-decoration: underline; }
+.settings-dialog { width: min(560px, calc(100vw - 32px)); max-height: 90vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 22px; color: var(--text); background: var(--bg); box-shadow: var(--shadow); }
+.settings-dialog::backdrop { background: rgba(0, 26, 52, .55); }
+.settings-dialog h2 { font-size: 19px; margin: 0; }
+.settings-dialog .cabinet-card { border: 0; padding: 0; box-shadow: none; margin: 0; }
+.settings-form { display: grid; gap: 14px; margin-top: 20px; }
+.settings-form > label:not(.check) { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.settings-form input:not([type=checkbox]), .settings-form select { width: 100%; color: var(--text); }
+.settings-dialog-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--line); margin-top: 20px; padding-top: 16px; }
+.settings-access { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.settings-access .check { font-size: 14px; }
+.settings-help { padding-top: 12px; margin-top: 13px; border-top: 1px solid var(--line); }
+.settings-help summary { color: var(--accent); font-size: 13px; cursor: pointer; width: fit-content; }
+.settings-help p { color: var(--muted); font-size: 13px; margin: 10px 0; }
+.settings-options { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 20px; align-items: center; }
+.settings-options .check { font-size: 14px; }
+.settings-options p { margin: 4px 0 0 26px; font-size: 12px; }
+.settings-cutoff { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; }
+.settings-cutoff input { display: block; width: 120px; margin-top: 6px; padding: 6px 10px; font-size: 13px; }
+.settings-assembly { padding: 16px 20px; }
+.settings-assembly .settings-help summary { color: var(--muted); font-size: 12px; }
+.settings-footer { display: flex; gap: 18px; color: var(--muted); font-size: 12px; margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.settings-footer details { flex: 1; }
+.settings-footer summary { cursor: pointer; width: fit-content; }
+.settings-error { color: var(--err); }
+.settings-returns-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.settings-returns-grid .panel + .panel { margin: 0; }
+.settings-status-list { display: grid; margin-bottom: 16px; }
+.settings-status-list label { padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.settings-status-list label:last-child { border-bottom: 0; }
+.settings-returns-grid .settings-help { margin-bottom: 18px; }
+.settings-received-days { display: flex; gap: 8px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+.settings-received-days input { width: 76px; }
+.settings-return-note { background: var(--surface); padding: 12px 14px; border-radius: 10px; }
+
+/* Таблица принтеров использует существующие ID и механику QZ Tray. */
+.settings-printing [hidden] { display: none !important; }
+.settings-printing #printers-panel { margin-top: 16px; }
+.settings-printing #printers-panel > .row:first-child { gap: 10px; }
+.settings-printing #qz-status { max-width: 650px; }
+.settings-printing .printer-help { margin: 8px 0 14px; padding-top: 0; border: 0; }
+.settings-printing #printers-panel { overflow-x: auto; }
+.settings-printing #printer-table { table-layout: fixed; min-width: 1080px; }
+.settings-printing #printer-table th:nth-child(1) { width: 27%; }
+.settings-printing #printer-table th:nth-child(2) { width: 17%; }
+.settings-printing #printer-table th:nth-child(3) { width: 24%; }
+.settings-printing #printer-table th:nth-child(4) { width: 14%; }
+.settings-printing #printer-table th:nth-child(5) { width: 15%; }
+.settings-printing #printer-table th:nth-child(6) { width: 3%; }
+.settings-printing #printer-table td { padding: 10px 8px; vertical-align: middle; }
+.settings-printing #printer-table th { font-size: 12px; padding: 10px 8px; }
+.settings-printing #printer-table td:first-child { font-size: 14px; }
+.settings-printing #printer-table select { width: 100%; padding: 7px 26px 7px 9px; font-size: 13px; line-height: 1.4; border-radius: 10px; background-position: right 9px center; }
+.settings-printing .paper-cell { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
+.settings-printing .paper-custom { grid-column: 1 / -1; }
+.settings-printing .paper-custom input { width: 55px; }
+.settings-printing .btn-add { padding: 3px 6px; font-size: 18px; }
+.settings-printing .label-format { display: block; margin-top: 4px; font-size: 12px; }
+.settings-printing .format-editor { display: block; margin-top: 7px; font-size: 12px; color: var(--muted); }
+.settings-printing .format-toggle { font-size: 12px; }
+.settings-printing .format-current { font-weight: 500; }
+.settings-printing .format-editor select { margin-top: 5px; }
+.settings-printing .printer-doc-hint { margin-left: 4px; color: var(--muted); font-size: 12px; cursor: help; }
+.settings-printing .test-cell .btn { font-size: 12px; padding: 6px 8px; }
+.settings-printing .test-cell .btn-fit { font-size: 17px; padding: 2px 8px; }
+.settings-printing .fit-note { font-size: 11px; margin-top: 4px; }
+.settings-printing .printer-certificate h3 { display: none; }
+.settings-printing .printer-certificate { margin-top: 15px; }
+@media (max-width: 1100px) {
+  .topbar { padding: 0 20px; gap: 12px; }
+  .topbar nav a, .reports-menu > summary { padding-left: 10px; padding-right: 10px; font-size: 14px; }
+  .settings-options { grid-template-columns: 1fr 1fr; }
+  .settings-cutoff { grid-column: 1 / -1; justify-content: flex-start; }
+}
+@media (max-width: 960px) {
+  .topbar { flex-wrap: wrap; justify-content: space-between; padding: 7px 12px; gap: 0; min-height: 58px; }
+  .header-menu-toggle { display: inline-flex; }
+  .topbar > nav { display: none; order: 2; flex-basis: 100%; padding: 8px 0 10px; flex-direction: column; gap: 2px; }
+  .topbar.mobile-open > nav { display: flex; }
+  .topbar nav > a, .topbar nav > a:first-child, .reports-menu > summary { padding: 11px 12px; border: 0; border-radius: 9px; }
+  .topbar nav > a.active { background: var(--accent-soft); color: var(--accent); }
+  .reports-menu-items { position: static; border: 0; border-left: 1px solid var(--line); border-radius: 0; box-shadow: none; margin-left: 12px; }
+  .reports-menu-items::before { display: none; }
+}
+@media (max-width: 740px) {
+  .settings-heading { align-items: flex-start; flex-direction: column; gap: 6px; margin-bottom: 18px; }
+  .settings-tabs { gap: 7px; }
+  .settings-tabs a { font-size: 13px; padding: 8px 12px; }
+  .settings-tabs a.active { padding: 7px 11px; }
+  .settings-options, .settings-returns-grid { grid-template-columns: 1fr; gap: 16px; }
+  .settings-options > div { min-width: 0; }
+  .settings-options .check { align-items: flex-start; }
+  .settings-dialog { padding: 18px; }
+  .settings-dialog-actions > .btn { font-size: 13px; }
+  .settings-footer { flex-direction: column; gap: 8px; }
+}

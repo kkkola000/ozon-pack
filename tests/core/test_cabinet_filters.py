@@ -48,12 +48,12 @@ def test_journal_shows_every_cabinet_and_filters_by_one(client, cabinets):
 
 # ------------------------------------------------------------------ настройки
 def test_settings_show_stats_in_every_cabinet_card(client, cabinets):
-    page = client.get("/settings").text
+    page = client.get("/settings?tab=accounts").text
     assert "текущий" not in page
     assert "Переключаются кабинеты списком в шапке" not in page
     cards = re.findall(r'<div class="cabinet-card[^"]*"\s+data-account="(\d+)"', page)
     assert {int(card) for card in cards} == {account["id"] for account in cabinets.values()}
-    # Плитки площадки — в карточке её кабинета: «Отправлений» у Ozon, «Ждут сборки» у Маркета.
+    # Счётчики площадки — в строке её кабинета: «Отправлений» у Ozon, «Ждут сборки» у Маркета.
     assert "Отправлений:" in page and "Ждут сборки:" in page
 
 
@@ -63,7 +63,7 @@ def test_ozon_return_statuses_are_saved_whatever_the_cabinets(client, cabinets):
     assert response.status_code == 200, response.text
     assert ozon_returns.get_returns_statuses() == ["ArrivedAtReturnPlace"]
     # Блок настроек Ozon показан: кабинет Ozon в панели есть.
-    assert "/api/returns/statuses" in client.get("/settings").text
+    assert "/api/returns/statuses" in client.get("/settings?tab=returns").text
 
 
 # ------------------------------------------------------------------ возвраты
@@ -107,11 +107,11 @@ def test_every_market_with_returns_has_a_chip(client, cabinets):
 def test_header_has_no_switcher_and_counts_cabinets_without_keys(client, cabinets):
     page = client.get("/orders").text
     assert 'id="cabinet-select"' not in page
-    assert "БЕЗ КЛЮЧЕЙ" not in page
+    assert 'class="account-warning"' not in page
     accounts.create("avito", "Новый Avito")          # без ключей
     page = client.get("/orders").text
-    assert "БЕЗ КЛЮЧЕЙ: 1" in page
+    assert 'class="account-warning" href="/settings?tab=accounts">Без ключей: 1</a>' in page
     # Меню одно: «Сборка», «Заказы», «Возвраты» — у любых кабинетов.
-    nav = page[page.index("<nav>"):page.index("</nav>")]
+    nav = re.search(r'<nav\b[^>]*id="main-navigation"[^>]*>(.*?)</nav>', page, re.S).group(1)
     for item in ('href="/pack"', 'href="/orders"', 'href="/returns"'):
         assert item in nav, item

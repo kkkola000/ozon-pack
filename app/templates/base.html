@@ -10,10 +10,10 @@
 </head>
 <body data-page="{{ active_tab or '' }}">
 <header class="topbar no-print">
-  <div class="brand">📦 <span>Pack</span></div>
+  {% if user %}<button class="header-menu-toggle" type="button" aria-label="Открыть меню" aria-controls="main-navigation" aria-expanded="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Меню</button>{% endif %}
   {# Шапка рисуется по выданным разделам, а не по роли: сборщик с выданными
      «Отчётами» должен видеть на них ссылку, администратор без них — нет. #}
-  <nav>
+  <nav id="main-navigation" aria-label="Основные разделы">
     {# Меню одно на всю панель: кабинета в шапке нет, значки — по всем кабинетам. #}
     {% for item in nav(request) if user %}
       {% if can_see(user, item.section) %}
@@ -39,18 +39,20 @@
       </div>
     </details>
     {% endif %}
-    {% if can_see(user, 'settings') %}<a href="/settings" class="{{ 'active' if active_tab == 'settings' }}">Настройки</a>{% endif %}
+
   </nav>
-  {% set without_keys = unconfigured() if user else 0 %}
-  {% if without_keys %}
-    <a class="badge warn" href="/settings" title="Панель не загружает заказы кабинета, пока не заданы ключи площадки">
-      БЕЗ КЛЮЧЕЙ: {{ without_keys }}</a>
+  {% if user %}
+  <details class="account-menu {{ 'active' if active_tab in ('settings', 'printers') }}">
+    <summary aria-label="Аккаунт {{ user.login }}"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" aria-hidden="true"><circle cx="12" cy="12" r="9.4"/><circle cx="12" cy="9" r="3"/><path d="M5.8 19c.8-3 3-4.5 6.2-4.5s5.4 1.5 6.2 4.5"/></svg></summary>
+    <div class="account-menu-items">
+      <div class="account-menu-caption"><b>{{ user.login }}</b><span>{{ role_label(user.role) }}</span></div>
+      {% set without_keys = unconfigured() %}
+      {% if without_keys and can_see(user, 'settings') %}<a class="account-warning" href="/settings?tab=accounts">Без ключей: {{ without_keys }}</a>{% endif %}
+      <a href="{{ '/settings' if can_see(user, 'settings') else '/settings/printing' }}" {{ 'aria-current=page' if active_tab in ('settings', 'printers') }}>Настройки</a>
+      <a href="/logout" class="account-logout">Выйти</a>
+    </div>
+  </details>
   {% endif %}
-  <div class="user">{% if user %}<b>{{ user.login }}</b>
-    <span class="muted small">{{ role_label(user.role) }}</span>
-    · <a href="/printers" class="{{ 'active' if active_tab == 'printers' }}"
-         title="Куда и на какой лист печатается каждый документ">Принтеры</a>
-    · <a href="/logout">выход</a>{% endif %}</div>
 </header>
 
 <main class="wrap {% block wrap_class %}{% endblock %}">

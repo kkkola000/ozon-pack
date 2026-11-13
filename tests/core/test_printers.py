@@ -135,7 +135,7 @@ def test_orientation_is_saved_per_row(client):
 
 def test_the_page_offers_orientation(client):
     enter(client)
-    page = client.get("/printers").text
+    page = client.get("/settings/printing").text
     assert "Ориентация" in page
     for word in ("Как в файле", "Вертикальная", "Горизонтальная"):
         assert word in page
@@ -185,7 +185,7 @@ def test_everyone_sets_up_printers(client, role):
     """Страница и сохранение — всем, включая сборщика: он у стола и знает принтеры."""
     person("someone", role)
     csrf = enter(client, "someone", "secret-password-1")
-    page = client.get("/printers")
+    page = client.get("/settings/printing")
     assert page.status_code == 200
     assert "Avito: этикетки" in page.text
     assert save(client, csrf, [row("ozon:label", "58x40", "Xprinter")]).status_code == 200
@@ -197,17 +197,17 @@ def test_a_packer_gets_only_the_printers(client):
     person("petrov", "packer")
     enter(client, "petrov", "secret-password-1")
     assert client.get("/settings").status_code == 403
-    assert 'href="/printers"' in client.get("/pack").text
+    assert 'href="/settings/printing"' in client.get("/pack").text
 
 
 def test_settings_point_to_the_printers(client):
     enter(client)
-    assert 'href="/printers"' in client.get("/settings").text
+    assert 'id="printer-table"' in client.get("/settings").text
 
 
 def test_strangers_are_turned_away(client):
     assert client.post("/api/printers", json={"rows": []}).status_code == 401
-    assert client.get("/printers").status_code in (303, 401)
+    assert client.get("/settings/printing").status_code in (303, 401)
 
 
 def test_saving_needs_csrf(client):
@@ -219,7 +219,7 @@ def test_every_page_knows_the_setup(client):
     """Печатают «Сборка», «Заказы» и «Возвраты» — настройка приходит в каждую страницу."""
     csrf = enter(client)
     save(client, csrf, [row("avito:label", "58x40", "A"), row("avito:label", "100x150", "B")])
-    for where in ("/pack", "/orders", "/returns", "/printers"):
+    for where in ("/pack", "/orders", "/returns", "/settings/printing"):
         page = client.get(where).text
         found = re.search(r"window\.PRINTERS = (\{.*?\});</script>", page)
         assert found, where

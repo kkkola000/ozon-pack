@@ -171,7 +171,7 @@ def test_pages_open_and_nav_shows_market(client):
     assert pack.status_code == 200
     assert 'id="label-gate"' in pack.text
     assert 'id="scan-panel"' in pack.text
-    settings_page = client.get("/settings")
+    settings_page = client.get("/settings?tab=accounts")
     assert settings_page.status_code == 200
     assert "Ждут сборки" in settings_page.text
     assert client.get("/logs").status_code == 200
