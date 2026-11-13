@@ -120,7 +120,7 @@ def create(account: dict, order_id: str, snapshot: dict, user: dict, *, separate
 def _aliases(conn, account_id: int, order_id: str, boxes: list[dict]):
     conn.execute('DELETE FROM cargo_barcodes WHERE account_id=? AND order_id=?', (account_id, order_id))
     conn.executemany('INSERT INTO cargo_barcodes VALUES(?,?,?,?)',
-                     [(account_id, order_id, b['barcode'], str(b['remote_id'])) for b in boxes])
+                     [(account_id, order_id, b['barcode'], str(b['remote_id'])) for b in boxes if b.get('barcode')])
 
 
 def label_order(account_id: int, barcode: str) -> str | None:
@@ -168,14 +168,46 @@ def open_editor(account: dict, order_id: str, user: dict) -> dict:
     with order_lock.hold(account['id'], order_id):
         _inflight_marking(account, order_id)
         snapshot = provider.read(account, order_id)
-        saved = create(account, order_id, snapshot, user)
-        if (saved['status'] in {'baseline', 'confirmed'} and saved['remote_stamp']
-                and saved['remote_stamp'] != snapshot.get('remote_stamp')):
-            boxes = snapshot.get('boxes')
-            if not boxes:
-                raise ValueError('Маркет удалил раскладку. Сверьте грузоместа в кабинете площадки.')
-            return _install(account, order_id, boxes, snapshot['remote_stamp'])
+        create(account, order_id, snapshot, user)
+        return reconcile(account, order_id, snapshot)
+
+
+def reconcile(account: dict, order_id: str, snapshot: dict) -> dict | None:
+    """Авторитетный ответ площадки заменяет только подтверждённую раскладку.
+
+    Пустая раскладка — тоже изменение. ЧЗ и первичный PDF архива сохраняются;
+    текущий комплект ярлыков будет заново загружен по номеру всего заказа.
+    Черновик и неопределённая запись требуют своего процесса подтверждения.
+    Вызывается под order_lock.
+    """
+    saved = get(account['id'], order_id)
+    if not saved or saved['status'] not in {'confirmed', 'baseline'}:
         return saved
+    if _shape(saved['units']) != _shape(units(snapshot['products'])):
+        raise ValueError('Состав заказа изменился. Перечитайте заказ перед распределением.')
+    stamp = snapshot.get('remote_stamp')
+    if stamp is None or saved['remote_stamp'] == stamp:
+        return saved
+    boxes = snapshot.get('boxes')
+    if boxes:
+        validate(saved, boxes)
+        if (not all(b.get('remote_id') and b.get('barcode') for b in boxes)
+                or len({b['remote_id'] for b in boxes}) != len(boxes)
+                or len({b['barcode'] for b in boxes}) != len(boxes)):
+            raise ValueError('Маркет пока не подтвердил идентификаторы и ярлыки грузомест')
+        return _install(account, order_id, boxes, stamp)
+    boxes = default_boxes(saved['units'])
+    boxes[0].update(remote_id=f'order:{order_id}', barcode='')
+    return _install(account, order_id, boxes, stamp, status='baseline')
+
+
+def refresh(account: dict, order_id: str) -> dict | None:
+    saved = get(account['id'], order_id)
+    provider = source(account)
+    if not provider or not saved or saved['status'] not in {'confirmed', 'baseline'}:
+        return saved
+    with order_lock.hold(account['id'], order_id):
+        return reconcile(account, order_id, provider.read(account, order_id))
 
 
 def _inflight_marking(account: dict, order_id: str):
@@ -209,22 +241,15 @@ def save_editor(account: dict, order_id: str, user: dict, revision, boxes):
         return apply(account, order_id, user, wanted, marks)
 
 
-def _install(account: dict, order_id: str, boxes: list[dict], remote_stamp=None) -> dict:
+def _install(account: dict, order_id: str, boxes: list[dict], remote_stamp=None, *, status='confirmed') -> dict:
     with db.write() as conn:
-        conn.execute("UPDATE cargo_orders SET boxes=?,revision=revision+1,status='confirmed',pending=NULL,"
+        conn.execute("UPDATE cargo_orders SET boxes=?,revision=revision+1,status=?,pending=NULL,"
                      "checked='[]',error=NULL,updated_at=?,remote_stamp=? WHERE account_id=? AND order_id=?",
-                     (json.dumps(boxes), db.now_iso(), remote_stamp, account['id'], order_id))
-        # Старый PDF места не выдаётся после изменения состава/нумерации комплекта.
-        plan = get(account['id'], order_id)
+                     (json.dumps(boxes), status, db.now_iso(), remote_stamp, account['id'], order_id))
+        # После новой ревизии нужен актуальный комплект, даже если площадка сохранила
+        # старые номера мест. Формат ключа кэша прежних версий при этом не меняется.
         _aliases(conn, account['id'], order_id, boxes)
-        active_ids = {str(b['remote_id']) for b in boxes}
-        for row in conn.execute('SELECT box_id FROM cargo_labels WHERE account_id=? AND order_id=?', (account['id'], order_id)).fetchall():
-            if row['box_id'] not in active_ids:
-                conn.execute('DELETE FROM cargo_labels WHERE account_id=? AND order_id=? AND box_id=?',
-                             (account['id'], order_id, row['box_id']))
-        for box in boxes:
-            conn.execute('DELETE FROM cargo_labels WHERE account_id=? AND order_id=? AND box_id=? AND signature!=?',
-                         (account['id'], order_id, str(box['remote_id']), label_signature(plan, box)))
+        conn.execute('DELETE FROM cargo_labels WHERE account_id=? AND order_id=?', (account['id'], order_id))
     return get(account['id'], order_id)
 
 
@@ -347,6 +372,7 @@ def cached_pdf(account_id: int, order_id: str) -> bytes | None:
 def ensure_labels(account: dict, order_id: str) -> bytes:
     from . import assembly_stickers, sticker_archive
     with order_lock.hold(account['id'], order_id):
+        refresh(account, order_id)
         labels_allowed(account['id'], order_id)
         saved = get(account['id'], order_id)
         if not saved:
@@ -374,7 +400,7 @@ def ensure_labels(account: dict, order_id: str) -> bytes:
 
 
 def complete_guard(account: dict, order_id: str):
-    saved = get(account['id'], order_id)
+    saved = refresh(account, order_id)
     if not saved:
         return
     labels_allowed(account['id'], order_id)

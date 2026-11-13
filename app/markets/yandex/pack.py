@@ -183,6 +183,10 @@ def missing_items(state: dict) -> list[str]:
 
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
     """Отпустить активный заказ, ничего не завершая."""
+    from .cargo import refresh_orders
+    active = load_state(account, user).get('active')
+    if active:
+        refresh_orders(account, {str(active['id'])})
     pack_state.release(user, event="yandex_pack_release", reason=reason)
     return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
@@ -853,6 +857,7 @@ def label_files(account: dict, order_ids: list[str]) -> tuple[dict[str, bytes], 
 
     def fetch(order_id: str) -> bytes:
         from ...core import cargo
+        cargo.refresh(account, order_id)
         cargo.labels_allowed(account['id'], order_id)
         if cargo.needs_labels(account['id'], order_id):
             return cargo.ensure_labels(account, order_id)

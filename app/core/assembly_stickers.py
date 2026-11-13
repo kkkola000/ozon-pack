@@ -41,6 +41,7 @@ def load(account: dict, number: str, user: dict) -> bytes:
         raise LookupError('Заказ не найден в кабинете')
     if board.not_ready(account, [number]):
         raise NotReady('Стикер будет скачан после передачи ЧЗ и подтверждения готовности заказа площадкой')
+    cargo.refresh(account, number)
     cargo.labels_allowed(account['id'], number)
     if cargo.needs_labels(account['id'], number):
         pdf = cargo.ensure_labels(account, number)

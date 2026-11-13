@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import defaultdict
 from copy import deepcopy
 
@@ -10,6 +11,8 @@ from ...core import cargo, db, marking
 from ...core.config import settings
 from ..base import CargoSource
 from . import client, store
+
+log = logging.getLogger(__name__)
 
 
 def fresh(account: dict, order_id: str) -> dict:
@@ -218,10 +221,14 @@ def write(account, _user, order_id, units, boxes, marks, dispatch, uncertain):
 
 
 def prepare_ready(account: dict, user: dict, order_id: str):
-    if not settings.split_orders_on_pack:
+    existing = cargo.get(account['id'], order_id)
+    if not settings.split_orders_on_pack and not existing:
         return
     raw = fresh(account, order_id)
     snapshot = _snapshot(account, order_id, raw)
+    if existing:
+        cargo.reconcile(account, order_id, snapshot)
+        return
     if raw['substatus'] == 'READY_TO_SHIP' and not snapshot['boxes']:
         return
     separate = raw['substatus'] == 'STARTED' and len(snapshot['boxes']) < 2
@@ -246,8 +253,24 @@ def label(account: dict, order_id: str, box_id: str) -> bytes:
                        (account['id'], order_id))
     if not row:
         raise ValueError('Заказ не найден')
+    if box_id == f'order:{order_id}':
+        return client.get_client(account).order_labels(str(row['campaign_id']), order_id, fmt=client.label_format())
     return client.get_client(account).box_label(str(row['campaign_id']), order_id, box_id,
                                                shipment_id=str(row['shipment_id'] or 0))
+
+
+def refresh_orders(account: dict, order_ids: set[str]):
+    """Список заказов может не содержать boxesLayout: подтверждаем отдельным чтением."""
+    for row in db.query('SELECT order_id FROM cargo_orders WHERE account_id=? AND status IN (\'confirmed\',\'baseline\')',
+                        (account['id'],)):
+        if row['order_id'] not in order_ids:
+            continue
+        try:
+            cargo.refresh(account, row['order_id'])
+        except (ValueError, client.YandexError) as exc:
+            # Отмена сборки и синхронизация остаются доступны при временном отказе API.
+            log.warning('Раскладка Маркета не обновлена: кабинет %s, заказ %s, %s',
+                        account['id'], row['order_id'], type(exc).__name__)
 
 
 SOURCE = CargoSource(read, write, label, prepare_ready, before_ready)

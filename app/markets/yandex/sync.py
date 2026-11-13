@@ -77,6 +77,9 @@ def sync_yandex(account: dict | None = None) -> dict:
                 seen.add(store.upsert_yandex_order(conn, account_id, raw))
                 saved += 1
 
+    from .cargo import refresh_orders
+    refresh_orders(account, seen)
+
     # Заказ ушёл из рабочих этапов — Маркет его больше не отдаёт, убираем и мы.
     stale = [
         row["id"]
