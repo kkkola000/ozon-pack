@@ -22,6 +22,12 @@
   <details class="settings-help"><summary>Правила сборки и отчётного дня</summary><p>Скан всех товаров обязателен: <b>{{ 'да' if settings.require_all_items else 'нет' }}</b> · Автопечать стикера: <b>{{ 'да' if settings.autoprint else 'нет' }}</b> · Готовность при скане: <b>автоматически</b> · Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>.</p><p>Правила меняются в файле .env, затем требуется перезапуск службы. После отсечки сканы попадают в следующий отчётный день. Сейчас: {{ report_cutoff_hint }}.</p><p>Галочка ЧЗ управляет только печатью; сохранение и передача работают всегда.</p></details>
 </div>
 {% endif %}
+<div class="panel settings-downloads">
+  <h2>Скачивание стикеров при сборке</h2>
+  <div class="row"><label class="small" for="sticker-folder">Папка на этом компьютере</label><input id="sticker-folder" type="text" readonly value="Загрузки браузера"><button class="btn small" type="button" id="choose-sticker-folder">Выбрать папку</button><button class="btn small" type="button" id="reset-sticker-folder" hidden>Сбросить</button></div>
+  <p class="muted small" id="sticker-folder-note">Папка выбирается отдельно на каждом компьютере сборщика.</p>
+  <p class="muted small">Стикер скачивается при открытии сборочного окна. Если площадка ещё ждёт ЧЗ — после его передачи и подтверждения готовности заказа. Без выбранной папки разрешите сайту автоматическое скачивание файлов в настройках браузера.</p>
+</div>
 {% include 'settings/printers.html' %}
 </section>
 {% elif settings_tab == 'accounts' %}{% include 'settings/accounts.html' %}
@@ -32,6 +38,7 @@
 <footer class="settings-footer"><span>Версия <span class="mono">{{ build_label() }}</span></span>{% if manage_settings %}<details><summary>О системе</summary><p>Синхронизация каждые {{ sync.interval }} с · {{ sync.last_status }}{% if sync.last_ok %} · последняя успешная {{ sync.last_ok | local_dt('%d.%m %H:%M:%S') }}{% endif %}.</p>{% if sync.last_result %}<p>{{ sync.last_result }}</p>{% endif %}{% if sync.last_error %}<p class="settings-error">{{ sync.last_error }}</p>{% endif %}{% for key,value in stats.items() %}<p>{{ key }}: {{ value }}</p>{% endfor %}<dl class="kv">{% for part in settings_rows %}{% include part %}{% endfor %}</dl></details>{% endif %}</footer>
 {% endblock %}
 {% block scripts %}
+{% if settings_tab == 'printing' %}<script src="/static/sticker_downloads.js?v={{ static_version() }}"></script>{% endif %}
 <script>window.SETTINGS_MANAGER_ONLY = {{ manager_only | default([]) | list | tojson }};</script>
 <script src="/static/settings.js?v={{ static_version() }}"></script>
 {% if settings_tab == 'printing' %}<script>window.PRINTER_LIMIT = {{ limit }};</script><script src="/static/printers.js?v={{ static_version() }}"></script>{% endif %}

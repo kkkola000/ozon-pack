@@ -101,6 +101,7 @@ def test_ozon_full_flow_preserves_code_and_confirms_remote_state(account, user, 
     opened = scan(account, user, BARCODE)
     assert opened['state']['active']
     assert opened['state']['items'][0]['marking']['status'] == 'waiting'
+    assert opened['state']['sticker_download']['ready'] is (status == 'awaiting_deliver')
     assert opened['state']['marking']['pending_key'] == sku
     if status == 'awaiting_packaging':
         assert api._postings[number]['status'] == status
@@ -122,6 +123,7 @@ def test_ozon_full_flow_preserves_code_and_confirms_remote_state(account, user, 
     ready = packing.state(user)
     assert ready['items'][0]['marking']['status'] == 'accepted'
     assert ready['complete'] is True
+    assert ready['sticker_download']['ready'] is True
     assert scan(account, user, number)['action'] == 'completed'
 
 
@@ -147,7 +149,8 @@ def test_each_unit_requires_barcode_then_unique_mark(account, user):
 def test_print_disabled_does_not_disable_storage_or_transfer(yandex_account, user):
     api, number, key = marked_yandex(yandex_account)
     db.kv_set(marking.KV_AUTO, '0')
-    scan(yandex_account, user, BARCODE)
+    opened = scan(yandex_account, user, BARCODE)
+    assert opened['state']['sticker_download']['ready'] is False
     result = scan(yandex_account, user, code())
     assert 'marking_print' not in result
     assert api._orders[number]['substatus'] == 'STARTED'
@@ -155,6 +158,7 @@ def test_print_disabled_does_not_disable_storage_or_transfer(yandex_account, use
     saved = marking.order(yandex_account['id'], number)
     assert saved['status'] == 'accepted'
     assert api._orders[number]['substatus'] == 'READY_TO_SHIP'
+    assert packing.state(user)['sticker_download']['ready'] is True
     assert api._orders[number]['items'][0]['instances'][0]['cisFull'] == code()
     assert marking.archive_details(saved['archive_id'])['items'][0]['item_key'] == key
     assert scan(yandex_account, user, number)['action'] == 'completed'

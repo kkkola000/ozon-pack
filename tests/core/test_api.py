@@ -52,17 +52,10 @@ def test_scan_endpoint(client):
            JOIN postings p ON p.posting_number = i.posting_number AND p.account_id = i.account_id
            WHERE p.status = 'awaiting_deliver' LIMIT 1"""
     )
-    # Пока наклейки не скачаны, сервер новый заказ не открывает.
-    locked = client.post("/api/pack/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
-    assert locked.status_code == 200
-    assert locked.json()["action"] == "labels_locked"
-    assert locked.json()["labels"]["locked"] is True
-
-    assert client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
     response = client.post("/api/pack/scan", json={"code": row["barcode"]}, headers={"X-CSRF-Token": csrf})
     assert response.status_code == 200
     assert response.json()["action"] == "posting_selected"
-    assert response.json()["labels"]["locked"] is False
+    assert response.json()["state"]["sticker_download"]["ready"] is True
 
 
 def test_packer_cannot_open_settings(client):
@@ -451,7 +444,7 @@ def test_version_matches_file():
     from app.core.version import get_version
 
     assert get_version() == (BASE_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    assert get_version() == "1.65.0"
+    assert get_version() == "1.66.0"
 
 
 # ---------------------------------------------------------------- лист по всем кабинетам

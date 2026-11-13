@@ -14,7 +14,6 @@ window.PACKS.yandex = {
     url: (id) => `/api/pack/label/yandex/${encodeURIComponent(id)}.pdf`,
   },
   words: {
-    // Слова замка на наклейки — общие: выгрузка идёт сразу по всем кабинетам.
     label: 'Ярлык',
     released: 'Сборка отменена. Сканируйте следующий товар.',
     confirmRelease: null,

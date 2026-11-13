@@ -24,7 +24,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from ..core import board as core_board
-from ..core import db, marking
+from ..core import accounts, assembly_stickers, db, marking
 from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import orders_sheet
@@ -162,17 +162,11 @@ def page(request: Request,
 
 # ------------------------------------------------------------------ сканирование
 def _answer(request: Request, result: dict) -> dict:
-    """Дописать к ответу плитки очереди и замок наклеек — они считаются по фильтру.
-
-    Замок — в каждом ответе, а не только в опросе раз в 30 секунд: сборку
-    завершили или отменили, и если новые наклейки не скачаны, поле
-    сканирования должно закрыться сразу, а не через полминуты.
-    """
+    """Дописать к ответу плитки очереди по фильтру кабинетов."""
     picked = _picked(request)
     where = core_packing.shops(picked)
     _tiles, counters = core_packing.tiles(picked, where)
     result["counters"] = counters
-    result.setdefault("labels", core_labels.state_everywhere(core_labels.pending_everywhere(where)))
     return result
 
 
@@ -220,20 +214,13 @@ def api_sync(request: Request, user: dict = Depends(require_section("pack"))):
 # ------------------------------------------------------------------ состояние
 @router.get("/api/pack/state")
 def api_state(request: Request, user: dict = Depends(require_section("pack"))):
-    """Состояние рабочего места: начатая сборка, очередь и замок на наклейки.
-
-    Замок общий на кабинеты под фильтром: сборка объединена, и начинать её,
-    выгрузив наклейки одного магазина, нельзя — посреди смены окажется, что у
-    соседнего заказа наклейки нет и взять её уже негде.
-    """
+    """Начатая сборка, её стикер для скачивания и очередь заказов."""
     picked = _picked(request)
     where = core_packing.shops(picked)
     _tiles, counters = core_packing.tiles(picked, where)
-    waiting = core_labels.pending_everywhere(where)
     return {
         "state": core_packing.state(user),
         "counters": counters,
-        "labels": core_labels.state_everywhere(waiting),
     }
 
 
@@ -271,6 +258,27 @@ def api_orders_sheet(request: Request, user: dict = Depends(require_section("pac
 
 
 # ------------------------------------------------------------------ наклейки
+@router.get('/api/pack/sticker/{account_id}/{order_id}.pdf')
+def download_sticker(account_id: int, order_id: str, user: dict = Depends(require_section('pack'))):
+    """Оригинальный стикер на компьютер; счётчик печати не меняется."""
+    account = accounts.get(account_id)
+    if not account or account_id not in {shop['id'] for shop in core_packing.shops(ALL)}:
+        raise HTTPException(404, 'Кабинет не найден')
+    try:
+        pdf = assembly_stickers.load(account, order_id, user)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except assembly_stickers.NotReady as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        # Ошибки площадки могут содержать секреты, не отправляем их в браузер.
+        raise HTTPException(502, 'Не удалось получить стикер. Загрузка будет повторена автоматически.') from exc
+    filename = assembly_stickers.filename(account, order_id)
+    return Response(pdf, media_type='application/pdf', headers={
+        'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-store',
+    })
+
+
 @router.get("/api/pack/label/{code}/{order_id}.pdf")
 def api_label(code: str, order_id: str, with_products: bool = False, user: dict = Depends(require_section("pack"))):
     """Наклейка одного заказа на печать — из того кабинета, где заказ лежит.
@@ -309,7 +317,7 @@ def api_label(code: str, order_id: str, with_products: bool = False, user: dict 
 
 @router.post("/api/pack/labels.zip")
 def api_labels(request: Request, user: dict = Depends(require_section("pack"))):
-    """Наклейки всех кабинетов одним архивом — то, с чего начинается смена."""
+    """Совместимость старых ссылок на ZIP. Выгрузка больше не блокирует сборку."""
     check_csrf(request)
     waiting = core_labels.pending_everywhere(core_packing.shops(_picked(request)))
     if not waiting:

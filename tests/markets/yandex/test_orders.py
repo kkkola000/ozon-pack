@@ -11,7 +11,7 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, board, db, labels
+from app.core import accounts, board, db
 from app.markets.yandex import client as yandex
 from app.main import app
 from app.markets.yandex import pack as yandex_pack
@@ -169,7 +169,7 @@ def test_pages_open_and_nav_shows_market(client):
     assert client.get("/yandex/pack").headers["location"] == "/pack"
     pack = client.get("/pack")
     assert pack.status_code == 200
-    assert 'id="label-gate"' in pack.text
+    assert 'id="label-gate"' not in pack.text
     assert 'id="scan-panel"' in pack.text
     settings_page = client.get("/settings?tab=accounts")
     assert settings_page.status_code == 200
@@ -240,7 +240,7 @@ def test_pending_labels_are_orders_awaiting_shipment(market):
     pending = yandex_pack.pending_labels(market["id"])
     assert set(pending) == {r["id"] for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP)}
     assert not set(pending) & {r["id"] for r in orders_in(market, yandex.SUBSTATUS_STARTED)}
-    assert labels.state(yandex_pack.pending_labels(market["id"]))["locked"] is True
+    assert yandex_pack.pending_labels(market["id"])
 
 
 def test_a_packed_order_does_not_hold_the_lock(market, user):
@@ -249,7 +249,7 @@ def test_a_packed_order_does_not_hold_the_lock(market, user):
             "UPDATE yandex_orders SET local_state = 'packed', packed_by = ?, packed_at = ? WHERE id = ?",
             (user["login"], db.now_iso(), row["id"]),
         )
-    assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
+    assert not yandex_pack.pending_labels(market["id"])
 
 
 def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
@@ -259,27 +259,27 @@ def test_archive_opens_the_lock_and_has_a_file_per_order(client, market):
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = sorted(archive.namelist())
     assert names == sorted(f"{r['id']}.pdf" for r in orders_in(market, yandex.SUBSTATUS_READY_TO_SHIP))
-    assert labels.state(yandex_pack.pending_labels(market["id"])) == {"pending": 0, "locked": False}
+    assert not yandex_pack.pending_labels(market["id"])
     assert db.query_one("SELECT 1 FROM events WHERE kind = 'labels_archive'")
 
     again = client.post(f"/api/pack/labels.zip?shop={market['id']}")
     assert again.status_code == 400
 
 
-def test_new_order_locks_the_scanner_again(client, market):
+def test_new_order_does_not_lock_the_scanner(client, market):
     client.post(f"/api/pack/labels.zip?shop={market['id']}")
     fake = yandex.get_client(market)
     fresh = fake._make_order(20, __import__("datetime").datetime.now(__import__("datetime").timezone.utc))
     fresh["status"], fresh["substatus"] = "PROCESSING", yandex.SUBSTATUS_STARTED
     fake._orders[str(fresh["orderId"])] = fresh
     yandex_sync.sync_yandex(market)
-    state = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
-    assert state["locked"] is False, "новый «Ожидает сборки» сборку не запирает"
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert str(fresh["orderId"]) not in yandex_pack.pending_labels(market["id"])
 
     fresh["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
     yandex_sync.sync_yandex(market)
-    state = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
-    assert state["pending"] == 1 and state["locked"] is True
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert yandex_pack.pending_labels(market["id"]) == [str(fresh["orderId"])]
 
 
 def test_single_label_and_batch_print(client, market):

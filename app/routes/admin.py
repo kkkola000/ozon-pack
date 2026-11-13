@@ -19,6 +19,7 @@ router = APIRouter()
 MIN_PASSWORD = 12
 
 EVENT_LABELS = {
+    'sticker_download': 'Скачивание стикера при сборке',
     "stickers_download": "Скачивание стикеров из архива",
     "stickers_retry": "Повтор сохранения стикера",
     "login": "Вход",

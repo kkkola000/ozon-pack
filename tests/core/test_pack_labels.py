@@ -1,13 +1,4 @@
-"""Наклейки на «Сборке» — общие на все кабинеты.
-
-Сборка объединена: сборщик стоит у одного стола и берёт заказы Ozon, Avito и
-Маркета подряд. Значит, и наклейки нужны сразу все. Скачал стикеры одного
-магазина, начал смену — и посреди неё наткнулся на заказ, ярлык которого уже
-не взять: площадка отдаёт наклейку, пока заказ ждёт отгрузки.
-
-Поэтому замок и архив считаются по всем кабинетам сразу, а фильтр площадки
-сужает и то, и другое: выбрали «Avito» — качаются её этикетки.
-"""
+"""Скачивание наклеек больше не блокирует сборку; прежний ZIP совместим."""
 import io
 import re
 import zipfile
@@ -85,35 +76,30 @@ def test_packed_order_does_not_hold_the_lock(warehouse, user):
 
 
 # ---------------------------------------------------------------------- замок
-def test_the_gate_counts_every_cabinet(client, warehouse):
-    """Замок держит, пока не выгружено всё: считаем по трём кабинетам сразу."""
-    waiting = pending(warehouse)
-    assert all(waiting.values()), "в фикстуре должен ждать выгрузки каждый кабинет"
-
-    labels = client.get("/api/pack/state").json()["labels"]
-    assert labels["locked"] is True
-    assert labels["pending"] == sum(len(keys) for keys in waiting.values())
+def test_pending_labels_never_lock_the_workspace(client, warehouse):
+    assert all(pending(warehouse).values())
+    for picked in ['all', *(str(shop['id']) for shop in warehouse.values())]:
+        result = client.get(f'/api/pack/state?shop={picked}').json()
+        assert 'labels' not in result
+        assert result['state']['active'] is None
 
 
-def test_the_gate_says_whose_labels_are_waiting(client, warehouse):
-    """«9 заказов» не отвечает на вопрос «чьих» — разбивка по магазинам нужна."""
-    labels = client.get("/api/pack/state").json()["labels"]
-    shops = {shop["title"]: shop for shop in labels["shops"]}
 
-    assert set(shops) == {"Ozon", "Кабинет Avito", "Маркет"}
-    # У каждой площадки наклейка называется по-своему — так её и зовут.
-    assert shops["Ozon"]["word"] == "стикеры"
-    assert shops["Кабинет Avito"]["word"] == "этикетки"
-    assert shops["Маркет"]["word"] == "ярлыки"
-    assert shops["Маркет"]["count"] == len(pending(warehouse)["yandex"])
+def test_packing_page_keeps_the_scanner_without_a_download_gate(client, warehouse):
+    page = client.get('/pack').text
+    assert 'id="label-gate"' not in page
+    assert 'id="btn-labels"' not in page
+    assert 'id="scan-panel"' in page
+    assert '/static/sticker_downloads.js' in page
 
 
-def test_a_cabinet_with_nothing_to_download_is_not_shown(client, warehouse):
-    """Выгруженный кабинет из замка уходит: работы по нему нет — строки нет."""
+
+def test_optional_zip_only_lists_cabinets_with_pending_files(client, warehouse):
+    from app.core import labels
     assert client.post(f"/api/pack/labels.zip?shop={warehouse['avito']['id']}").status_code == 200
+    remaining = labels.pending_everywhere(list(warehouse.values()))
+    assert {item['account']['id'] for item in remaining} == {warehouse['ozon']['id'], warehouse['yandex']['id']}
 
-    shops = client.get("/api/pack/state").json()["labels"]["shops"]
-    assert {shop["title"] for shop in shops} == {"Ozon", "Маркет"}
 
 
 # ---------------------------------------------------------------------- архив
@@ -136,7 +122,7 @@ def test_the_archive_opens_the_lock_for_everyone(client, warehouse):
     assert client.post("/api/pack/labels.zip").status_code == 200
 
     assert pending(warehouse) == {"ozon": [], "avito": [], "yandex": []}
-    assert client.get("/api/pack/state").json()["labels"]["locked"] is False
+    assert "labels" not in client.get("/api/pack/state").json()
 
 
 def test_nothing_left_to_download_is_refused(client, warehouse):
@@ -151,11 +137,13 @@ def test_the_archive_needs_csrf(client, warehouse):
 
 
 # --------------------------------------------------------------------- фильтр
-def test_the_filter_narrows_the_gate(client, warehouse):
-    """Выбран кабинет «Маркет» — замок считает его заказы, а не все подряд."""
-    labels = client.get(f"/api/pack/state?shop={warehouse['yandex']['id']}").json()["labels"]
-    assert [shop["title"] for shop in labels["shops"]] == ["Маркет"]
-    assert labels["pending"] == len(pending(warehouse)["yandex"])
+def test_filter_keeps_pending_files_separate_without_locking(client, warehouse):
+    from app.core import labels
+    remaining = labels.pending_everywhere([warehouse['yandex']])
+    assert [item['account']['id'] for item in remaining] == [warehouse['yandex']['id']]
+    assert remaining[0]['keys'] == pending(warehouse)['yandex']
+    assert 'labels' not in client.get(f"/api/pack/state?shop={warehouse['yandex']['id']}").json()
+
 
 
 def test_the_filter_narrows_the_archive(client, warehouse):
@@ -197,7 +185,7 @@ def test_a_refusing_marketplace_does_not_stop_the_others(client, warehouse, monk
     assert after["ozon"] == [] and after["avito"] == []
     assert after["yandex"] == before["yandex"], "невыгруженное должно остаться в очереди"
     # Замок не открылся: ярлыков Маркета так и нет.
-    assert client.get("/api/pack/state").json()["labels"]["locked"] is True
+    assert "labels" not in client.get("/api/pack/state").json()
 
 
 def test_everyone_refusing_is_an_error(client, warehouse, monkeypatch):
@@ -216,20 +204,20 @@ def test_the_archive_marks_downloaded_not_printed(client, warehouse):
     Раньше у Ozon выгрузка засчитывалась и как печать, а у Avito и Маркета —
     нет. Теперь одинаково: печать отмечает только печать.
     """
-    from app.core import db, labels
+    from app.core import db
 
     response = client.post("/api/pack/labels.zip")
     assert response.status_code == 200, response.text
     for table in ("postings", "avito_orders", "yandex_orders"):
         printed = db.query_one(f"SELECT COUNT(*) AS c FROM {table} WHERE print_count > 0")["c"]
         assert printed == 0, f"{table}: выгрузка засчиталась как печать"
-    assert all(labels.state(keys)["locked"] is False for keys in pending(warehouse).values())
+    assert not any(pending(warehouse).values())
 
     # Новый заказ без отметки «скачано» — замок снова закрыт.
     number = db.query_one("SELECT posting_number FROM postings WHERE label_saved_at IS NOT NULL LIMIT 1")[0]
     db.execute("UPDATE postings SET label_saved_at = NULL WHERE posting_number = ?", (number,))
-    state = client.get("/api/pack/state").json()["labels"]
-    assert state["locked"] is True and state["pending"] == 1
+    assert pending(warehouse)["ozon"] == [number]
+    assert "labels" not in client.get("/api/pack/state").json()
 
 
 # ------------------------------------------------------------- бронь при сквозной сборке
@@ -314,47 +302,27 @@ def test_orders_already_waiting_keep_their_labels_after_update(warehouse):
 
 
 # ------------------------------------------------- замок держит и сервер
-def test_server_does_not_open_an_order_before_labels(client, warehouse):
-    """Страница узнаёт о новых заказах раз в 30 секунд — сервер не ждёт её и не открывает заказ."""
-    from app.core import db
-
-    code = db.query_one(
-        "SELECT pb.barcode FROM product_barcodes pb JOIN posting_items i ON i.sku = pb.sku "
-        "AND i.account_id = pb.account_id JOIN postings p ON p.posting_number = i.posting_number "
-        "AND p.account_id = i.account_id WHERE p.status = 'awaiting_deliver' LIMIT 1")["barcode"]
-    locked = client.post("/api/pack/scan", json={"code": code}).json()
-    assert locked["action"] == "labels_locked"
-    assert "Сначала скачайте наклейки" in locked["message"]
-    assert locked["labels"]["locked"] is True
-    assert client.get("/api/pack/state").json()["state"]["active"] is None, "заказ не открыт"
-
-
-def test_open_packing_can_be_finished_then_the_gate_closes(client, warehouse, user):
-    """Начатую сборку замок не прерывает: её завершают или отменяют, а новую начать нельзя."""
-    from app.core import db, labels
+def test_server_opens_an_order_before_any_bulk_download(client, warehouse):
     from tests.conftest import pick_posting
-
-    for code in ("ozon", "avito", "yandex"):
-        source = {"ozon": ("postings", "posting_number"), "avito": ("avito_orders", "id"),
-                  "yandex": ("yandex_orders", "id")}[code]
-        labels.mark_saved(source[0], warehouse[code]["id"], pending(warehouse)[code], source[1])
     posting = pick_posting()
-    opened = client.post("/api/pack/scan", json={"code": posting["posting_number"]}).json()
-    assert opened["action"] == "posting_selected", opened["message"]
+    opened = client.post('/api/pack/scan', json={'code': posting['posting_number']}).json()
+    assert opened['action'] == 'posting_selected', opened
+    assert opened['state']['active']
+    assert opened['state']['sticker_download']['ready'] is True
+    assert 'labels' not in opened
 
-    # Посреди сборки подъехал новый заказ «Ожидает отгрузки».
-    other = db.query_one("SELECT posting_number FROM postings WHERE status = 'awaiting_deliver' "
-                         "AND posting_number != ? AND local_state = 'new' LIMIT 1", (posting["posting_number"],))
-    db.execute("UPDATE postings SET label_saved_at = NULL WHERE posting_number = ?", (other["posting_number"],))
 
-    item = posting["items"][0]
-    barcode = db.query_one("SELECT barcode FROM product_barcodes WHERE sku = ? LIMIT 1", (item["sku"],))["barcode"]
-    going = client.post("/api/pack/scan", json={"code": barcode}).json()
-    assert going["action"] != "labels_locked", "начатую сборку замок не прерывает"
-    assert going["labels"]["locked"] is True, "но в ответе уже видно, что наклейки ждут"
 
-    released = client.post("/api/pack/release").json()
-    assert released["labels"]["locked"] is True, "после отмены поле закрывается сразу, без ожидания опроса"
-    again = client.post("/api/pack/scan", json={"code": posting["posting_number"]}).json()
-    assert again["action"] == "labels_locked", "новую сборку до скачивания не начать"
-
+def test_new_pending_order_never_interrupts_current_or_next_packing(client, warehouse):
+    from app.core import db
+    from tests.conftest import pick_posting
+    posting = pick_posting()
+    opened = client.post('/api/pack/scan', json={'code': posting['posting_number']}).json()
+    assert opened['action'] == 'posting_selected', opened
+    db.execute('UPDATE postings SET label_saved_at = NULL')
+    assert 'labels' not in client.get('/api/pack/state').json()
+    released = client.post('/api/pack/release').json()
+    assert released['status'] == 'ok'
+    assert 'labels' not in released
+    again = client.post('/api/pack/scan', json={'code': posting['posting_number']}).json()
+    assert again['action'] == 'posting_selected', again

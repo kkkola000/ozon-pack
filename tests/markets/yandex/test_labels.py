@@ -17,6 +17,7 @@ from app.core import db
 from app.core import sync as core_sync
 from app.main import app
 from app.markets.yandex import client as yandex
+from app.markets.yandex import pack as yandex_pack
 from app.markets.yandex import sync as yandex_sync
 from app.markets.yandex.client import YandexClient, YandexError
 
@@ -208,16 +209,15 @@ def test_started_order_label_is_not_unloaded(client, market):
     """На «Сборку» — новые ярлыки только «Ожидает отгрузки», хотя Маркет отдал бы и этот."""
     started = work_ids(market, yandex.SUBSTATUS_STARTED)
     assert started, "в фикстуре нужен заказ «Ожидает сборки»"
-    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
-    assert gate["pending"] == len(work_ids(market))
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert len(yandex_pack.pending_labels(market["id"])) == len(work_ids(market))
 
     response = client.post(f"/api/pack/labels.zip?shop={market['id']}")
     assert response.status_code == 200, response.text
     names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
     assert f"{started[0]}.pdf" not in names
     assert started[0] not in {order for _c, order, _f in yandex.get_client(market).label_requests}
-    assert client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]["locked"] is False, \
-        "«Ожидает сборки» замок не держит"
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
 
 
 def test_started_order_waits_until_it_is_ready_to_ship(client, market):
@@ -226,8 +226,8 @@ def test_started_order_waits_until_it_is_ready_to_ship(client, market):
     fake = yandex.get_client(market)
     fake._orders[started]["substatus"] = yandex.SUBSTATUS_READY_TO_SHIP
     yandex_sync.sync_yandex(market)
-    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
-    assert gate == {**gate, "pending": 1, "locked": True}, "стал «Ожидает отгрузки» — его ярлык ждёт выгрузки"
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert yandex_pack.pending_labels(market["id"]) == [started]
     names = zipfile.ZipFile(io.BytesIO(client.post(f"/api/pack/labels.zip?shop={market['id']}").content)).namelist()
     assert names == [f"{started}.pdf"]
 
@@ -267,8 +267,8 @@ def test_label_saved_before_ready_to_ship_does_not_count(client, market):
     # Через общую синхронизацию: после неё ядро и отмечает переход в «Ожидает отгрузки».
     core_sync.sync_account(market)
 
-    gate = client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]
-    assert gate["locked"] is True and gate["pending"] == 1
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert yandex_pack.pending_labels(market["id"]) == [started]
     names = zipfile.ZipFile(io.BytesIO(client.post(f"/api/pack/labels.zip?shop={market['id']}").content)).namelist()
     assert names == [f"{started}.pdf"]
 
@@ -277,7 +277,8 @@ def test_label_saved_in_ready_to_ship_survives_the_next_sync(client, market):
     """Обычное обновление заказов отметку не трогает — иначе замок падал бы каждые пять минут."""
     assert client.post(f"/api/pack/labels.zip?shop={market['id']}").status_code == 200
     core_sync.sync_account(market)
-    assert client.get(f"/api/pack/state?shop={market['id']}").json()["labels"]["locked"] is False
+    assert "labels" not in client.get(f"/api/pack/state?shop={market['id']}").json()
+    assert not yandex_pack.pending_labels(market["id"])
 
 
 def test_early_labels_are_forgotten_once_on_update(market):

@@ -165,21 +165,6 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .tabs a .badge { background: var(--surface-2); }
 
 /* ---------- Рабочее место сборщика ---------- */
-/* Замок на сборке: пока стикеры не выгружены, поля сканирования нет вовсе.
-   Отсюда и вид — не полоска-подсказка, а то, что занимает её место. */
-.gate { text-align: center; padding: 26px 20px 30px; }
-.gate .what { font-size: 22px; font-weight: 800; letter-spacing: -.02em; }
-.gate .gate-why {
-  color: var(--muted); font-size: 14px; margin: 8px auto 20px; max-width: 600px; line-height: 1.5;
-}
-.gate .gate-why b { color: var(--text); }
-/* Разбивка замка по магазинам: чьи наклейки ждут и сколько. */
-.gate-shops { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
-.gate-shop {
-  display: flex; align-items: center; gap: 8px; font-size: 14px;
-  padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-2);
-}
-
 /* ---------- Зона сканирования на «Сборке» ----------
    Рамка говорит, в каком состоянии сканер: --zone — цвет состояния, его берут
    рамка, значок, метка и поле. Классы ставит market_pack.js. */
@@ -961,6 +946,9 @@ body.pack-open { overflow: hidden; }
 .settings-options { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 20px; align-items: center; }
 .settings-options .check { font-size: 14px; }
 .settings-options p { margin: 4px 0 0 26px; font-size: 12px; }
+.settings-downloads #sticker-folder { flex: 1; min-width: 160px; max-width: 480px; }
+.settings-downloads p { margin: 10px 0 0; }
+.settings-downloads [hidden] { display: none; }
 .settings-cutoff { display: flex; align-items: flex-end; justify-content: flex-end; gap: 8px; }
 .settings-cutoff input { display: block; width: 120px; margin-top: 6px; padding: 6px 10px; font-size: 13px; }
 .settings-assembly { padding: 16px 20px; }

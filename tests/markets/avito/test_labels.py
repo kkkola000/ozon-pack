@@ -9,7 +9,7 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, labels
+from app.core import accounts, db
 from app.main import app
 from app.markets.avito import client as avito
 from app.markets.avito import pack as avito_pack
@@ -54,15 +54,15 @@ def test_avito_archive_opens_the_lock(avito_cabinet):
     account = avito_cabinet
     with TestClient(app, follow_redirects=False) as client:
         csrf = login(client)
-        assert labels.state(avito_pack.pending_labels(account["id"]))["locked"] is True
+        assert avito_pack.pending_labels(account["id"])
         response = client.post(f"/api/pack/labels.zip?shop={account['id']}", headers={"X-CSRF-Token": csrf})
         assert response.status_code == 200, response.text
 
     assert names_in(response.content), "архив Avito пустой"
-    assert labels.state(avito_pack.pending_labels(account["id"])) == {"pending": 0, "locked": False}
+    assert not avito_pack.pending_labels(account["id"])
 
 
-def test_the_avito_pack_page_holds_the_gate(avito_cabinet):
+def test_the_avito_pack_page_has_no_download_gate(avito_cabinet):
     """Замок есть и в сборке Avito — шаблон тот же по смыслу."""
     with TestClient(app, follow_redirects=False) as client:
         login(client)
@@ -72,6 +72,6 @@ def test_the_avito_pack_page_holds_the_gate(avito_cabinet):
         page = client.get(old.headers["location"])
 
     assert page.status_code == 200
-    assert 'id="label-gate"' in page.text
+    assert 'id="label-gate"' not in page.text
     assert 'id="scan-panel"' in page.text
-    assert 'id="btn-labels"' in page.text
+    assert 'id="btn-labels"' not in page.text

@@ -1,7 +1,7 @@
 /* Рабочее место сборщика — одно на все площадки.
 
-   Здесь всё, что на складе одинаково: один поток сканов, замок на выгрузку
-   наклеек, история сканов, счётчики очереди, печать и опрос сервера. Адреса
+   Здесь всё, что на складе одинаково: один поток сканов, скачивание стикера
+   открытого заказа, история сканов, счётчики очереди, печать и опрос сервера. Адреса
    запросов тоже общие: кабинет в шапке больше ничего не решает, а какому
    кабинету принадлежит отсканированный код, разбирается сервер.
 
@@ -31,7 +31,6 @@ const packScan = document.getElementById('pack-scan');
 const SHOP_FILTER = new URLSearchParams(window.location.search).get('shop') || 'all';
 const at = (path) => `${path}?shop=${encodeURIComponent(SHOP_FILTER)}`;
 const STATE_URL = at('/api/pack/state');
-const LABELS_URL = at('/api/pack/labels.zip');
 const SCAN_URL = at('/api/pack/scan');
 const RELEASE_URL = at('/api/pack/release');
 const COMPLETE_URL = at('/api/pack/complete');
@@ -339,6 +338,7 @@ function renderActive(state) {
   hasActive = Boolean(state?.active) && pack !== null;
   opened = hasActive ? state : null;
   if (!hasActive) {
+    stickerOpening = null;
     // «Собрано» дожидается своих двух секунд — закроет его таймер.
     if (!doneTimer) closeModal();
     paintZone();
@@ -347,10 +347,28 @@ function renderActive(state) {
   showWork();
   paintModal(state);
   paintZone();
+  downloadOpenedSticker(state);
   const key = orderKey(state);
   if (state.marking?.status === 'accepted' && deferredLabels.delete(key)) {
     printLabel(pack.activeId(state.active));
   }
+}
+
+let stickerOpening = null;
+function downloadOpenedSticker(state) {
+  const key = orderKey(state);
+  if (stickerOpening?.key !== key) stickerOpening = { key, done: false, busy: false, retryAt: 0, warned: false };
+  const opening = stickerOpening;
+  const job = state.sticker_download;
+  if (!job?.ready || opening.done || opening.busy || Date.now() < opening.retryAt) return;
+  opening.busy = true;
+  StickerDownloads.save(job.url, job.filename).then(() => {
+    opening.done = true;
+  }).catch((error) => {
+    opening.retryAt = Date.now() + 10000;
+    if (!opening.warned) toast(`${error.message}. Скачивание будет повторено автоматически.`, 'error', 12000);
+    opening.warned = true;
+  }).finally(() => { opening.busy = false; });
 }
 
 function pushHistory(code, result) {
@@ -396,9 +414,6 @@ function applyResult(result, code, printWindow = null) {
   setBanner(result.status, result.message, shownCode(code || ''));
   beep(result.sound || result.status);
   if (result.counters) applyCounters(result.counters);
-  /* Замок — сразу по ответу: сборку завершили или отменили, а новые наклейки
-     не скачаны — поле закрывается сейчас, а не при следующем опросе. */
-  if (result.labels) applyGate(result.labels);
   if (code) pushHistory(shownCode(code), result);
   /* Печатать наклейку умеет не всякая площадка, и ключ у каждой свой. Берём
      ту, чей заказ только что открылся: renderActive уже поставил её выше. */
@@ -420,53 +435,7 @@ function applyResult(result, code, printWindow = null) {
   }
 }
 
-/* Замок: без выгруженных наклеек сканировать нечего, поэтому поле прячется
-   целиком. Наклейку площадка отдаёт, пока заказ в работе, — не забрали вовремя,
-   и её уже не получить.
 
-   Замок общий на все кабинеты под фильтром: сборка объединена, и начинать её,
-   скачав наклейки одного магазина, значит наткнуться посреди смены на заказ,
-   наклейки которого уже не взять.
-
-   Открытую сборку замок не трогает: товар у сборщика в руках, половина
-   отсканирована, и убрать поле сейчас значит бросить его с коробкой. Дадим
-   закрыть начатое — запрём после. */
-function applyGate(state) {
-  const gate = document.getElementById('label-gate');
-  const scanPanel = document.getElementById('scan-panel');
-  if (!gate || !scanPanel) return;
-  const pending = state?.pending || 0;
-  const locked = Boolean(state?.locked) && !hasActive;
-  gate.hidden = !locked;
-  scanPanel.hidden = locked;
-  if (!locked) {
-    const notice = `Подъехали новые заказы (${pending}). Завершите или отмените текущую сборку — `
-                 + 'затем скачайте наклейки.';
-    // Опрос идёт каждые 30 секунд: говорим один раз, а не встряхиваем рамку
-    // и не затираем итог скана при каждом опросе.
-    if (pending && hasActive && banner.querySelector('.text').textContent !== notice) {
-      setBanner('warning', notice);
-    }
-    return;
-  }
-  document.getElementById('gate-title').textContent = `Скачайте наклейки — ${unitWord(pending)}`;
-  /* Разбивка по магазинам: «9 заказов» не отвечает на вопрос «чьих», а у
-     каждой площадки наклейка называется по-своему — стикер, этикетка, ярлык. */
-  document.getElementById('gate-shops').innerHTML = (state.shops || []).map((shop) => `
-    <div class="gate-shop">
-      <i class="dot ${escapeHtml(shop.market)}"></i>
-      <b>${escapeHtml(shop.title)}</b>
-      <span class="muted">${escapeHtml(shop.word)} · ${shop.count}</span>
-    </div>`).join('');
-  document.getElementById('btn-labels').textContent = `Скачать наклейки (${pending})`;
-}
-
-/* «1 заказ», «2 заказа», «5 заказов». Слово общее: в замке заказы всех
-   площадок сразу, и назвать их отправлениями или ярлыками уже нельзя. */
-function unitWord(count) {
-  const tail = count % 100 >= 11 && count % 100 <= 14 ? 0 : count % 10;
-  return `${count} ${tail === 1 ? 'заказ' : tail >= 2 && tail <= 4 ? 'заказа' : 'заказов'}`;
-}
 
 /* Плитки очереди рисует сервер по фильтру: у каждой в data-key лежит имя
    числа, которое в неё идёт. Так JS не знает, чьи это плитки и сколько их. */
@@ -622,28 +591,12 @@ document.getElementById('btn-sheet').onclick = async (event) => {
   }
 };
 
-document.getElementById('btn-labels').onclick = async (event) => {
-  if (!await downloadArchive(LABELS_URL, event.target, 'naklejki.zip')) return;
-  /* Отказ одной площадки не отменяет выгрузку остальных: архив приедет, но её
-     заказы останутся в замке. Говорим об этом вслух — иначе «скачал, а сборка
-     не открылась» выглядит поломкой панели. */
-  const data = await refreshState();
-  if (data?.labels?.locked) {
-    toast('Часть наклеек площадка не отдала — они остались в списке. Попробуйте ещё раз.',
-          'error', 10000);
-  } else {
-    toast('Наклейки скачаны — можно начинать сборку', 'ok');
-  }
-};
-
-/* Опрашиваем сервер сами: новые заказы подъезжают фоновой синхронизацией, и
-   без этого замок опускался бы только после ручного обновления страницы. */
+/* Опрос обновляет сборку, очередь и готовность стикера после проверки ЧЗ. */
 async function refreshState() {
   try {
     const data = await api(STATE_URL, undefined, 'GET');
     renderActive(data.state);
     applyCounters(data.counters);
-    applyGate(data.labels);
     /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
        панели. Опрос идёт каждые 30 секунд и к свежести данных площадки
        отношения не имеет. */

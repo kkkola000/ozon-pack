@@ -32,7 +32,7 @@ MARKET = Market(
     schema=store.SCHEMA + returns.SCHEMA,
     raw_tables=("postings", "returns"),
     migrate=migrations.migrate,
-    # Стикеры: выгружаются до сборки, вместе со стикерами других кабинетов.
+    # Стикеры: источник оригиналов для архива и скачивания при сборке.
     labels=LabelsSource(
         word="стикеры",
         pending=pack.pending_labels,

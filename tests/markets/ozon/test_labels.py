@@ -77,11 +77,10 @@ def test_a_saved_posting_leaves_the_queue(sample_data):
 
 def test_the_lock_opens_when_nothing_is_left(sample_data):
     account = accounts.default_account()
-    assert labels.state(ozon_pack.pending_labels(account["id"]))["locked"] is True
+    assert ozon_pack.pending_labels(account["id"])
     labels.mark_saved("postings", account["id"], ozon_pack.pending_labels(account["id"]), "posting_number")
 
-    state = labels.state(ozon_pack.pending_labels(account["id"]))
-    assert state == {"pending": 0, "locked": False}
+    assert not ozon_pack.pending_labels(account["id"])
 
 
 # ------------------------------------------------------------------- архив
@@ -105,7 +104,7 @@ def test_archive_marks_what_it_took(client):
     assert client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf}).status_code == 200
 
     assert ozon_pack.pending_labels(account["id"]) == []
-    assert labels.state(ozon_pack.pending_labels(account["id"]))["locked"] is False
+    assert not ozon_pack.pending_labels(account["id"])
     saved = db.query_one(
         "SELECT COUNT(*) AS c FROM postings WHERE account_id = ? AND label_saved_at IS NOT NULL",
         (account["id"],))["c"]
@@ -147,22 +146,22 @@ def test_nothing_is_stored_on_disk(client, tmp_path):
 
 
 # --------------------------------------------------------------- состояние
-def test_state_carries_the_lock(client):
+def test_state_never_carries_the_download_lock(client):
     csrf = login(client)
     state = client.get("/api/pack/state").json()
-    assert state["labels"]["locked"] is True
-    assert state["labels"]["pending"] > 0
+    assert "labels" not in state
+    assert ozon_pack.pending_labels(accounts.default_account()["id"])
 
     client.post("/api/pack/labels.zip", headers={"X-CSRF-Token": csrf})
-    opened = client.get("/api/pack/state").json()["labels"]
-    assert opened["pending"] == 0 and opened["locked"] is False and opened["shops"] == []
+    assert "labels" not in client.get("/api/pack/state").json()
+    assert not ozon_pack.pending_labels(accounts.default_account()["id"])
 
 
-def test_the_pack_page_holds_the_gate(client):
+def test_the_pack_page_has_no_download_gate(client):
     """На странице сборки есть и замок, и поле — показывает их уже JS."""
     login(client)
     page = client.get("/pack")
     assert page.status_code == 200
-    assert 'id="label-gate"' in page.text
+    assert 'id="label-gate"' not in page.text
     assert 'id="scan-panel"' in page.text
-    assert 'id="btn-labels"' in page.text
+    assert 'id="btn-labels"' not in page.text

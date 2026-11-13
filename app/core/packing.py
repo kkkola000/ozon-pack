@@ -237,8 +237,15 @@ def _sign(state: dict, shop: dict) -> dict:
     любого кабинета — угадать по шапке нельзя, и подпись нужна в самом
     состоянии, а не только рядом с ним.
     """
+    from . import assembly_stickers
+
     market = _market(shop)
-    return {**state, "market": market.code if market else None, "shop": shop.get("title")}
+    signed = {**state, "market": market.code if market else None, "shop": shop.get("title")}
+    active = state.get('active') or {}
+    number = str(active.get('posting_number') or active.get('id') or '')
+    if number:
+        signed['sticker_download'] = assembly_stickers.descriptor(shop, number)
+    return signed
 
 
 def _run(shop: dict, call, *args) -> dict:
@@ -253,34 +260,6 @@ def _run(shop: dict, call, *args) -> dict:
             if result.get('action') == 'ready_for_label':
                 result['action'] = 'product_scanned'
     return result
-
-
-def _labels_locked(where: list[dict], user: dict, code: str) -> dict | None:
-    """Наклейки не скачаны — новый заказ не открываем. None — можно работать.
-
-    Замок держит не только страница (она прячет поле сканирования), но и
-    сервер: страница узнаёт о новых заказах раз в 30 секунд, и в этот промежуток
-    сборщик успел бы открыть заказ без наклейки. Начатую сборку замок не
-    трогает — её можно завершить или отменить, новую начать нельзя.
-    """
-    from . import labels as core_labels
-
-    waiting = core_labels.pending_everywhere(where)
-    if not waiting:
-        return None
-    gate = core_labels.state_everywhere(waiting)
-    shops = ", ".join(f"{shop['title']} — {shop['count']}" for shop in gate["shops"])
-    db.log_event("scan_labels_locked", level="warn", user=user, barcode=code,
-                 message=f"Наклейки не скачаны: {shops}")
-    return {
-        "status": "error",
-        "message": f"Сначала скачайте наклейки ({shops}): новые заказы ждут отгрузки.",
-        "action": "labels_locked",
-        "sound": "error",
-        "state": {"active": None, "items": [], "done": 0, "total": 0, "complete": False},
-        "market": None,
-        "labels": gate,
-    }
 
 
 def _kit_order(shop: dict, user: dict, code: str) -> dict | None:
@@ -356,10 +335,6 @@ def _scan(where: list[dict], user: dict, code: str) -> dict:
         if blocked is not None:
             return blocked
         return _locked_scan(open_shop, user, code)
-
-    locked = _labels_locked(where, user, code)
-    if locked is not None:
-        return locked
 
     target = owner_of(where, user, code) or _home(where)
     if target is None:

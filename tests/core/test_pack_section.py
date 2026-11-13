@@ -275,7 +275,7 @@ def test_updated_at_is_the_marketplace_time(client):
 def test_header_has_no_title_and_chips_go_left(client):
     """В шапке раздела только фильтр, прижатый к левому краю."""
     page = client.get("/pack").text
-    head = page.split('id="label-gate"', 1)[0]
+    head = page.split('id="scan-panel"', 1)[0]
     assert "<h2" not in head.split('<div class="panel">', 1)[-1], "заголовок «Сборка» остался"
     assert "justify-content:flex-end" not in head, "чипы всё ещё прижаты вправо"
 
