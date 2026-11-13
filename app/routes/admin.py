@@ -19,6 +19,9 @@ router = APIRouter()
 MIN_PASSWORD = 12
 
 EVENT_LABELS = {
+    'cargo_saved': 'Распределены грузоместа',
+    'cargo_scan': 'Подтверждено грузоместо',
+    'cargo_split': 'Разделён заказ Ozon',
     'sticker_download': 'Скачивание стикера при сборке',
     "stickers_download": "Скачивание стикеров из архива",
     "stickers_retry": "Повтор сохранения стикера",

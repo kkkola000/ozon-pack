@@ -274,13 +274,39 @@ class FakeYandexClient(YandexClient):
         order = self._orders[str(order_id)]
         if str(order['campaignId']) != str(campaign_id):
             raise ValueError('wrong campaign')
-        order['delivery']['boxesLayout'] = deepcopy(boxes)
+        if getattr(self, 'reject_ready_boxes', False) and order['substatus'] == 'READY_TO_SHIP':
+            raise YandexError('Layout cannot be changed after READY_TO_SHIP', status=400)
+        if not hasattr(self, 'box_requests'):
+            self.box_requests = []
+            self._box_serial = 0
+        self.box_requests.append(deepcopy(boxes))
+        result = deepcopy(boxes)
+        for number, box in enumerate(result, 1):
+            self._box_serial += 1
+            box.update(boxId=int(order_id) * 1000 + self._box_serial, barcode=f'{order_id}-{number}')
+        order['delivery']['boxesLayout'] = result
         for item in order['items']:
             instances = [i for box in boxes for p in box['items'] if str(p['id']) == str(item['id'])
                          for i in p.get('instances', [])]
+            # ЧЗ одного многоместного товара повторён в каждой части, но экземпляр остаётся один.
+            unique = []
+            for instance in instances:
+                if instance not in unique:
+                    unique.append(instance)
+            instances = unique
             item['instances'] = [dict(i, cisFull=i['cis'], cis=i['cis'].split('\x1d')[0]) if 'cis' in i else i
                                  for i in instances]
-        return {'status': 'OK', 'result': {'boxes': deepcopy(boxes)}}
+        return {'status': 'OK', 'result': {'boxes': deepcopy(result)}}
+
+    def box_label(self, campaign_id, order_id, box_id, *, shipment_id='0'):
+        from tests.pdfstub import make_label_pdf
+        order = self.order_details(order_id)
+        if str(order['campaignId']) != str(campaign_id):
+            raise ValueError('wrong campaign')
+        box = next((b for b in order['delivery'].get('boxesLayout', []) if str(b['boxId']) == str(box_id)), None)
+        if not box:
+            raise YandexError('Box not found', status=404)
+        return make_label_pdf([{'posting_number': box['barcode'], 'tpl': 'Yandex'}])
 
     def identifiers_status(self, campaign_id, order_id):
         raw = self.order_details(order_id)

@@ -190,6 +190,7 @@
         <b id="pack-count"></b>
       </div>
       <div class="pack-items" id="pack-items"></div>
+      <div class="cargo-controls" id="pack-cargo-controls" hidden><button class="btn small" id="btn-cargo" type="button">＋ Добавить грузоместо</button></div>
       <div class="pack-foot" id="pack-foot"></div>
     </div>
 
@@ -210,5 +211,6 @@
 <script src="/static/{{ code }}/pack.js?v={{ static_version() }}"></script>
 {% endfor %}
 <script src="/static/sticker_downloads.js?v={{ static_version() }}"></script>
+<script src="/static/cargo_pack.js?v={{ static_version() }}"></script>
 <script src="/static/market_pack.js?v={{ static_version() }}"></script>
 {% endblock %}

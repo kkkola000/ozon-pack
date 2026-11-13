@@ -85,7 +85,10 @@ def archive_page(request: Request, account_id: str = '', market: str = '', q: st
 
 @router.get('/api/stickers/{version_id}.pdf')
 def archive_pdf(version_id: int, download: bool = False, user: dict = Depends(require_section('stickers'))):
-    item = sticker_archive.version(version_id)
+    try:
+        item = sticker_archive.version(version_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if not item:
         raise HTTPException(404, 'Стикер не найден или срок хранения истёк')
     filename = safe_filename(f"{item['marketplace']}-{item['order_id']}-v{item['id']}.pdf")
@@ -102,21 +105,18 @@ def archive_zip(request: Request, ids: list[int] = Body(..., max_length=100),
     ids = list(dict.fromkeys(ids))
     if not ids:
         raise HTTPException(400, 'Выберите стикеры для скачивания')
-    marks = ','.join('?' for _ in ids)
-    size = db.query_one(
-        f'SELECT COUNT(*) AS n, SUM(length(v.pdf)) AS size FROM sticker_versions v '
-        f'JOIN sticker_orders o ON o.id = v.archive_id WHERE v.id IN ({marks}) AND v.saved_at >= ?',
-        ids + [sticker_archive.cutoff()],
-    )
-    if size['n'] != len(ids):
-        raise HTTPException(404, 'Один из выбранных стикеров отсутствует или устарел')
-    if size['size'] > sticker_archive.MAX_ZIP_BYTES:
-        raise HTTPException(400, 'Архив больше 100 МБ. Выберите меньше стикеров.')
     files = {}
+    size = 0
     for version_id in ids:
-        item = sticker_archive.version(version_id)
+        try:
+            item = sticker_archive.version(version_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         if not item:
             raise HTTPException(404, 'Стикер больше недоступен')
+        size += len(item['pdf'])
+        if size > sticker_archive.MAX_ZIP_BYTES:
+            raise HTTPException(400, 'Архив больше 100 МБ. Выберите меньше стикеров.')
         filename = safe_filename(f"{item['marketplace']}-{item['account_id']}-v{version_id}-{item['order_id']}.pdf")
         files[filename] = item['pdf']
     db.log_event('stickers_download', user=user, message=f'Скачаны стикеры из архива: {len(files)}')

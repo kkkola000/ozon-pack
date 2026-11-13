@@ -898,6 +898,21 @@ body.pack-open { overflow: hidden; }
 .pack-mark.ok { color: var(--ok); background: var(--ok-soft); }
 .pack-mark.err { color: var(--err); background: var(--err-soft); }
 
+/* Грузоместа сохраняют существующие карточки и форму сканирования. */
+.cargo-controls { display: flex; justify-content: center; padding-top: 14px; }
+.cargo-controls[hidden] { display: none; }
+.cargo-place + .cargo-place { margin-top: 14px; }
+.cargo-extra { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
+.cargo-title { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+.cargo-drop { display: grid; gap: 10px; min-height: 30px; }
+.cargo-empty { min-height: 112px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); color: var(--muted); font-size: 14px; }
+.cargo-over > .cargo-drop { outline: 2px dashed var(--accent); outline-offset: 3px; }
+.cargo-member { position: relative; min-width: 0; }
+.cargo-member[draggable=true] { cursor: grab; padding-left: 18px; }
+.cargo-handle { position: absolute; top: 50%; left: 0; transform: translateY(-50%); color: var(--muted); font-size: 20px; }
+.cargo-dragging { opacity: .35; }
+.cargo-part { display: block; margin: 5px 0 0 18px; color: var(--muted); font-size: 12px; }
+
 /* Шапка: навигация слева, аккаунт справа. Палитра панели сохраняется. */
 .topbar { gap: 20px; padding: 0 28px; min-height: 61px; }
 .topbar > nav > a:first-child { padding-left: 0; }

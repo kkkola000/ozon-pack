@@ -18,13 +18,13 @@
 """
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from ..core import board as core_board
-from ..core import accounts, assembly_stickers, db, marking
+from ..core import accounts, assembly_stickers, cargo, db, marking
 from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import orders_sheet
@@ -258,6 +258,57 @@ def api_orders_sheet(request: Request, user: dict = Depends(require_section("pac
 
 
 # ------------------------------------------------------------------ наклейки
+@contextmanager
+def _cargo_lock(user: dict):
+    try:
+        with core_packing._user_lock(user):
+            yield
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+def _cargo_account(user: dict):
+    account = core_packing.started(user)
+    if not account:
+        raise HTTPException(409, 'Сначала откройте заказ в сборке')
+    active = core_packing.workspace_of(account).load_state(account, user).get('active') or {}
+    return account, str(active.get('posting_number') or active.get('id') or '')
+
+
+@router.post('/api/pack/cargo/open')
+def open_cargo(request: Request, user: dict = Depends(require_section('pack'))):
+    check_csrf(request)
+    with _cargo_lock(user):
+        account, order_id = _cargo_account(user)
+        try:
+            cargo.open_editor(account, order_id, user)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except MarketError as exc:
+            raise HTTPException(502, 'Площадка не подтвердила текущую раскладку заказа') from exc
+        return {'state': core_packing.state(user)}
+
+
+@router.post('/api/pack/cargo/save')
+def save_cargo(request: Request, payload: dict = Body(...), user: dict = Depends(require_section('pack'))):
+    check_csrf(request)
+    with _cargo_lock(user):
+        account, order_id = _cargo_account(user)
+        try:
+            cargo.save_editor(account, order_id, user, payload.get('revision'), payload.get('boxes'))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except MarketError as exc:
+            message = ('Маркет отклонил изменение грузомест. API может запрещать его после «Готов к отгрузке».'
+                       if exc.status in {400, 409, 422} else
+                       'Пока не удалось подтвердить грузоместа. Повторите «Сохранить» для проверки результата.')
+            raise HTTPException(409 if exc.status in {400, 409, 422} else 502, message) from exc
+        from ..core.config import settings
+        plan = cargo.get(account['id'], order_id)
+        return {'status': 'ok', 'state': core_packing.state(user),
+                'autoprint': settings.autoprint and plan['status'] == 'confirmed'}
+
+
 @router.get('/api/pack/sticker/{account_id}/{order_id}.pdf')
 def download_sticker(account_id: int, order_id: str, user: dict = Depends(require_section('pack'))):
     """Оригинальный стикер на компьютер; счётчик печати не меняется."""
@@ -295,6 +346,10 @@ def api_label(code: str, order_id: str, with_products: bool = False, user: dict 
             status_code=400,
             detail=f"Заказ {order_id} ещё «Ожидает сборки» — наклейки печатаются с «Ожидает отгрузки»",
         )
+    try:
+        cargo.labels_allowed(shop['id'], order_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
     # Та же функция площадки, что печатает наклейки в «Заказах»: одна на всё.
     try:
         pdf, filename = board.labels(shop, user, [order_id])

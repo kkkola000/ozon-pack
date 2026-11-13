@@ -75,7 +75,8 @@ def classify(account_id: int, code: str) -> tuple[str, Any]:
     variants = barcode_variants(code)
     if not variants:
         return "unknown", None
-    number = order_id_from_code(code)
+    from ...core import cargo
+    number = cargo.label_order(account_id, code) or order_id_from_code(code)
     if number and number not in variants:
         variants.append(number)
 
@@ -851,6 +852,10 @@ def label_files(account: dict, order_ids: list[str]) -> tuple[dict[str, bytes], 
             wanted.append(order_id)
 
     def fetch(order_id: str) -> bytes:
+        from ...core import cargo
+        cargo.labels_allowed(account['id'], order_id)
+        if cargo.needs_labels(account['id'], order_id):
+            return cargo.ensure_labels(account, order_id)
         return client.order_labels(campaigns[order_id], order_id, fmt=page_format)
 
     with ThreadPoolExecutor(max_workers=min(LABEL_WORKERS, len(wanted) or 1)) as pool:

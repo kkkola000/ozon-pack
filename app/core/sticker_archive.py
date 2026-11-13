@@ -136,6 +136,11 @@ def save(archive_id: int, pdf: bytes) -> int:
 
 def capture(account: dict, archive_id: int, order_id: str) -> None:
     """Один заказ за запрос: многостраничный PDF нельзя делить по предположению."""
+    from . import cargo
+    if cargo.needs_labels(account['id'], order_id):
+        pdf = cargo.ensure_labels(account, order_id)
+        save(archive_id, pdf)
+        return
     if db.query_one('SELECT id FROM sticker_versions WHERE archive_id = ? LIMIT 1', (archive_id,)):
         return
     market = _source(account)
@@ -246,11 +251,18 @@ def remember_batch(account: dict, keys: list[str], pdf: bytes | None) -> None:
 def purge() -> None:
     before = cutoff()
     with db.write() as conn:
-        conn.execute('DELETE FROM sticker_versions WHERE saved_at < ?', (before,))
+        conn.execute('DELETE FROM cargo_labels WHERE saved_at < ?', (before,))
+        conn.execute('DELETE FROM sticker_versions WHERE saved_at < ? AND NOT EXISTS '
+                     '(SELECT 1 FROM sticker_orders o JOIN cargo_labels c ON c.account_id=o.account_id AND c.order_id=o.order_id '
+                     'WHERE o.id=sticker_versions.archive_id)', (before,))
         conn.execute('DELETE FROM sticker_orders WHERE created_at < ? '
                      'AND NOT EXISTS(SELECT 1 FROM sticker_versions v WHERE v.archive_id = sticker_orders.id)', (before,))
         conn.execute('DELETE FROM sticker_aliases WHERE NOT EXISTS '
                      '(SELECT 1 FROM sticker_orders o WHERE o.id = sticker_aliases.archive_id)')
+
+
+_SAVED_AT = ('COALESCE((SELECT MAX(c.saved_at) FROM cargo_labels c WHERE '
+             'c.account_id=o.account_id AND c.order_id=o.order_id), v.saved_at, o.created_at)')
 
 
 def _filters(account_id: int | None, market: str, q: str, since: str, until: str, state: str):
@@ -268,10 +280,10 @@ def _filters(account_id: int | None, market: str, q: str, since: str, until: str
                           'AND instr(lower(a.alias), lower(?)) > 0))')
         params += [q, q, q]
     if since:
-        conditions.append('date(COALESCE(v.saved_at, o.created_at), ?) >= ?')
+        conditions.append(f'date({_SAVED_AT}, ?) >= ?')
         params += [f'{settings.timezone_offset:+d} hours', since]
     if until:
-        conditions.append('date(COALESCE(v.saved_at, o.created_at), ?) <= ?')
+        conditions.append(f'date({_SAVED_AT}, ?) <= ?')
         params += [f'{settings.timezone_offset:+d} hours', until]
     if state == 'error':
         conditions.append('o.error IS NOT NULL')
@@ -286,14 +298,15 @@ def search(*, account_id: int | None = None, market: str = '', q: str = '', sinc
            until: str = '', state: str = '', page: int = 1) -> tuple[list[dict], int]:
     where, params = _filters(account_id, market, q, since, until, state)
     join = (' FROM sticker_orders o LEFT JOIN sticker_versions v ON v.id = '
-            '(SELECT MAX(id) FROM sticker_versions WHERE archive_id = o.id AND saved_at >= ?) ')
-    params = [cutoff()] + params
+            '(SELECT MAX(id) FROM sticker_versions WHERE archive_id = o.id AND (saved_at >= ? OR EXISTS '
+            '(SELECT 1 FROM cargo_labels c WHERE c.account_id=o.account_id AND c.order_id=o.order_id AND c.saved_at>=?))) ')
+    params = [cutoff(), cutoff()] + params
     total = db.query_one('SELECT COUNT(*) AS n' + join + 'WHERE ' + where, params)['n']
     rows = db.query(
-        'SELECT o.*, v.id AS version_id, v.saved_at, '
+        f'SELECT o.*, v.id AS version_id, {_SAVED_AT} AS saved_at, '
         '(SELECT COUNT(*) FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id '
         'WHERE m.archive_id=o.id AND c.active=1) AS marking_count'
-        + join + 'WHERE ' + where + ' ORDER BY COALESCE(v.saved_at, o.created_at) DESC, o.id DESC LIMIT ? OFFSET ?',
+        + join + 'WHERE ' + where + f' ORDER BY {_SAVED_AT} DESC, o.id DESC LIMIT ? OFFSET ?',
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
     )
     return [dict(row) for row in rows], total
@@ -302,9 +315,21 @@ def search(*, account_id: int | None = None, market: str = '', q: str = '', sinc
 def version(version_id: int) -> dict | None:
     row = db.query_one(
         'SELECT v.*, o.order_id, o.order_number, o.marketplace, o.shop_title FROM sticker_versions v '
-        'JOIN sticker_orders o ON o.id = v.archive_id WHERE v.id = ? AND v.saved_at >= ?', (version_id, cutoff()),
+        'JOIN sticker_orders o ON o.id = v.archive_id WHERE v.id = ? AND (v.saved_at >= ? OR EXISTS '
+        '(SELECT 1 FROM cargo_labels c WHERE c.account_id=o.account_id AND c.order_id=o.order_id AND c.saved_at>=?))',
+        (version_id, cutoff(), cutoff()),
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+    result = dict(row)
+    from . import cargo
+    cargo.labels_allowed(result['account_id'], result['order_id'])
+    if cargo.needs_labels(result['account_id'], result['order_id']):
+        result['pdf'] = cargo.cached_pdf(result['account_id'], result['order_id'])
+        stamp = db.query_one('SELECT MAX(saved_at) AS stamp FROM cargo_labels WHERE account_id=? AND order_id=?',
+                             (result['account_id'], result['order_id']))
+        result['saved_at'] = stamp['stamp'] or result['saved_at']
+    return result
 
 
 def retry(archive_id: int) -> None:

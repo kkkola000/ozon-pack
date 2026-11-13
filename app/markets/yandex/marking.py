@@ -121,6 +121,15 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
         raise marking.Rejected({c['item_key']: 'Состав заказа Маркета изменился' for c in codes})
     if raw.get('status') != 'PROCESSING':
         raise ValueError('Заказ Маркета вышел из рабочего статуса')
+    from ...core import cargo
+    plan = cargo.get(account['id'], order_id)
+    if plan and raw.get('substatus') == 'STARTED':
+        user = db.query_one('SELECT id,login,role FROM users WHERE id=(SELECT user_id FROM marking_orders '
+                            'WHERE account_id=? AND order_id=?)', (account['id'], order_id))
+        if not user:
+            raise ValueError('Не найден сборщик заказа')
+        cargo.apply(account, order_id, dict(user), plan['boxes'], codes, dispatch)
+        return
     if raw.get('substatus') == 'READY_TO_SHIP':
         if _saved_codes(raw, codes):
             return  # коды уже переданы, теперь проверяем их результат

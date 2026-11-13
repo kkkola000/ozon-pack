@@ -244,9 +244,54 @@ class FakeOzonClient(OzonClient):
         if posting["status"] != "awaiting_packaging":
             raise OzonError(f"Отправление уже в статусе {posting['status']}", status=409)
         self._apply_exemplars(posting_number)
+        if len(packages) > 1:
+            return self._split_ship(posting_number, packages)
         posting["status"] = "awaiting_deliver"
         posting["substatus"] = "posting_awaiting_deliver"
         return {"postings": [posting_number], "additional_data": []}
+
+    def _split_ship(self, posting_number, packages):
+        from copy import deepcopy
+        from collections import defaultdict
+        original = deepcopy(self._postings[posting_number])
+        products = {str(p['sku']): p for p in original['products']}
+        payload = deepcopy(getattr(self, '_marking_payloads', {}).get(posting_number, {}))
+        positions = defaultdict(int)
+        numbers = []
+        prefix, suffix = posting_number.rsplit('-', 1)
+        suffix = int(suffix)
+        for index, package in enumerate(packages):
+            number = posting_number if index == 0 else f'{prefix}-{suffix + index}'
+            while number in self._postings and number != posting_number:
+                suffix += 100
+                number = f'{prefix}-{suffix + index}'
+            child = deepcopy(original)
+            child.update(posting_number=number, status='awaiting_deliver', substatus='posting_awaiting_deliver')
+            child['products'] = []
+            child.pop('product_exemplars', None)
+            child['barcodes'] = {'upper_barcode': f'II{str(child.get("order_id", 0))}{index + 1:03}',
+                                 'lower_barcode': f'LBL{str(child.get("order_id", 0))}{index + 1:03}'}
+            child_payload = {'posting_number': number, 'products': []}
+            for item in package:
+                key, quantity = str(item['product_id']), int(item['quantity'])
+                child['products'].append({**deepcopy(products[key]), 'quantity': quantity})
+                marked = next((p for p in payload.get('products', []) if str(p['product_id']) == key), None)
+                if marked:
+                    begin = positions[key]
+                    child_payload['products'].append({'product_id': item['product_id'],
+                                                     'exemplars': deepcopy(marked['exemplars'][begin:begin + quantity])})
+                positions[key] += quantity
+            child.setdefault('requirements', {})['products_requiring_mandatory_mark'] = [
+                str(s) for s in (original.get('requirements') or {}).get('products_requiring_mandatory_mark', [])
+                if str(s) in {str(p['sku']) for p in child['products']}]
+            self._postings[number] = child
+            if child_payload['products']:
+                self._marking_payloads[number] = child_payload
+                self._apply_exemplars(number)
+            numbers.append(number)
+        for number in numbers:
+            self._postings[number]['related_postings'] = {'related_posting_numbers': list(numbers)}
+        return {'postings': numbers, 'additional_data': []}
 
     def package_label_batch(self, posting_numbers):  # type: ignore[override]
         """Задание v3/create + v2/get одним вызовом: PDF и отправления без стикера."""

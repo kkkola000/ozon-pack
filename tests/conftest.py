@@ -23,6 +23,8 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "require_all_items", True)
     monkeypatch.setattr(settings, "autoprint", True)
     monkeypatch.setattr(settings, "auto_ship_on_scan", False)
+    # Старые сценарии проверяют обычную сборку; новые тесты разделения включают флаг явно.
+    monkeypatch.setattr(settings, 'split_orders_on_pack', False)
     monkeypatch.setattr(settings, "admin_password", "test-admin-pass")
     # Фоновый поток синхронизации в тестах не нужен: данные грузим фикстурой явно.
     monkeypatch.setattr(settings, "sync_enabled", False)

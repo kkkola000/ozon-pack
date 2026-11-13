@@ -237,7 +237,7 @@ def _sign(state: dict, shop: dict) -> dict:
     любого кабинета — угадать по шапке нельзя, и подпись нужна в самом
     состоянии, а не только рядом с ним.
     """
-    from . import assembly_stickers
+    from . import assembly_stickers, cargo
 
     market = _market(shop)
     signed = {**state, "market": market.code if market else None, "shop": shop.get("title")}
@@ -245,7 +245,7 @@ def _sign(state: dict, shop: dict) -> dict:
     number = str(active.get('posting_number') or active.get('id') or '')
     if number:
         signed['sticker_download'] = assembly_stickers.descriptor(shop, number)
-    return signed
+    return cargo.enrich(shop, signed)
 
 
 def _run(shop: dict, call, *args) -> dict:
@@ -292,6 +292,9 @@ def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
     active = current.get('active') or {}
     number = str(active.get('posting_number') or active.get('id') or '')
     try:
+        from . import cargo
+        if cargo.split_pending(open_shop['id'], number):
+            raise ValueError('Дождитесь подтверждения переноса ЧЗ в новые отправления')
         with order_lock.hold(open_shop['id'], number):
             marking.prepare(open_shop, number, for_scan=True)
             saved = marking.save_scan(open_shop, user, current, code)
@@ -334,6 +337,15 @@ def _scan(where: list[dict], user: dict, code: str) -> dict:
         blocked = _kit_order(open_shop, user, code)
         if blocked is not None:
             return blocked
+        from . import cargo
+        checked = cargo.scan_label(open_shop, user, code, marking.enrich(open_shop, current))
+        if checked:
+            if checked['done']:
+                active = current['active']
+                return _locked_scan(open_shop, user, str(active.get('posting_number') or active.get('id')))
+            return {'status': 'warning' if checked['duplicate'] else 'ok', 'message': checked['message'],
+                    'action': 'cargo_label_scanned', 'sound': 'ok',
+                    'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
         return _locked_scan(open_shop, user, code)
 
     target = owner_of(where, user, code) or _home(where)

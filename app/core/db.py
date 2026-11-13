@@ -426,9 +426,9 @@ def _registry():
 
 def full_schema() -> str:
     """Схема целиком: общие таблицы плюс таблицы каждой площадки."""
-    from . import marking, readiness
+    from . import cargo, marking, readiness
 
-    return SCHEMA + marking.SCHEMA + readiness.SCHEMA + "".join(market.schema for market in _registry().all_markets())
+    return SCHEMA + marking.SCHEMA + readiness.SCHEMA + cargo.SCHEMA + "".join(market.schema for market in _registry().all_markets())
 
 
 def create_sql(table: str) -> str:
@@ -463,6 +463,7 @@ CORE_TABLES_WITH_NEW_COLUMNS = (
     "product_sets", "product_set_items", "return_acts", "shipped_items",
     "sticker_orders", "sticker_versions", "sticker_aliases",
     "marking_orders", "marking_codes", "order_operations", "ready_requests",
+    "cargo_orders", "cargo_labels", "cargo_barcodes", "cargo_split_children", "cargo_split_intents",
 )
 
 
@@ -593,7 +594,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # Таблицы с данными кабинета: чистятся вместе с ним. product_link_skips сюда
 # не входит — в ней решение про артикул, а не про кабинет.
-CORE_DATA_TABLES = ("ready_requests", "order_operations", "marking_orders", "sticker_aliases", "sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
+CORE_DATA_TABLES = ("cargo_barcodes", "cargo_labels", "cargo_orders", "cargo_split_children", "cargo_split_intents", "ready_requests", "order_operations", "marking_orders", "sticker_aliases", "sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
                     "product_sets", "product_set_items")
 
 

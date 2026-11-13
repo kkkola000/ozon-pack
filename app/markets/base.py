@@ -222,6 +222,17 @@ class MarkingSource:
     item_key: Callable[[dict], str]
     # Уточнение необязательной маркировки только при явном скане ЧЗ.
     discover: Callable[[dict, str], dict] | None = None
+    # После разделения отправления перенести ЧЗ только по подтверждённым экземплярам.
+    redistribute: Callable[[dict, dict, str, list[dict]], bool] | None = None
+
+
+@dataclass(frozen=True)
+class CargoSource:
+    read: Callable[[dict, str], dict]
+    write: Callable[..., dict]
+    label: Callable[[dict, str, str], bytes]
+    prepare_ready: Callable[[dict, dict, str], None]
+    before_ready: Callable[[dict, dict, str], None]
 
 
 @dataclass(frozen=True)
@@ -299,6 +310,7 @@ class Market:
     sync: Callable[..., dict]                # загрузка данных кабинета: sync(account, *, returns_too=True)
     stats: Callable[[int], dict[str, int]]   # плитки в «Настройках»
     marking: MarkingSource | None = None
+    cargo: CargoSource | None = None
     # Запасные ключи из .env — только там, где они исторически были (Ozon).
     env_credentials: Callable[[], tuple[str, str]] | None = None
     # Свои таблицы: DDL и какие из них хранят ответ площадки целиком (колонка raw).

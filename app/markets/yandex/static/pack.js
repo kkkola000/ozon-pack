@@ -39,6 +39,7 @@ window.PACKS.yandex = {
         <a class="btn" id="btn-open-label" href="/api/pack/label/yandex/${encodeURIComponent(order.id)}.pdf?with_products=true"
            target="_blank" rel="noopener" title="Открыть PDF в новой вкладке">Открыть PDF</a>`,
       items: state.items.map((item) => ({
+        key: String(item.item_id),
         name: item.name,
         image: item.image,
         scanned: item.scanned,

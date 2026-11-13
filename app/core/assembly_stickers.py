@@ -8,7 +8,7 @@ from __future__ import annotations
 import io
 from urllib.parse import quote
 
-from . import board, db, labels, sticker_archive
+from . import board, cargo, db, labels, sticker_archive
 
 
 class NotReady(ValueError):
@@ -22,8 +22,12 @@ def filename(account: dict, number: str) -> str:
 
 
 def descriptor(account: dict, number: str) -> dict:
+    plan = cargo.get(account['id'], number)
+    allowed = ((not plan or plan['status'] in {'confirmed', 'baseline'})
+               and not cargo.split_pending(account['id'], number) and not cargo.split_unknown(account['id'], number))
     return {'url': f"/api/pack/sticker/{account['id']}/{quote(number, safe='')}.pdf",
-            'filename': filename(account, number), 'ready': not bool(board.not_ready(account, [number]))}
+            'filename': filename(account, number), 'revision': plan['revision'] if plan else 0,
+            'ready': allowed and not bool(board.not_ready(account, [number]))}
 
 
 def load(account: dict, number: str, user: dict) -> bytes:
@@ -37,6 +41,12 @@ def load(account: dict, number: str, user: dict) -> bytes:
         raise LookupError('Заказ не найден в кабинете')
     if board.not_ready(account, [number]):
         raise NotReady('Стикер будет скачан после передачи ЧЗ и подтверждения готовности заказа площадкой')
+    cargo.labels_allowed(account['id'], number)
+    if cargo.needs_labels(account['id'], number):
+        pdf = cargo.ensure_labels(account, number)
+        sticker_archive.remember_batch(account, [number], pdf)
+        labels.mark_saved(source.table, account['id'], [number], source.key)
+        return pdf
     saved = db.query_one(
         'SELECT v.pdf FROM sticker_versions v JOIN sticker_orders o ON o.id = v.archive_id '
         'WHERE o.account_id = ? AND o.order_id = ? ORDER BY v.id DESC LIMIT 1', (account['id'], number),

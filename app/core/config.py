@@ -94,6 +94,8 @@ class Settings:
     autoprint: bool = field(default_factory=lambda: _bool("AUTOPRINT", True))
     # Собирать отправление (v4/posting/fbs/ship) прямо при скане товара.
     auto_ship_on_scan: bool = field(default_factory=lambda: _bool("AUTO_SHIP_ON_SCAN", False))
+    # Новые заказы: отдельное отправление/место на каждую товарную единицу.
+    split_orders_on_pack: bool = field(default_factory=lambda: _bool('SPLIT_ORDERS_ON_PACK', True))
     # Сколько минут отправление держится за сборщиком.
     claim_ttl_minutes: int = field(default_factory=lambda: _int("CLAIM_TTL_MINUTES", 30))
     # Статусы возвратов, считающиеся «готов к выдаче» (sys_name из API, через запятую).

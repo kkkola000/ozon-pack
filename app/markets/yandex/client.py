@@ -340,6 +340,22 @@ class YandexClient:
             raise YandexError(f"Маркет прислал вместо ярлыков заказа {order} не PDF", status=response.status_code)
         return response.content
 
+    def box_label(self, campaign_id: str, order_id: str, box_id: str, *, shipment_id: str = '0') -> bytes:
+        campaign = _positive_int(campaign_id, 'Магазин')
+        order = _positive_int(order_id, 'Заказ')
+        box = _positive_int(box_id, 'Грузоместо')
+        # shipmentId в этом методе устарел: официальная схема допускает любое число.
+        shipment = int(shipment_id) if str(shipment_id).isdigit() else 0
+        response = self._request('GET', f'/v2/campaigns/{campaign}/orders/{order}/delivery/'
+                                f'shipments/{shipment}/boxes/{box}/label',
+                                params={'format': label_format()}, headers={'Accept': 'application/pdf, application/json'})
+        if response.status_code >= 400:
+            message, code = self._extract_error(response)
+            raise YandexError(message, status=response.status_code, code=code)
+        if not response.content.startswith(b'%PDF'):
+            raise YandexError('Маркет не отдал PDF ярлыка грузоместа')
+        return response.content
+
     # ------------------------------------------------------------------ возвраты
     def campaigns(self) -> list[dict]:
         """Магазины кабинета: GET /v2/campaigns, только этого businessId.

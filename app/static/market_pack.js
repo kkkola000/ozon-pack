@@ -66,7 +66,7 @@ let lost = false;        // поле без фокуса — коды скане
 let lostTimer = null;
 
 function listening() {
-  return document.hasFocus() && document.activeElement === input;
+  return CargoPack.editing() || document.hasFocus() && document.activeElement === input;
 }
 
 /* Рамка, которая говорит о сканере, — та, где сейчас поле: в окне сборки
@@ -313,8 +313,8 @@ function paintModal(state) {
   document.getElementById('pack-count').textContent = `${done} из ${total}`;
 
   const next = markingNext >= 0 ? markingNext : waiting >= 0 ? waiting : items.findIndex((item) => !item.ok);
-  document.getElementById('pack-items').innerHTML = items.map((item, index) => packItem(item, index === next)).join('')
-    + (complete ? packStep(pack.words, done, total) : '');
+  document.getElementById('pack-items').innerHTML = CargoPack.render(state, items, next, packItem,
+    complete ? packStep(pack.words, done, total) : '');
 
   const foot = document.getElementById('pack-foot');
   const details = (card.details || []).filter(([, value]) => value)
@@ -328,7 +328,14 @@ function paintModal(state) {
   if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
   document.getElementById('btn-release').onclick = releaseActive;
   const force = document.getElementById('btn-force');
-  if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked); }
+  if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked) || CargoPack.editing()
+    || Boolean(state.cargo?.boxes?.length > 1 && state.cargo.checked.length < state.cargo.boxes.length); }
+  if (print) print.disabled = CargoPack.editing() || ['draft', 'uncertain'].includes(state.cargo?.status);
+  document.querySelectorAll('#pack-actions a').forEach((link) => {
+    const blocked = CargoPack.editing() || ['draft', 'uncertain'].includes(state.cargo?.status);
+    link.setAttribute('aria-disabled', String(blocked));
+    if (blocked) link.onclick = (event) => event.preventDefault();
+  });
 }
 
 /* Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
@@ -338,6 +345,7 @@ function renderActive(state) {
   hasActive = Boolean(state?.active) && pack !== null;
   opened = hasActive ? state : null;
   if (!hasActive) {
+    CargoPack.syncControls(state);
     stickerOpening = null;
     // «Собрано» дожидается своих двух секунд — закроет его таймер.
     if (!doneTimer) closeModal();
@@ -356,7 +364,7 @@ function renderActive(state) {
 
 let stickerOpening = null;
 function downloadOpenedSticker(state) {
-  const key = orderKey(state);
+  const key = `${orderKey(state)}:${state.sticker_download?.revision || 0}`;
   if (stickerOpening?.key !== key) stickerOpening = { key, done: false, busy: false, retryAt: 0, warned: false };
   const opening = stickerOpening;
   const job = state.sticker_download;
@@ -447,7 +455,7 @@ function applyCounters(counters) {
 }
 
 async function submitScan(code, printWindow = null) {
-  if (busy || !code) {
+  if (busy || !code || CargoPack.editing()) {
     printWindow?.close();
     return;
   }
@@ -595,6 +603,7 @@ document.getElementById('btn-sheet').onclick = async (event) => {
 async function refreshState() {
   try {
     const data = await api(STATE_URL, undefined, 'GET');
+    if (CargoPack.editing()) return data;
     renderActive(data.state);
     applyCounters(data.counters);
     /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
@@ -608,7 +617,7 @@ async function refreshState() {
 refreshState();
 setInterval(() => { if (!busy) refreshState(); }, 30000);
 setInterval(async () => {
-  if (busy || markingPollBusy || !opened?.marking?.poll) return;
+  if (busy || CargoPack.editing() || markingPollBusy || !opened?.marking?.poll) return;
   const wanted = orderKey(opened);
   markingPollBusy = true;
   try {

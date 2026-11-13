@@ -240,7 +240,8 @@ class OzonClient:
     def posting_get(self, posting_number: str, *, with_exemplars: bool = False) -> dict | None:
         payload = {
             "posting_number": posting_number,
-            "with": {"analytics_data": True, "barcodes": True, "financial_data": False, "product_exemplars": with_exemplars},
+            "with": {"analytics_data": True, "barcodes": True, "financial_data": False,
+                     "product_exemplars": with_exemplars, "related_postings": True},
         }
         try:
             data = self.post("/v3/posting/fbs/get", payload)

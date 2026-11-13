@@ -165,6 +165,12 @@ def upsert_posting(conn: sqlite3.Connection, account_id: int, raw: dict) -> str:
     number = raw.get("posting_number")
     if not number:
         raise ValueError("В ответе Ozon нет posting_number")
+    split = conn.execute('SELECT 1 FROM cargo_split_children WHERE account_id=? AND parent_id=? AND verified=1',
+                          (account_id, number)).fetchone()
+    retained = conn.execute('SELECT 1 FROM cargo_split_children WHERE account_id=? AND parent_id=? AND child_id=?',
+                             (account_id, number, number)).fetchone()
+    if split and not retained:
+        return str(number)
     raw = {key: value for key, value in raw.items() if key not in PERSONAL_KEYS}
 
     delivery = raw.get("delivery_method") or {}

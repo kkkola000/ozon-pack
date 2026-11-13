@@ -191,5 +191,10 @@ def finalize(account: dict, order_id: str, _context: dict, codes: list[dict]) ->
         raise ValueError('Отправление Ozon вышло из рабочего статуса')
 
 
+def redistribute(account, user, order_id, codes):
+    from . import cargo
+    return cargo.redistribute(account, user, order_id, codes)
+
+
 SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('sku') or ''),
-                       discover=lambda account, order_id: prepare(account, order_id, discover=True))
+                       discover=lambda account, order_id: prepare(account, order_id, discover=True), redistribute=redistribute)

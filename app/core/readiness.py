@@ -39,6 +39,9 @@ def call(account: dict, user: dict, order_id: str):
     from ..markets import registry
 
     workspace = registry.get(account['marketplace']).workspace
+    market = registry.get(account['marketplace'])
+    if market.cargo:
+        market.cargo.before_ready(account, user, order_id)
     if workspace and workspace.ready:
         result = workspace.ready(account, user, order_id)
         if isinstance(result, dict) and result.get('status') != 'ok':
@@ -50,18 +53,38 @@ def call(account: dict, user: dict, order_id: str):
 def start(account: dict, user: dict, order_id: str) -> dict:
     """deferred — переход отложен до маркировки; заказ можно открыть для сканов."""
     with order_lock.hold(account['id'], order_id):
+        from . import cargo
+        if cargo.split_unknown(account['id'], order_id):
+            saved = marking.order(account['id'], order_id)
+            if saved and marking.codes(saved):
+                raise ValueError('Дождитесь сверки ЧЗ разделённого заказа Ozon')
+            return {'deferred': False, 'result': call(account, user, order_id)}
+        if cargo.split_pending(account['id'], order_id):
+            raise ValueError('Дождитесь подтверждения ЧЗ новых отправлений Ozon')
         saved = marking.prepare(account, order_id)
+        from ..markets import registry
+        market = registry.get(account['marketplace'])
+        if market.cargo:
+            market.cargo.prepare_ready(account, user, order_id)
         if saved and saved['status'] != 'accepted' and any(p.get('required') or p.get('possible') for p in marking.products(saved)):
             return {'deferred': True, 'result': None}
         result = call(account, user, order_id)
     return {'deferred': False, 'result': result}
 
 
-def start_and_refresh(account: dict, user: dict, order_id: str):
+def start_and_refresh(account: dict, user: dict, order_id: str, *, preferred_sku: str | None = None):
     from ..markets import registry
 
     result = start(account, user, order_id)
-    board = registry.get(account['marketplace']).orders
+    market = registry.get(account['marketplace'])
+    board = market.orders
+    numbers = (result.get('result') or {}).get('postings') or []
+    if numbers and (len(numbers) > 1 or numbers[0] != order_id):
+        matching = [n for n in numbers if not preferred_sku or any(
+            str(i.get('sku')) == str(preferred_sku) for i in market.labels.items(account['id'], n))]
+        if not matching:
+            raise ValueError('Площадка не подтвердила отсканированный товар в новых отправлениях')
+        order_id = matching[0]
     row = db.query_one(f'SELECT * FROM {board.table} WHERE account_id=? AND {board.key}=?', (account['id'], order_id))
     if not row:
         raise ValueError('Площадка изменила номер заказа. Обновите заказы.')
@@ -70,6 +93,10 @@ def start_and_refresh(account: dict, user: dict, order_id: str):
 
 def complete_guard(account: dict, user: dict, order_id: str):
     with order_lock.hold(account['id'], order_id):
+        from . import cargo
+        if cargo.split_pending(account['id'], order_id):
+            raise ValueError('Дождитесь подтверждения ЧЗ новых отправлений Ozon')
+        cargo.complete_guard(account, order_id)
         saved = marking.prepare(account, order_id)
         marking.guard(account, order_id)
         if marking.needs_validation(saved):

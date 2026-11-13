@@ -736,11 +736,12 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
     deferred = False
     if posting["status"] in {store.STATUS_AWAITING_PACKAGING, store.STATUS_AWAITING_DELIVER}:
         try:
-            deferred, row = readiness.start_and_refresh(account, user, posting_number)
+            deferred, row = readiness.start_and_refresh(account, user, posting_number, preferred_sku=first_sku)
         except (ValueError, OzonError) as exc:
             return ScanResult("error", _ready_error(exc),
                               action="ready_pending", sound="error", state=load_state(account, user))
         posting = store.posting_view(row)
+        posting_number = str(row['posting_number'])
     if posting["status"] != store.STATUS_AWAITING_DELIVER and not (deferred and posting["status"] == store.STATUS_AWAITING_PACKAGING):
         return ScanResult(
             "error",
@@ -750,9 +751,8 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
         )
     previous = load_state(account, user)
     resumed = bool(previous["active"] and previous["active"]["posting_number"] == posting_number)
-    scanned: dict[str, int] = {}
-    if resumed:
-        scanned = dict(previous["scanned"])
+    from ...core import cargo
+    scanned = dict(previous['scanned']) if resumed else cargo.seed_scans(account['id'], posting_number)
     if first_sku:
         scanned[first_sku] = min(
             scanned.get(first_sku, 0) + 1,
@@ -993,6 +993,11 @@ def _refresh_shipped(client, account, numbers):
 
 def ready_order(account: dict, user: dict, posting_number: str) -> dict:
     """Перевести отправление в «Ожидает отгрузки» (v4/posting/fbs/ship)."""
+    from . import cargo as split
+    split.recover(account, posting_number, user)
+    if split.children(account['id'], posting_number):
+        numbers = split.verify(account, posting_number)
+        return {'status': 'ok', 'message': 'Ozon подтвердил разделённые отправления', 'postings': numbers}
     row = db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
     )
@@ -1025,7 +1030,7 @@ def ready_order(account: dict, user: dict, posting_number: str) -> dict:
         # Ozon ждёт product_id числом. Колонка sku текстовая, и нечисловое
         # значение (сбой синхронизации, правка базы руками) раньше давало
         # оператору 500 вместо понятного сообщения.
-        package = [{"product_id": int(item["sku"]), "quantity": int(item["quantity"])} for item in items]
+        packages = split.packages(items)
     except (TypeError, ValueError):
         return {
             "status": "error",
@@ -1033,8 +1038,8 @@ def ready_order(account: dict, user: dict, posting_number: str) -> dict:
         }
 
     try:
-        result = readiness.attempt(account, posting_number, lambda: client.ship(posting_number, [package]),
-                                   retry_confirmed=fresh.get('substatus') == 'ship_failed')
+        result = split.ship(account, user, posting_number, items, packages,
+                            retry_confirmed=fresh.get('substatus') == 'ship_failed')
     except OzonError as exc:
         db.log_event(
             "ship_error", level="error", account_id=account["id"], user=user,
@@ -1043,6 +1048,8 @@ def ready_order(account: dict, user: dict, posting_number: str) -> dict:
         return {"status": "error", "message": f"{posting_number}: Ozon пока не подтвердил сборку. Повторите скан для проверки."}
 
     numbers = result.get("postings") or [posting_number]
+    split.remember(account, posting_number, numbers, items, user, force=len(packages) > 1)
+    split.verify(account, posting_number)
     refreshed = _refresh_shipped(client, account, numbers)
     if set(refreshed) != set(numbers):
         return {'status': 'warning', 'message': 'Ozon пока не подтвердил сборку. Повторите скан для проверки.',
@@ -1057,9 +1064,7 @@ def ready_order(account: dict, user: dict, posting_number: str) -> dict:
         message="Отправление собрано в Ozon",
         payload={"result": numbers},
     )
-    extra = ""
-    if len(numbers) > 1 or (numbers and numbers[0] != posting_number):
-        extra = f" Ozon разделил заказ: {', '.join(numbers)}."
+    extra = f" Ozon разделил заказ: {', '.join(numbers)}." if numbers != [posting_number] else ''
     return {
         "status": "ok",
         "message": f"{posting_number}: переведено в «Ожидает отгрузки».{extra}",

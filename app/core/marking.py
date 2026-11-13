@@ -326,6 +326,8 @@ def _accept(account, saved, provider, context, marks):
     if not user_row:
         raise ValueError('Не найден сотрудник, отправивший маркировку')
     readiness.call(account, dict(user_row), order_id)
+    if provider.redistribute and provider.redistribute(account, dict(user_row), order_id, marks):
+        return
     provider.finalize(account, order_id, context, marks)
     prepare(account, order_id)
     with db.write() as conn:
@@ -397,6 +399,9 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
         try:
             context = json.loads(_open(saved['context']))
             marks = codes(saved, full=True)
+            user_row = db.query_one('SELECT id,login,role FROM users WHERE id=?', (saved['user_id'],))
+            if provider.redistribute and user_row and provider.redistribute(account, dict(user_row), order_id, marks):
+                return
             if saved['status'] == 'queued':
                 _submit(account, saved, provider, context, marks)
             else:
@@ -463,8 +468,9 @@ def retained(archive_id: int) -> dict | None:
     from . import sticker_archive
 
     row = db.query_one('SELECT o.* FROM sticker_orders o WHERE o.id=? AND (o.created_at>=? OR EXISTS '
-                       '(SELECT 1 FROM sticker_versions v WHERE v.archive_id=o.id AND v.saved_at>=?))',
-                       (archive_id, sticker_archive.cutoff(), sticker_archive.cutoff()))
+                       '(SELECT 1 FROM sticker_versions v WHERE v.archive_id=o.id AND v.saved_at>=?) OR EXISTS '
+                       '(SELECT 1 FROM cargo_labels c WHERE c.account_id=o.account_id AND c.order_id=o.order_id AND c.saved_at>=?))',
+                       (archive_id, sticker_archive.cutoff(), sticker_archive.cutoff(), sticker_archive.cutoff()))
     return dict(row) if row else None
 
 
