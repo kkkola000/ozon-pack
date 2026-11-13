@@ -125,6 +125,7 @@ WORKSPACE = Workspace(
     scan=yandex_pack.scan,
     release=yandex_pack.release,
     complete=yandex_pack.complete_active,
+    ready=yandex_pack.ready_order,
 )
 
 

@@ -45,6 +45,12 @@ let hasActive = false;   // открыта ли сборка — при откр
 let pack = null;         // площадка открытого заказа: её слова и её карточка
 let opened = null;       // состояние открытой сборки — для «Собрано» после неё
 const history = [];
+let markingPrintQueue = Promise.resolve();
+let markingPollBusy = false;
+const deferredLabels = new Set();
+const orderKey = (state) => `${state?.active?.account_id || ''}:${state?.market || ''}:${state?.active?.posting_number || state?.active?.id || ''}`;
+const isMarkingCode = (code) => /^(?:\]d[28]|\x1d?01\d{14}21)/.test(code || '');
+const shownCode = (code) => isMarkingCode(code) ? 'ЧЗ' : code;
 
 /* ---------- Зона сканирования ----------
    Рамка показывает, куда сейчас уйдёт скан. Сканер — это клавиатура: если
@@ -244,7 +250,8 @@ function showDone(finished) {
 function packItem(item, next) {
   const mark = item.ok ? 'done' : next ? 'next' : '';
   // Комплект ждёт вложение — флажок называет, что вложить.
-  const flag = item.wait ? `Вложите «${escapeHtml(item.wait)}» и отсканируйте его` : 'Сканируйте этот товар';
+  const flag = opened?.marking?.pending_key && opened.marking.pending_key === item.marking?.key ? 'Сканируйте ЧЗ этого товара'
+    : item.wait ? `Вложите «${escapeHtml(item.wait)}» и отсканируйте его` : 'Сканируйте этот товар';
   return `
     <div class="pack-item ${mark}">
       ${packPhoto(item.image, item.name)}
@@ -254,6 +261,7 @@ function packItem(item, next) {
         ${next ? `<span class="pack-flag">${flag}</span>` : ''}
         ${item.extra || ''}
       </div>
+      ${item.marking ? `<span class="pack-mark ${item.marking.status === 'accepted' ? 'ok' : item.marking.status === 'error' ? 'err' : 'waiting'}" role="img" aria-label="${escapeHtml(item.marking.title)}" title="${escapeHtml(item.marking.title)}">М</span>` : ''}
       <div class="pack-qty">${item.ok ? '✓ ' : ''}${item.scanned} / ${item.need}<small>${item.ok ? 'собрано' : 'шт'}</small></div>
     </div>`;
 }
@@ -297,12 +305,15 @@ function paintModal(state) {
   // Комплект ждёт вложение — сервер пропустит только его, и поле так и говорит.
   const items = card.items || [];
   const waiting = items.findIndex((item) => item.wait);
-  input.placeholder = complete ? `${pack.words.close || 'Отсканируйте наклейку'}…`
+  const markingNext = state.marking?.pending_key ? items.findIndex((item) => item.marking?.key === state.marking.pending_key) : -1;
+  input.placeholder = markingNext >= 0 ? 'Сканируйте ЧЗ этого товара…'
+    : state.marking?.poll ? 'Дождитесь проверки ЧЗ…'
+    : complete ? `${pack.words.close || 'Отсканируйте наклейку'}…`
     : waiting >= 0 ? `Вложите «${items[waiting].wait}» и отсканируйте его…` : 'Сканируйте товар…';
   document.getElementById('pack-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
   document.getElementById('pack-count').textContent = `${done} из ${total}`;
 
-  const next = waiting >= 0 ? waiting : items.findIndex((item) => !item.ok);
+  const next = markingNext >= 0 ? markingNext : waiting >= 0 ? waiting : items.findIndex((item) => !item.ok);
   document.getElementById('pack-items').innerHTML = items.map((item, index) => packItem(item, index === next)).join('')
     + (complete ? packStep(pack.words, done, total) : '');
 
@@ -318,7 +329,7 @@ function paintModal(state) {
   if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
   document.getElementById('btn-release').onclick = releaseActive;
   const force = document.getElementById('btn-force');
-  if (force) force.onclick = forceComplete;
+  if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked); }
 }
 
 /* Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
@@ -336,6 +347,10 @@ function renderActive(state) {
   showWork();
   paintModal(state);
   paintZone();
+  const key = orderKey(state);
+  if (state.marking?.status === 'accepted' && deferredLabels.delete(key)) {
+    printLabel(pack.activeId(state.active));
+  }
 }
 
 function pushHistory(code, result) {
@@ -362,15 +377,29 @@ function applyResult(result, code, printWindow = null) {
     : null;
   // Новый скан во время «Собрано» — сразу к нему: ждать две секунды незачем.
   if (doneTimer) closeModal();
+  if (result.action === 'released' || result.action === 'completed') deferredLabels.clear();
+  if (result.deferred_label_print) deferredLabels.add(orderKey(result.state));
+  if (result.marking_print) {
+    const job = result.marking_print;
+    const reserved = printWindow;
+    printWindow = null;
+    if (job.setup) window.PRINTERS = job.setup;
+    markingPrintQueue = markingPrintQueue.catch(() => {}).then(async () => {
+      try {
+        const ok = await printPdf(job.url, { name: 'Дубликат ЧЗ', kind: job.kind, window: reserved, wait: true });
+        if (!ok) toast('ЧЗ сохранён. Повторите печать через «Стикеры → ЧЗ».', 'error', 12000);
+      } catch (error) { toast('ЧЗ сохранён, но дубликат не напечатан. Повторите печать через «Стикеры → ЧЗ».', 'error', 12000); }
+    });
+  }
   renderActive(result.state || { active: null });
   if (finished) showDone(finished);
-  setBanner(result.status, result.message, code || '');
+  setBanner(result.status, result.message, shownCode(code || ''));
   beep(result.sound || result.status);
   if (result.counters) applyCounters(result.counters);
   /* Замок — сразу по ответу: сборку завершили или отменили, а новые наклейки
      не скачаны — поле закрывается сейчас, а не при следующем опросе. */
   if (result.labels) applyGate(result.labels);
-  if (code) pushHistory(code, result);
+  if (code) pushHistory(shownCode(code), result);
   /* Печатать наклейку умеет не всякая площадка, и ключ у каждой свой. Берём
      ту, чей заказ только что открылся: renderActive уже поставил её выше. */
   const printer = PACKS[result.market]?.print;
@@ -454,13 +483,13 @@ async function submitScan(code, printWindow = null) {
     return;
   }
   busy = true;
-  setBanner('busy', 'Проверяем код…', code);
+  setBanner('busy', 'Проверяем код…', shownCode(code));
   try {
     const result = await api(SCAN_URL, { code });
     applyResult(result, code, printWindow);
   } catch (error) {
     printWindow?.close();
-    setBanner('error', error.message, code);
+    setBanner('error', error.message, shownCode(code));
     beep('error');
     toast(error.message, 'error');
   } finally {
@@ -495,14 +524,16 @@ async function forceComplete() {
 }
 
 async function printLabel(id, printWindow = null) {
-  if (!pack?.print) return;
+  const currentPack = pack;
+  if (!currentPack?.print) return;
+  await markingPrintQueue;
   const ok = await printLabelDocument({
-    pdfUrl: `${pack.print.url(id)}?with_products=true`,
-    name: `${pack.words.label} ${id}`,
+    pdfUrl: `${currentPack.print.url(id)}?with_products=true`,
+    name: `${currentPack.words.label} ${id}`,
     window: printWindow,
-    kind: pack.print.kind,
+    kind: currentPack.print.kind,
   });
-  if (ok) toast(`${pack.words.label} ${id} отправлен на печать`, 'ok', 3500);
+  if (ok) toast(`${currentPack.words.label} ${id} отправлен на печать`, 'ok', 3500);
 }
 
 input.addEventListener('keydown', (event) => {
@@ -517,9 +548,10 @@ input.addEventListener('keydown', (event) => {
     /* Сборки нет — заказ ещё не открыт, и какой он будет площадки, неизвестно.
        Вкладку резервируем, если печать есть хоть у одной: не пригодится —
        закроем. */
-    const reserve = !hasActive && Object.values(PACKS).some((one) => one.print)
-      ? reservePrintWindow() : null;
-    submitScan(input.value.trim(), reserve);
+    const code = input.value.replace(/[\r\n]+$/g, '');
+    const reserve = isMarkingCode(code) && window.PRINT_MARKING_DUPLICATES ? reservePrintWindow('marking:duplicate')
+      : !hasActive && Object.values(PACKS).some((one) => one.print) ? reservePrintWindow() : null;
+    submitScan(code, reserve);
   }
 });
 
@@ -622,6 +654,16 @@ async function refreshState() {
 
 refreshState();
 setInterval(() => { if (!busy) refreshState(); }, 30000);
+setInterval(async () => {
+  if (busy || markingPollBusy || !opened?.marking?.poll) return;
+  const wanted = orderKey(opened);
+  markingPollBusy = true;
+  try {
+    const data = await api(at('/api/pack/marking/poll'), {});
+    if (!busy && wanted === orderKey(opened)) renderActive(data.state);
+  } catch (error) { /* очередь сохранена; следующий опрос повторит проверку */ }
+  finally { markingPollBusy = false; }
+}, 3000);
 
 /* Список заказов всех кабинетов: фильтры работают на уже готовых строках.
 

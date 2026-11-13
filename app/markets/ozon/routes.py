@@ -132,6 +132,7 @@ WORKSPACE = Workspace(
     scan=packing.scan,
     release=packing.release,
     complete=packing.complete_active,
+    ready=packing.ready_order,
 )
 
 

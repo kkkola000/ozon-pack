@@ -4,7 +4,7 @@ import pytest
 from app.markets.avito import pack as avito_pack
 from app.core import db, report
 from app.markets.avito import sync as avito_sync
-from app.markets.avito import store as avito_store
+from app.markets.avito import store as avito_store, client as avito_client
 
 
 def orders(account, status="ready_to_ship"):
@@ -115,6 +115,8 @@ def test_label_rescan_before_all_items(avito_account, avito_data, user):
         " VALUES(?,?,?,?,?,1)",
         (avito_account["id"], order["id"], "вторая-позиция", "ART-2", "Вторая позиция"),
     )
+    avito_client.get_client(avito_account)._orders[order['id']]['items'].append(
+        {'avitoId': 'вторая-позиция', 'id': 'ART-2', 'title': 'Вторая позиция', 'count': 1})
     state = avito_pack.scan(avito_account, user, order["id"])["state"]
     assert state["total"] >= 2
 
@@ -154,14 +156,14 @@ def test_packed_order_is_not_reopened(avito_account, avito_data, user):
     assert result["action"] == "already_packed"
 
 
-def test_order_awaiting_confirmation_is_not_packable(avito_account, avito_data, user):
+def test_order_awaiting_confirmation_is_confirmed_by_label(avito_account, avito_data, user):
     waiting = orders(avito_account, "on_confirmation")
     if not waiting:
         pytest.skip("в подделке нет заказов «Подтвердите заказ»")
     result = avito_pack.scan(avito_account, user, waiting[0]["id"])
-    assert result["status"] == "warning"
-    assert result["action"] == "wrong_status"
-    assert result["state"]["active"] is None
+    assert result["status"] == "ok"
+    assert result["action"] == "order_opened"
+    assert result["state"]["active"]["status"] == "ready_to_ship"
 
 
 def test_release_frees_the_order(avito_account, avito_data, user):
@@ -195,6 +197,8 @@ def test_units_are_filled_in_order(avito_account, avito_data, user):
         " VALUES(?,?,?,?,?,2)",
         (avito_account["id"], order["id"], "позиция-на-два", "ART-X", "Позиция в двух экземплярах"),
     )
+    avito_client.get_client(avito_account)._orders[order['id']]['items'].append(
+        {'avitoId': 'позиция-на-два', 'id': 'ART-X', 'title': 'Позиция в двух экземплярах', 'count': 2})
     state = avito_pack.scan(avito_account, user, order["id"])["state"]
     total = state["total"]
     assert total >= 3

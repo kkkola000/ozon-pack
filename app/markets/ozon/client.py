@@ -160,6 +160,41 @@ class OzonClient:
         except ValueError as exc:
             raise OzonError(f"Некорректный ответ Ozon: {exc}", status=response.status_code) from exc
 
+    def post_once(self, path: str, payload: dict) -> dict:
+        """Запись без слепого повтора после таймаута. Результат проверяется чтением."""
+        try:
+            response = self._client.post(path, content=json.dumps(payload, ensure_ascii=False).encode())
+        except httpx.HTTPError as exc:
+            raise OzonError('Не удалось подтвердить результат запроса Ozon') from exc
+        if response.status_code >= 400:
+            message, code = self._extract_error(response)
+            raise OzonError(message, status=response.status_code, code=code)
+        if not response.content:
+            return {}
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise OzonError('Ozon вернул некорректный ответ') from exc
+        if not isinstance(result, dict):
+            raise OzonError('Ozon вернул некорректный ответ')
+        return result
+
+    def exemplars_get(self, posting_number: str) -> dict:
+        return self.post('/v6/fbs/posting/product/exemplar/create-or-get', {'posting_number': posting_number})
+
+    def exemplars_validate(self, posting_number: str, products: list[dict]) -> dict:
+        return self.post('/v5/fbs/posting/product/exemplar/validate',
+                         {'posting_number': posting_number, 'products': products})
+
+    def exemplars_set(self, payload: dict) -> None:
+        self.post_once('/v6/fbs/posting/product/exemplar/set', payload)
+
+    def exemplars_status(self, posting_number: str) -> dict:
+        return self.post('/v5/fbs/posting/product/exemplar/status', {'posting_number': posting_number})
+
+    def exemplars_update(self, posting_number: str) -> None:
+        self.post_once('/v1/fbs/posting/product/exemplar/update', {'posting_number': posting_number})
+
     @staticmethod
     def _extract_error(response: httpx.Response) -> tuple[str, str | None]:
         try:
@@ -202,10 +237,10 @@ class OzonClient:
             bool(body.get("has_next")),
         )
 
-    def posting_get(self, posting_number: str) -> dict | None:
+    def posting_get(self, posting_number: str, *, with_exemplars: bool = False) -> dict | None:
         payload = {
             "posting_number": posting_number,
-            "with": {"analytics_data": True, "barcodes": True, "financial_data": False, "product_exemplars": False},
+            "with": {"analytics_data": True, "barcodes": True, "financial_data": False, "product_exemplars": with_exemplars},
         }
         try:
             data = self.post("/v3/posting/fbs/get", payload)
@@ -235,7 +270,7 @@ class OzonClient:
             "packages": [{"products": products} for products in packages],
             "with": {"additional_data": True},
         }
-        data = self.post("/v4/posting/fbs/ship", payload)
+        data = self.post_once("/v4/posting/fbs/ship", payload)
         return {
             "postings": list(data.get("result") or []),
             "additional_data": list(data.get("additional_data") or []),

@@ -1,5 +1,34 @@
 /* Просмотр и печать используют общий обработчик data-print-pdf в qz.js. */
 const stickerChoices = () => [...document.querySelectorAll('.sticker-select')];
+const stickerMarkingModal = document.getElementById('sticker-marking-modal');
+document.getElementById('sticker-marking-close').onclick = () => { stickerMarkingModal.hidden = true; };
+stickerMarkingModal.addEventListener('click', (event) => { if (event.target === stickerMarkingModal) stickerMarkingModal.hidden = true; });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') stickerMarkingModal.hidden = true; });
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-marking-archive]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const data = await api(`/api/stickers/${button.dataset.markingArchive}/marking`, undefined, 'GET');
+    document.getElementById('sticker-marking-title').textContent = `ЧЗ отправления ${data.order_id}`;
+    const rows = data.items.map((item) => {
+      const ok = item.status === 'accepted';
+      const bad = item.status === 'error';
+      const url = `/api/stickers/marking/${item.id}.pdf`;
+      return `<tr><td>${escapeHtml(item.name)}<div class="small muted">Экземпляр ${item.unit_no}</div></td>
+        <td class="mono small">${escapeHtml(item.gtin)}<div>${escapeHtml(item.serial)}</div></td>
+        <td><span class="badge ${ok ? 'ok' : bad ? 'err' : 'warn'}">${ok ? 'Принят' : bad ? 'Не принят' : 'Ожидает проверки'}</span></td>
+        <td>${bad ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат ЧЗ">Печать</a>`}</td></tr>`;
+    }).join('');
+    const all = `/api/stickers/${button.dataset.markingArchive}/marking.pdf`;
+    document.getElementById('sticker-marking-content').innerHTML =
+      `${data.error ? `<p class="muted small">${escapeHtml(data.error)}</p>` : ''}<div style="overflow-x:auto"><table><thead><tr><th>Товар</th><th>GTIN / серийный номер</th><th>Проверка площадкой</th><th>Действия</th></tr></thead><tbody>${rows}</tbody></table></div>
+       ${data.items.length ? `<div class="row" style="justify-content:flex-end;margin-top:16px"><a class="btn" href="${all}" target="_blank" rel="noopener" data-print-pdf="${all}" data-print-kind="marking:duplicate" data-print-name="Дубликаты ЧЗ">Печать всех ЧЗ</a></div>` : ''}`;
+    stickerMarkingModal.hidden = false;
+    document.getElementById('sticker-marking-close').focus();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { button.disabled = false; }
+});
 const stickerDownload = document.getElementById('stickers-download');
 const stickerAll = document.getElementById('stickers-all');
 function updateStickerSelection() {

@@ -13,12 +13,9 @@
 Защита от тех же трёх ошибок: чужой товар — стоп, чужой ярлык — стоп,
 собранное второй раз не открывается.
 
-На сборку попадают только заказы «Ожидает отгрузки» (READY_TO_SHIP) — так же,
-как у Ozon и Avito. «Ожидает сборки» (STARTED) сканом не открывается: сначала
-заказ отмечают готовым к отгрузке в кабинете Маркета, и после обновления
-заказов он появится на сборке. Ярлыки — так же: Маркет отдаёт их уже с
-подтверждения, но на «Сборку» выгружаются только ярлыки заказов «Ожидает
-отгрузки», и печатать ярлык заказа «Ожидает сборки» панель не даёт.
+Скан ШК товара или ярлыка переводит STARTED в READY_TO_SHIP; переход
+подтверждается чтением заказа. Для маркируемого товара сначала собираем и
+проверяем ЧЗ, затем подтверждаем готовность. Наклейки доступны после перехода.
 
 Сопоставление (core/linked.py) работает и здесь: штрихкод любой карточки,
 сопоставленной с карточкой Маркета, подходит к позиции заказа, даже если
@@ -26,6 +23,8 @@
 сопоставленной с ней, собирается по частям так же, как у Ozon.
 """
 from __future__ import annotations
+
+from contextlib import suppress
 
 import io
 import json
@@ -198,10 +197,10 @@ def candidates_for_offers(account: dict, offers: list[str], user: dict) -> list[
         SELECT DISTINCT o.* FROM yandex_orders o
         JOIN yandex_order_items i ON i.order_id = o.id AND i.account_id = o.account_id
         WHERE o.account_id = ? AND i.offer_id IN ({marks})
-          AND o.substatus = ? AND o.local_state != 'packed'
+          AND o.substatus IN (?,?) AND o.local_state != 'packed'
         ORDER BY (o.shipment_date IS NULL), o.shipment_date, o.id
         """,
-        [account["id"]] + list(offers) + [PACKABLE],
+        [account["id"]] + list(offers) + [PACKABLE, NOT_YET],
     )
     result = []
     for row in rows:
@@ -623,27 +622,23 @@ def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str
             "warning", f"Заказ {order_id} уже собран ({order.get('packed_by') or '—'}).",
             action="already_packed", sound="error", state=load_state(account, user),
         )
-    if order["substatus"] == NOT_YET:
-        return ScanResult(
-            "warning", f"Заказ {order_id} ещё «Ожидает сборки» — собирать его рано. {NOT_YET_HINT}",
-            action="needs_ship", sound="error", state=load_state(account, user),
-        )
-    if order["substatus"] != PACKABLE:
+    from ...core import readiness
+
+    if order["claim_active"] and row["claim_user_id"] != user["id"]:
+        return ScanResult("error", f"Заказ уже собирает {row['claim_login']}", action="locked", state=load_state(account, user))
+    deferred = False
+    if order['substatus'] in {PACKABLE, NOT_YET}:
+        try:
+            deferred, row = readiness.start_and_refresh(account, user, order_id)
+        except (ValueError, YandexError):
+            return ScanResult('error', 'Не удалось подтвердить состав и готовность заказа в Маркете. Повторите скан.',
+                              action='ready_pending', sound='error', state=load_state(account, user))
+        order = store.yandex_view(row)
+    if order["substatus"] != PACKABLE and not (deferred and order["substatus"] == NOT_YET):
         return ScanResult(
             "error", f"Заказ {order_id} в статусе «{order['status_label']}» — он не в работе.",
             action="wrong_status", state=load_state(account, user),
         )
-    if order["claim_active"] and row["claim_user_id"] != user["id"]:
-        return ScanResult(
-            "error", f"Заказ {order_id} уже собирает {row['claim_login']}.",
-            action="locked", state=load_state(account, user),
-        )
-    if not order["items"]:
-        return ScanResult(
-            "error", f"У заказа {order_id} нет состава — обновите данные из Маркета.",
-            action="wrong_status", state=load_state(account, user),
-        )
-
     previous = load_state(account, user)
     resumed = bool(previous["active"] and previous["active"]["id"] == order_id)
     scanned: dict[str, int] = dict(previous["scanned"]) if resumed else {}
@@ -653,14 +648,9 @@ def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str
             int(scanned.get(first_item_id, 0)) + 1, max(1, int(first_item.get("quantity") or 1))
         )
 
-    now = db.now_iso()
     with db.write() as conn:
         pack_state.release_previous(conn, user, keep=(account["id"], order_id))
-        conn.execute(
-            "UPDATE yandex_orders SET claim_user_id = ?, claim_login = ?, claim_at = ? "
-            "WHERE account_id = ? AND id = ?",
-            (user["id"], user["login"], now, account["id"], order_id),
-        )
+        pack_state.claim(conn, account, user, order_id)
         pack_state.save(conn, account, user, order_id, scanned)
         db.log_event(
             "yandex_pack_start", account_id=account["id"], user=user, posting_number=order_id,
@@ -673,7 +663,7 @@ def select_order(account: dict, user: dict, order_id: str, *, first_item_id: str
             )
 
     state = load_state(account, user)
-    should_print = settings.autoprint and not label_in_hand and not resumed
+    should_print = settings.autoprint and not label_in_hand and not resumed and order['substatus'] == PACKABLE
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте ярлык заказа."
     else:
@@ -734,8 +724,17 @@ def _scan_order(account: dict, user: dict, order_row: dict, code: str) -> ScanRe
 
 
 def complete(account: dict, user: dict, order_id: str, code: str | None = None) -> ScanResult:
+    from ...core import readiness
+
+    try:
+        readiness.complete_guard(account, user, order_id)
+    except (ValueError, YandexError) as exc:
+        return ScanResult('error', str(exc) if isinstance(exc, ValueError) else 'Маркет пока не подтвердил готовность заказа',
+                          action='marking_required', sound='error', state=load_state(account, user))
+
     now = db.now_iso()
     with db.write() as conn:
+        pack_state.claim(conn, account, user, order_id)
         conn.execute(
             """
             UPDATE yandex_orders SET local_state = 'packed', packed_at = ?, packed_by = ?,
@@ -915,3 +914,31 @@ def pending_labels(account_id: int) -> list[str]:
     Собранное замок не держит.
     """
     return core_labels.waiting(account_id, table="yandex_orders", key="id", status_sql=store.BOARD_STATUS_SQL)
+
+
+def ready_order(account: dict, user: dict, order_id: str) -> None:
+    """STARTED -> READY_TO_SHIP, с проверкой нового состояния на площадке."""
+    from ...core import readiness
+
+    row = db.query_one('SELECT campaign_id FROM yandex_orders WHERE account_id=? AND id=?', (account['id'], order_id))
+    if not row or not row['campaign_id']:
+        raise ValueError('Не найден магазин заказа Маркета')
+    api = yandex.get_client(account)
+    raw = api.order_details(order_id)
+    if str(raw.get('campaignId')) != str(row['campaign_id']):
+        raise ValueError('Маркет вернул заказ другого магазина')
+    if raw.get('status') != 'PROCESSING' or raw.get('substatus') not in {PACKABLE, NOT_YET}:
+        raise ValueError('Заказ Маркета уже вне сборки')
+    if raw['substatus'] == NOT_YET:
+        # Даже при таймауте запрос мог пройти. Проверяем чтением.
+        with suppress(YandexError):
+            readiness.attempt(account, order_id, lambda: api.ready_to_ship(str(row['campaign_id']), order_id))
+        raw = api.order_details(order_id)
+    if raw.get('status') != 'PROCESSING' or raw.get('substatus') != PACKABLE:
+        raise ValueError('Маркет пока не подтвердил статус «Готов к отгрузке»')
+    with db.write() as conn:
+        store.upsert_yandex_order(conn, account['id'], raw)
+    core_labels.note_deliver(account)
+    readiness.confirmed(account, order_id)
+    db.log_event('yandex_ready', account_id=account['id'], user=user, posting_number=order_id,
+                 message='Готовность к отгрузке подтверждена Маркетом')

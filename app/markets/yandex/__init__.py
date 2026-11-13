@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from ..base import CatalogSource, LabelsSource, Market
-from . import catalog, client, migrations, pack, returns, routes, store, sync
+from . import catalog, client, marking, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="yandex",
@@ -25,6 +25,7 @@ MARKET = Market(
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
     stats=routes.settings_stats,
+    marking=marking.SOURCE,
     schema=store.SCHEMA + returns.SCHEMA,
     # Разовые правки своих таблиц: ярлыки, скачанные в «Ожидает сборки».
     migrate=migrations.migrate,

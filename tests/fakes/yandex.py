@@ -255,3 +255,37 @@ class FakeYandexClient(YandexClient):
 
     def close(self):  # type: ignore[override]
         return None
+
+    def order_details(self, order_id):
+        from app.markets.yandex.client import YandexError
+        if str(order_id) not in self._orders:
+            raise YandexError('Заказ не найден', status=404)
+        return json.loads(json.dumps(self._orders[str(order_id)]))
+
+    def ready_to_ship(self, campaign_id, order_id):
+        order = self._orders[str(order_id)]
+        if str(order['campaignId']) != str(campaign_id):
+            raise ValueError('wrong campaign')
+        order['substatus'] = 'READY_TO_SHIP'
+        return {'status': 'OK'}
+
+    def order_boxes(self, campaign_id, order_id, boxes):
+        from copy import deepcopy
+        order = self._orders[str(order_id)]
+        if str(order['campaignId']) != str(campaign_id):
+            raise ValueError('wrong campaign')
+        order['delivery']['boxesLayout'] = deepcopy(boxes)
+        for item in order['items']:
+            instances = [i for box in boxes for p in box['items'] if str(p['id']) == str(item['id'])
+                         for i in p.get('instances', [])]
+            item['instances'] = [dict(i, cisFull=i['cis'], cis=i['cis'].split('\x1d')[0]) if 'cis' in i else i
+                                 for i in instances]
+        return {'status': 'OK', 'result': {'boxes': deepcopy(boxes)}}
+
+    def identifiers_status(self, campaign_id, order_id):
+        raw = self.order_details(order_id)
+        if str(raw['campaignId']) != str(campaign_id):
+            raise ValueError('wrong campaign')
+        return {'status': 'OK', 'result': {'items': [
+            {'id': i['id'], 'cis': [{'value': c.get('cis'), 'status': 'OK'} for c in i.get('instances', []) if c.get('cis')]}
+            for i in raw['items']]}}

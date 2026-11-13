@@ -10,7 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .core import accounts, db, deps, security, sticker_archive, sync
+from .core import accounts, db, deps, marking, security, sticker_archive, sync
 from .core.config import BASE_DIR
 from .core.version import get_commit, get_version
 from .markets import registry
@@ -56,8 +56,10 @@ async def lifespan(_app: FastAPI):
         log.warning("Кабинеты без ключей (данные не загружаются): %s", ", ".join(without_keys))
     sync.start_worker()
     sticker_archive.start_worker()
+    marking.start_worker()
     yield
     sticker_archive.stop_worker()
+    marking.stop_worker()
     worker = sync.get_worker()
     if worker:
         worker.stop()

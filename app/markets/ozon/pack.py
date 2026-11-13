@@ -180,10 +180,10 @@ def candidates_for_sku(account: dict, sku: str, user: dict) -> list[dict]:
         """
         SELECT p.* FROM postings p
         JOIN posting_items i ON i.posting_number = p.posting_number AND i.account_id = p.account_id
-        WHERE p.account_id = ? AND i.sku = ? AND p.status = ? AND p.local_state = 'new'
+        WHERE p.account_id = ? AND i.sku = ? AND p.status IN (?,?) AND p.local_state = 'new'
         ORDER BY (p.shipment_date IS NULL), p.shipment_date
         """,
-        (account["id"], sku, store.STATUS_AWAITING_DELIVER),
+        (account["id"], sku, store.STATUS_AWAITING_DELIVER, store.STATUS_AWAITING_PACKAGING),
     )
     result = []
     for row in rows:
@@ -720,40 +720,25 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
             sound="error",
             state=load_state(account, user),
         )
-    if posting["status"] == store.STATUS_AWAITING_PACKAGING:
-        if settings.auto_ship_on_scan:
-            ship_result = ship_posting(account, user, posting_number)
-            if ship_result["status"] != "ok":
-                return ScanResult(
-                    ship_result["status"], ship_result["message"], sound="error", state=load_state(account, user)
-                )
-            row = db.query_one(
-                "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
-            )
-            posting = store.posting_view(row)
-        else:
-            return ScanResult(
-                "warning",
-                f"Отправление {posting_number} в статусе «Ожидает сборки». Сначала соберите его на вкладке заказов.",
-                action="needs_ship",
-                sound="error",
-                state=load_state(account, user),
-            )
-    if posting["status"] != store.STATUS_AWAITING_DELIVER:
+    from ...core import readiness
+
+    if posting["claim_active"] and row["claim_user_id"] != user["id"]:
+        return ScanResult("error", f"Отправление уже собирает {row['claim_login']}", action="locked", state=load_state(account, user))
+    deferred = False
+    if posting["status"] in {store.STATUS_AWAITING_PACKAGING, store.STATUS_AWAITING_DELIVER}:
+        try:
+            deferred, row = readiness.start_and_refresh(account, user, posting_number)
+        except (ValueError, OzonError):
+            return ScanResult("error", "Не удалось подтвердить состав и готовность заказа в Ozon. Повторите скан.",
+                              action="ready_pending", sound="error", state=load_state(account, user))
+        posting = store.posting_view(row)
+    if posting["status"] != store.STATUS_AWAITING_DELIVER and not (deferred and posting["status"] == store.STATUS_AWAITING_PACKAGING):
         return ScanResult(
             "error",
             f"Отправление {posting_number} в статусе «{posting['status_label']}» — оно не в работе.",
             action="wrong_status",
             state=load_state(account, user),
         )
-    if posting["claim_active"] and row["claim_user_id"] != user["id"]:
-        return ScanResult(
-            "error",
-            f"Отправление {posting_number} уже собирает {row['claim_login']}.",
-            action="locked",
-            state=load_state(account, user),
-        )
-
     previous = load_state(account, user)
     resumed = bool(previous["active"] and previous["active"]["posting_number"] == posting_number)
     scanned: dict[str, int] = {}
@@ -765,14 +750,9 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
             next((i["quantity"] for i in posting["items"] if i["sku"] == first_sku), 1),
         )
 
-    now = db.now_iso()
     with db.write() as conn:
         pack_state.release_previous(conn, user, keep=(account["id"], posting_number))
-        conn.execute(
-            "UPDATE postings SET claim_user_id = ?, claim_login = ?, claim_at = ? "
-            "WHERE account_id = ? AND posting_number = ?",
-            (user["id"], user["login"], now, account["id"], posting_number),
-        )
+        pack_state.claim(conn, account, user, posting_number)
         pack_state.save(conn, account, user, posting_number, scanned)
         db.log_event(
             "pack_start",
@@ -795,7 +775,7 @@ def select_posting(account: dict, user: dict, posting_number: str, *, first_sku:
     # Стикер печатаем только когда его нет на руках. Пришли сюда со скана
     # товара — печатаем; со скана стикера — он уже распечатан; вернулись в уже
     # открытую сборку — тем более, стикер для неё печатался при её открытии.
-    should_print = settings.autoprint and not label_in_hand and not resumed
+    should_print = settings.autoprint and not label_in_hand and not resumed and posting['status'] == store.STATUS_AWAITING_DELIVER
     if state["complete"]:
         message = "Все товары собраны. Наклейте и отсканируйте стикер отправления."
     else:
@@ -887,8 +867,17 @@ def _scan_posting(account: dict, user: dict, posting_row: dict, code: str) -> Sc
 
 
 def complete(account: dict, user: dict, posting_number: str, code: str | None = None) -> ScanResult:
+    from ...core import readiness
+
+    try:
+        readiness.complete_guard(account, user, posting_number)
+    except (ValueError, OzonError) as exc:
+        return ScanResult("error", str(exc) if isinstance(exc, ValueError) else "Ozon пока не подтвердил готовность заказа",
+                          action="marking_required", sound="error", state=load_state(account, user))
+
     now = db.now_iso()
     with db.write() as conn:
+        pack_state.claim(conn, account, user, posting_number)
         conn.execute(
             """
             UPDATE postings SET local_state = 'packed', packed_at = ?, packed_by = ?,
@@ -978,14 +967,41 @@ def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:
 
 
 # ------------------------------------------------------------------ сборка на стороне Ozon
-def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
+def _refresh_shipped(client, account, numbers):
+    refreshed = []
+    for number in numbers:
+        try:
+            raw = client.posting_get(number)
+        except OzonError:
+            raw = None
+        if raw:
+            with db.write() as conn:
+                store.upsert_posting(conn, account["id"], raw)
+            if raw.get('status') == store.STATUS_AWAITING_DELIVER and raw.get('substatus') != 'ship_failed':
+                refreshed.append(number)
+    return refreshed
+
+
+def ready_order(account: dict, user: dict, posting_number: str) -> dict:
     """Перевести отправление в «Ожидает отгрузки» (v4/posting/fbs/ship)."""
     row = db.query_one(
         "SELECT * FROM postings WHERE account_id = ? AND posting_number = ?", (account["id"], posting_number)
     )
     if not row:
         return {"status": "error", "message": f"Отправление {posting_number} не найдено"}
-    if row["status"] == store.STATUS_AWAITING_DELIVER:
+    from ...core import readiness
+
+    client = ozon.get_client(account)
+    fresh = client.posting_get(posting_number)
+    if not fresh or str(fresh.get('posting_number')) != posting_number:
+        raise ValueError('Ozon не подтвердил отправление')
+    with db.write() as conn:
+        store.upsert_posting(conn, account['id'], fresh)
+    row = db.query_one('SELECT * FROM postings WHERE account_id=? AND posting_number=?',
+                       (account['id'], posting_number))
+    if row["status"] == store.STATUS_AWAITING_DELIVER and fresh.get('substatus') != 'ship_failed':
+        readiness.confirmed(account, posting_number)
+        core_labels.note_deliver(account)
         return {"status": "ok", "message": f"{posting_number}: уже «Ожидает отгрузки»", "postings": [posting_number]}
     if row["status"] != store.STATUS_AWAITING_PACKAGING:
         return {
@@ -1007,27 +1023,23 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
             "message": f"{posting_number}: в составе некорректный SKU — обновите данные из Ozon",
         }
 
-    client = ozon.get_client(account)
     try:
-        result = client.ship(posting_number, [package])
+        result = readiness.attempt(account, posting_number, lambda: client.ship(posting_number, [package]),
+                                   retry_confirmed=fresh.get('substatus') == 'ship_failed')
     except OzonError as exc:
         db.log_event(
             "ship_error", level="error", account_id=account["id"], user=user,
-            posting_number=posting_number, message=str(exc),
+            posting_number=posting_number, message=f"Ozon не подтвердил сборку: HTTP {exc.status or 'неизвестен'}",
         )
-        return {"status": "error", "message": f"{posting_number}: Ozon отклонил сборку — {exc.message}"}
+        return {"status": "error", "message": f"{posting_number}: Ozon пока не подтвердил сборку. Повторите скан для проверки."}
 
     numbers = result.get("postings") or [posting_number]
-    refreshed = []
-    for number in numbers:
-        try:
-            raw = client.posting_get(number)
-        except OzonError:
-            raw = None
-        if raw:
-            with db.write() as conn:
-                store.upsert_posting(conn, account["id"], raw)
-            refreshed.append(number)
+    refreshed = _refresh_shipped(client, account, numbers)
+    if set(refreshed) != set(numbers):
+        return {'status': 'warning', 'message': 'Ozon пока не подтвердил сборку. Повторите скан для проверки.',
+                'postings': numbers}
+    readiness.confirmed(account, posting_number)
+    core_labels.note_deliver(account)
     db.log_event(
         "ship",
         account_id=account["id"],
@@ -1044,6 +1056,18 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
         "message": f"{posting_number}: переведено в «Ожидает отгрузки».{extra}",
         "postings": numbers or refreshed,
     }
+
+
+def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
+    from ...core import readiness
+
+    try:
+        result = readiness.start(account, user, posting_number)
+        if result['deferred']:
+            return {'status': 'warning', 'message': 'Сначала отсканируйте ЧЗ товаров в разделе «Сборка»', 'postings': []}
+        return result['result']
+    except (ValueError, OzonError):
+        return {'status': 'error', 'message': 'Не удалось подтвердить готовность отправления в Ozon', 'postings': []}
 
 
 def labels(account: dict, user: dict, posting_numbers: list[str], *, mark: bool = True) -> tuple[bytes, str]:

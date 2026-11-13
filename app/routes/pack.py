@@ -18,12 +18,13 @@
 """
 from __future__ import annotations
 
+from contextlib import suppress
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from ..core import board as core_board
-from ..core import db
+from ..core import db, marking
 from ..core import labels as core_labels
 from ..core import orders as core_orders
 from ..core import orders_sheet
@@ -35,6 +36,32 @@ from ..core.deps import check_csrf, pdf_response, require_section, safe_filename
 from ..markets.base import MarketError
 
 router = APIRouter()
+
+
+@router.get('/api/pack/marking/{mark_id}.pdf')
+def marking_pdf(mark_id: int, user: dict = Depends(require_section('pack'))):
+    try:
+        pdf = marking.print_pdf([mark_id])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, ImportError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return pdf_response(pdf, f'chz-{mark_id}.pdf')
+
+
+@router.post('/api/pack/marking/poll')
+def marking_poll(request: Request, user: dict = Depends(require_section('pack'))):
+    check_csrf(request)
+    account = core_packing.started(user)
+    if account:
+        state = core_packing.workspace_of(account).load_state(account, user)
+        active = state.get('active') or {}
+        number = str(active.get('posting_number') or active.get('id') or '')
+        if number:
+            # Фоновый поток может уже выполнять ту же операцию.
+            with suppress(ValueError):
+                marking.process(account, number)
+    return {'state': core_packing.state(user)}
 
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
 ALL = core_packing.ALL

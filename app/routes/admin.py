@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 
 from urllib.parse import urlencode
 
-from ..core import access, accounts, db, product_labels, report, security, shops, sync
+from ..core import access, accounts, db, marking, printers, product_labels, report, security, shops, sync
 from ..core.deps import check_csrf, require_manager, require_section, templates
 from ..markets import registry
 from ..markets.base import KeyCheckError, MarketError
@@ -177,6 +177,9 @@ def settings_page(request: Request, user: dict = Depends(require_section("settin
             "cabinets": cabinets,
             "marketplaces": registry.MARKETS,
             "product_barcodes_enabled": product_labels.enabled(),
+            'marking_enabled': marking.enabled(),
+            'marking_printer': next(r for r in printers.rows() if r['kind'] == 'marking:duplicate'),
+            'marking_paper': printers.PAPER,
             "report_cutoff": report.get_cutoff(),
             "report_cutoff_hint": report.cutoff_hint(),
             "roles": [r for r in access.ROLES if access.may_set_role(user, r[0])],
@@ -446,3 +449,27 @@ def api_product_barcodes(request: Request, payload: dict = Body(...), admin: dic
     message = 'Печать ШК товара перед стикером включена' if enabled else 'Печатается только стикер отправления'
     db.log_event('product_barcodes_changed', user=admin, message=message)
     return {'status': 'ok', 'message': message, 'enabled': enabled}
+
+
+@router.post('/api/settings/marking')
+def api_marking_settings(request: Request, payload: dict = Body(...), admin: dict = Depends(require_manager)):
+    import json
+
+    check_csrf(request)
+    enabled = payload.get('enabled')
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, 'Укажите, включена ли автоматическая печать ЧЗ')
+    try:
+        wanted = [r for r in printers.rows() if r['kind'] != 'marking:duplicate']
+        wanted.append({'kind': 'marking:duplicate', 'size': payload.get('size'),
+                       'printer': payload.get('printer'), 'width': payload.get('width'), 'height': payload.get('height')})
+        validated = printers.validate_rows(wanted)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    with db.write() as conn:
+        for key, value in [(printers.KV_ROWS, json.dumps(validated, ensure_ascii=False)),
+                           (marking.KV_AUTO, '1' if enabled else '0')]:
+            conn.execute('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                         (key, value))
+        db.log_event('marking_settings', user=admin, message='Настройки общего принтера и автопечати ЧЗ сохранены', conn=conn)
+    return {'status': 'ok', 'message': 'Настройки печати ЧЗ сохранены', 'printers': printers.setup()}

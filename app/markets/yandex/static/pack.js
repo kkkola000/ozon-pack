@@ -43,6 +43,7 @@ window.PACKS.yandex = {
         name: item.name,
         image: item.image,
         scanned: item.scanned,
+        marking: item.marking,
         need: item.need,
         ok: item.ok,
         // Артикул — основной карточки группы (article), ШК — всех сопоставленных.

@@ -909,3 +909,12 @@ body.pack-open { overflow: hidden; }
   .sticker-filter-actions { justify-content: flex-start; }
   .sticker-toolbar { align-items: flex-start; }
 }
+
+/* Единственное дополнение к карточке сборки: состояние маркировки товара. */
+.pack-mark {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 34px;
+  width: 34px; height: 34px; border-radius: 50%; font-size: 18px; font-weight: 800;
+  color: var(--muted); background: var(--surface-2);
+}
+.pack-mark.ok { color: var(--ok); background: var(--ok-soft); }
+.pack-mark.err { color: var(--err); background: var(--err-soft); }

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ...core.config import settings
 from ..base import CatalogSource, LabelsSource, Market
-from . import catalog, client, migrations, pack, returns, routes, store, sync
+from . import catalog, client, marking, migrations, pack, returns, routes, store, sync
 
 MARKET = Market(
     code="ozon",
@@ -26,6 +26,7 @@ MARKET = Market(
     ping=lambda account: client.get_client(account).ping(),
     sync=sync.sync_account,
     stats=routes.settings_stats,
+    marking=marking.SOURCE,
     # Первый кабинет Ozon исторически мог получать ключи из .env.
     env_credentials=lambda: (settings.ozon_client_id, settings.ozon_api_key),
     schema=store.SCHEMA + returns.SCHEMA,

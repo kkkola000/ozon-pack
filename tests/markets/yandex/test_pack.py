@@ -270,16 +270,14 @@ def test_second_pass_does_not_duplicate_report_rows(market, user):
 
 
 # ------------------------------------------------------------------ только «Ожидает отгрузки»
-def test_awaiting_packaging_order_does_not_open_by_label(market, user):
-    """«Ожидает сборки» на сборку не попадает — даже сканом самого ярлыка."""
+def test_awaiting_packaging_order_is_made_ready_by_label(market, user):
     started = work_orders(market, yandex.SUBSTATUS_STARTED)
-    assert started, "в подделке нужны заказы «Ожидает сборки»"
-    result = yandex_pack.scan(market, user, started[0]["id"])
-    assert result["status"] == "warning" and result["action"] == "needs_ship"
-    assert "Ожидает сборки" in result["message"] and "кабинете Маркета" in result["message"]
-    assert result["state"]["active"] is None
-    row = db.query_one("SELECT claim_user_id FROM yandex_orders WHERE id = ?", (started[0]["id"],))
-    assert row["claim_user_id"] is None, "заказ не должен браться в сборку"
+    assert started
+    result = yandex_pack.scan(market, user, started[0]['id'])
+    assert result['status'] == 'ok' and result['action'] == 'order_selected'
+    assert result['state']['active']['substatus'] == yandex.SUBSTATUS_READY_TO_SHIP
+    row = db.query_one('SELECT claim_user_id FROM yandex_orders WHERE id=?', (started[0]['id'],))
+    assert row['claim_user_id'] == user['id']
 
 
 def test_product_scan_skips_awaiting_packaging_orders(market, user):
@@ -296,18 +294,16 @@ def test_product_scan_skips_awaiting_packaging_orders(market, user):
     assert result["state"]["active"]["substatus"] == yandex.SUBSTATUS_READY_TO_SHIP
 
 
-def test_product_only_in_awaiting_packaging_explains_why(market, user):
-    """Товар есть только в «Ожидает сборки» — не «не нужен», а «рано, подтвердите в Маркете»."""
+def test_product_only_in_awaiting_packaging_is_made_ready(market, user):
     started = work_orders(market, yandex.SUBSTATUS_STARTED)[0]
-    item = started["items"][0]
-    db.execute("UPDATE yandex_orders SET local_state = 'packed' WHERE account_id = ? AND substatus = ?",
-               (market["id"], yandex.SUBSTATUS_READY_TO_SHIP))
-    result = yandex_pack.scan(market, user, item["barcodes"][0])
-    assert result["status"] == "warning" and result["action"] == "needs_ship", result["message"]
-    assert "Ожидает сборки" in result["message"]
-    assert result["state"]["active"] is None
-    # Ядро спрашивает «чей код» до скана — ответ обязан вести в этот кабинет.
-    assert yandex_pack.owner(market, user, item["barcodes"][0])[0] == "known"
+    item = started['items'][0]
+    db.execute("UPDATE yandex_orders SET local_state='packed' WHERE account_id=? AND substatus=?",
+               (market['id'], yandex.SUBSTATUS_READY_TO_SHIP))
+    assert yandex_pack.owner(market, user, item['barcodes'][0])[0] == 'product'
+    result = yandex_pack.scan(market, user, item['barcodes'][0])
+    assert result['status'] == 'ok' and result['action'] == 'order_selected', result['message']
+    assert result['state']['active']['substatus'] == yandex.SUBSTATUS_READY_TO_SHIP
+    assert result['state']['done'] >= 1
 
 
 def test_packing_list_counts_only_what_can_be_packed(market):

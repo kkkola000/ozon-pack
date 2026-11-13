@@ -224,7 +224,7 @@ class FakeOzonClient(OzonClient):
         more = start + limit < len(items)
         return [json.loads(json.dumps(p)) for p in page], (str(start + limit) if more else ""), more
 
-    def posting_get(self, posting_number):  # type: ignore[override]
+    def posting_get(self, posting_number, *, with_exemplars=False):  # type: ignore[override]
         posting = self._postings.get(posting_number)
         return json.loads(json.dumps(posting)) if posting else None
 
@@ -243,6 +243,7 @@ class FakeOzonClient(OzonClient):
             raise OzonError("Отправление не найдено", status=404)
         if posting["status"] != "awaiting_packaging":
             raise OzonError(f"Отправление уже в статусе {posting['status']}", status=409)
+        self._apply_exemplars(posting_number)
         posting["status"] = "awaiting_deliver"
         posting["substatus"] = "posting_awaiting_deliver"
         return {"postings": [posting_number], "additional_data": []}
@@ -383,3 +384,64 @@ class FakeOzonClient(OzonClient):
 
     def close(self):  # type: ignore[override]
         return None
+
+    def exemplars_get(self, posting_number):
+        from copy import deepcopy
+        posting = self._postings[posting_number]
+        if not hasattr(self, '_marking_payloads'):
+            self._marking_payloads = {}
+            self.marking_requests = []
+        required = {str(s) for s in (posting.get('requirements') or {}).get('products_requiring_mandatory_mark', [])}
+        products = []
+        for p in posting['products']:
+            sku = str(p['sku'])
+            existing = next((x for x in self._marking_payloads.get(posting_number, {}).get('products', [])
+                             if str(x['product_id']) == sku), None)
+            exemplars = deepcopy(existing['exemplars']) if existing else [
+                {'exemplar_id': int(sku) * 1000 + n, 'marks': [], 'is_gtd_absent': True, 'is_rnpt_absent': True}
+                for n in range(1, int(p['quantity']) + 1)]
+            products.append({'product_id': int(sku), 'quantity': p['quantity'], 'exemplars': exemplars,
+                             'is_mandatory_mark_needed': sku in required,
+                             'is_mandatory_mark_possible': sku in required})
+        return {'posting_number': posting_number, 'multi_box_qty': 1, 'products': products}
+
+    def exemplars_validate(self, posting_number, products):
+        from copy import deepcopy
+        result = deepcopy(products)
+        for p in result:
+            p['valid'] = True
+            for e in p['exemplars']:
+                e['valid'] = True
+                for m in e.get('marks', []):
+                    m['valid'] = True
+        return {'products': result}
+
+    def exemplars_set(self, payload):
+        from copy import deepcopy
+        self.exemplars_get(payload['posting_number'])
+        self.marking_requests.append(deepcopy(payload))
+        self._marking_payloads[payload['posting_number']] = deepcopy(payload)
+
+    def exemplars_status(self, posting_number):
+        from copy import deepcopy
+        self.exemplars_get(posting_number)
+        data = deepcopy(self._marking_payloads.get(posting_number, {'products': []}))
+        data['posting_number'] = posting_number
+        data['status'] = 'ship_available' if self._postings[posting_number]['status'] == 'awaiting_packaging' else 'update_available'
+        for p in data['products']:
+            for e in p['exemplars']:
+                for mark in e.get('marks', []):
+                    mark.update(check_status='passed', error_codes=[])
+        return data
+
+    def exemplars_update(self, posting_number):
+        self._apply_exemplars(posting_number)
+
+    def _apply_exemplars(self, posting_number):
+        payload = getattr(self, '_marking_payloads', {}).get(posting_number)
+        if payload:
+            self._postings[posting_number]['product_exemplars'] = {'products': [
+                {'sku': p['product_id'], 'exemplars': [
+                    {'exemplar_id': e['exemplar_id'], 'mandatory_mark': next(
+                        (m['mark'] for m in e.get('marks', []) if m['mark_type'] == 'mandatory_mark'), '')}
+                    for e in p['exemplars']]} for p in payload['products']]}

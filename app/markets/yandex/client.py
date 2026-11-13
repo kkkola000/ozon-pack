@@ -202,6 +202,47 @@ class YandexClient:
         except ValueError as exc:
             raise YandexError(f"Некорректный ответ Маркета: {exc}", status=response.status_code) from exc
 
+    def write_once(self, method: str, path: str, payload: dict) -> dict:
+        try:
+            response = self._client.request(method, path, content=json.dumps(payload, ensure_ascii=False).encode())
+        except httpx.HTTPError as exc:
+            raise YandexError('Не удалось подтвердить результат запроса Маркета') from exc
+        if response.status_code >= 400:
+            message, code = self._extract_error(response)
+            raise YandexError(message, status=response.status_code, code=code)
+        if not response.content:
+            return {}
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise YandexError('Маркет вернул некорректный ответ') from exc
+        if not isinstance(result, dict):
+            raise YandexError('Маркет вернул некорректный ответ')
+        if result.get('status') == 'ERROR' or result.get('errors'):
+            raise YandexError('Маркет не принял запрос', status=409)
+        return result
+
+    def order_details(self, order_id: str) -> dict:
+        data = self.request_json('POST', f'/v1/businesses/{self.business_id}/orders',
+                                 {'orderIds': [_positive_int(order_id, 'Заказ')]}, {'limit': 1})
+        found = [o for o in data.get('orders') or [] if str(o.get('orderId')) == str(order_id)]
+        if len(found) != 1:
+            raise YandexError('Маркет не подтвердил состав заказа')
+        return found[0]
+
+    def order_boxes(self, campaign_id: str, order_id: str, boxes: list[dict]) -> dict:
+        return self.write_once('PUT', f'/v2/campaigns/{_positive_int(campaign_id, "Магазин")}/orders/'
+                               f'{_positive_int(order_id, "Заказ")}/boxes', {'boxes': boxes, 'allowRemove': False})
+
+    def identifiers_status(self, campaign_id: str, order_id: str) -> dict:
+        return self.request_json('POST', f'/v2/campaigns/{_positive_int(campaign_id, "Магазин")}/orders/'
+                                 f'{_positive_int(order_id, "Заказ")}/identifiers/status')
+
+    def ready_to_ship(self, campaign_id: str, order_id: str) -> dict:
+        return self.write_once('PUT', f'/v2/campaigns/{_positive_int(campaign_id, "Магазин")}/orders/'
+                               f'{_positive_int(order_id, "Заказ")}/status',
+                               {'order': {'status': 'PROCESSING', 'substatus': 'READY_TO_SHIP'}})
+
     @staticmethod
     def _extract_error(response: httpx.Response) -> tuple[str, str | None]:
         """Ошибка Маркета приходит списком в `errors` — берём первую понятную."""

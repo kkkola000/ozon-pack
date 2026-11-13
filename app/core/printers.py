@@ -127,6 +127,9 @@ def documents() -> list[dict]:
         })
     out.append({"kind": "pack:sheet", "section": "Сборка и заказы",
                 "title": "Лист с заказами", "size": "a4", "hint": ""})
+    out.append({'kind': 'marking:duplicate', 'section': 'Сборка и заказы',
+                'title': 'Дубликаты ЧЗ — все маркетплейсы', 'size': '58x40',
+                'hint': 'Один общий принтер дубликатов Честного знака для всех площадок.'})
     out.append({"kind": "returns:sheet", "section": "Возвраты",
                 "title": "Лист возвратов для пункта выдачи", "size": "a4", "hint": ""})
     out.append({"kind": "returns:act", "section": "Возвраты",
@@ -260,7 +263,7 @@ def rows() -> list[dict]:
     return out
 
 
-def save(wanted) -> list[dict]:
+def validate_rows(wanted) -> list[dict]:
     """Сохранить строки. Ошибка — ValueError с текстом для человека."""
     if not isinstance(wanted, list):
         raise ValueError("Нужен список: документ, размер листа, принтер, ориентация")
@@ -282,9 +285,19 @@ def save(wanted) -> list[dict]:
             raise ValueError(f"У «{title}» размер {paper_title(row)} указан дважды")
         seen.add((kind, paper))
         per_kind[kind] = per_kind.get(kind, 0) + 1
+        if kind == 'marking:duplicate':
+            if per_kind[kind] > 1:
+                raise ValueError('Для дубликатов ЧЗ выбирается один общий принтер и размер')
+            if min(paper_mm(row)) < 30:
+                raise ValueError('Для ЧЗ нужна этикетка не меньше 30×30 мм')
         if per_kind[kind] > ROWS_PER_KIND:
             raise ValueError(f"У «{title}» слишком много размеров")
         clean.append(row)
+    return clean
+
+
+def save(wanted) -> list[dict]:
+    clean = validate_rows(wanted)
     db.kv_set(KV_ROWS, json.dumps(clean, ensure_ascii=False))
     return rows()
 

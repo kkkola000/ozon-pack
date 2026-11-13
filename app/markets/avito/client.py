@@ -355,6 +355,19 @@ class AvitoClient:
         # Пустой ответ Avito на успешный переход тоже встречается.
         return True if success is None else bool(success)
 
+    def confirm_once(self, order_id: str) -> None:
+        try:
+            response = self._client.post('/order-management/1/order/applyTransition',
+                                         headers={'Authorization': f'Bearer {self.token()}'},
+                                         json={'orderId': str(order_id), 'transition': TRANSITION_CONFIRM})
+        except httpx.HTTPError as exc:
+            raise AvitoError('Не удалось подтвердить результат запроса Avito') from exc
+        if response.status_code >= 400:
+            message, code = self._extract_error(response)
+            raise AvitoError(message, status=response.status_code, code=code)
+        if response.content and response.json().get('success') is False:
+            raise AvitoError('Avito не подтвердил заказ', status=409)
+
     def label_task(self, marketplace_ids: list[str]) -> str:
         """Задача на генерацию этикеток. Avito ждёт номера из сервиса сделок."""
         data = self.request_json(

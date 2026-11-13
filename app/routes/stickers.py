@@ -7,12 +7,43 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
-from ..core import accounts, db, labels, sticker_archive
+from ..core import accounts, db, labels, marking, sticker_archive
 from ..core.config import settings
 from ..core.deps import check_csrf, pdf_response, require_section, safe_filename, templates
 from ..markets import registry
 
 router = APIRouter()
+
+
+@router.get('/api/stickers/{archive_id}/marking')
+def archive_marking(archive_id: int, user: dict = Depends(require_section('stickers'))):
+    try:
+        return marking.archive_details(archive_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get('/api/stickers/{archive_id}/marking.pdf')
+def archive_marking_pdf(archive_id: int, user: dict = Depends(require_section('stickers'))):
+    try:
+        detail = marking.archive_details(archive_id)
+        pdf = marking.print_pdf([m['id'] for m in detail['items']])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, ImportError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return pdf_response(pdf, f'chz-order-{archive_id}.pdf')
+
+
+@router.get('/api/stickers/marking/{mark_id}.pdf')
+def archived_mark_pdf(mark_id: int, user: dict = Depends(require_section('stickers'))):
+    try:
+        pdf = marking.print_pdf([mark_id])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, ImportError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return pdf_response(pdf, f'chz-{mark_id}.pdf')
 
 
 def _date(value: str) -> str:

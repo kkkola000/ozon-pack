@@ -207,6 +207,13 @@ def market_order(yandex_account, sample_data, account):
                (yandex_account["id"], order["id"], yandex_account["id"], order["id"]))
     db.execute("UPDATE yandex_order_items SET offer_id = 'YA-OWN', quantity = 1 WHERE account_id = ? AND order_id = ?",
                (yandex_account["id"], order["id"]))
+    # Проверка состава теперь читает и площадку: подделка должна содержать
+    # те же изменения заказа, что и локальная база.
+    remote = fake._orders[order['id']]
+    local = list(db.query('SELECT item_id,quantity FROM yandex_order_items WHERE account_id=? AND order_id=?',
+                         (yandex_account['id'], order['id'])))
+    by_id = {str(i['id']): i for i in remote['items']}
+    remote['items'] = [dict(by_id[i['item_id']], offerId='YA-OWN', count=i['quantity']) for i in local]
     card = put_card(yandex_account, "YA-OWN", "Кружка Маркета")
     main = put_card(account, "OZ-LINK", "Кружка", barcodes=[FOREIGN], offer_id="OZ-ART")
     link(main, card)

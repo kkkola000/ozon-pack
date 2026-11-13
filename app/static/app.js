@@ -146,12 +146,12 @@ async function printLabelDocument({ pdfUrl, name = 'Стикер', window: preop
    десятки. */
 const LABEL_WINDOW_NAME = 'ozp-label';
 
-function reservePrintWindow() {
+function reservePrintWindow(kind = '') {
   if (!IS_SAFARI) return null;
   /* Наклейки всех площадок рабочего места печатает QZ Tray — вкладка не нужна,
      и мигать ею незачем. Если QZ Tray откажет, браузер предложит открыть файл
      ссылкой. */
-  const kinds = Object.values(window.PACKS || {}).filter((one) => one.print).map((one) => one.print.kind);
+  const kinds = kind ? [kind] : Object.values(window.PACKS || {}).filter((one) => one.print).map((one) => one.print.kind);
   if (typeof QZ !== 'undefined' && kinds.length && kinds.every((kind) => QZ.onlyQz(kind))) return null;
   try { return window.open('', LABEL_WINDOW_NAME); } catch (error) { return null; }
 }

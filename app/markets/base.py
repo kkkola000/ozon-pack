@@ -200,6 +200,25 @@ class Workspace:
     # complete(кабинет, человек, причина). None — площадка так не умеет (Avito:
     # заказ там закрывает последняя единица товара).
     complete: Callable[[dict, dict, str], dict] | None = None
+    # Подтвердить готовность на площадке и перечитать фактический статус.
+    ready: Callable[[dict, dict, str], None] | None = None
+
+
+@dataclass(frozen=True)
+class MarkingSource:
+    """Экземпляры ЧЗ: требования, полная запись, проверка и применение изменений.
+
+    prepare -> {products: [{key, sku, quantity, required, possible}], context}.
+    poll -> {status: checking/accepted/error, errors: {key: безопасный текст}}.
+    Никакой HTTP 200 сам по себе не означает принятия кода.
+    """
+
+    prepare: Callable[[dict, str], dict]
+    # dispatch фиксирует неопределённый результат непосредственно перед записью.
+    submit: Callable[[dict, str, dict, list[dict], Callable[[], None]], None]
+    poll: Callable[[dict, str, dict, list[dict]], dict]
+    finalize: Callable[[dict, str, dict, list[dict]], None]
+    item_key: Callable[[dict], str]
 
 
 @dataclass(frozen=True)
@@ -276,6 +295,7 @@ class Market:
     ping: Callable[[dict], dict]             # проверить ключи кабинета; MarketError при отказе
     sync: Callable[..., dict]                # загрузка данных кабинета: sync(account, *, returns_too=True)
     stats: Callable[[int], dict[str, int]]   # плитки в «Настройках»
+    marking: MarkingSource | None = None
     # Запасные ключи из .env — только там, где они исторически были (Ozon).
     env_credentials: Callable[[], tuple[str, str]] | None = None
     # Свои таблицы: DDL и какие из них хранят ответ площадки целиком (колонка raw).

@@ -140,11 +140,11 @@ def test_claim_blocks_second_packer(account, sample_data, user, other_user):
     assert user["login"] in result["message"]
 
 
-def test_awaiting_packaging_requires_ship_first(account, sample_data, user):
+def test_awaiting_packaging_is_shipped_on_label_scan(account, sample_data, user):
     posting = pick_posting(status=ozon_store.STATUS_AWAITING_PACKAGING)
     result = packing.scan(account, user, posting["posting_number"])
-    assert result["action"] == "needs_ship"
-    assert packing.load_state(account, user)["active"] is None
+    assert result["action"] == "posting_selected"
+    assert result["state"]["active"]["status"] == ozon_store.STATUS_AWAITING_DELIVER
 
 
 def test_auto_ship_on_scan_setting(account, sample_data, user, monkeypatch):

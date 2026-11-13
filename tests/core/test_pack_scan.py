@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from app.core import accounts, db, packing, sync
 from app.main import app
 from app.markets.avito import sync as avito_sync
-from app.markets.ozon import store as ozon_store
+from app.markets.ozon import store as ozon_store, client as ozon_client
+from copy import deepcopy
 from app.markets.yandex import sync as yandex_sync
 
 
@@ -201,6 +202,11 @@ def test_the_same_product_opens_the_first_order_in_the_list(client, cabinets, us
             "INSERT OR REPLACE INTO product_barcodes(account_id, sku, barcode) VALUES(?, ?, ?)",
             (second["id"], sku, barcode),
         )
+        fake = ozon_client.get_client(second)
+        raw = deepcopy(next(iter(fake._postings.values())))
+        raw.update(posting_number=number, status='awaiting_deliver', shipment_date=shipment_date)
+        raw['products'] = [dict(raw['products'][0], sku=int(sku), quantity=1)]
+        fake._postings[number] = raw
         return number
 
     # Второй кабинет горит раньше — берём его заказ.
@@ -226,19 +232,18 @@ RUCKSACK = "8885020503531"
 def rucksack(cabinets):
     """Сценарий со склада: товар есть в каталогах двух кабинетов Ozon.
 
-    В кабинете «МК» с ним лежит отправление, но оно ещё «Ожидает сборки». В
-    кабинете «Ozon» заказов с этим товаром нет вовсе. Правильный ответ — «ещё
-    в статусе «Ожидает сборки»», и он не должен зависеть от того, какой
-    кабинет открыт в шапке.
+    В «МК» отправление ещё «Ожидает сборки», а в «Ozon» заказов с этим
+    товаром нет. Скан должен открыть и подтвердить заказ «МК» независимо
+    от кабинета в шапке.
     """
     mk = accounts.get(accounts.create("ozon", "МК", "test-client", "test-key"))
     for shop in (cabinets["ozon"], mk):
         db.execute(
-            "INSERT INTO products(account_id, sku, offer_id, name) VALUES(?, 'SKU-ANEX', 'ANEX-1', ?)",
+            "INSERT INTO products(account_id, sku, offer_id, name) VALUES(?, '199999999', 'ANEX-1', ?)",
             (shop["id"], "Эргорюкзак Anex Whiz-Hug Lownight"),
         )
         db.execute(
-            "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, 'SKU-ANEX')",
+            "INSERT INTO product_barcodes(account_id, barcode, sku) VALUES(?, ?, '199999999')",
             (shop["id"], RUCKSACK),
         )
     db.execute(
@@ -248,9 +253,14 @@ def rucksack(cabinets):
     )
     db.execute(
         "INSERT INTO posting_items(account_id, posting_number, sku, offer_id, name, quantity) "
-        "VALUES(?, '49000000-7777-1', 'SKU-ANEX', 'ANEX-1', 'Эргорюкзак Anex Whiz-Hug Lownight', 1)",
+        "VALUES(?, '49000000-7777-1', '199999999', 'ANEX-1', 'Эргорюкзак Anex Whiz-Hug Lownight', 1)",
         (mk["id"],),
     )
+    fake = ozon_client.get_client(mk)
+    raw = deepcopy(next(iter(fake._postings.values())))
+    raw.update(posting_number='49000000-7777-1', status='awaiting_packaging')
+    raw['products'] = [dict(raw['products'][0], sku=199999999, offer_id='ANEX-1', quantity=1)]
+    fake._postings[raw['posting_number']] = raw
     return mk
 
 
@@ -262,7 +272,8 @@ def test_the_answer_comes_from_the_cabinet_that_has_the_order(client, cabinets, 
     """
     result = scan(client, RUCKSACK)
     assert "не нужен ни в одном" not in result["message"], result["message"]
-    assert "Ожидает сборки" in result["message"], result["message"]
+    assert result["status"] == "ok", result["message"]
+    assert result["state"]["active"]["status"] == ozon_store.STATUS_AWAITING_DELIVER
     assert result["shop"] == "МК"
 
 
@@ -280,7 +291,8 @@ def test_a_cabinet_filter_separates_two_shops_of_one_marketplace(client, cabinet
 
     own = scan(client, number, shop=rucksack["id"])
     assert own["shop"] == "МК"
-    assert "Ожидает сборки" in own["message"], own["message"]
+    assert own["status"] == "ok", own["message"]
+    assert own["state"]["active"]["status"] == ozon_store.STATUS_AWAITING_DELIVER
 
 
 def test_the_same_scan_gives_the_same_answer(client, cabinets, rucksack):
@@ -338,6 +350,9 @@ def test_owner_agrees_with_the_scan_on_every_barcode(cabinets, user):
         elif index % 3 == 0:
             db.execute("UPDATE postings SET local_state = 'packed' WHERE account_id = ? AND posting_number = ?",
                        (shop["id"], number))
+    kinds |= check()
+    # Теперь все заказы закрыты — известный товар открыть уже нечем.
+    db.execute("UPDATE postings SET local_state='packed' WHERE account_id=?", (shop['id'],))
     kinds |= check()
     assert {"product", "known"} <= kinds, f"проверка вышла пустой: {kinds}"
 

@@ -15,6 +15,21 @@ import json
 from . import accounts, db
 
 
+def claim(conn, account: dict, user: dict, number: str) -> None:
+    """Проверка владельца и бронь в одной транзакции, после любых сетевых ожиданий."""
+    from .store import claim_is_active
+
+    board = _registry().get(account['marketplace']).orders
+    row = conn.execute(f'SELECT * FROM {board.table} WHERE account_id=? AND {board.key}=?',
+                       (account['id'], number)).fetchone()
+    if not row or row['local_state'] == 'packed':
+        raise ValueError('Заказ уже собран или отсутствует')
+    if row['claim_user_id'] != user['id'] and claim_is_active(row['claim_at']):
+        raise ValueError('Заказ уже собирает другой сотрудник')
+    conn.execute(f'UPDATE {board.table} SET claim_user_id=?,claim_login=?,claim_at=? WHERE account_id=? AND {board.key}=?',
+                 (user['id'], user['login'], db.now_iso(), account['id'], number))
+
+
 def _registry():
     from ..markets import registry
 
@@ -33,6 +48,7 @@ def save(conn, account: dict, user: dict, number: str, scanned) -> None:
     Время начала сохраняется, пока заказ тот же: оно нужно журналу — сколько
     собирали, — а не каждому скану.
     """
+    claim(conn, account, user, number)
     now = db.now_iso()
     conn.execute(
         """
@@ -75,7 +91,13 @@ def release_previous(conn, user: dict, *, keep: tuple[int, str] | None = None) -
     previous = (row["account_id"], row["posting_number"])
     if keep is not None and previous == keep:
         return None
-    unclaim(conn, *previous)
+    # Просроченную бронь мог уже получить другой сборщик.
+    account = accounts.get(previous[0])
+    board = _registry().get(account['marketplace']).orders if account else None
+    if board:
+        owner = conn.execute(f'SELECT claim_user_id FROM {board.table} WHERE account_id=? AND {board.key}=?', previous).fetchone()
+        if owner and owner['claim_user_id'] == user['id']:
+            unclaim(conn, *previous)
     return previous
 
 

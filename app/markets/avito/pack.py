@@ -23,6 +23,8 @@
 """
 from __future__ import annotations
 
+from contextlib import suppress
+
 import json
 import re
 from collections import Counter
@@ -113,7 +115,28 @@ def owner(account: dict, user: dict, code: str) -> tuple[str, str] | None:  # no
     Спрашивается до скана и ничего не меняет.
     """
     order = find_order(account["id"], code)
-    return ("label", str(order["id"])) if order else None
+    if order:
+        return 'label', str(order['id'])
+    candidates = product_orders(account, code)
+    free = [o for o in candidates if not core_store.claim_is_active(o.get('claim_at')) or o.get('claim_user_id') == user['id']]
+    if free:
+        return 'product', str(free[0]['id'])
+    return ('known', str(candidates[0]['id'])) if candidates else None
+
+
+def product_orders(account: dict, code: str) -> list[dict]:
+    """Только однозначно известные ШК своих/сопоставленных карточек, без угадывания."""
+    variants = set(barcode_variants(code))
+    found = []
+    for row in db.query("SELECT * FROM avito_orders WHERE account_id=? AND status IN ('on_confirmation','ready_to_ship') "
+                        "AND local_state!='packed' ORDER BY (ship_till IS NULL),ship_till,id", (account['id'],)):
+        for item in store.avito_items(account['id'], row['id']):
+            known, _image = _item_extras(account['id'], item)
+            known = set(known) | {card_sku(item), str(item.get('seller_id') or '')}
+            if variants & (known - {''}):
+                found.append(store.avito_view(row))
+                break
+    return found
 
 
 # ------------------------------------------------------------------ состояние сборки
@@ -142,7 +165,7 @@ def load_state(account: dict, user: dict) -> dict:
     for index, (item, unit_no) in enumerate(units):
         sku = card_sku(item)
         if sku not in looks:
-            looks[sku] = linked.extras(account["id"], sku, image=item.get("image"))
+            looks[sku] = _item_extras(account['id'], item)
             # Артикул — основной карточки группы: у объявления его может не быть.
             articles[sku] = linked.article(account["id"], sku, item.get("seller_id"))
         view = _unit_view(index, item, unit_no, entries, sets.get(sku), looks[sku])
@@ -162,6 +185,13 @@ def load_state(account: dict, user: dict) -> dict:
 def card_sku(item: dict) -> str:
     """Карточка позиции в каталоге панели: у Avito это номер объявления."""
     return str(item.get("avito_id") or "")
+
+
+def _item_extras(account_id: int, item: dict):
+    sku = card_sku(item)
+    own = db.query_one('SELECT barcodes,image FROM products WHERE account_id=? AND sku=?', (account_id, sku))
+    return linked.extras(account_id, sku, barcodes=db.json_list(own['barcodes']) if own else [],
+                         image=item.get('image') or (own['image'] if own else None))
 
 
 def _entries(raw) -> list[dict]:
@@ -232,6 +262,11 @@ def scan(account: dict, user: dict, code: str) -> ScanResult:
     if state["active"] is None:
         if order:
             return open_order(account, user, order, code)
+        candidates = product_orders(account, code)
+        candidates = [o for o in candidates if not core_store.claim_is_active(o.get('claim_at')) or o.get('claim_user_id') == user['id']]
+        if candidates:
+            result = open_order(account, user, candidates[0])
+            return _scan_item(account, user, load_state(account, user), code) if result['status'] == 'ok' else result
         db.log_event("avito_scan_unknown", level="error", account_id=account["id"], user=user,
                      barcode=code, message="Стикер не опознан")
         return ScanResult(
@@ -286,6 +321,19 @@ def open_order(account: dict, user: dict, order: dict, code: str | None = None) 
             sound="error",
             state=load_state(account, user),
         )
+    if order.get('status') in {'on_confirmation', PACKABLE}:
+        from ...core import readiness
+        from .client import AvitoError
+
+        if core_store.claim_is_active(order.get('claim_at')) and order.get('claim_user_id') != user['id']:
+            return ScanResult('error', 'Заказ уже собирает другой сотрудник', action='locked', state=load_state(account, user))
+        try:
+            readiness.start(account, user, order_id)
+            row = db.query_one('SELECT * FROM avito_orders WHERE account_id=? AND id=?', (account['id'], order_id))
+            order = store.avito_view(row)
+        except (ValueError, AvitoError):
+            return ScanResult('error', 'Avito пока не подтвердил готовность заказа. Повторите скан.',
+                              action='ready_pending', state=load_state(account, user))
     if order.get("status") != PACKABLE:
         label = STATUS_LABELS.get(order.get("status") or "", order.get("status") or "")
         return ScanResult(
@@ -305,14 +353,9 @@ def open_order(account: dict, user: dict, order: dict, code: str | None = None) 
             state=load_state(account, user),
         )
 
-    now = db.now_iso()
     with db.write() as conn:
         pack_state.release_previous(conn, user, keep=(account["id"], order_id))
-        conn.execute(
-            "UPDATE avito_orders SET claim_user_id = ?, claim_login = ?, claim_at = ? "
-            "WHERE account_id = ? AND id = ?",
-            (user["id"], user["login"], now, account["id"], order_id),
-        )
+        pack_state.claim(conn, account, user, order_id)
         pack_state.save(conn, account, user, order_id, [])
         db.log_event("avito_pack_start", account_id=account["id"], user=user,
                      posting_number=order_id, barcode=code, message="Заказ взят в сборку", conn=conn)
@@ -493,8 +536,17 @@ def _credit_unit(account: dict, user: dict, state: dict, unit: dict, code: str) 
 
 def complete(account: dict, user: dict, order_id: str, code: str | None = None,
              auto: bool = False) -> ScanResult:
+    from ...core import readiness
+    from .client import AvitoError
+
+    try:
+        readiness.complete_guard(account, user, order_id)
+    except (ValueError, AvitoError):
+        return ScanResult('error', 'Avito пока не подтвердил готовность заказа',
+                          action='ready_pending', state=load_state(account, user))
     now = db.now_iso()
     with db.write() as conn:
+        pack_state.claim(conn, account, user, order_id)
         conn.execute(
             "UPDATE avito_orders SET local_state = 'packed', packed_at = ?, packed_by = ?, "
             "claim_user_id = NULL, claim_login = NULL, claim_at = NULL "
@@ -516,6 +568,31 @@ def complete(account: dict, user: dict, order_id: str, code: str | None = None,
         completed_order=order_id,
         state=load_state(account, user),
     )
+
+
+def ready_order(account: dict, user: dict, order_id: str) -> None:
+    from ...core import readiness
+    from . import client
+
+    api = client.get_client(account)
+    raw = api.order(order_id)
+    if not raw or str(raw.get('id')) != order_id:
+        raise ValueError('Avito не подтвердил заказ')
+    if raw.get('status') == client.STATUS_ON_CONFIRMATION:
+        actions = {a.get('name') for a in raw.get('availableActions') or []}
+        if client.TRANSITION_CONFIRM not in actions:
+            raise ValueError('Avito не разрешает подтверждение этого заказа')
+        with suppress(client.AvitoError):
+            readiness.attempt(account, order_id, lambda: api.confirm_once(order_id))
+        raw = api.order(order_id)
+    if not raw or raw.get('status') != PACKABLE:
+        raise ValueError('Avito пока не подтвердил статус «Готов к отгрузке»')
+    with db.write() as conn:
+        store.upsert_avito_order(conn, account['id'], raw)
+    core_labels.note_deliver(account)
+    readiness.confirmed(account, order_id)
+    db.log_event('avito_ready', account_id=account['id'], user=user, posting_number=order_id,
+                 message='Готовность к отгрузке подтверждена Avito')
 
 
 # ------------------------------------------------------------------- Avito

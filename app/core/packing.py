@@ -43,7 +43,9 @@ Avito в руках давала «такого отправления нет»,
 """
 from __future__ import annotations
 
-from . import accounts, db, orders as core_orders
+from contextlib import nullcontext
+
+from . import accounts, db, marking, marking_codes, order_lock, orders as core_orders
 from . import shops as core_shops
 
 # «Все заказы»: фильтр не выбран, сборка идёт по всем кабинетам.
@@ -244,7 +246,12 @@ def _run(shop: dict, call, *args) -> dict:
     result = dict(call(shop, *args))
     result.update(_sign({}, shop))
     if isinstance(result.get("state"), dict):
-        result["state"] = _sign(result["state"], shop)
+        result["state"] = _sign(marking.enrich(shop, result["state"]), shop)
+        marking_state = result['state'].get('marking') or {}
+        if marking_state.get('pending_key') and result.get('status') == 'ok':
+            result['message'] = 'Товар отсканирован. Теперь отсканируйте его ЧЗ.'
+            if result.get('action') == 'ready_for_label':
+                result['action'] = 'product_scanned'
     return result
 
 
@@ -297,18 +304,58 @@ def _kit_order(shop: dict, user: dict, code: str) -> dict | None:
             "state": _sign(state, shop), **_sign({}, shop)}
 
 
-def scan(where: list[dict], user: dict, code: str) -> dict:
+def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
+    if open_shop is None:
+        return {'status': 'error', 'message': 'Сначала откройте заказ и отсканируйте ШК товара',
+                'action': 'marking_required', 'state': state(user), 'sound': 'error'}
+    workspace = _workspace(open_shop)
+    current = workspace.load_state(open_shop, user)
+    active = current.get('active') or {}
+    number = str(active.get('posting_number') or active.get('id') or '')
+    try:
+        with order_lock.hold(open_shop['id'], number):
+            marking.prepare(open_shop, number)
+            saved = marking.save_scan(open_shop, user, current, code)
+    except ValueError as exc:
+        return {'status': 'error', 'message': str(exc), 'action': 'marking_error', 'sound': 'error',
+                'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
+    except Exception:
+        return {'status': 'error', 'message': 'Пока не удалось сохранить ЧЗ. Повторите скан.',
+                'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
+    result = {'status': 'warning' if saved['duplicate'] else 'ok',
+              'message': 'ЧЗ уже сохранён; повторная автопечать не запущена' if saved['duplicate'] else
+                         'ЧЗ сохранён и связан с товаром и стикером отправления',
+              'action': 'marking_saved', 'sound': 'ok',
+              'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
+    if not saved['duplicate'] and marking.enabled():
+        from . import printers
+
+        result['marking_print'] = {'url': f'/api/pack/marking/{saved["id"]}.pdf', 'kind': 'marking:duplicate',
+                                  'setup': printers.setup()}
+    return result
+
+
+def _scan(where: list[dict], user: dict, code: str) -> dict:
     """Один скан рабочего места. Кабинет выбирается по коду, а не по шапке."""
-    code = (code or "").strip()
+    raw = (code or '').rstrip('\r\n')
+    is_mark = marking_codes.looks_like(raw)
+    code = raw if is_mark else raw.strip()
     open_shop = started(user)
+    if is_mark:
+        return _mark_scan(open_shop, user, code)
     if open_shop is not None:
         stranger = _stranger(user, open_shop, code)
         if stranger is not None:
             return stranger
+        current = _workspace(open_shop).load_state(open_shop, user)
+        if marking.pending(open_shop, current):
+            return {'status': 'error', 'message': 'Сначала отсканируйте ЧЗ выбранной единицы товара',
+                    'action': 'marking_required', 'sound': 'error',
+                    'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
         blocked = _kit_order(open_shop, user, code)
         if blocked is not None:
             return blocked
-        return _run(open_shop, _workspace(open_shop).scan, user, code)
+        return _locked_scan(open_shop, user, code)
 
     locked = _labels_locked(where, user, code)
     if locked is not None:
@@ -323,10 +370,49 @@ def scan(where: list[dict], user: dict, code: str) -> dict:
             "state": {"active": None, "items": [], "done": 0, "total": 0, "complete": False},
             "market": None,
         }
-    return _run(target, _workspace(target).scan, user, code)
+    return _locked_scan(target, user, code)
+
+
+def _locked_scan(shop: dict, user: dict, code: str) -> dict:
+    current = _workspace(shop).load_state(shop, user)
+    active = current.get('active') or {}
+    number = str(active.get('posting_number') or active.get('id') or '')
+    if not number:
+        claim = _workspace(shop).owner(shop, user, code)
+        number = str(claim[1]) if claim and claim[1] else ''
+    if not number:
+        return _run(shop, _workspace(shop).scan, user, code)
+    with order_lock.hold(shop['id'], number):
+        result = _run(shop, _workspace(shop).scan, user, code)
+        if not active and not result.get('print') and result.get('state', {}).get('active'):
+            from . import board
+            from .config import settings
+
+            claim = _workspace(shop).owner(shop, user, code)
+            if result['state'].get('marking') and claim and claim[0] != 'label' and board.not_ready(shop, [number]):
+                result['deferred_label_print'] = settings.autoprint
+        return result
+
+
+def scan(where: list[dict], user: dict, code: str) -> dict:
+    try:
+        with _user_lock(user):
+            return _scan(where, user, code)
+    except ValueError as exc:
+        return {'status': 'error', 'message': str(exc), 'sound': 'error', 'state': state(user)}
+
+
+def _user_lock(user: dict):
+    anchor = _home(shops(ALL))
+    return order_lock.hold(anchor['id'], f'@scan-user:{user["id"]}') if anchor else nullcontext()
 
 
 def release(user: dict) -> dict:
+    with _user_lock(user):
+        return _release(user)
+
+
+def _release(user: dict) -> dict:
     """Отменить начатую сборку — в том кабинете, где она открыта."""
     open_shop = started(user)
     if open_shop is None:
@@ -339,6 +425,17 @@ def release(user: dict) -> dict:
 
 
 def complete(user: dict, reason: str = "ручное завершение") -> dict:
+    with _user_lock(user):
+        shop = started(user)
+        if shop is None:
+            raise ValueError('Сборка не начата')
+        active = _workspace(shop).load_state(shop, user).get('active') or {}
+        number = str(active.get('posting_number') or active.get('id') or '')
+        with order_lock.hold(shop['id'], number):
+            return _complete(user, reason)
+
+
+def _complete(user: dict, reason: str) -> dict:
     """«Завершить без скана наклейки». Отказ — ValueError с текстом для оператора."""
     open_shop = started(user)
     if open_shop is None:
@@ -354,7 +451,7 @@ def state(user: dict) -> dict:
     open_shop = started(user)
     if open_shop is None:
         return {"active": None, "items": [], "done": 0, "total": 0, "complete": False, "market": None}
-    return _sign(_workspace(open_shop).load_state(open_shop, user), open_shop)
+    return _sign(marking.enrich(open_shop, _workspace(open_shop).load_state(open_shop, user)), open_shop)
 
 
 # ------------------------------------------------------------------ плитки очереди

@@ -254,3 +254,6 @@ class FakeAvitoClient(AvitoClient):
 
     def close(self):  # type: ignore[override]
         return None
+
+    def confirm_once(self, order_id):
+        return self.apply_transition(order_id, 'confirm')

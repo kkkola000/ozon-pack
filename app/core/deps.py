@@ -10,7 +10,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 
-from . import access, product_labels
+from . import access, marking, product_labels
 from .config import BASE_DIR, settings
 from .version import build_label
 
@@ -141,6 +141,7 @@ def local_dt(value: str | None, fmt: str = "%d.%m %H:%M") -> str:
 templates.env.filters["local_dt"] = local_dt
 templates.env.globals["settings"] = settings
 templates.env.globals["print_product_barcodes"] = product_labels.enabled
+templates.env.globals['print_marking_duplicates'] = marking.enabled
 
 
 def panel_has_catalog(request: Request = None) -> bool:  # noqa: ARG001 - зовётся из шаблона

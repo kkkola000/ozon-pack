@@ -290,7 +290,9 @@ def search(*, account_id: int | None = None, market: str = '', q: str = '', sinc
     params = [cutoff()] + params
     total = db.query_one('SELECT COUNT(*) AS n' + join + 'WHERE ' + where, params)['n']
     rows = db.query(
-        'SELECT o.*, v.id AS version_id, v.saved_at'
+        'SELECT o.*, v.id AS version_id, v.saved_at, '
+        '(SELECT COUNT(*) FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id '
+        'WHERE m.archive_id=o.id AND c.active=1) AS marking_count'
         + join + 'WHERE ' + where + ' ORDER BY COALESCE(v.saved_at, o.created_at) DESC, o.id DESC LIMIT ? OFFSET ?',
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
     )

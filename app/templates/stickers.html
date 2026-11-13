@@ -36,6 +36,7 @@
         <td>{% if item.error %}<span class="badge err">Ошибка загрузки</span><div class="small muted">{{ item.error }}</div>{% elif item.version_id %}<span class="badge ok">Сохранён</span>{% else %}<span class="badge warn">Ожидает загрузки</span>{% endif %}
         </td>
         <td><div class="sticker-actions">
+          {% if item.marking_count %}<button class="btn small" type="button" data-marking-archive="{{ item.id }}">ЧЗ <span class="badge accent">{{ item.marking_count }}</span></button>{% endif %}
           {% if item.version_id %}
           <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf" target="_blank" rel="noopener">Просмотр</a>
           <a class="btn small" href="/api/stickers/{{ item.version_id }}.pdf?download=true">Скачать</a>
@@ -50,6 +51,13 @@
   {% if page < pages %}
   <div class="row sticker-pagination"><a class="btn" id="stickers-more" href="{{ following }}">Ещё</a></div>
   {% endif %}
+</div>
+<div class="modal" id="sticker-marking-modal" hidden>
+  <div class="modal-box" style="max-width:960px;background:var(--bg)" role="dialog" aria-modal="true" aria-labelledby="sticker-marking-title">
+    <div class="row between"><h2 id="sticker-marking-title" style="margin:0">ЧЗ отправления</h2><button class="btn small" type="button" id="sticker-marking-close" aria-label="Закрыть ЧЗ">✕</button></div>
+    <div id="sticker-marking-content" style="margin-top:16px"></div>
+    <p class="muted small" style="margin:16px 0 0">Коды привязаны к единицам товара и этому стикеру. Повторная печать не передаёт код площадке заново.</p>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}<script src="/static/stickers.js?v={{ static_version() }}"></script>{% endblock %}
