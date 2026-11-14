@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 
-from ...core import cargo, db, exemplar_data, marking, pack_state
+from ...core import cargo, db, exemplar_data, marking, marking_codes, pack_state
 from ...core.config import settings
 from . import client, store
 
@@ -139,12 +139,15 @@ def _assign(context: dict, by_code: dict, found: set) -> list[dict]:
         for unit, exemplar in enumerate(product['exemplars'], 1):
             for mark in exemplar.get('marks') or []:
                 value = mark.get('mark')
-                if mark.get('mark_type') != 'mandatory_mark' or value not in by_code:
+                if mark.get('mark_type') != 'mandatory_mark':
                     continue
-                original = by_code[value]
-                if value in found or original['item_key'] != str(product['product_id']):
+                match = next((v for v in by_code if marking_codes.equivalent(v, value)), None)
+                if match is None:
+                    continue
+                original = by_code[match]
+                if match in found or original['item_key'] != str(product['product_id']):
                     raise ValueError('Ozon вернул неоднозначную привязку ЧЗ к отправлениям')
-                found.add(value)
+                found.add(match)
                 assigned.append({**original, 'source_unit': original['unit_no'],
                                  'item_key': str(product['product_id']), 'unit_no': unit})
     return assigned

@@ -262,7 +262,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     same = db.query_one('SELECT * FROM marking_codes WHERE fingerprint = ?', (fingerprint,))
     replacing_same = False
     if same:
-        if same['marking_order_id'] == saved['id'] and same['active'] and _open(same['code']) == parsed.raw and same['status'] != 'error':
+        if same['marking_order_id'] == saved['id'] and same['active'] and marking_codes.equivalent(_open(same['code']), parsed.raw) and same['status'] != 'error':
             return {'duplicate': True, 'id': same['id']}
         replacing_same = same['marking_order_id'] == saved['id'] and same['active'] and same['status'] == 'error'
         if not replacing_same:

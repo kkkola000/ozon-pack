@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ...core import db, exemplar_data, marking, readiness
+from ...core import db, exemplar_data, marking, marking_codes, readiness
 from ..base import MarkingSource
 from . import client, store
 
@@ -206,7 +206,7 @@ def _checks(data, context):
             for mark in exemplar.get('marks') or []:
                 status = str(mark.get('check_status') or '').lower()
                 if mark.get('mark_type') == 'mandatory_mark':
-                    actual[key, str(exemplar.get('exemplar_id')), mark.get('mark')] = mark.get('check_status')
+                    actual[key, str(exemplar.get('exemplar_id')), marking_codes.comparison_key(mark.get('mark'))] = mark.get('check_status')
                     if mark.get('error_codes') or status in {'error', 'invalid'}:
                         errors[error_key] = 'Код ЧЗ не принят Ozon'
                 elif mark.get('mark_type') in {'jw_uin', 'imei'} and (mark.get('error_codes') or status in {'error', 'invalid'}):
@@ -226,7 +226,7 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     if failed:
         return {'status': 'retry', 'message': 'Ozon не смог обработать проверку ЧЗ. Передача будет повторена.'}
     exemplar_ids = {str(p['product_id']): [str(e['exemplar_id']) for e in p['exemplars']] for p in context['products']}
-    passed = all(str(actual.get((c['item_key'], exemplar_ids[c['item_key']][c['unit_no'] - 1], c['raw']))).lower() in {'passed', 'success'}
+    passed = all(str(actual.get((c['item_key'], exemplar_ids[c['item_key']][c['unit_no'] - 1], marking_codes.comparison_key(c['raw'])))).lower() in {'passed', 'success'}
                  for c in codes)
     details_ok, detail_errors = _checked_details(data, context)
     if detail_errors:
@@ -267,9 +267,9 @@ def _checked_details(data: dict, context: dict) -> tuple[bool, dict]:
 
 
 def _applied(raw: dict, codes: list[dict], context: dict | None = None) -> bool:
-    got = {(str(p.get('sku')), e.get('mandatory_mark')) for p in (raw.get('product_exemplars') or {}).get('products') or []
+    got = {(str(p.get('sku')), marking_codes.comparison_key(e.get('mandatory_mark'))) for p in (raw.get('product_exemplars') or {}).get('products') or []
            for e in p.get('exemplars') or []}
-    if not all((c['item_key'], c['raw']) in got for c in codes):
+    if not all((c['item_key'], marking_codes.comparison_key(c['raw'])) in got for c in codes):
         return False
     actual = {(str(p.get('sku')), str(e.get('exemplar_id'))): e
               for p in (raw.get('product_exemplars') or {}).get('products') or [] for e in p.get('exemplars') or []}

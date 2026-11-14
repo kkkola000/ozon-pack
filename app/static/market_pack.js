@@ -517,6 +517,16 @@ async function printLabel(id, printWindow = null) {
 }
 
 input.addEventListener('keydown', (event) => {
+  const gs = event.key === '\x1d' || event.ctrlKey && !event.altKey && !event.metaKey
+    && (event.key === ']' || event.code === 'BracketRight');
+  if (gs) {
+    event.preventDefault();
+    if (!input.readOnly && !input.disabled && !busy) {
+      input.setRangeText('\x1d', input.selectionStart, input.selectionEnd, 'end');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    return;
+  }
   if (event.key === 'Enter') {
     event.preventDefault();
     /* Скан от сканера — это нажатие клавиши, то есть действие пользователя.

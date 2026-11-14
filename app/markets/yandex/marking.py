@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from collections import Counter
 
-from ...core import db, exemplar_data, marking
+from ...core import db, exemplar_data, marking, marking_codes
 from ..base import MarkingSource
 from . import client
 
@@ -58,8 +58,8 @@ def _instances(raw: dict) -> dict[str, list[dict]]:
 
 def _saved_codes(raw: dict, codes: list[dict]) -> bool:
     instances = _instances(raw)
-    wanted = Counter((c['item_key'], c['raw']) for c in codes)
-    got = Counter((key, i.get('cisFull')) for key, rows in instances.items() for i in rows)
+    wanted = Counter((c['item_key'], marking_codes.comparison_key(c['raw'])) for c in codes)
+    got = Counter((key, marking_codes.comparison_key(i.get('cisFull'))) for key, rows in instances.items() for i in rows)
     return not (wanted - got)
 
 
@@ -103,7 +103,7 @@ def _saved_data(raw: dict, context: dict, codes: list[dict]) -> bool:
         for unit, fields in rows.items():
             mark = next((c['raw'] for c in codes if c['item_key'] == key and c['unit_no'] == int(unit)), None)
             match = next((i for i in actual if all(i.get(f) == v for f, v in fields.items()) and
-                          (not mark or i.get('cisFull') == mark)), None)
+                          (not mark or marking_codes.equivalent(i.get('cisFull'), mark))), None)
             if match is None:
                 return False
             actual.remove(match)
@@ -223,7 +223,7 @@ def _code_checks(data, raw, codes):
     failed = False
     for code in codes:
         found = [c for c in by_item.get(code['item_key'], [])
-                 if c.get('value') in {code['raw'], code['raw'].split('\x1d', 1)[0]}]
+                 if c.get('value') == marking_codes.short(code['raw']) or marking_codes.equivalent(c.get('value'), code['raw'])]
         if len(found) != 1:
             pending = True
             continue

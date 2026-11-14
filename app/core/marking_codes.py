@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 GS = '\x1d'
 START = re.compile(r'^01(\d{14})21')
+# Supported compact profile: 01 + GTIN(14) + 21 + serial(13) + 93 + check(4).
+# Fixed positions only; do not split arbitrary serials at the first "93".
+COMPACT_93 = re.compile(r'01\d{14}21[\x20-\x7e]{13}93[\x20-\x7e]{4}')
 MAX_CODE = 512
 
 
@@ -16,6 +19,7 @@ class Code:
     gtin: str
     serial: str
     fields: tuple[tuple[str, str], ...]
+    compact: bool = False
 
 
 def looks_like(value: str) -> bool:
@@ -31,6 +35,9 @@ def parse(value: str) -> Code:
     if not raw or len(raw) > MAX_CODE or any(c != GS and not 32 <= ord(c) <= 126 for c in raw):
         raise ValueError('Нужен полный DataMatrix ЧЗ без посторонних управляющих символов')
     first, *tail = raw.split(GS)
+    compact = not tail and COMPACT_93.fullmatch(raw) is not None
+    if compact:
+        first, tail = raw[:31], [raw[31:]]
     match = START.match(first)
     if not match or not 1 <= len(first[18:]) <= 20:
         raise ValueError('В ЧЗ не найдены корректные GTIN и серийный номер')
@@ -47,8 +54,32 @@ def parse(value: str) -> Code:
         fields.append((ai, part[len(ai):]))
     ais = [ai for ai, _ in fields]
     if len(set(ais)) != len(ais) or not ('93' in ais or '91' in ais and '92' in ais):
-        raise ValueError('В ЧЗ отсутствует криптохвост. Настройте сканер на передачу полного кода и GS')
-    return Code(raw, gtin, serial, tuple(fields))
+        raise ValueError('Не удалось определить крипточасть ЧЗ: код неполный или его формат не поддерживается')
+    return Code(raw, gtin, serial, tuple(fields), compact)
+
+
+def comparison_key(value):
+    """For comparisons only: never replace the stored or transmitted string."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return parse(value).fields
+    except ValueError:
+        return value
+
+
+def equivalent(left, right) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        return parse(left).fields == parse(right).fields
+    except ValueError:
+        return False
+
+
+def short(value: str) -> str:
+    code = parse(value)
+    return '01' + code.gtin + '21' + code.serial
 
 
 def image(code: Code):
@@ -57,11 +88,15 @@ def image(code: Code):
     from PIL import Image
 
     # Разделители представления выбираем так, чтобы данные нельзя было принять за AI.
-    values = ''.join(value for _, value in code.fields)
+    # Naming AI 93 separately would make the encoder INSERT a GS. Preserve
+    # the exact compact payload instead; its 19-character suffix fits AI 21.
+    # The decoder below must prove byte-for-byte equality in the final image.
+    fields = (('01', code.gtin), ('21', code.raw[18:])) if code.compact else code.fields
+    values = ''.join(value for _, value in fields)
     if '[' not in values and ']' not in values:
-        text = ''.join(f'[{ai}]{value}' for ai, value in code.fields)
+        text = ''.join(f'[{ai}]{value}' for ai, value in fields)
     elif '(' not in values and ')' not in values:
-        text = ''.join(f'({ai}){value}' for ai, value in code.fields)
+        text = ''.join(f'({ai}){value}' for ai, value in fields)
     else:
         raise ValueError('Не удалось безопасно подготовить дубликат этого ЧЗ; исходный код сохранён')
     symbol = zxingcpp.create_barcode(text, zxingcpp.BarcodeFormat.DataMatrix, gs1=True, force_square=True)

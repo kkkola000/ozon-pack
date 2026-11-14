@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from copy import deepcopy
 
-from ...core import cargo, db, exemplar_data, marking
+from ...core import cargo, db, exemplar_data, marking, marking_codes
 from ...core.config import settings
 from ..base import CargoSource
 from . import client, store
@@ -41,7 +41,8 @@ def _cis(instance: dict) -> str:
 
 
 def _known_unit(product: dict, value: str) -> int | None:
-    codes = [_cis(i) for i in product.get('instances') or []]
+    codes = [marking_codes.comparison_key(_cis(i)) for i in product.get('instances') or []]
+    value = value if isinstance(value, tuple) else marking_codes.comparison_key(value) if value else ''
     if value and codes.count(value) == 1:
         return codes.index(value) + 1
     if value:
@@ -56,7 +57,7 @@ def _partial_units(product: dict, entries: list[dict], used: set[int]) -> dict[i
             values = [_cis(i) for i in entry.get('instances') or [] if _cis(i)]
             if len(values) > 1:
                 raise ValueError('Часть товара содержит несколько ЧЗ')
-            groups[values[0] if values else ''].append(entry)
+            groups[marking_codes.comparison_key(values[0]) if values else ''].append(entry)
     result = {}
     for value, group in groups.items():
         total = int(group[0]['partialCount'].get('total') or 0)
@@ -180,7 +181,7 @@ def _box_shape(box: dict, *, codes: bool) -> str:
         item = {k: entry[k] for k in ('id', 'fullCount', 'partialCount') if k in entry}
         if codes:
             item['instances'] = sorted(json.dumps({**{k: i[k] for k in ('gtd', 'rnpt', 'uin', 'countryCode') if k in i},
-                                                  **({'cis': _cis(i)} if _cis(i) else {})}, sort_keys=True)
+                                                  **({'cis': marking_codes.comparison_key(_cis(i))} if _cis(i) else {})}, sort_keys=True)
                                        for i in entry.get('instances') or [])
         items.append(item)
     return json.dumps(sorted(items, key=lambda i: int(i['id'])), sort_keys=True)
