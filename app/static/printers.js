@@ -12,10 +12,11 @@
   const status = document.getElementById('qz-status');
   const LIMIT = window.PRINTER_LIMIT || 4;
   let dirty = false;
+  let saving = false;
   const scope = panel.closest('.settings-printing') || panel;
   const trackEdit = ({ target }) => {
-    // Отсечка сохраняется отдельно, а отменённая правка в ⚙ не меняет строку.
-    if (target.closest('#printer-table') || target.matches('#print-product-barcodes, #print-marking')) dirty = true;
+    // Отменённая правка в ⚙ не меняет строку.
+    if (target.closest('#printer-table') || target.matches('#print-product-barcodes, #print-marking, #report-cutoff')) dirty = true;
   };
   scope.addEventListener('input', trackEdit);
   scope.addEventListener('change', trackEdit);
@@ -282,37 +283,50 @@
 
 
   async function saveAll(button) {
-    const rows = [...table.querySelectorAll('tr.printer-row')].map((row) => rowData(row));
-    const formats = Object.fromEntries([...table.querySelectorAll('.format-select')]
-      .map((select) => [select.dataset.kind, select.value]));
-    button.disabled = true;
+    if (saving) return false;
+    const controls = [...scope.querySelectorAll('input, select, button')].map((element) => [element, element.disabled]);
+    saving = true;
+    controls.forEach(([element]) => { element.disabled = true; });
+    const originalText = button.textContent;
+    button.textContent = 'Сохраняем…';
     try {
+      const rows = [...table.querySelectorAll('tr.printer-row')].map((row) => rowData(row));
+      const formats = Object.fromEntries([...table.querySelectorAll('.format-select')]
+        .map((select) => [select.dataset.kind, select.value]));
       const payload = { rows, formats };
       for (const [id, key] of [['print-product-barcodes', 'print_product_barcodes'], ['print-marking', 'print_marking_duplicates']]) {
         const checkbox = document.getElementById(id);
         if (checkbox) payload[key] = checkbox.checked;
       }
+      const cutoff = document.getElementById('report-cutoff');
+      if (cutoff) payload.report_cutoff = cutoff.value;
       const result = await api('/api/printers', payload);
       dirty = false;
       window.PRINT_PRODUCT_BARCODES = result.print_product_barcodes;
       window.PRINT_MARKING_DUPLICATES = result.print_marking_duplicates;
       // Страница уже знает новый выбор — печать с неё идёт по нему сразу.
       window.PRINTERS = result.printers;
+      if (cutoff && result.report_cutoff) cutoff.value = result.report_cutoff;
+      const cutoffHint = document.getElementById('report-cutoff-hint');
+      if (cutoffHint && result.report_cutoff_hint) cutoffHint.textContent = result.report_cutoff_hint;
       table.querySelectorAll('tr.printer-row').forEach((row) => {
         const select = row.querySelector('.printer-select');
         select.dataset.saved = select.value;
       });
-      toast('Настройки печати сохранены', 'ok');
+      toast('Настройки сборки и печати сохранены', 'ok');
       return true;
     } catch (error) {
       toast(error.message, 'error', 8000);
       return false;
     } finally {
-      button.disabled = false;
+      controls.forEach(([element, disabled]) => { element.disabled = disabled; });
+      button.textContent = originalText;
+      saving = false;
     }
   }
 
-  document.getElementById('btn-save-printers').addEventListener('click', (event) => saveAll(event.target));
+  document.getElementById('btn-save-printers').addEventListener('click', (event) => saveAll(event.currentTarget));
+  document.getElementById('btn-save-cutoff')?.addEventListener('click', (event) => saveAll(event.currentTarget));
 
   check();
 })();

@@ -17,7 +17,7 @@ import json
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 
-from ..core import access, db, marking, product_labels
+from ..core import access, db, marking, product_labels, report
 from ..core import printers as core_printers
 from ..core.deps import check_csrf, current_user
 
@@ -34,16 +34,8 @@ def printers_page(user: dict = Depends(current_user)):
 def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(current_user)):
     """Сохранить строки «документ — размер листа — принтер — ориентация». Пусто — «через браузер»."""
     check_csrf(request)
-    flags = {}
-    for key, kv in [('print_product_barcodes', product_labels.KV_ENABLED),
-                    ('print_marking_duplicates', marking.KV_AUTO)]:
-        if key not in payload:
-            continue
-        if not access.is_manager(user):
-            raise HTTPException(403, 'Параметры сборки меняет владелец или администратор')
-        if not isinstance(payload[key], bool):
-            raise HTTPException(400, 'Укажите галочки печати значениями true или false')
-        flags[kv] = '1' if payload[key] else '0'
+    flags = _flags(payload, user)
+    cutoff = _cutoff(payload, user)
     try:
         validated = core_printers.validate_rows(payload.get('rows'))
         formats = core_printers.validate_formats(payload.get('formats'))
@@ -52,10 +44,14 @@ def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(c
     # Все поля проверены до записи. Ошибка формата/флага не меняет принтеры.
     with db.write() as conn:
         values = {core_printers.KV_ROWS: json.dumps(validated, ensure_ascii=False), **flags}
+        if cutoff is not None:
+            values[report.KV_CUTOFF] = cutoff
         if payload.get('formats') is not None:
             values[core_printers.KV_FORMATS] = json.dumps(formats, ensure_ascii=False)
         conn.executemany('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          list(values.items()))
+        if cutoff is not None:
+            db.log_event('report_cutoff_set', user=user, message=cutoff, conn=conn)
     saved = core_printers.rows()
     titles = {doc["kind"]: doc["title"] for doc in core_printers.documents()}
     summary = "; ".join(
@@ -73,7 +69,33 @@ def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(c
         summary += '; дубликат «Честный знак»: ' + ('да' if marking.enabled() else 'нет')
     db.log_event("printers_saved", user=user, message=summary)
     return {"status": "ok", "printers": core_printers.setup(),
-            'print_product_barcodes': product_labels.enabled(), 'print_marking_duplicates': marking.enabled()}
+            'print_product_barcodes': product_labels.enabled(), 'print_marking_duplicates': marking.enabled(),
+            **({'report_cutoff': cutoff, 'report_cutoff_hint': report.cutoff_hint()} if cutoff is not None else {})}
+
+
+def _flags(payload: dict, user: dict) -> dict:
+    flags = {}
+    for key, kv in [('print_product_barcodes', product_labels.KV_ENABLED),
+                    ('print_marking_duplicates', marking.KV_AUTO)]:
+        if key not in payload:
+            continue
+        if not access.is_manager(user):
+            raise HTTPException(403, 'Параметры сборки меняет владелец или администратор')
+        if not isinstance(payload[key], bool):
+            raise HTTPException(400, 'Укажите галочки печати значениями true или false')
+        flags[kv] = '1' if payload[key] else '0'
+    return flags
+
+
+def _cutoff(payload: dict, user: dict) -> str | None:
+    if 'report_cutoff' not in payload:
+        return None
+    if not access.is_manager(user):
+        raise HTTPException(403, 'Время отчётного дня меняет владелец или администратор')
+    try:
+        return report.validate_cutoff(payload['report_cutoff'])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # Пачка стикеров на смену — десятки страниц; больше этого через подгонку не гоним.

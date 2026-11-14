@@ -216,13 +216,22 @@ def test_archive_and_pdf_require_permissions_and_keep_single_sticker(account, us
     mark_id = marking.codes(saved)[0]['id']
     with TestClient(app, follow_redirects=False) as client:
         assert client.get(f'/api/pack/marking/{mark_id}.pdf').status_code == 401
+        assert client.get(f'/api/stickers/marking/{mark_id}.pdf').status_code == 401
         client.post('/login', data={'login': 'admin', 'password': 'test-admin-pass'})
         assert client.get(f'/api/pack/marking/{mark_id}.pdf').status_code == 200
         detail = client.get(f'/api/stickers/{saved["archive_id"]}/marking')
         assert detail.status_code == 200
         assert detail.json()['items'][0]['serial'] == 'ABCDEF1234567'
         assert 'code' not in detail.json()['items'][0] and 'raw' not in detail.json()['items'][0]
-        assert client.get(f'/api/stickers/{saved["archive_id"]}/marking.pdf').status_code == 200
+        for url in (f'/api/stickers/marking/{mark_id}.pdf', f'/api/stickers/{saved["archive_id"]}/marking.pdf'):
+            response = client.get(url)
+            assert response.status_code == 200, response.text
+            assert response.headers['content-type'] == 'application/pdf'
+            assert response.content.startswith(b'%PDF-')
+        db.execute('UPDATE marking_codes SET active=0, status=? WHERE id=?', ('removed', mark_id))
+        removed = client.get(f'/api/stickers/marking/{mark_id}.pdf')
+        assert removed.status_code == 404 and 'не найден' in removed.json()['detail']
+        db.execute('UPDATE marking_codes SET active=1, status=? WHERE id=?', ('saved', mark_id))
     assert db.count('SELECT COUNT(*) FROM marking_codes') == 1
     assert marking.codes(saved, full=True)[0]['raw'] == code()
 

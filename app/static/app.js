@@ -131,8 +131,8 @@ function offerManualPrint(url, name, reason = 'окно печати не отк
   setTimeout(() => element.remove(), 30000);
 }
 
-/* Safari печатает PDF во фрейме пустым листом — для него готовим HTML с
-   картинкой стикера. Определяем именно Safari, а не WebKit вообще: Chrome и
+/* Safari печатает PDF во фрейме пустым листом — для него открываем отдельную
+   вкладку. Определяем именно Safari, а не WebKit вообще: Chrome и
    Edge на macOS тоже содержат Safari в строке браузера. */
 const IS_SAFARI = /^((?!chrome|chromium|crios|edg|android|fxios).)*safari/i.test(navigator.userAgent);
 
@@ -162,6 +162,8 @@ function reservePrintWindow(kind = '') {
 async function printPdf(url, {
   name = 'Стикер', asBlob = true, window: preopened = null, kind = '', pageSize = null, wait = false,
 } = {}) {
+  // Запасаем вкладку до первого await, в том числе для вызовов без reservePrintWindow.
+  if (IS_SAFARI && !preopened) preopened = reservePrintWindow(kind);
   /* Сначала QZ Tray, если для этого документа выбран принтер (см. «Принтеры»).
      Не вышло — печатаем через браузер, как раньше: из-за настройки печать не
      должна пропасть. Вкладка, заготовленная под Safari, при этом не нужна. */
@@ -182,23 +184,6 @@ async function printPdf(url, {
     }
   }
 
-  /* Safari не печатает PDF из скрытого фрейма — выходит пустой лист. Открываем
-     файл в отдельной вкладке: печатается именно то, что отдал Ozon. Вкладку
-     заготавливает вызывающий код в момент нажатия клавиши, иначе Safari сочтёт
-     её всплывающим окном и заблокирует. */
-  if (IS_SAFARI) {
-    const target = preopened || window.open(url, LABEL_WINDOW_NAME);
-    if (!target) {
-      offerManualPrint(url, name);
-      return false;
-    }
-    if (preopened) target.location = url;
-    setTimeout(() => {
-      try { target.focus(); target.print(); } catch (error) { /* оператор нажмёт Cmd+P */ }
-    }, 1200);
-    return true;
-  }
-
   let printUrl = url;
   if (asBlob && !url.startsWith('blob:')) {
     try {
@@ -206,16 +191,40 @@ async function printPdf(url, {
       if (!response.ok) {
         let detail = `Ошибка ${response.status}`;
         try { detail = (await response.json()).detail || detail; } catch (e) { /* не JSON */ }
+        preopened?.close();
         toast(`${name}: ${detail}`, 'error', 15000);
         return false;
       }
+      const file = await response.blob();
+      if (await file.slice(0, 5).text() !== '%PDF-') {
+        preopened?.close();
+        toast(`${name}: сервер не вернул PDF. Обновите страницу и проверьте вход в панель.`, 'error', 15000);
+        return false;
+      }
       releasePrintBlob();
-      printBlobUrl = URL.createObjectURL(await response.blob());
+      printBlobUrl = URL.createObjectURL(file);
       printUrl = printBlobUrl;
     } catch (error) {
+      preopened?.close();
       toast(`${name}: не удалось получить файл — ${error.message}`, 'error', 12000);
       return false;
     }
+  }
+
+  /* Safari печатает в отдельной вкладке. Сначала проверяем ответ сервера,
+     чтобы в неё не попадала страница ошибки вместо файла. Вкладку заранее
+     открывает вызывающий код, пока браузер видит нажатие пользователя. */
+  if (IS_SAFARI) {
+    const target = preopened || window.open(printUrl, LABEL_WINDOW_NAME);
+    if (!target) {
+      offerManualPrint(printUrl, name);
+      return false;
+    }
+    if (preopened) target.location = printUrl;
+    setTimeout(() => {
+      try { target.focus(); target.print(); } catch (error) { /* оператор нажмёт Cmd+P */ }
+    }, 1200);
+    return true;
   }
 
   document.getElementById('print-frame')?.remove();

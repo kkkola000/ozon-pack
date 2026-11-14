@@ -48,11 +48,15 @@ def get_cutoff() -> str:
     return raw if _parse_cutoff(raw) else DEFAULT_CUTOFF
 
 
-def set_cutoff(value: str, user: dict | None = None) -> str:
-    parsed = _parse_cutoff(value)
+def validate_cutoff(value: str) -> str:
+    parsed = _parse_cutoff(value) if isinstance(value, str) else None
     if not parsed:
         raise ValueError("Время указывается как ЧЧ:ММ, например 18:00")
-    cleaned = "%02d:%02d" % parsed
+    return f'{parsed[0]:02d}:{parsed[1]:02d}'
+
+
+def set_cutoff(value: str, user: dict | None = None) -> str:
+    cleaned = validate_cutoff(value)
     db.kv_set(KV_CUTOFF, cleaned)
     db.log_event("report_cutoff_set", user=user, message=cleaned)
     return cleaned

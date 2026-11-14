@@ -4,7 +4,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import accounts, db, marking, printers, product_labels
+from app.core import accounts, db, marking, printers, product_labels, report
 from app.core.security import hash_password
 from app.main import app
 
@@ -51,7 +51,8 @@ def test_printing_and_flags_are_saved_together(client):
         'rows': [{'kind': 'ozon:label', 'size': '58x40', 'printer': 'LABEL', 'orientation': 'landscape',
                   'gap': 2, 'shift': {'right': 2}},
                  {'kind': 'marking:duplicate', 'size': '58x40', 'printer': 'CHZ'}],
-        'formats': {'ozon:label': 'small'}, 'print_product_barcodes': True, 'print_marking_duplicates': True})
+        'formats': {'ozon:label': 'small'}, 'print_product_barcodes': True, 'print_marking_duplicates': True,
+        'report_cutoff': '19:35'})
     assert response.status_code == 200, response.text
     assert product_labels.enabled() and marking.enabled()
     label = next(r for r in printers.rows() if r['kind'] == 'ozon:label')
@@ -59,12 +60,18 @@ def test_printing_and_flags_are_saved_together(client):
     assert label['gap'] == 2 and label['shift'] == {'right': 2}
     assert next(r for r in printers.rows() if r['kind'] == 'marking:duplicate')['printer'] == 'CHZ'
     assert printers.label_format('ozon:label') == 'small'
+    assert report.get_cutoff() == response.json()['report_cutoff'] == '19:35'
+    assert db.count("SELECT COUNT(*) FROM events WHERE kind='report_cutoff_set'") == 1
+    page = client.get('/settings').text
+    assert 'id="report-cutoff" value="19:35"' in page
+    assert 'id="print-product-barcodes" checked' in page and 'id="print-marking" checked' in page
 
 
 @pytest.mark.parametrize('changes', [
     {'formats': {'ozon:label': 'not-a-format'}},
     {'print_product_barcodes': 'true'},
     {'print_marking_duplicates': 1},
+    *({'report_cutoff': value} for value in ('', '24:00', '18:60', None, 1800, True)),
 ])
 def test_invalid_batch_does_not_partially_change_printers_or_flags(client, changes):
     headers = login(client)
@@ -72,9 +79,27 @@ def test_invalid_batch_does_not_partially_change_printers_or_flags(client, chang
     original = {r['key']: r['value'] for r in db.query('SELECT * FROM kv')}
     payload = {'rows': [{'kind': 'ozon:label', 'size': '58x40', 'printer': 'NEW'}],
                'formats': {'ozon:label': 'small'}, 'print_product_barcodes': True,
-               'print_marking_duplicates': True, **changes}
+               'print_marking_duplicates': True, 'report_cutoff': '19:35', **changes}
     assert client.post('/api/printers', headers=headers, json=payload).status_code == 400
     assert {r['key']: r['value'] for r in db.query('SELECT * FROM kv')} == original
+
+
+def test_cutoff_batch_still_requires_csrf_and_manager_role(client):
+    headers = login(client, packer=True)
+    payload = {'rows': [{'kind': 'ozon:label', 'size': '58x40', 'printer': 'BAD'}], 'report_cutoff': '19:35'}
+    original = {r['key']: r['value'] for r in db.query('SELECT * FROM kv')}
+    assert client.post('/api/printers', json=payload).status_code == 403
+    assert client.post('/api/printers', headers=headers, json=payload).status_code == 403
+    assert {r['key']: r['value'] for r in db.query('SELECT * FROM kv')} == original
+
+
+def test_printer_only_save_keeps_existing_cutoff(client):
+    headers = login(client, packer=True)
+    report.set_cutoff('19:35')
+    result = client.post('/api/printers', headers=headers, json={
+        'rows': [{'kind': 'ozon:label', 'size': '58x40', 'printer': 'LABEL'}]})
+    assert result.status_code == 200, result.text
+    assert report.get_cutoff() == '19:35'
 
 
 @pytest.mark.parametrize('flag', ['print_product_barcodes', 'print_marking_duplicates'])

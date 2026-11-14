@@ -1,6 +1,28 @@
-/* Просмотр и печать используют общий обработчик data-print-pdf в qz.js. */
+/* Сохранённый «Честный знак» печатается тем же способом, что при сборке. */
 const stickerChoices = () => [...document.querySelectorAll('.sticker-select')];
 const stickerMarkingModal = document.getElementById('sticker-marking-modal');
+let stickerMarkingPrinting = false;
+document.getElementById('sticker-marking-content').addEventListener('click', async (event) => {
+  const link = event.target.closest('a[data-print-kind="marking:duplicate"]');
+  if (!link) return;
+  event.preventDefault();
+  event.stopPropagation(); // Не запускаем второй обработчик печати из qz.js.
+  if (stickerMarkingPrinting) return;
+  stickerMarkingPrinting = true;
+  const reserved = reservePrintWindow(link.dataset.printKind);
+  link.setAttribute('aria-disabled', 'true');
+  try {
+    await printPdf(link.dataset.printPdf, {
+      name: link.dataset.printName, kind: link.dataset.printKind, window: reserved, wait: true,
+    });
+  } catch (error) {
+    reserved?.close();
+    toast(error.message, 'error');
+  } finally {
+    link.removeAttribute('aria-disabled');
+    stickerMarkingPrinting = false;
+  }
+});
 document.getElementById('sticker-marking-close').onclick = () => { stickerMarkingModal.hidden = true; };
 stickerMarkingModal.addEventListener('click', (event) => { if (event.target === stickerMarkingModal) stickerMarkingModal.hidden = true; });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') stickerMarkingModal.hidden = true; });

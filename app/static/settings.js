@@ -13,19 +13,7 @@ for (const dialog of document.querySelectorAll('.settings-dialog')) {
     if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close();
   });
 }
-document.getElementById('btn-save-cutoff')?.addEventListener('click', async (event) => {
-  const cutoff = document.getElementById('report-cutoff').value;
-  event.target.disabled = true;
-  try {
-    const result = await api('/api/report/cutoff', { cutoff });
-    toast(result.message, 'ok', 8000);
-    setTimeout(() => window.location.reload(), 1200);
-    return;
-  } catch (error) {
-    toast(error.message, 'error', 9000);
-  }
-  event.target.disabled = false;
-});
+// Обе кнопки вкладки сборки используют общее сохранение в printers.js.
 
 function cabinetCard(id) {
   return document.querySelector(`.cabinet-card[data-account="${id}"]`);
