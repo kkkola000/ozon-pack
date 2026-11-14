@@ -8,6 +8,28 @@ from ..base import MarkingSource
 from . import client, store
 
 
+def _needs_exemplars(raw: dict) -> bool:
+    """Допинформация может требоваться без прежнего списка обязательных ЧЗ.
+
+    Действия Ozon обозначают также ГТД, РНПТ и вес. Само требование ЧЗ
+    подтверждается отдельным is_mandatory_mark_needed в ответе экземпляров.
+    """
+    actions = set(raw.get('available_actions') or [])
+    requirements = raw.get('requirements') or {}
+    return bool(actions.intersection({'ship_with_additional_info', 'update_cis'}) or any(
+        requirements.get(key) for key in ('products_requiring_gtd', 'products_requiring_rnpt',
+                                         'products_requiring_imei', 'products_requiring_jw_uin',
+                                         'products_requiring_weight')))
+
+
+def _remember_required(conn, account_id: int, order_id: str, required: set[str]):
+    if not required:
+        return
+    conn.execute('UPDATE postings SET requires_mark=1 WHERE account_id=? AND posting_number=?', (account_id, order_id))
+    conn.executemany('UPDATE posting_items SET mandatory_mark=1 WHERE account_id=? AND posting_number=? AND sku=?',
+                     [(account_id, order_id, sku) for sku in required])
+
+
 def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
     raw = client.get_client(account).posting_get(order_id)
     if not raw or str(raw.get('posting_number') or '') != order_id:
@@ -24,34 +46,38 @@ def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
     required.update(str(p['sku']) for p in raw.get('products') or [] if p.get('mandatory_mark'))
     # Не теряем известное обязательство, если Ozon снял флаг после сборки.
     required.update(str(i['sku']) for i in items if i.get('mandatory_mark'))
+    saved = marking.order(account['id'], order_id)
+    if saved:
+        required.update(p['key'] for p in marking.products(saved) if p.get('required'))
     with db.write() as conn:
         store.upsert_posting(conn, account['id'], raw)
-        if required:
-            # Чтение экземпляров ниже может завершиться ошибкой. Не стираем
-            # последнее известное требование до успешного сохранения снимка ЧЗ.
-            conn.execute('UPDATE postings SET requires_mark=1 WHERE account_id=? AND posting_number=?',
-                         (account['id'], order_id))
-            conn.executemany('UPDATE posting_items SET mandatory_mark=1 WHERE account_id=? AND posting_number=? AND sku=?',
-                             [(account['id'], order_id, sku) for sku in required])
+        # Чтение экземпляров ниже может завершиться ошибкой: известное требование сохраняем.
+        _remember_required(conn, account['id'], order_id, required)
     return raw, local, required
 
 
 def prepare(account: dict, order_id: str, *, discover: bool = False) -> dict | None:
-    _raw, local, required = _posting(account, order_id)
+    raw, local, required = _posting(account, order_id)
     saved = marking.order(account['id'], order_id)
     known = bool(saved and (marking.codes(saved, active=False) or any(
         p.get('required') or p.get('possible') for p in marking.products(saved))))
-    if not required and not known and not discover:
+    if not required and not known and not discover and not _needs_exemplars(raw):
         # Обычному заказу не нужны экземпляры: Ozon может их не отдавать,
         # в том числе когда отправление уже собрано в личном кабинете.
         return None
-    return _exemplars(account, order_id, local, required)
+    data = _exemplars(account, order_id, local, required)
+    if not known and not discover and not any(p['required'] for p in data['products']):
+        # «Допинфо» само по себе не означает ЧЗ: не превращаем ГТД/вес в обязательный скан марки.
+        return None
+    return data
 
 
 def _exemplars(account: dict, order_id: str, local: dict, required: set[str]) -> dict:
     data = client.get_client(account).exemplars_get(order_id)
     if str(data.get('posting_number') or '') != order_id:
         raise ValueError('Ozon не подтвердил номер отправления экземпляров')
+    saved = marking.order(account['id'], order_id)
+    local_marks = {m['item_key'] for m in marking.codes(saved)} if saved else set()
     products = []
     for product in data.get('products') or []:
         key = str(product.get('product_id') or '')
@@ -61,12 +87,17 @@ def _exemplars(account: dict, order_id: str, local: dict, required: set[str]) ->
             raise ValueError('Состав экземпляров Ozon не совпадает с заказом. Обновите заказы.')
         if any(not e.get('exemplar_id') for e in exemplars):
             raise ValueError('Ozon не вернул идентификаторы экземпляров')
-        needed = bool(product.get('is_mandatory_mark_needed') or key in required)
+        has_mark = any(m.get('mark_type') == 'mandatory_mark' and m.get('mark')
+                       for e in exemplars for m in e.get('marks') or [])
+        # Уже отправленный нами необязательный ЧЗ не меняет политику всего товара.
+        needed = bool(product.get('is_mandatory_mark_needed') or key in required or has_mark and key not in local_marks)
         products.append({'key': key, 'sku': key, 'quantity': quantity,
                          'required': needed,
                          'possible': needed or bool(product.get('is_mandatory_mark_possible'))})
     if {p['key'] for p in products} != set(local):
         raise ValueError('Ozon вернул неполный состав экземпляров')
+    with db.write() as conn:
+        _remember_required(conn, account['id'], order_id, {p['key'] for p in products if p['required']})
     return {'products': products, 'context': data}
 
 
