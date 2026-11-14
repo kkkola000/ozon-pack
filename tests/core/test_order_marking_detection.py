@@ -141,7 +141,7 @@ def test_next_scan_refreshes_requirements_in_an_already_open_order(account, yand
     result = scan(shop, user, BARCODE)
     assert not result['state']['complete']
     if kind == 'cz':
-        assert result['status'] == 'error' and 'ЧЗ' in result['message']
+        assert result['status'] == 'error' and 'Честный знак' in result['message']
         assert result['state']['items'][0]['marking']['status'] == 'waiting'
         assert result['state']['marking']['pending_key'] == key
     else:

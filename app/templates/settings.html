@@ -16,17 +16,17 @@
 <div class="panel settings-assembly">
   <div class="settings-options">
     <div><label class="check"><input type="checkbox" id="print-product-barcodes" {{ 'checked' if product_barcodes_enabled }}> <b>Печатать ШК перед стикером</b></label><p class="muted small">На принтере стикера отправления.</p></div>
-    <div><label class="check"><input type="checkbox" id="print-marking" {{ 'checked' if marking_enabled }}> <b>Печатать дубликат ЧЗ</b></label><p class="muted small">После сканирования. Один общий принтер — ниже.</p></div>
+    <div><label class="check"><input type="checkbox" id="print-marking" {{ 'checked' if marking_enabled }}> <b>Печатать дубликат «Честный знак»</b></label><p class="muted small">После сканирования. Один общий принтер — ниже.</p></div>
     <div class="settings-cutoff"><label class="small muted">Закрывать отчётный день · МСК<input type="time" id="report-cutoff" value="{{ report_cutoff }}"></label><button class="btn small" id="btn-save-cutoff">Сохранить</button></div>
   </div>
-  <details class="settings-help"><summary>Правила сборки и отчётного дня</summary><p>Скан всех товаров обязателен: <b>{{ 'да' if settings.require_all_items else 'нет' }}</b> · Автопечать стикера: <b>{{ 'да' if settings.autoprint else 'нет' }}</b> · Готовность при скане: <b>автоматически</b> · Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>.</p><p>Правила меняются в файле .env, затем требуется перезапуск службы. После отсечки сканы попадают в следующий отчётный день. Сейчас: {{ report_cutoff_hint }}.</p><p>Галочка ЧЗ управляет только печатью; сохранение и передача работают всегда.</p></details>
+  <details class="settings-help"><summary>Правила сборки и отчётного дня</summary><p>Скан всех товаров обязателен: <b>{{ 'да' if settings.require_all_items else 'нет' }}</b> · Автопечать стикера: <b>{{ 'да' if settings.autoprint else 'нет' }}</b> · Готовность при скане: <b>автоматически</b> · Бронь отправления: <b>{{ settings.claim_ttl_minutes }} мин</b>.</p><p>Правила меняются в файле .env, затем требуется перезапуск службы. После отсечки сканы попадают в следующий отчётный день. Сейчас: {{ report_cutoff_hint }}.</p><p>Галочка «Честный знак» управляет только печатью; сохранение и передача работают всегда.</p></details>
 </div>
 {% endif %}
 <div class="panel settings-downloads">
   <h2>Скачивание стикеров при сборке</h2>
   <div class="row"><label class="small" for="sticker-folder">Папка на этом компьютере</label><input id="sticker-folder" type="text" readonly value="Загрузки браузера"><button class="btn small" type="button" id="choose-sticker-folder">Выбрать папку</button><button class="btn small" type="button" id="reset-sticker-folder" hidden>Сбросить</button></div>
   <p class="muted small" id="sticker-folder-note">Папка выбирается отдельно на каждом компьютере сборщика.</p>
-  <p class="muted small">Стикер скачивается при открытии сборочного окна. Если площадка ещё ждёт ЧЗ — после его передачи и подтверждения готовности заказа. Без выбранной папки разрешите сайту автоматическое скачивание файлов в настройках браузера.</p>
+  <p class="muted small">Стикер скачивается при открытии сборочного окна. Если площадка ещё ждёт Честный знак — после его передачи и подтверждения готовности заказа. Без выбранной папки разрешите сайту автоматическое скачивание файлов в настройках браузера.</p>
 </div>
 {% include 'settings/printers.html' %}
 </section>

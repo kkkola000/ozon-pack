@@ -146,7 +146,7 @@ def _assign(context: dict, by_code: dict, found: set) -> list[dict]:
                     continue
                 original = by_code[match]
                 if match in found or original['item_key'] != str(product['product_id']):
-                    raise ValueError('Ozon вернул неоднозначную привязку ЧЗ к отправлениям')
+                    raise ValueError('Ozon вернул неоднозначную привязку Честный знак к отправлениям')
                 found.add(match)
                 assigned.append({**original, 'source_unit': original['unit_no'],
                                  'item_key': str(product['product_id']), 'unit_no': unit})
@@ -174,16 +174,16 @@ def _mapped(account: dict, parent: str, codes: list[dict]) -> list[dict]:
         data = provider._exemplars(account, number, local, required)
         assigned = _assign(data['context'], by_code, found)
         if required and not assigned:
-            raise ValueError('Ozon пока не подтвердил ЧЗ новых отправлений')
+            raise ValueError('Ozon пока не подтвердил Честный знак новых отправлений')
         child_details = _child_details(data, policies, original_units, details, assigned, data_found)
         data['details'] = child_details
         data['context']['_panel_details'] = child_details
         if provider.poll(account, number, data['context'], assigned)['status'] != 'accepted':
-            raise ValueError('Дождитесь проверки ЧЗ новых отправлений в Ozon')
+            raise ValueError('Дождитесь проверки кодов «Честный знак» новых отправлений в Ozon')
         provider.finalize(account, number, data['context'], assigned)
         output.append({'order_id': number, 'data': data, 'codes': assigned})
     if found != set(by_code):
-        raise ValueError('Не все сохранённые ЧЗ подтверждены в новых отправлениях Ozon')
+        raise ValueError('Не все сохранённые коды «Честный знак» подтверждены в новых отправлениях Ozon')
     if data_found != {(k, int(u)) for k, rows in details.items() for u, values in rows.items() if values}:
         raise ValueError('Не все дополнительные данные подтверждены в новых отправлениях Ozon')
     return output
@@ -259,7 +259,9 @@ def _save_marks(account: dict, parent: str, mapped: list[dict], codes: list[dict
 def redistribute(account: dict, user: dict, parent: str, codes: list[dict]) -> bool:
     recover(account, parent, user)
     rows = children(account['id'], parent)
-    if not rows:
+    if not rows or all(row['marks_verified'] for row in rows):
+        # Completed redistribution is historical. A later marking change
+        # belongs to the current child, even if it kept its parent's number.
         return False
     verify(account, parent)
     mapped = _mapped(account, parent, codes)
@@ -273,5 +275,5 @@ def redistribute(account: dict, user: dict, parent: str, codes: list[dict]) -> b
             pack_state.claim(conn, account, user, selected)
             pack_state.save(conn, account, user, selected, cargo.seed_scans(account['id'], selected))
     db.log_event('cargo_split', account_id=account['id'], user=user, posting_number=parent,
-                 message='Ozon подтвердил отправления и ЧЗ: ' + ', '.join(r['child_id'] for r in rows))
+                 message='Ozon подтвердил отправления и Честный знак: ' + ', '.join(r['child_id'] for r in rows))
     return True

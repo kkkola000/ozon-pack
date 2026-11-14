@@ -27,7 +27,8 @@ def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
     local = {str(i['sku']): int(i['quantity']) for i in items}
     actual = {str(p.get('sku') or ''): int(p.get('quantity') or 0) for p in raw.get('products') or []}
     if not local or local != actual:
-        raise ValueError('Состав отправления Ozon изменился. Обновите заказы перед сборкой.')
+        message = 'Состав отправления Ozon изменился. Обновите заказы перед сборкой.'
+        raise marking.Rejected({key: message for key in local}, message)
     required = {str(s) for s in (raw.get('requirements') or {}).get('products_requiring_mandatory_mark') or []}
     required.update(str(p['sku']) for p in raw.get('products') or [] if p.get('mandatory_mark'))
     # Не теряем известное обязательство, если Ozon снял флаг после сборки.
@@ -50,11 +51,37 @@ def prepare(account: dict, order_id: str, *, discover: bool = False) -> dict | N
     # Всегда читаем требования отправления, включая уже готовые заказы.
     # Отсутствие старых requirements/actions не доказывает отсутствие ЧЗ/ГТД.
     data = _exemplars(account, order_id, local, required, requirements=raw.get('requirements') or {})
+    if saved:
+        _reconcile(account, saved, data)
     if any((raw.get('requirements') or {}).get(k) for k in ('products_requiring_country', 'products_requiring_change_country')):
         raise ValueError('Ozon требует указать страну происхождения. Укажите её в кабинете Ozon и обновите заказ.')
     if not known and not discover and not any(p['required'] or p.get('fields') for p in data['products']):
         return None
     return data
+
+
+def _remote_marks(context: dict, *, all_types: bool = False) -> set:
+    return {(str(p['product_id']), marking_codes.comparison_key(m.get('mark')))
+            for p in context['products'] for e in p['exemplars'] for m in e.get('marks') or []
+            if (all_types or m.get('mark_type') == 'mandatory_mark') and m.get('mark')}
+
+
+def _reconcile(account: dict, saved: dict, data: dict) -> None:
+    if saved['status'] in {'checking', 'uncertain'}:
+        return  # Absence during an asynchronous write is not proof of deletion.
+    # A changed API type name is not evidence that the full code disappeared.
+    remote = _remote_marks(data['context'], all_types=True)
+    removed = [m['id'] for m in marking.codes(saved, full=True) if m['status'] == 'accepted'
+               and (m['item_key'], marking_codes.comparison_key(m['raw'])) not in remote]
+    if not removed:
+        return
+    def slots(context):
+        return {(str(p['product_id']), tuple(str(e['exemplar_id']) for e in p['exemplars'])) for p in context['products']}
+    import json
+    changed = slots(json.loads(marking._open(saved['context']))) != slots(data['context'])
+    if changed and any(int(p['quantity']) > 1 for p in data['products']):
+        raise ValueError('Ozon изменил экземпляры товара. Сверьте привязку маркировки перед продолжением.')
+    marking.retire(account, saved, removed, data['context'])
 
 
 def _fields(product, key, requirements):
@@ -72,7 +99,7 @@ def _exemplars(account: dict, order_id: str, local: dict, required: set[str], *,
     except client.OzonError as exc:
         status = getattr(exc, 'status', None)
         hint = 'Проверьте права ключа на этот метод.' if status in {401, 403} else 'Повторите скан для проверки.'
-        raise ValueError('Не удалось получить требования ЧЗ и ГТД в Ozon '
+        raise ValueError('Не удалось получить требования к кодам «Честный знак» и ГТД в Ozon '
                          f'(create-or-get, HTTP {status or "неизвестен"}). {hint}') from exc
     if str(data.get('posting_number') or '') != order_id:
         raise ValueError('Ozon не подтвердил номер отправления экземпляров')
@@ -208,7 +235,7 @@ def _checks(data, context):
                 if mark.get('mark_type') == 'mandatory_mark':
                     actual[key, str(exemplar.get('exemplar_id')), marking_codes.comparison_key(mark.get('mark'))] = mark.get('check_status')
                     if mark.get('error_codes') or status in {'error', 'invalid'}:
-                        errors[error_key] = 'Код ЧЗ не принят Ozon'
+                        errors[error_key] = 'Код «Честный знак» не принят Ozon'
                 elif mark.get('mark_type') in {'jw_uin', 'imei'} and (mark.get('error_codes') or status in {'error', 'invalid'}):
                     field = 'uin' if mark['mark_type'] == 'jw_uin' else 'imei'
                     errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
@@ -224,7 +251,7 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     if errors:
         return {'status': 'error', 'errors': errors}
     if failed:
-        return {'status': 'retry', 'message': 'Ozon не смог обработать проверку ЧЗ. Передача будет повторена.'}
+        return {'status': 'retry', 'message': 'Ozon не смог обработать проверку кодов «Честный знак». Передача будет повторена.'}
     exemplar_ids = {str(p['product_id']): [str(e['exemplar_id']) for e in p['exemplars']] for p in context['products']}
     passed = all(str(actual.get((c['item_key'], exemplar_ids[c['item_key']][c['unit_no'] - 1], marking_codes.comparison_key(c['raw'])))).lower() in {'passed', 'success'}
                  for c in codes)
@@ -297,6 +324,9 @@ def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> 
         raise ValueError('Ozon не подтвердил отправление')
     if raw.get('status') == store.STATUS_AWAITING_DELIVER:
         if not _applied(raw, codes, context):
+            current = _remote_marks(api.exemplars_get(order_id))
+            if any((c['item_key'], marking_codes.comparison_key(c['raw'])) not in current for c in codes):
+                raise ValueError('Ozon не подтвердил актуальную маркировку. Повторная запись не выполнена.')
             readiness.attempt(account, order_id, lambda: api.exemplars_update(order_id))
             raw = api.posting_get(order_id, with_exemplars=True)
             if not raw or not _applied(raw, codes, context):

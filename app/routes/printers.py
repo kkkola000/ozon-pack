@@ -70,7 +70,7 @@ def api_save(request: Request, payload: dict = Body(...), user: dict = Depends(c
     if product_labels.KV_ENABLED in flags:
         summary += '; ШК перед стикером: ' + ('да' if product_labels.enabled() else 'нет')
     if marking.KV_AUTO in flags:
-        summary += '; дубликат ЧЗ: ' + ('да' if marking.enabled() else 'нет')
+        summary += '; дубликат «Честный знак»: ' + ('да' if marking.enabled() else 'нет')
     db.log_event("printers_saved", user=user, message=summary)
     return {"status": "ok", "printers": core_printers.setup(),
             'print_product_barcodes': product_labels.enabled(), 'print_marking_duplicates': marking.enabled()}

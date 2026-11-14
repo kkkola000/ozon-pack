@@ -94,7 +94,7 @@ def test_required_marking_is_not_bypassed_when_exemplar_read_fails(account, user
     api, number, _sku = marked_ozon(account, status=status)
     unavailable = Mock(side_effect=OzonError('no permission', status=403))
     monkeypatch.setattr(api, 'exemplars_get', unavailable)
-    ship = Mock(side_effect=AssertionError('ЧЗ ещё не проверен'))
+    ship = Mock(side_effect=AssertionError('Честный знак ещё не проверен'))
     monkeypatch.setattr(api, 'ship', ship)
     result = scan(account, user, number)
     assert result['status'] == 'error'

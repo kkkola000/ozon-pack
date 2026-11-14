@@ -21,8 +21,8 @@ KV_AUTO = 'print_marking_duplicates'
 
 
 class Rejected(ValueError):
-    def __init__(self, errors: dict[str, str]):
-        super().__init__('Площадка отклонила данные экземпляров')
+    def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров'):
+        super().__init__(message)
         self.errors = errors
 SCHEMA = order_lock.SCHEMA + """
 CREATE TABLE IF NOT EXISTS marking_orders (
@@ -88,7 +88,7 @@ def _open(value: str) -> str:
             raise ValueError('Не удалось расшифровать код')
         return base64.b64decode(decrypted, validate=True).decode('utf-8')
     except (ValueError, UnicodeError) as exc:
-        raise ValueError('Не удалось расшифровать сохранённый ЧЗ. Проверьте ключ шифрования панели.') from exc
+        raise ValueError('Не удалось расшифровать сохранённый код «Честный знак». Проверьте ключ шифрования панели.') from exc
 
 
 def order(account_id: int, order_id: str) -> dict | None:
@@ -106,7 +106,7 @@ def prepare(account: dict, order_id: str, *, for_scan: bool = False) -> dict | N
     data = (provider.discover if for_scan and provider.discover else provider.prepare)(account, order_id)
     if data is None:
         if needs_validation(saved):
-            raise ValueError('Не удалось подтвердить требования к уже сохранённым ЧЗ заказа')
+            raise ValueError('Не удалось подтвердить требования к уже сохранённым кодам «Честный знак» заказа')
         return None
     products = data['products']
     if not products or sum(int(p['quantity']) for p in products) > 500:
@@ -114,6 +114,8 @@ def prepare(account: dict, order_id: str, *, for_scan: bool = False) -> dict | N
     if any(not p.get('key') or not 1 <= int(p['quantity']) <= 500 for p in products):
         raise ValueError('Площадка вернула некорректный состав экземпляров')
     if saved:
+        # The provider may have reconciled a confirmed remote deletion.
+        saved = order(account['id'], order_id)
         return _refresh(saved, data)
     now = db.now_iso()
     with db.write() as conn:
@@ -146,9 +148,9 @@ def _refresh(saved: dict, data: dict) -> dict:
         return saved
     if signature(products) != signature(previous) and (codes(saved) or exemplar_data.values(saved)):
         db.execute("UPDATE marking_orders SET status='error',error=? WHERE id=?",
-                   ('Состав или требования заказа изменились. Сверьте уже сохранённые ЧЗ перед продолжением.', saved['id']))
-        raise ValueError('Состав заказа изменился; сохранённые ЧЗ требуют сверки')
-    if saved['status'] in {'queued', 'checking', 'uncertain'}:
+                   ('Состав или требования заказа изменились. Сверьте уже сохранённые коды «Честный знак» перед продолжением.', saved['id']))
+        raise ValueError('Состав заказа изменился; сохранённые коды «Честный знак» требуют сверки')
+    if saved['status'] in {'checking', 'uncertain'}:
         raise ValueError('Требования изменились во время передачи. Дождитесь проверки данных площадкой.')
     for product in products:
         old = old_policy.get(product['key'], {})
@@ -161,6 +163,21 @@ def _refresh(saved: dict, data: dict) -> dict:
 
 def products(saved: dict) -> list[dict]:
     return json.loads(saved['products'])
+
+
+def retire(account: dict, saved: dict, ids: list[int], context: dict) -> None:
+    """Remove confirmed remote bindings from active work, retaining the audit row."""
+    if not ids:
+        return
+    with order_lock.hold(account['id'], saved['order_id']), db.write() as conn:
+        conn.executemany("UPDATE marking_codes SET active=0,status='removed',error=NULL "
+                         "WHERE id=? AND marking_order_id=? AND active=1 AND status='accepted'",
+                         [(code_id, saved['id']) for code_id in ids])
+        conn.execute("UPDATE marking_orders SET context=?,status='collecting',revision=revision+1,"
+                     'submitted_revision=NULL,error=NULL,checked_at=NULL WHERE id=?',
+                     (_seal(json.dumps(context, ensure_ascii=False)), saved['id']))
+        db.log_event('marking_removed_remotely', account_id=account['id'], posting_number=saved['order_id'],
+                     message=f'На площадке снята маркировка: {len(ids)} экз.', conn=conn)
 
 
 def has_required(saved: dict | None) -> bool:
@@ -185,7 +202,7 @@ def guard(account: dict, order_id: str) -> None:
     """Общая защита завершения, в том числе прямых/старых маршрутов."""
     saved = order(account['id'], order_id)
     if needs_validation(saved) and saved['status'] != 'accepted':
-        raise ValueError(saved.get('error') or 'Передайте обязательные ЧЗ и данные товара и дождитесь принятия площадкой')
+        raise ValueError(saved.get('error') or 'Передайте обязательные коды «Честный знак» и данные товара и дождитесь принятия площадкой')
 
 
 def item_key(account: dict, item: dict) -> str:
@@ -235,8 +252,8 @@ def enrich(account: dict, state: dict) -> dict:
         item['marking'] = {
             'key': product['key'],
             'status': 'error' if failed else 'accepted' if ready else 'waiting',
-            'title': 'ЧЗ не прошёл проверку' if failed else 'ЧЗ принят площадкой' if ready else
-                     saved.get('error') or 'ЧЗ не отсканирован или проверяется',
+            'title': 'Честный знак не прошёл проверку' if failed else 'Честный знак принят площадкой' if ready else
+                     saved.get('error') or 'Честный знак не отсканирован или проверяется',
         }
     waiting = pending(account, state)
     blocked = needs_validation(saved) and saved['status'] != 'accepted'
@@ -261,27 +278,29 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     fingerprint = hashlib.sha256((parsed.gtin + '\0' + parsed.serial).encode('ascii')).hexdigest()
     same = db.query_one('SELECT * FROM marking_codes WHERE fingerprint = ?', (fingerprint,))
     replacing_same = False
+    restoring = False
     if same:
         if same['marking_order_id'] == saved['id'] and same['active'] and marking_codes.equivalent(_open(same['code']), parsed.raw) and same['status'] != 'error':
             return {'duplicate': True, 'id': same['id']}
         replacing_same = same['marking_order_id'] == saved['id'] and same['active'] and same['status'] == 'error'
-        if not replacing_same:
-            raise ValueError('Этот экземпляр ЧЗ уже связан с заказом. Один код нельзя использовать повторно.')
+        restoring = same['marking_order_id'] == saved['id'] and not same['active'] and same['status'] == 'removed'
+        if not replacing_same and not restoring:
+            raise ValueError('Этот экземпляр «Честный знак» уже связан с заказом. Один код нельзя использовать повторно.')
     slot = pending(account, state, required_only=False)
     if not slot:
         raise ValueError('Сначала отсканируйте ШК маркируемого товара; для каждой единицы нужен отдельный скан')
     product, unit = slot
-    if replacing_same and (same['item_key'], same['unit_no']) != (product['key'], unit):
-        raise ValueError('Этот ЧЗ относится к другой единице товара')
+    if (replacing_same or restoring) and (same['item_key'], same['unit_no']) != (product['key'], unit):
+        raise ValueError('Этот код «Честный знак» относится к другой единице товара')
     item = next(i for i in state['items'] if item_key(account, i) == product['key'])
     # Сопоставление проверяем, если каталог содержит числовой EAN/GTIN.
     known = {str(c).zfill(14) for c in item.get('barcodes') or [] if str(c).isdigit() and len(str(c)) in {12, 13, 14}}
     if known and parsed.gtin not in known:
         raise ValueError('GTIN маркировки не совпадает с отсканированным товаром')
-    mark_id = _store_scan(account, user, saved, parsed, fingerprint, product, unit, same if replacing_same else None)
+    mark_id = _store_scan(account, user, saved, parsed, fingerprint, product, unit, same if replacing_same or restoring else None)
     if _worker:
         _worker.wake.set()
-    return {'duplicate': bool(replacing_same and _open(same['code']) == parsed.raw), 'id': mark_id}
+    return {'duplicate': bool(replacing_same and marking_codes.equivalent(_open(same['code']), parsed.raw)), 'id': mark_id}
 
 
 def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
@@ -298,12 +317,12 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
                                'AND unit_no = ? AND active = 1', (saved['id'], product['key'], unit)).fetchone()
             if old:
                 if old['status'] != 'error':
-                    raise ValueError('У этой единицы уже есть ЧЗ')
-                if not replacing_same:
+                    raise ValueError('У этой единицы уже есть код «Честный знак»')
+                if not same or old['id'] != same['id']:
                     conn.execute('UPDATE marking_codes SET active = 0 WHERE id = ?', (old['id'],))
             if replacing_same:
                 mark_id = same['id']
-                conn.execute("UPDATE marking_codes SET code=?,status='saved',error=NULL WHERE id=?",
+                conn.execute("UPDATE marking_codes SET code=?,active=1,status='saved',error=NULL WHERE id=?",
                              (_seal(parsed.raw), mark_id))
             else:
                 mark_id = conn.execute(
@@ -313,7 +332,7 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
             conn.execute("UPDATE marking_orders SET revision=revision+1,status='collecting',error=NULL,user_id=? "
                          'WHERE id = ?', (user['id'], saved['id']))
             db.log_event('marking_saved', account_id=account['id'], user=user, posting_number=order_id,
-                         message=f'ЧЗ сохранён: позиция {product["key"]}, единица {unit}', conn=conn)
+                         message=f'Честный знак сохранён: позиция {product["key"]}, единица {unit}', conn=conn)
         latest = order(account['id'], order_id)
         exemplar_data.queue(latest, user['id'])
     return mark_id
@@ -350,7 +369,7 @@ def _accept(account, saved, provider, context, marks):
                      (db.now_iso(), saved['id']))
         conn.execute("UPDATE marking_codes SET status='accepted',error=NULL WHERE marking_order_id=? AND active=1", (saved['id'],))
         db.log_event('marking_accepted', account_id=account['id'], user=dict(user_row), posting_number=order_id,
-                     message=f'Площадка приняла {len(marks)} кодов ЧЗ; готовность подтверждена', conn=conn)
+                     message=f'Площадка приняла {len(marks)} кодов «Честный знак»; готовность подтверждена', conn=conn)
 
 
 def _submit(account, saved, provider, context, marks):
@@ -368,7 +387,7 @@ def _check(account, saved, provider, context, marks):
     outcome = provider.poll(account, saved['order_id'], context, marks)
     if outcome['status'] == 'error':
         _reject(saved, marks, outcome.get('errors') or {},
-                'Площадка отклонила данные. Исправьте отмеченное поле или повторно отсканируйте ЧЗ.')
+                'Площадка отклонила данные. Исправьте отмеченное поле или повторно отсканируйте код «Честный знак».')
     elif outcome['status'] == 'accepted':
         _accept(account, saved, provider, context, marks)
     else:
@@ -381,7 +400,7 @@ def _check(account, saved, provider, context, marks):
 
 def _connection_failure(account, saved, exc):
     # Не сохраняем внешний текст: он может содержать коды и ключи.
-    log.warning('Передача ЧЗ: кабинет %s, заказ %s, %s', account['id'], saved['order_id'], type(exc).__name__)
+    log.warning('Передача кодов «Честный знак»: кабинет %s, заказ %s, %s', account['id'], saved['order_id'], type(exc).__name__)
     status = getattr(exc, 'status', None)
     # Отказ опроса не доказывает отказ предыдущей записи: после 401/429
     # на status нельзя автоматически повторно отправлять уже переданные ЧЗ.
@@ -389,11 +408,11 @@ def _connection_failure(account, saved, exc):
     definite = writing and status in {400, 404, 409, 422}
     if definite:
         _reject(saved, codes(saved), {m['item_key']: 'Площадка отклонила запись данных экземпляров' for m in codes(saved)},
-                'Площадка отклонила данные экземпляров. Проверьте заказ и повторите скан ЧЗ.')
+                'Площадка отклонила данные экземпляров. Проверьте заказ и повторите скан кода «Честный знак».')
     next_status = 'error' if definite else 'queued' if writing and status in {401, 403, 429} else None
     db.execute('UPDATE marking_orders SET status=COALESCE(?,status),checked_at=?,error=?,attempts=attempts+1 WHERE id=?',
                (next_status, db.now_iso(), 'Площадка отклонила данные экземпляров.' if definite else
-                'Пока не удалось подтвердить передачу ЧЗ. Проверка будет повторена.', saved['id']))
+                'Пока не удалось подтвердить передачу кодов «Честный знак». Проверка будет повторена.', saved['id']))
 
 
 def process(account: dict, order_id: str, *, force: bool = False) -> None:
@@ -412,6 +431,13 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
             return
         marks = []
         try:
+            if saved['status'] == 'queued':
+                # Reconcile before a new write so an externally removed,
+                # previously accepted code is never silently submitted again.
+                prepare(account, order_id)
+                saved = order(account['id'], order_id)
+                if saved['status'] != 'queued':
+                    return
             context = exemplar_data.context(saved)
             marks = codes(saved, full=True)
             user_row = db.query_one('SELECT id,login,role FROM users WHERE id=?', (saved['user_id'],))
@@ -454,7 +480,7 @@ class Worker(threading.Thread):
                 try:
                     run_once()
                 except Exception:
-                    log.exception('Не удалось обработать очередь ЧЗ')
+                    log.exception('Не удалось обработать очередь кодов «Честный знак»')
                 self.wake.wait(5)
         finally:
             conn = getattr(db._local, 'conn', None)
@@ -511,15 +537,15 @@ def print_pdf(ids: list[int]) -> bytes:
     from . import printers
 
     if not ids or len(ids) > 100:
-        raise ValueError('Выберите от 1 до 100 кодов ЧЗ')
+        raise ValueError('Выберите от 1 до 100 кодов «Честный знак»')
     selected = []
     for mark_id in dict.fromkeys(ids):
         row = db.query_one('SELECT c.*, o.archive_id FROM marking_codes c JOIN marking_orders o ON o.id=c.marking_order_id '
                            'WHERE c.id=? AND c.active=1', (mark_id,))
         if not row or not retained(row['archive_id']):
-            raise LookupError('Код ЧЗ не найден или срок хранения истёк')
+            raise LookupError('Код «Честный знак» не найден или срок хранения истёк')
         if row['status'] == 'error':
-            raise ValueError('Этот ЧЗ отклонён площадкой. Замените марку перед повторной печатью.')
+            raise ValueError('Этот код «Честный знак» отклонён площадкой. Замените марку перед повторной печатью.')
         selected.append(marking_codes.parse(_open(row['code'])))
     paper = next(r for r in printers.rows() if r['kind'] == 'marking:duplicate')
     return marking_codes.pdf(selected, *printers.paper_mm(paper))

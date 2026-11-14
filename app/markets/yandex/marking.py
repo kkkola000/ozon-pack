@@ -22,7 +22,7 @@ def prepare(account: dict, order_id: str) -> dict:
     if str(raw.get('campaignId')) != campaign:
         raise ValueError('Маркет вернул заказ другого магазина')
     if raw.get('programType') not in {'FBS', 'EXPRESS'}:
-        raise ValueError('Автоматическая сборка и передача ЧЗ поддерживается для FBS и Экспресс Маркета')
+        raise ValueError('Автоматическая сборка и передача кодов «Честный знак» поддерживается для FBS и Экспресс Маркета')
     local = {str(i['item_id']): (str(i['offer_id']), int(i['quantity'])) for i in db.query(
         'SELECT item_id,offer_id,quantity FROM yandex_order_items WHERE account_id=? AND order_id=?',
         (account['id'], order_id))}
@@ -147,7 +147,7 @@ def _boxes(raw: dict, codes: list[dict]) -> list[dict]:
     layout = deepcopy((raw.get('delivery') or {}).get('boxesLayout') or [])
     if not layout:
         if len((raw.get('delivery') or {}).get('boxes') or []) > 1:
-            raise ValueError('Маркет не вернул раскладку нескольких коробок. Обновите заказ перед передачей ЧЗ.')
+            raise ValueError('Маркет не вернул раскладку нескольких коробок. Обновите заказ перед передачей кодов «Честный знак».')
         layout = [{'items': [{'id': int(k), 'fullCount': int(i['count'])} for k, i in items.items()]}]
     positions = {}
     counts = {k: 0 for k in items}
@@ -229,14 +229,14 @@ def _code_checks(data, raw, codes):
             continue
         status = found[0].get('status')
         if status == 'INVALID':
-            errors[f'{code["item_key"]}:{code["unit_no"]}'] = 'Маркет не разрешил продажу товара с этим ЧЗ'
+            errors[f'{code["item_key"]}:{code["unit_no"]}'] = 'Маркет не разрешил продажу товара с этим кодом «Честный знак»'
         elif status != 'OK':
             pending = True  # FAILED — не удалось проверить; это не INVALID.
             failed = failed or status == 'FAILED'
     if errors:
         return {'status': 'error', 'errors': errors}
     if failed and raw.get('substatus') == 'STARTED':
-        return {'status': 'retry', 'message': 'Маркет не смог проверить ЧЗ. Передача будет повторена.'}
+        return {'status': 'retry', 'message': 'Маркет не смог проверить Честный знак. Передача будет повторена.'}
     return {'status': 'checking' if pending or not codes else 'accepted'}
 
 

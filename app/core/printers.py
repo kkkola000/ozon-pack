@@ -128,7 +128,7 @@ def documents() -> list[dict]:
     out.append({"kind": "pack:sheet", "section": "Сборка и заказы",
                 "title": "Лист с заказами", "size": "a4", "hint": ""})
     out.append({'kind': 'marking:duplicate', 'section': 'Сборка и заказы',
-                'title': 'Дубликаты ЧЗ — все маркетплейсы', 'size': '58x40',
+                'title': 'Дубликаты «Честный знак» — все маркетплейсы', 'size': '58x40',
                 'hint': 'Один общий принтер дубликатов Честного знака для всех площадок.'})
     out.append({"kind": "returns:sheet", "section": "Возвраты",
                 "title": "Лист возвратов для пункта выдачи", "size": "a4", "hint": ""})
@@ -287,9 +287,9 @@ def validate_rows(wanted) -> list[dict]:
         per_kind[kind] = per_kind.get(kind, 0) + 1
         if kind == 'marking:duplicate':
             if per_kind[kind] > 1:
-                raise ValueError('Для дубликатов ЧЗ выбирается один общий принтер и размер')
+                raise ValueError('Для дубликатов «Честный знак» выбирается один общий принтер и размер')
             if min(paper_mm(row)) < 30:
-                raise ValueError('Для ЧЗ нужна этикетка не меньше 30×30 мм')
+                raise ValueError('Для кода «Честный знак» нужна этикетка не меньше 30×30 мм')
         if per_kind[kind] > ROWS_PER_KIND:
             raise ValueError(f"У «{title}» слишком много размеров")
         clean.append(row)

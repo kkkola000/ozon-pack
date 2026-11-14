@@ -49,7 +49,7 @@ let markingPollBusy = false;
 const deferredLabels = new Set();
 const orderKey = (state) => `${state?.active?.account_id || ''}:${state?.market || ''}:${state?.active?.posting_number || state?.active?.id || ''}`;
 const isMarkingCode = (code) => /^(?:\]d[28]|\x1d?01\d{14}21)/.test(code || '');
-const shownCode = (code) => isMarkingCode(code) ? 'ЧЗ' : code;
+const shownCode = (code) => isMarkingCode(code) ? 'Честный знак' : code;
 
 /* ---------- Зона сканирования ----------
    Рамка показывает, куда сейчас уйдёт скан. Сканер — это клавиатура: если
@@ -250,7 +250,7 @@ function showDone(finished) {
 function packItem(item, next) {
   const mark = item.ok ? 'done' : next ? 'next' : '';
   // Комплект ждёт вложение — флажок называет, что вложить.
-  const flag = opened?.marking?.pending_key && opened.marking.pending_key === item.marking?.key ? 'Сканируйте ЧЗ этого товара'
+  const flag = opened?.marking?.pending_key && opened.marking.pending_key === item.marking?.key ? 'Сканируйте код «Честный знак» этого товара'
     : item.wait ? `Вложите «${escapeHtml(item.wait)}» и отсканируйте его` : 'Сканируйте этот товар';
   return `
     <div class="pack-item ${mark} ${item.exemplar_data ? 'has-exemplar-data' : ''}">
@@ -308,8 +308,8 @@ function paintModal(state) {
   const items = card.items || [];
   const waiting = items.findIndex((item) => item.wait);
   const markingNext = state.marking?.pending_key ? items.findIndex((item) => item.marking?.key === state.marking.pending_key) : -1;
-  input.placeholder = markingNext >= 0 ? 'Сканируйте ЧЗ этого товара…'
-    : state.marking?.poll ? 'Дождитесь проверки ЧЗ…'
+  input.placeholder = markingNext >= 0 ? 'Сканируйте код «Честный знак» этого товара…'
+    : state.marking?.poll ? 'Дождитесь проверки кодов «Честный знак»…'
     : complete ? `${pack.words.close || 'Отсканируйте наклейку'}…`
     : waiting >= 0 ? `Вложите «${items[waiting].wait}» и отсканируйте его…` : 'Сканируйте товар…';
   document.getElementById('pack-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
@@ -415,9 +415,9 @@ function applyResult(result, code, printWindow = null) {
     if (job.setup) window.PRINTERS = job.setup;
     markingPrintQueue = markingPrintQueue.catch(() => {}).then(async () => {
       try {
-        const ok = await printPdf(job.url, { name: 'Дубликат ЧЗ', kind: job.kind, window: reserved, wait: true });
-        if (!ok) toast('ЧЗ сохранён. Повторите печать через «Стикеры → ЧЗ».', 'error', 12000);
-      } catch (error) { toast('ЧЗ сохранён, но дубликат не напечатан. Повторите печать через «Стикеры → ЧЗ».', 'error', 12000); }
+        const ok = await printPdf(job.url, { name: 'Дубликат «Честный знак»', kind: job.kind, window: reserved, wait: true });
+        if (!ok) toast('Честный знак сохранён. Повторите печать через «Стикеры → Честный знак».', 'error', 12000);
+      } catch (error) { toast('Честный знак сохранён, но дубликат не напечатан. Повторите печать через «Стикеры → Честный знак».', 'error', 12000); }
     });
   }
   renderActive(result.state || { active: null });

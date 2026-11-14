@@ -481,7 +481,7 @@ def api_marking_settings(request: Request, payload: dict = Body(...), admin: dic
     check_csrf(request)
     enabled = payload.get('enabled')
     if not isinstance(enabled, bool):
-        raise HTTPException(400, 'Укажите, включена ли автоматическая печать ЧЗ')
+        raise HTTPException(400, 'Укажите, включена ли автоматическая печать Честный знак')
     try:
         wanted = [r for r in printers.rows() if r['kind'] != 'marking:duplicate']
         wanted.append({'kind': 'marking:duplicate', 'size': payload.get('size'),
@@ -494,5 +494,5 @@ def api_marking_settings(request: Request, payload: dict = Body(...), admin: dic
                            (marking.KV_AUTO, '1' if enabled else '0')]:
             conn.execute('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (key, value))
-        db.log_event('marking_settings', user=admin, message='Настройки общего принтера и автопечати ЧЗ сохранены', conn=conn)
-    return {'status': 'ok', 'message': 'Настройки печати ЧЗ сохранены', 'printers': printers.setup()}
+        db.log_event('marking_settings', user=admin, message='Настройки общего принтера и автопечати «Честный знак» сохранены', conn=conn)
+    return {'status': 'ok', 'message': 'Настройки печати «Честный знак» сохранены', 'printers': printers.setup()}

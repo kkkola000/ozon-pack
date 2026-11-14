@@ -56,7 +56,7 @@ def _partial_units(product: dict, entries: list[dict], used: set[int]) -> dict[i
         if entry.get('partialCount'):
             values = [_cis(i) for i in entry.get('instances') or [] if _cis(i)]
             if len(values) > 1:
-                raise ValueError('Часть товара содержит несколько ЧЗ')
+                raise ValueError('Часть товара содержит несколько кодов «Честный знак»')
             groups[marking_codes.comparison_key(values[0]) if values else ''].append(entry)
     result = {}
     for value, group in groups.items():
@@ -146,7 +146,7 @@ def _instance(raw: dict, unit: dict, marks: list[dict]) -> dict:
     if value:
         result['cis'] = value
     if 'CIS' in (item.get('requiredInstanceTypes') or []) and not value:
-        raise ValueError('Сначала отсканируйте ЧЗ каждой обязательной товарной единицы')
+        raise ValueError('Сначала отсканируйте код «Честный знак» каждой обязательной товарной единицы')
     return result
 
 
@@ -196,7 +196,7 @@ def confirm(raw: dict, expected: list[dict], boxes: list[dict]) -> list[dict]:
     for proposal, local in zip(expected, boxes, strict=True):
         match = next((b for b in actual if _box_shape(b, codes=with_codes) == _box_shape(proposal, codes=with_codes)), None)
         if not match or not match.get('boxId') or not match.get('barcode'):
-            raise ValueError('Маркет пока не подтвердил состав, ЧЗ и ярлыки грузомест')
+            raise ValueError('Маркет пока не подтвердил состав, Честный знак и ярлыки грузомест')
         actual.remove(match)
         confirmed.append({'id': local['id'], 'units': local['units'],
                           'remote_id': str(match['boxId']), 'barcode': str(match['barcode'])})

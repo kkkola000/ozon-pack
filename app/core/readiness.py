@@ -57,10 +57,10 @@ def start(account: dict, user: dict, order_id: str) -> dict:
         if cargo.split_unknown(account['id'], order_id):
             saved = marking.order(account['id'], order_id)
             if marking.needs_validation(saved):
-                raise ValueError('Дождитесь сверки ЧЗ разделённого заказа Ozon')
+                raise ValueError('Дождитесь сверки кодов «Честный знак» разделённого заказа Ozon')
             return {'deferred': False, 'result': call(account, user, order_id)}
         if cargo.split_pending(account['id'], order_id):
-            raise ValueError('Дождитесь подтверждения ЧЗ новых отправлений Ozon')
+            raise ValueError('Дождитесь подтверждения Честный знак новых отправлений Ozon')
         saved = marking.prepare(account, order_id)
         if saved:
             exemplar_data.queue(saved, user['id'])
@@ -98,7 +98,7 @@ def complete_guard(account: dict, user: dict, order_id: str):
     with order_lock.hold(account['id'], order_id):
         from . import cargo
         if cargo.split_pending(account['id'], order_id):
-            raise ValueError('Дождитесь подтверждения ЧЗ новых отправлений Ozon')
+            raise ValueError('Дождитесь подтверждения Честный знак новых отправлений Ozon')
         cargo.complete_guard(account, order_id)
         saved = marking.prepare(account, order_id)
         marking.guard(account, order_id)

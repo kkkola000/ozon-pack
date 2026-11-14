@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -29,6 +30,8 @@ from ...core.product_sets import part_slot
 from . import client as ozon
 from .client import OzonError
 from . import store
+
+log = logging.getLogger(__name__)
 
 POSTING_NUMBER_RE = re.compile(r"^\d{5,}-\d{3,}-\d{1,3}$")
 
@@ -170,7 +173,20 @@ def missing_items(state: dict) -> list[str]:
 
 def release(account: dict, user: dict, *, reason: str = "manual") -> ScanResult:
     """Отпустить активное отправление, ничего не завершая."""
+    from ...core import marking, order_lock
+    active = load_state(account, user).get('active')
+    warning = False
+    if active:
+        try:
+            with order_lock.hold(account['id'], active['posting_number']):
+                marking.prepare(account, active['posting_number'])
+        except (ValueError, OzonError) as exc:
+            warning = True
+            log.warning('Сверка маркировки при отмене: кабинет %s, %s', account['id'], type(exc).__name__)
     pack_state.release(user, event="pack_release", reason=reason)
+    if warning:
+        return ScanResult('warning', 'Сборка отменена. Сверка маркировки с Ozon не завершена; повторите проверку при открытии заказа.',
+                          action='released', state=load_state(account, user))
     return ScanResult("ok", "Сборка отменена", action="released", state=load_state(account, user))
 
 
@@ -1078,7 +1094,7 @@ def ship_posting(account: dict, user: dict, posting_number: str) -> dict:
     try:
         result = readiness.start(account, user, posting_number)
         if result['deferred']:
-            return {'status': 'warning', 'message': 'Сначала отсканируйте ЧЗ товаров в разделе «Сборка»', 'postings': []}
+            return {'status': 'warning', 'message': 'Сначала отсканируйте код «Честный знак» товаров в разделе «Сборка»', 'postings': []}
         return result['result']
     except (ValueError, OzonError):
         return {'status': 'error', 'message': 'Не удалось подтвердить готовность отправления в Ozon', 'postings': []}

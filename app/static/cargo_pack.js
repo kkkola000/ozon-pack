@@ -56,7 +56,7 @@ const CargoPack = (() => {
         return `<div class="cargo-member" data-cargo-unit="${escapeHtml(id)}" data-cargo-from="${escapeHtml(box.id)}" ${editor ? 'draggable="true"' : ''}>
           ${editor ? '<span class="cargo-handle" aria-hidden="true">⠿</span>' : ''}
           ${renderItem(item, pending || !item.ok && unit.id === nextUnit?.id)}
-          ${shared(id) ? '<span class="cargo-part">Часть товара · ШК и ЧЗ сканируются один раз</span>' : ''}
+          ${shared(id) ? '<span class="cargo-part">Часть товара · ШК и Честный знак сканируются один раз</span>' : ''}
         </div>`;
       }).join('');
       const checked = plan.checked?.includes(box.barcode);
@@ -141,7 +141,7 @@ const CargoPack = (() => {
           boxes: editor.boxes.map((box) => ({ id: box.id, units: box.units })) });
         reset();
         renderActive(result.state);
-        toast(result.state.cargo.status === 'draft' ? 'Раскладка сохранена. Отсканируйте ЧЗ товаров.' : 'Грузоместа подтверждены Маркетом', 'ok');
+        toast(result.state.cargo.status === 'draft' ? 'Раскладка сохранена. Отсканируйте код «Честный знак» товаров.' : 'Грузоместа подтверждены Маркетом', 'ok');
         if (result.autoprint) await printLabel(pack.activeId(result.state.active), reserved);
         else reserved?.close();
       }

@@ -256,7 +256,7 @@ def _run(shop: dict, call, *args) -> dict:
         result["state"] = _sign(marking.enrich(shop, result["state"]), shop)
         marking_state = result['state'].get('marking') or {}
         if marking_state.get('pending_key') and result.get('status') == 'ok':
-            result['message'] = 'Товар отсканирован. Теперь отсканируйте его ЧЗ.'
+            result['message'] = 'Товар отсканирован. Теперь отсканируйте его код «Честный знак».'
             if result.get('action') == 'ready_for_label':
                 result['action'] = 'product_scanned'
     return result
@@ -294,7 +294,7 @@ def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
     try:
         from . import cargo
         if cargo.split_pending(open_shop['id'], number):
-            raise ValueError('Дождитесь подтверждения переноса ЧЗ в новые отправления')
+            raise ValueError('Дождитесь подтверждения переноса кодов «Честный знак» в новые отправления')
         with order_lock.hold(open_shop['id'], number):
             marking.prepare(open_shop, number, for_scan=True)
             saved = marking.save_scan(open_shop, user, current, code)
@@ -302,11 +302,11 @@ def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
         return {'status': 'error', 'message': str(exc), 'action': 'marking_error', 'sound': 'error',
                 'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
     except Exception:
-        return {'status': 'error', 'message': 'Пока не удалось сохранить ЧЗ. Повторите скан.',
+        return {'status': 'error', 'message': 'Пока не удалось сохранить Честный знак. Повторите скан.',
                 'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
     result = {'status': 'warning' if saved['duplicate'] else 'ok',
-              'message': 'ЧЗ уже сохранён; повторная автопечать не запущена' if saved['duplicate'] else
-                         'ЧЗ сохранён и связан с товаром и стикером отправления',
+              'message': 'Честный знак уже сохранён; повторная автопечать не запущена' if saved['duplicate'] else
+                         'Честный знак сохранён и связан с товаром и стикером отправления',
               'action': 'marking_saved', 'sound': 'ok',
               'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
     if not saved['duplicate'] and marking.enabled():
@@ -332,7 +332,7 @@ def _scan(where: list[dict], user: dict, code: str) -> dict:
         current = _workspace(open_shop).load_state(open_shop, user)
         _refresh_requirements(open_shop, current)
         if marking.pending(open_shop, current):
-            return {'status': 'error', 'message': 'Сначала отсканируйте ЧЗ выбранной единицы товара',
+            return {'status': 'error', 'message': 'Сначала отсканируйте код «Честный знак» выбранной единицы товара',
                     'action': 'marking_required', 'sound': 'error',
                     'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
         blocked = _kit_order(open_shop, user, code)

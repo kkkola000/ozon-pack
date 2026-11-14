@@ -213,7 +213,7 @@ def refresh(account: dict, order_id: str) -> dict | None:
 def _inflight_marking(account: dict, order_id: str):
     saved = marking.order(account['id'], order_id)
     if saved and saved['status'] in {'queued', 'checking', 'uncertain'}:
-        raise ValueError('Дождитесь проверки ЧЗ перед изменением грузомест')
+        raise ValueError('Дождитесь проверки кодов «Честный знак» перед изменением грузомест')
 
 
 def save_editor(account: dict, order_id: str, user: dict, revision, boxes):
@@ -313,7 +313,7 @@ def enrich(account: dict, state: dict) -> dict:
                     'accepted' if mark and mark['status'] == 'accepted' else 'waiting')
                 unit['marking'] = {'key': unit['key'], 'status': status,
                                    'title': (mark.get('error') if mark else None) or
-                                   ('ЧЗ принят площадкой' if status == 'accepted' else 'ЧЗ не отсканирован или проверяется')}
+                                   ('Честный знак принят площадкой' if status == 'accepted' else 'Честный знак не отсканирован или проверяется')}
             state['cargo']['units'].append(unit)
     state['cargo']['editable'] = active.get('local_state') != 'packed'
     if saved and saved['status'] == 'uncertain':
@@ -335,7 +335,7 @@ def labels_allowed(account_id: int, order_id: str):
     if split_unknown(account_id, order_id):
         raise ValueError('Ozon ещё не подтвердил номера разделённых отправлений')
     if split_pending(account_id, order_id):
-        raise ValueError('Ozon ещё не подтвердил перенос ЧЗ в новые отправления')
+        raise ValueError('Ozon ещё не подтвердил перенос кодов «Честный знак» в новые отправления')
     saved = get(account_id, order_id)
     if saved and saved['status'] in {'draft', 'uncertain'}:
         raise ValueError('Сначала сохраните грузоместа и дождитесь подтверждения площадки')
@@ -419,7 +419,7 @@ def scan_label(account: dict, user: dict, code: str, state: dict) -> dict | None
             raise ValueError('Номер заказа не подтверждает грузоместо. Сканируйте ярлык каждой коробки.')
         return None
     if not state.get('complete'):
-        raise ValueError('Сначала отсканируйте товары и дождитесь проверки ЧЗ')
+        raise ValueError('Сначала отсканируйте товары и дождитесь проверки кодов «Честный знак»')
     labels_allowed(account['id'], order_id)
     checked = set(saved['checked'])
     duplicate = code in checked

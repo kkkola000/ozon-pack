@@ -92,7 +92,7 @@ def test_packaging_order_waits_for_verified_readiness(client, warehouse, monkeyp
     number = order(account, 'packaging')
 
     def premature(*args):
-        raise AssertionError('Нельзя запрашивать стикер до передачи ЧЗ и готовности')
+        raise AssertionError('Нельзя запрашивать стикер до передачи кодов «Честный знак» и готовности')
 
     source_response(monkeypatch, account, premature)
     job = assembly_stickers.descriptor(account, number)
