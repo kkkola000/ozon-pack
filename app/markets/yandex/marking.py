@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from collections import Counter
 
-from ...core import db, exemplar_data, marking, product_marking
+from ...core import db, exemplar_data, marking
 from ..base import MarkingSource
 from . import client
 
@@ -27,7 +27,6 @@ def prepare(account: dict, order_id: str) -> dict:
         'SELECT item_id,offer_id,quantity FROM yandex_order_items WHERE account_id=? AND order_id=?',
         (account['id'], order_id))}
     products = []
-    declared = product_marking.declarations(account, [sku for sku, _ in local.values()], client.get_client(account))
     details = {}
     for item in raw.get('items') or []:
         key, sku, quantity = str(item.get('id') or ''), str(item.get('offerId') or ''), int(item.get('count') or 0)
@@ -35,8 +34,8 @@ def prepare(account: dict, order_id: str) -> dict:
             raise ValueError('Состав Маркета изменился. Обновите заказы перед сборкой.')
         types = set(item.get('requiredInstanceTypes') or [])
         products.append({'key': key, 'sku': sku, 'quantity': quantity,
-                         'required': bool(types & {'CIS', 'CIS_OPTIONAL'}) or sku in declared,
-                         'possible': bool(types & {'CIS', 'CIS_OPTIONAL'}) or sku in declared,
+                         'required': bool(types & {'CIS', 'CIS_OPTIONAL'}),
+                         'possible': bool(types & {'CIS', 'CIS_OPTIONAL'}),
                          'fields': [f.lower() for f in ('GTD', 'RNPT', 'UIN') if f in types]})
         for unit, instance in enumerate(item.get('instances') or [], 1):
             values = {f: instance[f] for f in products[-1]['fields'] if instance.get(f)}

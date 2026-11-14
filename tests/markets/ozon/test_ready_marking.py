@@ -1,4 +1,4 @@
-"""Готовый заказ без ЧЗ не должен зависеть от методов работы с экземплярами."""
+"""Требования читаются и для готового заказа; повторной сборки готового заказа нет."""
 from copy import deepcopy
 from unittest.mock import Mock
 
@@ -19,12 +19,11 @@ def ordinary_order(account, status='awaiting_deliver'):
 
 
 @pytest.mark.parametrize('via', ['product', 'label'])
-@pytest.mark.parametrize('response', ['refused', 'empty'])
-def test_ready_ordinary_order_opens_and_completes_without_exemplars(account, user, monkeypatch, via, response):
+def test_ready_ordinary_order_checks_exemplars_without_shipping_again(account, user, monkeypatch, via):
     api, number, _sku = ordinary_order(account)
-    unavailable = Mock(side_effect=OzonError('not applicable', status=400)) if response == 'refused' else Mock(return_value={})
+    read = Mock(wraps=api.exemplars_get)
     ship = Mock(side_effect=AssertionError('Готовый заказ нельзя собирать повторно'))
-    monkeypatch.setattr(api, 'exemplars_get', unavailable)
+    monkeypatch.setattr(api, 'exemplars_get', read)
     monkeypatch.setattr(api, 'ship', ship)
     result = scan(account, user, BARCODE if via == 'product' else number)
     assert result['action'] == 'posting_selected', result['message']
@@ -33,10 +32,27 @@ def test_ready_ordinary_order_opens_and_completes_without_exemplars(account, use
     if via == 'label':
         assert not result.get('print')
         scan(account, user, BARCODE)
+    assert read.called
     assert scan(account, user, number)['action'] == 'completed'
-    unavailable.assert_not_called()
     ship.assert_not_called()
     assert marking.order(account['id'], number) is None
+
+
+@pytest.mark.parametrize('status', ['awaiting_packaging', 'awaiting_deliver'])
+@pytest.mark.parametrize('response', ['refused', 'empty'])
+def test_missing_exemplar_requirements_never_mean_unmarked(account, user, monkeypatch, status, response):
+    api, number, _sku = ordinary_order(account, status=status)
+    read = Mock(side_effect=OzonError('not available', status=403)) if response == 'refused' else Mock(return_value={})
+    monkeypatch.setattr(api, 'exemplars_get', read)
+    ship = Mock(wraps=api.ship)
+    monkeypatch.setattr(api, 'ship', ship)
+    result = scan(account, user, BARCODE)
+    assert result['status'] == 'error'
+    assert result['state']['active'] is None
+    assert read.called
+    ship.assert_not_called()
+    if response == 'refused':
+        assert 'create-or-get' in result['message'] and 'HTTP 403' in result['message']
 
 
 def test_fresh_ready_status_wins_over_old_local_packaging(account, user, monkeypatch):
@@ -44,18 +60,18 @@ def test_fresh_ready_status_wins_over_old_local_packaging(account, user, monkeyp
     api._postings[number]['status'] = 'awaiting_deliver'
     ship = Mock(side_effect=AssertionError('Локальный статус устарел, ship вызывать нельзя'))
     monkeypatch.setattr(api, 'ship', ship)
-    monkeypatch.setattr(api, 'exemplars_get', Mock(side_effect=AssertionError('Нет маркировки')))
+    monkeypatch.setattr(api, 'exemplars_get', Mock(wraps=api.exemplars_get))
     result = scan(account, user, number)
     assert result['status'] == 'ok', result['message']
     assert result['state']['active']['status'] == 'awaiting_deliver'
     ship.assert_not_called()
 
 
-def test_ordinary_packaging_still_becomes_ready_without_exemplar_calls(account, user, monkeypatch):
+def test_ordinary_packaging_checks_exemplars_and_becomes_ready(account, user, monkeypatch):
     api, number, _sku = ordinary_order(account, status='awaiting_packaging')
     ship = Mock(wraps=api.ship)
     monkeypatch.setattr(api, 'ship', ship)
-    monkeypatch.setattr(api, 'exemplars_get', Mock(side_effect=AssertionError('Нет маркировки')))
+    monkeypatch.setattr(api, 'exemplars_get', Mock(wraps=api.exemplars_get))
     result = scan(account, user, BARCODE)
     assert result['status'] == 'ok', result['message']
     assert api._postings[number]['status'] == 'awaiting_deliver'
@@ -67,7 +83,7 @@ def test_legacy_empty_marking_snapshot_does_not_keep_ordinary_order_blocked(acco
     with order_lock.hold(account['id'], number):
         saved = marking.prepare(account, number, for_scan=True)
     assert not marking.needs_validation(saved)
-    monkeypatch.setattr(api, 'exemplars_get', Mock(side_effect=OzonError('not applicable', status=400)))
+    monkeypatch.setattr(api, 'exemplars_get', Mock(wraps=api.exemplars_get))
     result = scan(account, user, BARCODE)
     assert result['status'] == 'ok', result['message']
     assert scan(account, user, number)['action'] == 'completed'
@@ -115,7 +131,7 @@ def test_saved_codes_are_still_checked_after_remote_requirement_is_cleared(accou
     assert marking.codes(marking.order(account['id'], number), full=True)[0]['raw'] == code()
 
 
-def test_optional_marking_is_discovered_only_when_a_mark_is_scanned(account, user, monkeypatch):
+def test_optional_marking_is_required_from_the_initial_product_scan(account, user, monkeypatch):
     api, number, _sku = ordinary_order(account)
     original = api.exemplars_get
     def optional(order_id):
@@ -125,9 +141,10 @@ def test_optional_marking_is_discovered_only_when_a_mark_is_scanned(account, use
     calls = Mock(side_effect=optional)
     monkeypatch.setattr(api, 'exemplars_get', calls)
     assert scan(account, user, BARCODE)['status'] == 'ok'
-    calls.assert_not_called()
+    assert calls.called
+    assert packing.state(user)['items'][0]['marking']['status'] == 'waiting'
+    assert packing.complete(user)['status'] == 'error'
     assert scan(account, user, code())['action'] == 'marking_saved'
-    assert calls.call_count == 1
     finish_job(account, number)
     assert marking.order(account['id'], number)['status'] == 'accepted'
 

@@ -3,23 +3,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ...core import db, exemplar_data, marking, product_marking, readiness
+from ...core import db, exemplar_data, marking, readiness
 from ..base import MarkingSource
 from . import client, store
-
-
-def _needs_exemplars(raw: dict) -> bool:
-    """Допинформация может требоваться без прежнего списка обязательных ЧЗ.
-
-    Действия Ozon обозначают также ГТД, РНПТ и вес. Само требование ЧЗ
-    подтверждается отдельным is_mandatory_mark_needed в ответе экземпляров.
-    """
-    actions = set(raw.get('available_actions') or [])
-    requirements = raw.get('requirements') or {}
-    return bool(actions.intersection({'ship_with_additional_info', 'update_cis'}) or any(
-        requirements.get(key) for key in ('products_requiring_gtd', 'products_requiring_rnpt',
-                                         'products_requiring_imei', 'products_requiring_jw_uin',
-                                         'products_requiring_weight')))
 
 
 def _remember_required(conn, account_id: int, order_id: str, required: set[str]):
@@ -58,18 +44,15 @@ def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
 
 def prepare(account: dict, order_id: str, *, discover: bool = False) -> dict | None:
     raw, local, required = _posting(account, order_id)
-    required.update(product_marking.declarations(account, list(local), client.get_client(account)))
     saved = marking.order(account['id'], order_id)
-    known = bool(saved and (marking.codes(saved, active=False) or any(
+    known = bool(saved and (marking.needs_validation(saved) or marking.codes(saved, active=False) or any(
         p.get('required') or p.get('possible') for p in marking.products(saved))))
+    # Всегда читаем требования отправления, включая уже готовые заказы.
+    # Отсутствие старых requirements/actions не доказывает отсутствие ЧЗ/ГТД.
+    data = _exemplars(account, order_id, local, required, requirements=raw.get('requirements') or {})
     if any((raw.get('requirements') or {}).get(k) for k in ('products_requiring_country', 'products_requiring_change_country')):
         raise ValueError('Ozon требует указать страну происхождения. Укажите её в кабинете Ozon и обновите заказ.')
-    if not required and not known and not discover and not _needs_exemplars(raw):
-        # Для обычного товара без декларации маркировки/допинфо Ozon может
-        # отклонять чтение экземпляров, особенно у уже готового отправления.
-        return None
-    data = _exemplars(account, order_id, local, required, requirements=raw.get('requirements') or {})
-    if data is None or not known and not discover and not any(p['required'] or p.get('fields') for p in data['products']):
+    if not known and not discover and not any(p['required'] or p.get('fields') for p in data['products']):
         return None
     return data
 
@@ -84,7 +67,13 @@ def _fields(product, key, requirements):
 
 
 def _exemplars(account: dict, order_id: str, local: dict, required: set[str], *, requirements=None) -> dict:
-    data = client.get_client(account).exemplars_get(order_id)
+    try:
+        data = client.get_client(account).exemplars_get(order_id)
+    except client.OzonError as exc:
+        status = getattr(exc, 'status', None)
+        hint = 'Проверьте права ключа на этот метод.' if status in {401, 403} else 'Повторите скан для проверки.'
+        raise ValueError('Не удалось получить требования ЧЗ и ГТД в Ozon '
+                         f'(create-or-get, HTTP {status or "неизвестен"}). {hint}') from exc
     if str(data.get('posting_number') or '') != order_id:
         raise ValueError('Ozon не подтвердил номер отправления экземпляров')
     saved = marking.order(account['id'], order_id)

@@ -430,12 +430,6 @@ class FakeOzonClient(OzonClient):
     def close(self):  # type: ignore[override]
         return None
 
-    def product_attributes(self, skus):
-        return []
-
-    def category_attributes(self, category_id, type_id):
-        return []
-
     def exemplars_get(self, posting_number):
         from copy import deepcopy
         posting = self._postings[posting_number]

@@ -330,6 +330,7 @@ def _scan(where: list[dict], user: dict, code: str) -> dict:
         if stranger is not None:
             return stranger
         current = _workspace(open_shop).load_state(open_shop, user)
+        _refresh_requirements(open_shop, current)
         if marking.pending(open_shop, current):
             return {'status': 'error', 'message': 'Сначала отсканируйте ЧЗ выбранной единицы товара',
                     'action': 'marking_required', 'sound': 'error',
@@ -379,6 +380,24 @@ def _locked_scan(shop: dict, user: dict, code: str) -> dict:
             if result['state'].get('marking') and claim and claim[0] != 'label' and board.not_ready(shop, [number]):
                 result['deferred_label_print'] = settings.autoprint
         return result
+
+
+def _refresh_requirements(shop: dict, state: dict):
+    from ..markets.base import MarketError
+
+    active = state.get('active') or {}
+    number = str(active.get('posting_number') or active.get('id') or '')
+    if not number or not marking.source(shop):
+        return
+    try:
+        with order_lock.hold(shop['id'], number):
+            marking.prepare(shop, number)
+    except MarketError as exc:
+        # Ответ площадки может содержать полные коды и ключи. В сканер
+        # возвращаем только этап и HTTP-статус, не текст исключения.
+        status = getattr(exc, 'status', None)
+        raise ValueError('Не удалось проверить требования заказа '
+                         f'(HTTP {status or "неизвестен"}). Повторите скан для проверки.') from exc
 
 
 def scan(where: list[dict], user: dict, code: str) -> dict:

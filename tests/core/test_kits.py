@@ -146,9 +146,12 @@ def test_insert_before_the_main_is_refused(account, kit, user):
     assert item_of(result["state"], kit["sku"])["parts"][1]["scanned"] == 0
 
 
-def test_two_kits_are_main_insert_main_insert(account, kit, user):
+def test_two_kits_are_main_insert_main_insert(account, kit, user, sample_data):
     db.execute("UPDATE posting_items SET quantity = 2 WHERE account_id = ? AND posting_number = ?",
                (account["id"], kit["posting"]["posting_number"]))
+    # Проверка требований сверяет состав с площадкой на каждом скане.
+    remote = sample_data._postings[kit["posting"]["posting_number"]]
+    next(p for p in remote["products"] if str(p["sku"]) == kit["sku"])["quantity"] = 2
     assert scan(user, kit["main"])["status"] == "ok"
     first = scan(user, INSERT)
     assert item_of(first["state"], kit["sku"])["scanned"] == 1
