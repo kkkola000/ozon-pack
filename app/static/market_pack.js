@@ -66,7 +66,7 @@ let lost = false;        // поле без фокуса — коды скане
 let lostTimer = null;
 
 function listening() {
-  return CargoPack.editing() || document.hasFocus() && document.activeElement === input;
+  return CargoPack.editing() || ExemplarFields.editing() || document.hasFocus() && document.activeElement === input;
 }
 
 /* Рамка, которая говорит о сканере, — та, где сейчас поле: в окне сборки
@@ -110,6 +110,7 @@ function watchFocus() {
 function keepFocus() {
   const current = document.activeElement;
   if (current === input || !document.hasFocus()) return;
+  if (current?.closest('.pack-exemplar-data')) return;
   if (current?.matches('input:not([type=checkbox]):not([type=radio]), select, textarea')) return;
   input.focus();
 }
@@ -252,13 +253,14 @@ function packItem(item, next) {
   const flag = opened?.marking?.pending_key && opened.marking.pending_key === item.marking?.key ? 'Сканируйте ЧЗ этого товара'
     : item.wait ? `Вложите «${escapeHtml(item.wait)}» и отсканируйте его` : 'Сканируйте этот товар';
   return `
-    <div class="pack-item ${mark}">
+    <div class="pack-item ${mark} ${item.exemplar_data ? 'has-exemplar-data' : ''}">
       ${packPhoto(item.image, item.name)}
       <div class="grow">
         <div class="pack-name">${escapeHtml(item.name || 'Без названия')}</div>
         ${item.meta ? `<div class="pack-meta">${item.meta}</div>` : ''}
         ${next ? `<span class="pack-flag">${flag}</span>` : ''}
         ${item.extra || ''}
+        ${ExemplarFields.render(item.exemplar_data)}
       </div>
       ${item.marking ? `<span class="pack-mark ${item.marking.status === 'accepted' ? 'ok' : item.marking.status === 'error' ? 'err' : 'waiting'}" role="img" aria-label="${escapeHtml(item.marking.title)}" title="${escapeHtml(item.marking.title)}">М</span>` : ''}
       <div class="pack-qty">${item.ok ? '✓ ' : ''}${item.scanned} / ${item.need}<small>${item.ok ? 'собрано' : 'шт'}</small></div>
@@ -284,6 +286,7 @@ function packStep(words, done, total) {
    у всех. Кнопки общие — печать, отмена, завершение без скана; каких у
    площадки нет, те она просто не рисует. */
 function paintModal(state) {
+  ExemplarFields.begin(orderKey(state));
   const card = pack.card(state);
   const active = state.active;
   document.getElementById('pack-dot').className = `dot ${state.market}`;
@@ -455,7 +458,7 @@ function applyCounters(counters) {
 }
 
 async function submitScan(code, printWindow = null) {
-  if (busy || !code || CargoPack.editing()) {
+  if (busy || !code || CargoPack.editing() || ExemplarFields.editing()) {
     printWindow?.close();
     return;
   }
@@ -603,7 +606,7 @@ document.getElementById('btn-sheet').onclick = async (event) => {
 async function refreshState() {
   try {
     const data = await api(STATE_URL, undefined, 'GET');
-    if (CargoPack.editing()) return data;
+    if (CargoPack.editing() || ExemplarFields.editing()) return data;
     renderActive(data.state);
     applyCounters(data.counters);
     /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
@@ -617,7 +620,7 @@ async function refreshState() {
 refreshState();
 setInterval(() => { if (!busy) refreshState(); }, 30000);
 setInterval(async () => {
-  if (busy || CargoPack.editing() || markingPollBusy || !opened?.marking?.poll) return;
+  if (busy || CargoPack.editing() || ExemplarFields.editing() || markingPollBusy || !opened?.marking?.poll) return;
   const wanted = orderKey(opened);
   markingPollBusy = true;
   try {

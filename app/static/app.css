@@ -740,6 +740,11 @@ body.pack-open { overflow: hidden; }
 .pack-item.next { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .pack-item.done { border-color: var(--ok); }
 .pack-item .grow { min-width: 0; }
+.pack-exemplar-data { display: grid; gap: 10px; margin-top: 12px; }
+.pack-exemplar-field { display: grid; gap: 4px; }
+.pack-exemplar-field input { width: 100%; min-width: 0; box-sizing: border-box; }
+.pack-exemplar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .pack-item .item-photo { width: 84px; aspect-ratio: 1; padding: 3px; }
 .pack-item .item-photo.blank { font-size: 26px; }
 .pack-name { font-weight: 700; font-size: 17px; }
@@ -787,6 +792,7 @@ body.pack-open { overflow: hidden; }
   .pack-actions { justify-content: flex-start; }
   .pack-body { padding: 14px 16px 18px; }
   .pack-item { flex-wrap: wrap; }
+  .pack-item.has-exemplar-data .grow { flex-basis: calc(100% - 100px); }
   .pack-scan .pack-slot { flex-basis: 100%; order: 3; }
   .pack-scan .scan-state { margin-left: auto; margin-top: 12px; }
   .pack-scan .scan-field input { padding-right: 18px; }

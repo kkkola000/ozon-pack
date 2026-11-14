@@ -275,6 +275,20 @@ def _cargo_account(user: dict):
     return account, str(active.get('posting_number') or active.get('id') or '')
 
 
+@router.post('/api/pack/exemplar-data')
+def save_exemplar_data(request: Request, payload: dict = Body(...), user: dict = Depends(require_section('pack'))):
+    from ..core import exemplar_data
+    check_csrf(request)
+    with _cargo_lock(user):
+        account, order_id = _cargo_account(user)
+        try:
+            exemplar_data.save(account, user, order_id, payload)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return _answer(request, {'status': 'ok', 'message': 'Данные сохранены для передачи площадке',
+                                  'state': core_packing.state(user)})
+
+
 @router.post('/api/pack/cargo/open')
 def open_cargo(request: Request, user: dict = Depends(require_section('pack'))):
     check_csrf(request)

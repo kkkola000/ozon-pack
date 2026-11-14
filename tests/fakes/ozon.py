@@ -430,6 +430,12 @@ class FakeOzonClient(OzonClient):
     def close(self):  # type: ignore[override]
         return None
 
+    def product_attributes(self, skus):
+        return []
+
+    def category_attributes(self, category_id, type_id):
+        return []
+
     def exemplars_get(self, posting_number):
         from copy import deepcopy
         posting = self._postings[posting_number]
@@ -445,7 +451,10 @@ class FakeOzonClient(OzonClient):
             exemplars = deepcopy(existing['exemplars']) if existing else [
                 {'exemplar_id': int(sku) * 1000 + n, 'marks': [], 'is_gtd_absent': True, 'is_rnpt_absent': True}
                 for n in range(1, int(p['quantity']) + 1)]
-            products.append({'product_id': int(sku), 'quantity': p['quantity'], 'exemplars': exemplars,
+            fields = {flag: sku in {str(s) for s in (posting.get('requirements') or {}).get('products_requiring_' + suffix) or []}
+                      for flag, suffix in (('is_gtd_needed', 'gtd'), ('is_rnpt_needed', 'rnpt'),
+                                           ('is_jw_uin_needed', 'jw_uin'), ('is_weight_needed', 'weight'))}
+            products.append({'product_id': int(sku), 'quantity': p['quantity'], 'exemplars': exemplars, **fields,
                              'is_mandatory_mark_needed': sku in required,
                              'is_mandatory_mark_possible': sku in required})
         return {'posting_number': posting_number, 'multi_box_qty': 1, 'products': products}
@@ -475,6 +484,10 @@ class FakeOzonClient(OzonClient):
         data['status'] = 'ship_available' if self._postings[posting_number]['status'] == 'awaiting_packaging' else 'update_available'
         for p in data['products']:
             for e in p['exemplars']:
+                for field in ('gtd', 'rnpt', 'weight'):
+                    if field in e:
+                        e[field + '_check_status'] = 'passed'
+                        e[field + '_error_codes'] = []
                 for mark in e.get('marks', []):
                     mark.update(check_status='passed', error_codes=[])
         return data
@@ -487,6 +500,11 @@ class FakeOzonClient(OzonClient):
         if payload:
             self._postings[posting_number]['product_exemplars'] = {'products': [
                 {'sku': p['product_id'], 'exemplars': [
-                    {'exemplar_id': e['exemplar_id'], 'mandatory_mark': next(
+                    {**{k: e[k] for k in ('gtd', 'rnpt', 'weight', 'is_gtd_absent', 'is_rnpt_absent') if k in e},
+                     'imei': [m['mark'] for m in e.get('marks') or [] if m['mark_type'] == 'imei'],
+                     'exemplar_id': e['exemplar_id'], 'mandatory_mark': next(
                         (m['mark'] for m in e.get('marks', []) if m['mark_type'] == 'mandatory_mark'), '')}
                     for e in p['exemplars']]} for p in payload['products']]}
+            for p in payload['products']:
+                item = next(i for i in self._postings[posting_number]['products'] if str(i['sku']) == str(p['product_id']))
+                item['jw_uin'] = [m['mark'] for e in p['exemplars'] for m in e.get('marks') or [] if m['mark_type'] == 'jw_uin']

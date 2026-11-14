@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from ...core import db, marking, readiness
+from ...core import db, exemplar_data, marking, product_marking, readiness
 from ..base import MarkingSource
 from . import client, store
 
@@ -58,21 +58,32 @@ def _posting(account: dict, order_id: str) -> tuple[dict, dict, set[str]]:
 
 def prepare(account: dict, order_id: str, *, discover: bool = False) -> dict | None:
     raw, local, required = _posting(account, order_id)
+    required.update(product_marking.declarations(account, list(local), client.get_client(account)))
     saved = marking.order(account['id'], order_id)
     known = bool(saved and (marking.codes(saved, active=False) or any(
         p.get('required') or p.get('possible') for p in marking.products(saved))))
+    if any((raw.get('requirements') or {}).get(k) for k in ('products_requiring_country', 'products_requiring_change_country')):
+        raise ValueError('Ozon требует указать страну происхождения. Укажите её в кабинете Ozon и обновите заказ.')
     if not required and not known and not discover and not _needs_exemplars(raw):
-        # Обычному заказу не нужны экземпляры: Ozon может их не отдавать,
-        # в том числе когда отправление уже собрано в личном кабинете.
+        # Для обычного товара без декларации маркировки/допинфо Ozon может
+        # отклонять чтение экземпляров, особенно у уже готового отправления.
         return None
-    data = _exemplars(account, order_id, local, required)
-    if not known and not discover and not any(p['required'] for p in data['products']):
-        # «Допинфо» само по себе не означает ЧЗ: не превращаем ГТД/вес в обязательный скан марки.
+    data = _exemplars(account, order_id, local, required, requirements=raw.get('requirements') or {})
+    if data is None or not known and not discover and not any(p['required'] or p.get('fields') for p in data['products']):
         return None
     return data
 
 
-def _exemplars(account: dict, order_id: str, local: dict, required: set[str]) -> dict:
+def _fields(product, key, requirements):
+    fields = [f for f, flag in (('gtd', 'is_gtd_needed'), ('rnpt', 'is_rnpt_needed'),
+                                ('uin', 'is_jw_uin_needed'), ('weight', 'is_weight_needed')) if product.get(flag)]
+    for f, suffix in (('gtd', 'gtd'), ('rnpt', 'rnpt'), ('uin', 'jw_uin'), ('imei', 'imei'), ('weight', 'weight')):
+        if key in {str(s) for s in (requirements or {}).get('products_requiring_' + suffix) or []} and f not in fields:
+            fields.append(f)
+    return fields
+
+
+def _exemplars(account: dict, order_id: str, local: dict, required: set[str], *, requirements=None) -> dict:
     data = client.get_client(account).exemplars_get(order_id)
     if str(data.get('posting_number') or '') != order_id:
         raise ValueError('Ozon не подтвердил номер отправления экземпляров')
@@ -90,15 +101,34 @@ def _exemplars(account: dict, order_id: str, local: dict, required: set[str]) ->
         has_mark = any(m.get('mark_type') == 'mandatory_mark' and m.get('mark')
                        for e in exemplars for m in e.get('marks') or [])
         # Уже отправленный нами необязательный ЧЗ не меняет политику всего товара.
-        needed = bool(product.get('is_mandatory_mark_needed') or key in required or has_mark and key not in local_marks)
+        needed = bool(product.get('is_mandatory_mark_needed') or product.get('is_mandatory_mark_possible')
+                      or key in required or has_mark and key not in local_marks)
+        fields = _fields(product, key, requirements)
         products.append({'key': key, 'sku': key, 'quantity': quantity,
                          'required': needed,
-                         'possible': needed or bool(product.get('is_mandatory_mark_possible'))})
+                         'possible': needed or bool(product.get('is_mandatory_mark_possible')), 'fields': fields,
+                         'weight_min': product.get('weight_min'), 'weight_max': product.get('weight_max')})
     if {p['key'] for p in products} != set(local):
         raise ValueError('Ozon вернул неполный состав экземпляров')
     with db.write() as conn:
         _remember_required(conn, account['id'], order_id, {p['key'] for p in products if p['required']})
-    return {'products': products, 'context': data}
+    return {'products': products, 'context': data, 'details': _seed_details(data, products)}
+
+
+def _seed_details(data, products):
+    details = {}
+    for product in data['products']:
+        key = str(product['product_id'])
+        fields = next(p['fields'] for p in products if p['key'] == key)
+        for unit, e in enumerate(product['exemplars'], 1):
+            values = {f: e[f] for f in fields if f in e and e[f] and not e.get('is_' + f + '_absent')}
+            for f, kind in (('uin', 'jw_uin'), ('imei', 'imei')):
+                found = [m['mark'] for m in e.get('marks') or [] if m.get('mark_type') == kind and m.get('mark')]
+                if f in fields and len(found) == 1:
+                    values[f] = found[0]
+            if values:
+                details.setdefault(key, {})[str(unit)] = values
+    return details
 
 
 def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> list[dict]:
@@ -115,6 +145,15 @@ def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> lis
             else:
                 exemplar.pop('is_gtd_absent', None)
                 exemplar.pop('is_rnpt_absent', None)
+            for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
+                if field in {'gtd', 'rnpt', 'weight'}:
+                    exemplar[field] = value
+                    if field != 'weight' and not validate:
+                        exemplar['is_' + field + '_absent'] = False
+                elif field in {'uin', 'imei'}:
+                    kind = 'jw_uin' if field == 'uin' else 'imei'
+                    exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != kind]
+                    exemplar['marks'].append({'mark': value, 'mark_type': kind})
             if (key, unit) in values:
                 exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'mandatory_mark']
                 exemplar['marks'].append({'mark': values[key, unit], 'mark_type': 'mandatory_mark'})
@@ -132,6 +171,7 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
     if baseline != actual:
         raise marking.Rejected({c['item_key']: 'Состав экземпляров Ozon изменился. Требуется сверка заказа.' for c in codes})
     # Берём свежие ГТД/РНПТ/IMEI/вес, не затирая изменения в кабинете Ozon.
+    fresh['_panel_details'] = context.get('_panel_details', {})
     validation = api.exemplars_validate(order_id, _payload(fresh, codes, validate=True))
     result = validation.get('products') or []
     if not result or {str(p.get('product_id')) for p in result} != {str(p['product_id']) for p in fresh['products']}:
@@ -143,9 +183,12 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
         for unit, exemplar in enumerate(product.get('exemplars') or [], 1):
             if exemplar.get('valid') is not True or any(m.get('valid') is not True for m in exemplar.get('marks') or []):
                 invalid = True
-                errors[f'{key}:{unit}'] = 'Данные экземпляра не соответствуют требованиям Ozon'
+                invalid_cz = any(m.get('mark_type') == 'mandatory_mark' and m.get('valid') is not True
+                                 for m in exemplar.get('marks') or [])
+                error_key = f'{key}:{unit}' if invalid_cz or not context.get('_panel_details') else f'data:{key}:{unit}'
+                errors[error_key] = 'Данные экземпляра не соответствуют требованиям Ozon'
         if product.get('valid') is not True and not invalid:
-            errors[key] = 'Данные товара не соответствуют требованиям Ozon'
+            errors[f'data:{key}:1' if context.get('_panel_details', {}).get(key) else key] = 'Данные товара не соответствуют требованиям Ozon'
     if errors:
         raise marking.Rejected(errors)
     payload = {'posting_number': order_id, 'products': _payload(fresh, codes)}
@@ -167,15 +210,20 @@ def _checks(data, context):
             unit = units.get((key, str(exemplar.get('exemplar_id'))))
             error_key = f'{key}:{unit}' if unit else key
             for field in ('gtd', 'rnpt', 'weight'):
-                if exemplar.get(field + '_error_codes'):
-                    errors[error_key] = 'Ozon отклонил обязательные данные экземпляра'
+                status = str(exemplar.get(field + '_check_status') or '').lower()
+                if exemplar.get(field + '_error_codes') or status in {'error', 'invalid'}:
+                    errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
+                failed = failed or status == 'failed'
             for mark in exemplar.get('marks') or []:
+                status = str(mark.get('check_status') or '').lower()
                 if mark.get('mark_type') == 'mandatory_mark':
                     actual[key, str(exemplar.get('exemplar_id')), mark.get('mark')] = mark.get('check_status')
-                    if mark.get('error_codes'):
+                    if mark.get('error_codes') or status in {'error', 'invalid'}:
                         errors[error_key] = 'Код ЧЗ не принят Ozon'
-                    if mark.get('check_status') == 'failed':
-                        failed = True
+                elif mark.get('mark_type') in {'jw_uin', 'imei'} and (mark.get('error_codes') or status in {'error', 'invalid'}):
+                    field = 'uin' if mark['mark_type'] == 'jw_uin' else 'imei'
+                    errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
+                failed = failed or status == 'failed'
     return actual, errors, failed
 
 
@@ -189,34 +237,81 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     if failed:
         return {'status': 'retry', 'message': 'Ozon не смог обработать проверку ЧЗ. Передача будет повторена.'}
     exemplar_ids = {str(p['product_id']): [str(e['exemplar_id']) for e in p['exemplars']] for p in context['products']}
-    passed = all(actual.get((c['item_key'], exemplar_ids[c['item_key']][c['unit_no'] - 1], c['raw'])) == 'passed'
+    passed = all(str(actual.get((c['item_key'], exemplar_ids[c['item_key']][c['unit_no'] - 1], c['raw']))).lower() in {'passed', 'success'}
                  for c in codes)
-    if passed and codes and data.get('status') in {'ship_available', 'update_available'}:
+    details_ok, detail_errors = _checked_details(data, context)
+    if detail_errors:
+        return {'status': 'error', 'errors': detail_errors}
+    passed = passed and details_ok
+    has_data = bool(codes or context.get('_panel_details'))
+    if passed and has_data and data.get('status') in {'ship_available', 'update_available'}:
         return {'status': 'accepted'}
-    if passed and codes:
+    if passed and has_data:
         raw = client.get_client(account).posting_get(order_id, with_exemplars=True)
-        if raw and raw.get('status') == store.STATUS_AWAITING_DELIVER and _applied(raw, codes):
+        if raw and raw.get('status') == store.STATUS_AWAITING_DELIVER and _applied(raw, codes, context):
             return {'status': 'accepted'}
     return {'status': 'checking'}
 
 
-def _applied(raw: dict, codes: list[dict]) -> bool:
+def _checked_details(data: dict, context: dict) -> tuple[bool, dict]:
+    actual = {(str(p['product_id']), str(e.get('exemplar_id'))): e for p in data.get('products') or []
+              for e in p.get('exemplars') or []}
+    good, errors = True, {}
+    for product in context['products']:
+        key = str(product['product_id'])
+        for unit, e in enumerate(product['exemplars'], 1):
+            got = actual.get((key, str(e['exemplar_id'])), {})
+            for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
+                if field in {'gtd', 'rnpt', 'weight'}:
+                    status = got.get(field + '_check_status')
+                    matches = got.get(field) == value and not got.get('is_' + field + '_absent')
+                    bad = got.get(field + '_error_codes')
+                else:
+                    kind = 'jw_uin' if field == 'uin' else 'imei'
+                    mark = next((m for m in got.get('marks') or [] if m.get('mark_type') == kind and m.get('mark') == value), {})
+                    status, matches, bad = mark.get('check_status'), bool(mark), mark.get('error_codes')
+                if bad or str(status).lower() in {'error', 'invalid'}:
+                    errors[f'data:{key}:{unit}:{field}'] = 'Площадка отклонила значение поля'
+                if not matches or str(status).lower() not in {'passed', 'success'}:
+                    good = False
+    return good, errors
+
+
+def _applied(raw: dict, codes: list[dict], context: dict | None = None) -> bool:
     got = {(str(p.get('sku')), e.get('mandatory_mark')) for p in (raw.get('product_exemplars') or {}).get('products') or []
            for e in p.get('exemplars') or []}
-    return all((c['item_key'], c['raw']) in got for c in codes)
+    if not all((c['item_key'], c['raw']) in got for c in codes):
+        return False
+    actual = {(str(p.get('sku')), str(e.get('exemplar_id'))): e
+              for p in (raw.get('product_exemplars') or {}).get('products') or [] for e in p.get('exemplars') or []}
+    for product in (context or {}).get('products', []):
+        key = str(product['product_id'])
+        for unit, e in enumerate(product['exemplars'], 1):
+            row = actual.get((key, str(e['exemplar_id'])), {})
+            for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
+                if field == 'uin':
+                    found = next((p.get('jw_uin') or [] for p in raw.get('products') or [] if str(p['sku']) == key), [])
+                    if value not in found:
+                        return False
+                elif field == 'imei':
+                    if value not in (row.get('imei') or []):
+                        return False
+                elif row.get(field) != value or row.get('is_' + field + '_absent'):
+                    return False
+    return True
 
 
-def finalize(account: dict, order_id: str, _context: dict, codes: list[dict]) -> None:
+def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
     api = client.get_client(account)
     raw = api.posting_get(order_id, with_exemplars=True)
     if not raw:
         raise ValueError('Ozon не подтвердил отправление')
     if raw.get('status') == store.STATUS_AWAITING_DELIVER:
-        if not _applied(raw, codes):
+        if not _applied(raw, codes, context):
             readiness.attempt(account, order_id, lambda: api.exemplars_update(order_id))
             raw = api.posting_get(order_id, with_exemplars=True)
-            if not raw or not _applied(raw, codes):
-                raise ValueError('Ozon пока не подтвердил сохранение ЧЗ в отправлении')
+            if not raw or not _applied(raw, codes, context):
+                raise ValueError('Ozon пока не подтвердил сохранение данных экземпляров в отправлении')
         readiness.confirmed(account, order_id)
     elif raw.get('status') != store.STATUS_AWAITING_PACKAGING:
         raise ValueError('Отправление Ozon вышло из рабочего статуса')

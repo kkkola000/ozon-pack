@@ -7,7 +7,7 @@ import logging
 from collections import defaultdict
 from copy import deepcopy
 
-from ...core import cargo, db, marking
+from ...core import cargo, db, exemplar_data, marking
 from ...core.config import settings
 from ..base import CargoSource
 from . import client, store
@@ -179,7 +179,9 @@ def _box_shape(box: dict, *, codes: bool) -> str:
     for entry in box.get('items') or []:
         item = {k: entry[k] for k in ('id', 'fullCount', 'partialCount') if k in entry}
         if codes:
-            item['cis'] = sorted(_cis(i) for i in entry.get('instances') or [] if _cis(i))
+            item['instances'] = sorted(json.dumps({**{k: i[k] for k in ('gtd', 'rnpt', 'uin', 'countryCode') if k in i},
+                                                  **({'cis': _cis(i)} if _cis(i) else {})}, sort_keys=True)
+                                       for i in entry.get('instances') or [])
         items.append(item)
     return json.dumps(sorted(items, key=lambda i: int(i['id'])), sort_keys=True)
 
@@ -188,7 +190,7 @@ def confirm(raw: dict, expected: list[dict], boxes: list[dict]) -> list[dict]:
     actual = list((raw.get('delivery') or {}).get('boxesLayout') or [])
     if len(actual) != len(expected):
         raise ValueError('Маркет пока не подтвердил количество грузомест')
-    with_codes = any(_cis(i) for b in expected for p in b['items'] for i in p.get('instances') or [])
+    with_codes = any(p.get('instances') for b in expected for p in b['items'])
     confirmed = []
     for proposal, local in zip(expected, boxes, strict=True):
         match = next((b for b in actual if _box_shape(b, codes=with_codes) == _box_shape(proposal, codes=with_codes)), None)
@@ -206,7 +208,8 @@ def write(account, _user, order_id, units, boxes, marks, dispatch, uncertain):
     raw = fresh(account, order_id)
     if cargo._shape(cargo.units(products(raw))) != cargo._shape(units):
         raise ValueError('Состав заказа изменился')
-    wanted = payload(raw, units, boxes, marks)
+    from .marking import with_details
+    wanted = payload(with_details(raw, exemplar_data.values(marking.order(account['id'], order_id)), layout=False), units, boxes, marks)
     if not uncertain:
         saved = cargo.get(account['id'], order_id)
         if saved['remote_stamp'] and saved['remote_stamp'] != remote_stamp(raw):

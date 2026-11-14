@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS products (
     name       TEXT,
     image      TEXT,
     barcodes   TEXT,
+    marking_required INTEGER,
+    marking_checked_at TEXT,
     -- Товар в архиве площадки: он не продаётся, и в разделе «Товары» его быть
     -- не должно. Строку при этом не удаляем — её штрихкоды могут понадобиться,
     -- если архивный товар остался в несобранном заказе.

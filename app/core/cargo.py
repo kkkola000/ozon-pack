@@ -232,9 +232,8 @@ def save_editor(account: dict, order_id: str, user: dict, revision, boxes):
         marks_order = marking.order(account['id'], order_id)
         marks = marking.codes(marks_order, full=True) if marks_order else []
         # Пока обязательные ЧЗ не собраны, сохраняем намерение, не отправляя неполные экземпляры.
-        required = marking.has_required(marks_order)
-        required_count = sum(p['quantity'] for p in marking.products(marks_order) if p.get('required')) if required else 0
-        if required and len(marks) < required_count:
+        from . import exemplar_data
+        if marks_order and marking.needs_validation(marks_order) and not exemplar_data.ready(marks_order):
             db.execute('UPDATE cargo_orders SET boxes=?,revision=revision+1,status=\'draft\',error=NULL,updated_at=? '
                        'WHERE account_id=? AND order_id=?', (json.dumps(wanted), db.now_iso(), account['id'], order_id))
             return get(account['id'], order_id)
@@ -311,7 +310,7 @@ def enrich(account: dict, state: dict) -> dict:
             mark = codes.get((unit['key'], unit['unit']))
             if mark or metadata.get(unit['key'], {}).get('required'):
                 status = 'error' if mark and mark['status'] == 'error' else (
-                    'accepted' if mark and marked['status'] == 'accepted' else 'waiting')
+                    'accepted' if mark and mark['status'] == 'accepted' else 'waiting')
                 unit['marking'] = {'key': unit['key'], 'status': status,
                                    'title': (mark.get('error') if mark else None) or
                                    ('ЧЗ принят площадкой' if status == 'accepted' else 'ЧЗ не отсканирован или проверяется')}

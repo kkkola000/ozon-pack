@@ -21,7 +21,7 @@ const CargoPack = (() => {
     controls.hidden = !state?.active || !state.cargo?.editable;
     button.textContent = editor ? 'Сохранить' : '＋ Добавить грузоместо';
     button.classList.toggle('primary', Boolean(editor));
-    button.disabled = requestBusy || Boolean(state?.marking?.poll);
+    button.disabled = requestBusy || Boolean(state?.marking?.poll) || ExemplarFields.editing();
     button.title = editor ? 'Сохранить. Esc — отменить изменения.' : 'Добавить грузоместо и перетащить в него товар';
     document.getElementById('scan').readOnly = Boolean(editor || requestBusy);
   }
@@ -30,7 +30,9 @@ const CargoPack = (() => {
     const base = items.find((i) => String(i.key) === unit.key);
     if (!base) return null;
     const scanned = Number(base.scanned || 0) >= unit.unit ? 1 : 0;
-    return { ...base, need: 1, scanned, ok: Boolean(scanned), marking: unit.marking || base.marking };
+    return { ...base, need: 1, scanned, ok: Boolean(scanned), marking: unit.marking || base.marking,
+      exemplar_data: base.exemplar_data ? { ...base.exemplar_data,
+        units: base.exemplar_data.units.filter((u) => u.unit === unit.unit) } : null };
   }
 
   function render(state, items, next, renderItem, step) {
@@ -121,6 +123,7 @@ const CargoPack = (() => {
   });
 
   button.addEventListener('click', async () => {
+    if (ExemplarFields.editing()) { toast('Сначала передайте введённые данные товара', 'error'); return; }
     if (requestBusy) return;
     requestBusy = true;
     const saving = Boolean(editor);

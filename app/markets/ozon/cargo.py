@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 
-from ...core import cargo, db, marking, pack_state
+from ...core import cargo, db, exemplar_data, marking, pack_state
 from ...core.config import settings
 from . import client, store
 
@@ -73,7 +73,7 @@ def remember(account: dict, parent: str, numbers: list[str], items: list[dict], 
                          (account['id'], parent, user['id']))
     scans = state['scanned'] if state else '{}'
     marked = marking.order(account['id'], parent)
-    marks_verified = 0 if marked and marking.codes(marked) else 1
+    marks_verified = 0 if marking.needs_validation(marked) else 1
     with db.write() as conn:
         conn.executemany('INSERT OR IGNORE INTO cargo_split_children'
                          '(account_id,parent_id,child_id,source_items,source_scanned,marks_verified,user_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
@@ -153,24 +153,59 @@ def _assign(context: dict, by_code: dict, found: set) -> list[dict]:
 def _mapped(account: dict, parent: str, codes: list[dict]) -> list[dict]:
     from . import marking as provider
     by_code = {c['raw']: c for c in codes}
+    saved = marking.order(account['id'], parent)
+    details = exemplar_data.values(saved)
+    policies = {p['key']: p for p in marking.products(saved)} if saved else {}
+    original_context = exemplar_data.context(saved) if saved else {}
+    original_units = {(str(p['product_id']), str(e['exemplar_id'])): unit
+                      for p in original_context.get('products', []) for unit, e in enumerate(p['exemplars'], 1)}
+    data_found = set()
     output, found = [], set()
     for child in children(account['id'], parent):
         number = child['child_id']
         local = {str(i['sku']): int(i['quantity']) for i in store.posting_items(account['id'], number)}
-        required = set(local).intersection(c['item_key'] for c in codes)
-        if not required:
+        relevant = set(local).intersection({c['item_key'] for c in codes} | set(details))
+        if not relevant:
             continue
+        required = {k for k in relevant if policies.get(k, {}).get('required')}
         data = provider._exemplars(account, number, local, required)
         assigned = _assign(data['context'], by_code, found)
-        if not assigned:
+        if required and not assigned:
             raise ValueError('Ozon пока не подтвердил ЧЗ новых отправлений')
+        child_details = _child_details(data, policies, original_units, details, assigned, data_found)
+        data['details'] = child_details
+        data['context']['_panel_details'] = child_details
         if provider.poll(account, number, data['context'], assigned)['status'] != 'accepted':
             raise ValueError('Дождитесь проверки ЧЗ новых отправлений в Ozon')
         provider.finalize(account, number, data['context'], assigned)
         output.append({'order_id': number, 'data': data, 'codes': assigned})
     if found != set(by_code):
         raise ValueError('Не все сохранённые ЧЗ подтверждены в новых отправлениях Ozon')
+    if data_found != {(k, int(u)) for k, rows in details.items() for u, values in rows.items() if values}:
+        raise ValueError('Не все дополнительные данные подтверждены в новых отправлениях Ozon')
     return output
+
+
+def _child_details(data, policies, original_units, details, assigned, data_found):
+    child_details = {}
+    for product in data['context']['products']:
+        key = str(product['product_id'])
+        policy = policies.get(key, {})
+        metadata = next(p for p in data['products'] if p['key'] == key)
+        metadata['fields'] = sorted(set(metadata.get('fields', [])) | set(policy.get('fields', [])))
+        for unit, e in enumerate(product['exemplars'], 1):
+            source_unit = original_units.get((key, str(e['exemplar_id'])))
+            if source_unit is None:
+                source_unit = next((m['source_unit'] for m in assigned if m['item_key'] == key and m['unit_no'] == unit), None)
+            if key in details and source_unit is None:
+                raise ValueError('Ozon пока не подтвердил привязку дополнительных данных к новым экземплярам')
+            values = exemplar_data.at(details, key, source_unit) if source_unit else {}
+            if values:
+                if (key, source_unit) in data_found:
+                    raise ValueError('Ozon вернул повторяющийся экземпляр дополнительных данных')
+                data_found.add((key, source_unit))
+                child_details.setdefault(key, {})[str(unit)] = values
+    return child_details
 
 
 def _move_reports(conn, account_id: int, parent: str, mapped: list[dict]):
@@ -204,6 +239,8 @@ def _save_marks(account: dict, parent: str, mapped: list[dict], codes: list[dict
                          (account['id'], number, archive_id, json.dumps(data['products']),
                           marking._seal(json.dumps(data['context'], ensure_ascii=False)), user['id'], now, now))
             mark_id = conn.execute('SELECT id FROM marking_orders WHERE account_id=? AND order_id=?', (account['id'], number)).fetchone()['id']
+            conn.execute("UPDATE marking_orders SET details=?,field_errors='{}',user_id=? WHERE id=?",
+                         (marking._seal(json.dumps(data.get('details') or {}, ensure_ascii=False)), user['id'], mark_id))
             for mark in child['codes']:
                 conn.execute("UPDATE marking_codes SET marking_order_id=?,item_key=?,unit_no=?,active=1,status='accepted',error=NULL WHERE id=?",
                              (mark_id, mark['item_key'], mark['unit_no'], mark['id']))

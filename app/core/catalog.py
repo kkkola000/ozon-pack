@@ -70,6 +70,9 @@ def save(conn: sqlite3.Connection, account_id: int, cards: Iterable[dict]) -> in
                 "ON CONFLICT(account_id, barcode) DO UPDATE SET sku = excluded.sku",
                 (account_id, barcode, sku),
             )
+        if isinstance(card.get('marking_required'), bool):
+            conn.execute('UPDATE products SET marking_required=?,marking_checked_at=? WHERE account_id=? AND sku=?',
+                         (int(card['marking_required']), db.now_iso(), account_id, sku))
         count += 1
     return count
 

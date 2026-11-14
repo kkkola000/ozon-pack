@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, crypto, db, marking_codes, order_lock, pack_state
+from . import accounts, crypto, db, exemplar_data, marking_codes, order_lock, pack_state
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS marking_orders (
     archive_id INTEGER NOT NULL REFERENCES sticker_orders(id) ON DELETE CASCADE,
     products TEXT NOT NULL,
     context TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    field_errors TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'collecting',
     revision INTEGER NOT NULL DEFAULT 0,
     submitted_revision INTEGER,
@@ -112,23 +114,7 @@ def prepare(account: dict, order_id: str, *, for_scan: bool = False) -> dict | N
     if any(not p.get('key') or not 1 <= int(p['quantity']) <= 500 for p in products):
         raise ValueError('Площадка вернула некорректный состав экземпляров')
     if saved:
-        def signature(rows):
-            return {(str(p['key']), str(p['sku']), int(p['quantity'])) for p in rows}
-        previous = json.loads(saved['products'])
-        old_policy = {p['key']: p for p in previous}
-        stricter = any(p.get(flag) and not old_policy.get(p['key'], {}).get(flag)
-                       for p in products for flag in ('required', 'possible'))
-        # Площадка может снять требование после получения ЧЗ. Уже сохранённое
-        # обязательство сохраняем; новый обязательный товар требует сверки.
-        if signature(products) == signature(previous) and not stricter:
-            return saved
-        if codes(saved):
-            db.execute("UPDATE marking_orders SET status='error',error=? WHERE id=?",
-                       ('Состав или требования заказа изменились. Сверьте уже сохранённые ЧЗ перед продолжением.', saved['id']))
-            raise ValueError('Состав заказа изменился; сохранённые ЧЗ требуют сверки')
-        db.execute("UPDATE marking_orders SET products=?,context=?,status='collecting',revision=revision+1 WHERE id=?",
-                   (json.dumps(products), _seal(json.dumps(data['context'], ensure_ascii=False)), saved['id']))
-        return order(account['id'], order_id)
+        return _refresh(saved, data)
     now = db.now_iso()
     with db.write() as conn:
         conn.execute(
@@ -137,10 +123,40 @@ def prepare(account: dict, order_id: str, *, for_scan: bool = False) -> dict | N
         archive_id = conn.execute('SELECT id FROM sticker_orders WHERE account_id = ? AND order_id = ?',
                                   (account['id'], order_id)).fetchone()['id']
         conn.execute(
-            'INSERT OR IGNORE INTO marking_orders(account_id,order_id,archive_id,products,context,created_at) '
-            'VALUES(?,?,?,?,?,?)', (account['id'], order_id, archive_id, json.dumps(products),
-                                   _seal(json.dumps(data['context'], ensure_ascii=False)), now))
+            'INSERT OR IGNORE INTO marking_orders(account_id,order_id,archive_id,products,context,details,created_at) '
+            'VALUES(?,?,?,?,?,?,?)', (account['id'], order_id, archive_id, json.dumps(products),
+                                     _seal(json.dumps(data['context'], ensure_ascii=False)),
+                                     _seal(json.dumps(data.get('details') or {}, ensure_ascii=False)), now))
     return order(account['id'], order_id)
+
+
+def _refresh(saved: dict, data: dict) -> dict:
+    products = data['products']
+    def signature(rows):
+        return {(str(p['key']), str(p['sku']), int(p['quantity'])) for p in rows}
+    previous = json.loads(saved['products'])
+    old_policy = {p['key']: p for p in previous}
+    stricter = any(p.get(flag) and not old_policy.get(p['key'], {}).get(flag)
+                   for p in products for flag in ('required', 'possible'))
+    stricter = stricter or any(set(p.get('fields', [])) - set(old_policy.get(p['key'], {}).get('fields', []))
+                              for p in products)
+    # Площадка может снять требование после получения ЧЗ. Уже сохранённое
+    # обязательство сохраняем; новый обязательный товар требует сверки.
+    if signature(products) == signature(previous) and not stricter:
+        return saved
+    if signature(products) != signature(previous) and (codes(saved) or exemplar_data.values(saved)):
+        db.execute("UPDATE marking_orders SET status='error',error=? WHERE id=?",
+                   ('Состав или требования заказа изменились. Сверьте уже сохранённые ЧЗ перед продолжением.', saved['id']))
+        raise ValueError('Состав заказа изменился; сохранённые ЧЗ требуют сверки')
+    if saved['status'] in {'queued', 'checking', 'uncertain'}:
+        raise ValueError('Требования изменились во время передачи. Дождитесь проверки данных площадкой.')
+    for product in products:
+        old = old_policy.get(product['key'], {})
+        product['required'] = bool(product.get('required') or old.get('required'))
+        product['fields'] = sorted(set(product.get('fields', [])) | set(old.get('fields', [])))
+    db.execute("UPDATE marking_orders SET products=?,context=?,status='collecting',revision=revision+1 WHERE id=?",
+               (json.dumps(products), _seal(json.dumps(data['context'], ensure_ascii=False)), saved['id']))
+    return order(saved['account_id'], saved['order_id'])
 
 
 def products(saved: dict) -> list[dict]:
@@ -162,14 +178,14 @@ def codes(saved: dict, *, full: bool = False, active: bool = True) -> list[dict]
 
 
 def needs_validation(saved: dict | None) -> bool:
-    return bool(saved and (has_required(saved) or codes(saved)))
+    return bool(saved and (has_required(saved) or exemplar_data.required(saved) or codes(saved)))
 
 
 def guard(account: dict, order_id: str) -> None:
     """Общая защита завершения, в том числе прямых/старых маршрутов."""
     saved = order(account['id'], order_id)
     if needs_validation(saved) and saved['status'] != 'accepted':
-        raise ValueError(saved.get('error') or 'Сначала отсканируйте все обязательные ЧЗ и дождитесь принятия площадкой')
+        raise ValueError(saved.get('error') or 'Передайте обязательные ЧЗ и данные товара и дождитесь принятия площадкой')
 
 
 def item_key(account: dict, item: dict) -> str:
@@ -208,12 +224,14 @@ def enrich(account: dict, state: dict) -> dict:
         product = by_key.get(item_key(account, item))
         if not product:
             continue
+        item['exemplar_data'] = exemplar_data.public(saved, product['key'])
         related = [m for m in marks if m['item_key'] == product['key']]
         if not product.get('required') and not related:
             continue
         failed = any(m['status'] == 'error' for m in related) or (
-            saved['status'] == 'error' and not any(m['status'] == 'error' for m in marks))
-        ready = saved['status'] == 'accepted' and len(related) >= int(product['quantity'])
+            saved['status'] == 'error' and not json.loads(saved.get('field_errors') or '{}') and
+            not any(m['status'] == 'error' for m in marks))
+        ready = len(related) >= int(product['quantity']) and all(m['status'] == 'accepted' for m in related)
         item['marking'] = {
             'key': product['key'],
             'status': 'error' if failed else 'accepted' if ready else 'waiting',
@@ -297,11 +315,7 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
             db.log_event('marking_saved', account_id=account['id'], user=user, posting_number=order_id,
                          message=f'ЧЗ сохранён: позиция {product["key"]}, единица {unit}', conn=conn)
         latest = order(account['id'], order_id)
-        present = {(m['item_key'], m['unit_no']) for m in codes(latest)}
-        full = all((p['key'], u) in present for p in products(latest) if p.get('required')
-                   for u in range(1, int(p['quantity']) + 1))
-        if full:
-            db.execute("UPDATE marking_orders SET status='queued',checked_at=NULL WHERE id=?", (saved['id'],))
+        exemplar_data.queue(latest, user['id'])
     return mark_id
 
 
@@ -311,8 +325,9 @@ def _reject(saved: dict, marks: list[dict], errors: dict[str, str], message: str
             error = errors.get(f'{mark["item_key"]}:{mark["unit_no"]}') or errors.get(mark['item_key'])
             if error:
                 conn.execute("UPDATE marking_codes SET status='error',error=? WHERE id=?", (error, mark['id']))
-        conn.execute("UPDATE marking_orders SET status='error',error=?,checked_at=? WHERE id=?",
-                     (message, db.now_iso(), saved['id']))
+        field_errors = {k: v for k, v in errors.items() if k.startswith('data:')}
+        conn.execute("UPDATE marking_orders SET status='error',error=?,field_errors=?,checked_at=? WHERE id=?",
+                     (message, json.dumps(field_errors), db.now_iso(), saved['id']))
 
 
 def _accept(account, saved, provider, context, marks):
@@ -331,7 +346,7 @@ def _accept(account, saved, provider, context, marks):
     provider.finalize(account, order_id, context, marks)
     prepare(account, order_id)
     with db.write() as conn:
-        conn.execute("UPDATE marking_orders SET status='accepted',error=NULL,checked_at=? WHERE id=?",
+        conn.execute("UPDATE marking_orders SET status='accepted',error=NULL,field_errors='{}',checked_at=? WHERE id=?",
                      (db.now_iso(), saved['id']))
         conn.execute("UPDATE marking_codes SET status='accepted',error=NULL WHERE marking_order_id=? AND active=1", (saved['id'],))
         db.log_event('marking_accepted', account_id=account['id'], user=dict(user_row), posting_number=order_id,
@@ -353,7 +368,7 @@ def _check(account, saved, provider, context, marks):
     outcome = provider.poll(account, saved['order_id'], context, marks)
     if outcome['status'] == 'error':
         _reject(saved, marks, outcome.get('errors') or {},
-                'ЧЗ не принят площадкой. Замените отмеченную марку и повторите сканирование.')
+                'Площадка отклонила данные. Исправьте отмеченное поле или повторно отсканируйте ЧЗ.')
     elif outcome['status'] == 'accepted':
         _accept(account, saved, provider, context, marks)
     else:
@@ -397,7 +412,7 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
             return
         marks = []
         try:
-            context = json.loads(_open(saved['context']))
+            context = exemplar_data.context(saved)
             marks = codes(saved, full=True)
             user_row = db.query_one('SELECT id,login,role FROM users WHERE id=?', (saved['user_id'],))
             if provider.redistribute and user_row and provider.redistribute(account, dict(user_row), order_id, marks):

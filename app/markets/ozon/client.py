@@ -414,6 +414,16 @@ class OzonClient:
             items = (data.get("result") or {}).get("items") or []
         return list(items)
 
+    def product_attributes(self, skus: list[str]) -> list[dict]:
+        data = self.post('/v4/product/info/attributes',
+                         {'filter': {'sku': [str(s) for s in skus], 'visibility': 'ALL'}, 'limit': 1000})
+        return list(data.get('result') or [])
+
+    def category_attributes(self, category_id: int, type_id: int) -> list[dict]:
+        data = self.post('/v1/description-category/attribute',
+                         {'description_category_id': category_id, 'type_id': type_id, 'language': 'DEFAULT'})
+        return list(data.get('result') or [])
+
     # ------------------------------------------------------------------ возвраты
     def returns_list(self, *, limit: int = 500, last_id: int = 0, filter_: dict | None = None) -> tuple[list[dict], bool]:
         # В /v1/returns/list допускается только один фильтр за запрос.

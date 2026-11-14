@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections import Counter
 
-from ...core import db, marking
+from ...core import db, exemplar_data, marking, product_marking
 from ..base import MarkingSource
 from . import client
 
@@ -26,16 +27,24 @@ def prepare(account: dict, order_id: str) -> dict:
         'SELECT item_id,offer_id,quantity FROM yandex_order_items WHERE account_id=? AND order_id=?',
         (account['id'], order_id))}
     products = []
+    declared = product_marking.declarations(account, [sku for sku, _ in local.values()], client.get_client(account))
+    details = {}
     for item in raw.get('items') or []:
         key, sku, quantity = str(item.get('id') or ''), str(item.get('offerId') or ''), int(item.get('count') or 0)
         if local.get(key) != (sku, quantity):
             raise ValueError('Состав Маркета изменился. Обновите заказы перед сборкой.')
         types = set(item.get('requiredInstanceTypes') or [])
         products.append({'key': key, 'sku': sku, 'quantity': quantity,
-                         'required': 'CIS' in types, 'possible': bool(types & {'CIS', 'CIS_OPTIONAL'})})
+                         'required': bool(types & {'CIS', 'CIS_OPTIONAL'}) or sku in declared,
+                         'possible': bool(types & {'CIS', 'CIS_OPTIONAL'}) or sku in declared,
+                         'fields': [f.lower() for f in ('GTD', 'RNPT', 'UIN') if f in types]})
+        for unit, instance in enumerate(item.get('instances') or [], 1):
+            values = {f: instance[f] for f in products[-1]['fields'] if instance.get(f)}
+            if values:
+                details.setdefault(key, {})[str(unit)] = values
     if {p['key'] for p in products} != set(local):
         raise ValueError('Маркет вернул неполный состав заказа')
-    return {'products': products, 'context': {'campaign': campaign, 'order': raw}}
+    return {'products': products, 'context': {'campaign': campaign, 'order': raw}, 'details': details}
 
 
 def _same_items(left: dict, right: dict) -> bool:
@@ -50,7 +59,56 @@ def _instances(raw: dict) -> dict[str, list[dict]]:
 
 def _saved_codes(raw: dict, codes: list[dict]) -> bool:
     instances = _instances(raw)
-    return all(any(i.get('cisFull') == c['raw'] for i in instances.get(c['item_key'], [])) for c in codes)
+    wanted = Counter((c['item_key'], c['raw']) for c in codes)
+    got = Counter((key, i.get('cisFull')) for key, rows in instances.items() for i in rows)
+    return not (wanted - got)
+
+
+def with_details(raw: dict, details: dict, *, layout: bool = True) -> dict:
+    raw = deepcopy(raw)
+    for item in raw['items']:
+        key = str(item['id'])
+        if key not in details:
+            continue
+        instances = item.setdefault('instances', [])
+        while len(instances) < int(item['count']):
+            instances.append({})
+        for unit in range(1, int(item['count']) + 1):
+            instances[unit - 1].update(exemplar_data.at(details, key, unit))
+    if not layout:
+        return raw
+    # boxesLayout.instances can contain older values: overlay by the same
+    # physical-unit offsets used for CIS when constructing the full request.
+    positions = {}
+    for box in (raw.get('delivery') or {}).get('boxesLayout') or []:
+        for entry in box.get('items') or []:
+            key = str(entry['id'])
+            if key not in details:
+                continue
+            item = next(i for i in raw['items'] if str(i['id']) == key)
+            start, count = _box_range(entry, item, positions, key)
+            prior = entry.get('instances') or item.get('instances') or []
+            if not entry.get('instances'):
+                prior = prior[start:start + count]
+            entry['instances'] = [{**(prior[n] if n < len(prior) else {}),
+                                   **exemplar_data.at(details, key, start + n + 1)} for n in range(count)]
+    return raw
+
+
+def _saved_data(raw: dict, context: dict, codes: list[dict]) -> bool:
+    if not _saved_codes(raw, codes):
+        return False
+    details = context.get('_panel_details', {})
+    for key, rows in details.items():
+        actual = list(_instances(raw).get(key, []))
+        for unit, fields in rows.items():
+            mark = next((c['raw'] for c in codes if c['item_key'] == key and c['unit_no'] == int(unit)), None)
+            match = next((i for i in actual if all(i.get(f) == v for f, v in fields.items()) and
+                          (not mark or i.get('cisFull') == mark)), None)
+            if match is None:
+                return False
+            actual.remove(match)
+    return True
 
 
 def _box_instances(entry, item, start, quantity, codes):
@@ -131,12 +189,14 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
         cargo.apply(account, order_id, dict(user), plan['boxes'], codes, dispatch)
         return
     if raw.get('substatus') == 'READY_TO_SHIP':
-        if _saved_codes(raw, codes):
+        if _saved_data(raw, context, codes):
             return  # коды уже переданы, теперь проверяем их результат
-        raise marking.Rejected({c['item_key']: 'Маркет запрещает менять раскладку после готовности к отгрузке' for c in codes})
+        raise marking.Rejected({'data:' + key + ':' + unit: 'Маркет запрещает менять данные после готовности к отгрузке. Исправьте заказ в кабинете Маркета.'
+                                for key, rows in context.get('_panel_details', {}).items() for unit in rows} or
+                               {c['item_key']: 'Маркет запрещает менять раскладку после готовности к отгрузке' for c in codes})
     if raw.get('substatus') != 'STARTED':
         raise ValueError('Маркет пока не разрешает передать раскладку заказа')
-    boxes = _boxes(raw, codes)
+    boxes = _boxes(with_details(raw, context.get('_panel_details', {})), codes)
     dispatch()
     api.order_boxes(context['campaign'], order_id, boxes)
 
@@ -147,11 +207,17 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     if str(raw.get('campaignId')) != context['campaign'] or not _same_items(context['order'], raw):
         return {'status': 'error', 'errors': {c['item_key']: 'Состав заказа изменился' for c in codes}}
     # Доказываем, что проверяется именно последний полный код, не старый CIS.
-    if not _saved_codes(raw, codes):
+    if not _saved_data(raw, context, codes):
         return {'status': 'checking'}
+    if not codes:
+        return {'status': 'accepted' if context.get('_panel_details') else 'checking'}
     data = api.identifiers_status(context['campaign'], order_id)
     if data.get('status') != 'OK':
         return {'status': 'checking'}
+    return _code_checks(data, raw, codes)
+
+
+def _code_checks(data, raw, codes):
     by_item = {str(i.get('id')): i.get('cis') or [] for i in (data.get('result') or {}).get('items') or []}
     errors = {}
     pending = False
@@ -175,9 +241,9 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     return {'status': 'checking' if pending or not codes else 'accepted'}
 
 
-def finalize(account: dict, order_id: str, _context: dict, codes: list[dict]) -> None:
-    if not _saved_codes(client.get_client(account).order_details(order_id), codes):
-        raise ValueError('Маркет пока не подтвердил сохранение полного ЧЗ')
+def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
+    if not _saved_data(client.get_client(account).order_details(order_id), context, codes):
+        raise ValueError('Маркет пока не подтвердил сохранение полных данных экземпляров')
 
 
 SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('item_id') or ''))

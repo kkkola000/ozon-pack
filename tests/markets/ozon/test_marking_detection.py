@@ -76,16 +76,17 @@ def test_non_marking_additional_info_does_not_show_m_or_force_chz(account, user,
 
     def customs_only(order_id):
         data = original(order_id)
-        data['products'][0].update(is_gtd_needed=True, is_mandatory_mark_needed=False, is_mandatory_mark_possible=True)
+        data['products'][0].update(is_gtd_needed=True, is_mandatory_mark_needed=False, is_mandatory_mark_possible=False)
         return data
 
     monkeypatch.setattr(api, 'exemplars_get', customs_only)
     result = scan(account, user, BARCODE)
     assert result['status'] == 'ok', result
     assert not result['state']['items'][0].get('marking')
-    assert result['state']['complete']
-    assert marking.order(account['id'], number) is None
-    assert scan(account, user, number)['action'] == 'completed'
+    assert not result['state']['complete']
+    assert result['state']['items'][0]['exemplar_data']['units'][0]['fields'][0]['name'] == 'gtd'
+    assert marking.order(account['id'], number)['status'] == 'collecting'
+    assert scan(account, user, number)['status'] == 'error'
 
 
 @pytest.mark.parametrize('requirement', ['products_requiring_gtd', 'products_requiring_rnpt', 'products_requiring_weight'])

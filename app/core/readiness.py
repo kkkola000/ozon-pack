@@ -1,7 +1,7 @@
 """Готовность заказа на площадке: скан инициирует переход, чтение подтверждает."""
 from __future__ import annotations
 
-from . import db, marking, order_lock
+from . import db, exemplar_data, marking, order_lock
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ready_requests (
@@ -56,17 +56,20 @@ def start(account: dict, user: dict, order_id: str) -> dict:
         from . import cargo
         if cargo.split_unknown(account['id'], order_id):
             saved = marking.order(account['id'], order_id)
-            if saved and marking.codes(saved):
+            if marking.needs_validation(saved):
                 raise ValueError('Дождитесь сверки ЧЗ разделённого заказа Ozon')
             return {'deferred': False, 'result': call(account, user, order_id)}
         if cargo.split_pending(account['id'], order_id):
             raise ValueError('Дождитесь подтверждения ЧЗ новых отправлений Ozon')
         saved = marking.prepare(account, order_id)
+        if saved:
+            exemplar_data.queue(saved, user['id'])
         from ..markets import registry
         market = registry.get(account['marketplace'])
         if market.cargo:
             market.cargo.prepare_ready(account, user, order_id)
-        if saved and saved['status'] != 'accepted' and any(p.get('required') or p.get('possible') for p in marking.products(saved)):
+        if saved and saved['status'] != 'accepted' and (marking.needs_validation(saved) or any(
+                p.get('possible') for p in marking.products(saved))):
             return {'deferred': True, 'result': None}
         result = call(account, user, order_id)
     return {'deferred': False, 'result': result}
@@ -99,13 +102,16 @@ def complete_guard(account: dict, user: dict, order_id: str):
         cargo.complete_guard(account, order_id)
         saved = marking.prepare(account, order_id)
         marking.guard(account, order_id)
+        context, codes = None, []
         if marking.needs_validation(saved):
-            import json
-
-            outcome = marking.source(account).poll(account, order_id, json.loads(marking._open(saved['context'])),
-                                                    marking.codes(saved, full=True))
+            context = exemplar_data.context(saved)
+            codes = marking.codes(saved, full=True)
+            outcome = marking.source(account).poll(account, order_id, context, codes)
             if outcome['status'] != 'accepted':
                 db.execute("UPDATE marking_orders SET status='uncertain',error=? WHERE id=?",
-                           ('Площадка пока не подтвердила актуальные ЧЗ. Завершение заблокировано.', saved['id']))
-                raise ValueError('Дождитесь подтверждения ЧЗ площадкой')
+                           ('Площадка пока не подтвердила актуальные данные экземпляров. Завершение заблокировано.', saved['id']))
+                raise ValueError('Дождитесь подтверждения данных экземпляров площадкой')
+            marking.source(account).finalize(account, order_id, context, codes)
         call(account, user, order_id)
+        if context is not None:
+            marking.source(account).finalize(account, order_id, context, codes)

@@ -55,6 +55,7 @@ def card(mapping: dict) -> dict | None:
         "name": _text(offer.get("name")),
         "image": _picture(offer),
         "barcodes": barcodes,
+        "marking_required": offer.get('markingDeclared'),
     }
 
 
