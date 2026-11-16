@@ -6,10 +6,16 @@ import re
 from dataclasses import dataclass
 
 GS = '\x1d'
+# Some scanners send the separator as printable text, including a backslash
+# before the angle bracket. This is scanner notation, not JSON escaping.
+TEXT_GS = re.compile(r'(?:\\)?<gs>', re.IGNORECASE)
 START = re.compile(r'^01(\d{14})21')
 # Supported compact profile: 01 + GTIN(14) + 21 + serial(13) + 93 + check(4).
 # Fixed positions only; do not split arbitrary serials at the first "93".
 COMPACT_93 = re.compile(r'01\d{14}21[\x20-\x7e]{13}93[\x20-\x7e]{4}')
+# Known 83-character profile without separators: serial(13), key(4),
+# base64 signature(44). Restore GS only at these fixed field boundaries.
+JOINED_91_92 = re.compile(r'01\d{14}21[\x20-\x7e]{13}91[\x20-\x7e]{4}92[A-Za-z0-9+/]{43}=')
 MAX_CODE = 512
 
 
@@ -23,6 +29,7 @@ class Code:
 
 
 def looks_like(value: str) -> bool:
+    value = TEXT_GS.sub(GS, value)
     return value.startswith((']d2', ']d8')) or bool(START.match(value.lstrip(GS)))
 
 
@@ -31,9 +38,24 @@ def parse(value: str) -> Code:
     raw = value.rstrip('\r\n')
     if raw.startswith((']d2', ']d8')):
         raw = raw[3:]
+    try:
+        return _parse(raw)
+    except ValueError:
+        # Preserve an already valid payload: the literal characters <gs>
+        # can themselves be part of a serial number. Only retry scanner
+        # notation when parsing the original bytes failed.
+        converted = TEXT_GS.sub(GS, raw)
+        if converted == raw:
+            raise
+        return _parse(converted)
+
+
+def _parse(raw: str) -> Code:
     raw = raw.removeprefix(GS)
     if not raw or len(raw) > MAX_CODE or any(c != GS and not 32 <= ord(c) <= 126 for c in raw):
         raise ValueError('Нужен полный DataMatrix Честный знак без посторонних управляющих символов')
+    if JOINED_91_92.fullmatch(raw):
+        raw = raw[:31] + GS + raw[31:37] + GS + raw[37:]
     first, *tail = raw.split(GS)
     compact = not tail and COMPACT_93.fullmatch(raw) is not None
     if compact:

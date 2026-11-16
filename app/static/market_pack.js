@@ -48,7 +48,9 @@ let markingPrintQueue = Promise.resolve();
 let markingPollBusy = false;
 const deferredLabels = new Set();
 const orderKey = (state) => `${state?.active?.account_id || ''}:${state?.market || ''}:${state?.active?.posting_number || state?.active?.id || ''}`;
-const isMarkingCode = (code) => /^(?:\]d[28]|\x1d?01\d{14}21)/.test(code || '');
+// Распознаём текстовые GS для скрытия кода в истории и подготовки окна печати.
+// Сам скан отправляем без изменений: разделители проверяет сервер.
+const isMarkingCode = (code) => /^(?:\]d[28]|\x1d?01\d{14}21)/.test((code || '').replace(/\\?<gs>/gi, '\x1d'));
 const shownCode = (code) => isMarkingCode(code) ? 'Честный знак' : code;
 
 /* ---------- Зона сканирования ----------
