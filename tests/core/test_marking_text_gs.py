@@ -139,7 +139,7 @@ def test_text_notation_does_not_allow_reusing_a_code_in_another_order(account, u
     marked_ozon(second)
     scan(second, user, BARCODE)
     rejected = scan(second, user, RAW)
-    assert rejected['status'] == 'error' and 'уже связан' in rejected['message']
+    assert rejected['status'] == 'error' and rejected['message'].startswith('Данный Честный знак уже используется в заказе: ')
     assert db.count('SELECT COUNT(*) FROM marking_codes') == 1
 
 

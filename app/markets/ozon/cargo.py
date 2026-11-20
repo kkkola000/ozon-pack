@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 
-from ...core import cargo, db, exemplar_data, marking, marking_codes, pack_state
+from ...core import cargo, db, exemplar_data, marking, marking_codes, marking_registry, pack_state
 from ...core.config import settings
 from . import client, store
 
@@ -247,6 +247,9 @@ def _save_marks(account: dict, parent: str, mapped: list[dict], codes: list[dict
             for mark in child['codes']:
                 conn.execute("UPDATE marking_codes SET marking_order_id=?,item_key=?,unit_no=?,active=1,status='accepted',error=NULL WHERE id=?",
                              (mark_id, mark['item_key'], mark['unit_no'], mark['id']))
+                marking_registry.binding(mark['fingerprint'], conn)
+                conn.execute('UPDATE marking_registry SET order_id=?,revision=revision+1,updated_at=? WHERE fingerprint=? AND code_id=?',
+                             (number, now, mark['fingerprint'], mark['id']))
             progress = cargo.seed_scans(account['id'], number)
             for mark in child['codes']:
                 progress[mark['item_key']] = max(progress.get(mark['item_key'], 0), mark['unit_no'])

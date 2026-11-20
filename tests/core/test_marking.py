@@ -313,7 +313,7 @@ def test_one_mark_cannot_be_used_in_another_market(account, yandex_account, user
     scan(yandex_account, user, BARCODE)
     rejected = scan(yandex_account, user, code())
     assert rejected['status'] == 'error'
-    assert 'повторно' in rejected['message']
+    assert rejected['message'] == f'Данный Честный знак уже используется в заказе: {number}'
     assert db.count('SELECT COUNT(*) FROM marking_codes') == 1
 
 

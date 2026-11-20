@@ -295,8 +295,8 @@ def _filters(account_id: int | None, market: str, q: str, since: str, until: str
             if q.isascii() and q.isdigit() and len(q) in {12, 13, 14}:
                 matches.append('o.id IN (SELECT m.archive_id FROM marking_codes c '
                                'JOIN marking_orders m ON m.id=c.marking_order_id '
-                               'WHERE c.active=1 AND c.gtin=?)')
-                params.append(q.zfill(14))
+                               'WHERE c.active=1 AND c.gtin=? UNION SELECT archive_id FROM marking_releases WHERE gtin=?)')
+                params += [q.zfill(14), q.zfill(14)]
             conditions.append('(' + ' OR '.join(matches) + ')')
     if since:
         conditions.append(f'date({_SAVED_AT}, ?) >= ?')
@@ -324,7 +324,10 @@ def search(*, account_id: int | None = None, market: str = '', q: str = '', sinc
     rows = db.query(
         f'SELECT o.*, v.id AS version_id, {_SAVED_AT} AS saved_at, '
         '(SELECT COUNT(*) FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id '
-        'WHERE m.archive_id=o.id AND c.active=1) AS marking_count'
+        'WHERE m.archive_id=o.id AND c.active=1) + '
+        '(SELECT COUNT(DISTINCT h.fingerprint) FROM marking_releases h WHERE h.archive_id=o.id '
+        'AND NOT EXISTS(SELECT 1 FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id '
+        'WHERE m.archive_id=o.id AND c.fingerprint=h.fingerprint AND c.active=1)) AS marking_count'
         + join + 'WHERE ' + where + f' ORDER BY {_SAVED_AT} DESC, o.id DESC LIMIT ? OFFSET ?',
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE],
     )

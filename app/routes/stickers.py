@@ -7,9 +7,9 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from ..core import accounts, db, labels, marking, marking_codes, sticker_archive
+from ..core import access, accounts, db, labels, marking, marking_codes, marking_registry, sticker_archive
 from ..core.config import settings
-from ..core.deps import check_csrf, pdf_response, require_section, safe_filename, templates
+from ..core.deps import check_csrf, pdf_response, require_manager, require_section, safe_filename, templates
 from ..markets import registry
 
 router = APIRouter()
@@ -18,7 +18,7 @@ router = APIRouter()
 @router.get('/api/stickers/{archive_id}/marking')
 def archive_marking(archive_id: int, user: dict = Depends(require_section('stickers'))):
     try:
-        return marking.archive_details(archive_id)
+        return marking.archive_details(archive_id) | {'can_unbind': access.is_manager(user)}
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
 
@@ -27,7 +27,8 @@ def archive_marking(archive_id: int, user: dict = Depends(require_section('stick
 def archive_marking_pdf(archive_id: int, user: dict = Depends(require_section('stickers'))):
     try:
         detail = marking.archive_details(archive_id)
-        pdf = marking.print_pdf([m['id'] for m in detail['items']])
+        pdf = marking.print_pdf([m['id'] for m in detail['items'] if not m['history']],
+                                history_ids=[m['id'] for m in detail['items'] if m['history']])
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from exc
     except (ValueError, ImportError) as exc:
@@ -44,6 +45,33 @@ def archived_mark_pdf(mark_id: int, user: dict = Depends(require_section('sticke
     except (ValueError, ImportError) as exc:
         raise HTTPException(400, str(exc)) from exc
     return pdf_response(pdf, f'chz-{mark_id}.pdf')
+
+
+@router.get('/api/stickers/marking/history/{release_id}.pdf')
+def released_mark_pdf(release_id: int, user: dict = Depends(require_section('stickers'))):
+    try:
+        pdf = marking.print_pdf([], history_ids=[release_id])
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, ImportError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return pdf_response(pdf, f'chz-history-{release_id}.pdf')
+
+
+@router.post('/api/stickers/{archive_id}/marking/{mark_id}/unbind')
+def unbind_mark(archive_id: int, mark_id: int, request: Request, payload: dict = Body(...),
+                user: dict = Depends(require_section('stickers')), manager: dict = Depends(require_manager)):
+    check_csrf(request)
+    version = payload.get('version')
+    if not isinstance(version, str) or not version:
+        raise HTTPException(400, 'Откройте список кодов перед отвязкой')
+    try:
+        marking_registry.release(archive_id, mark_id, user=manager, expected_version=version)
+        return archive_marking(archive_id, user)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 def _date(value: str) -> str:

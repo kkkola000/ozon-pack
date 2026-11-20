@@ -78,6 +78,13 @@ def sync_postings(account: dict | None = None) -> dict:
         if raw:
             with db.write() as conn:
                 store.upsert_posting(conn, account_id, raw)
+            if raw.get('status') == 'cancelled':
+                from . import marking_returns
+
+                try:
+                    marking_returns.cancelled(account, raw)
+                except (ValueError, LookupError):
+                    log.warning('Отвязка маркировки отменённого отправления отложена: %s', number)
             refreshed += 1
         else:
             db.execute(

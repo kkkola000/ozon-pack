@@ -3,6 +3,18 @@ const stickerChoices = () => [...document.querySelectorAll('.sticker-select')];
 const stickerMarkingModal = document.getElementById('sticker-marking-modal');
 let stickerMarkingPrinting = false;
 document.getElementById('sticker-marking-content').addEventListener('click', async (event) => {
+  const unbind = event.target.closest('[data-unbind-mark]');
+  if (unbind) {
+    if (unbind.disabled) return;
+    unbind.disabled = true;
+    try {
+      const data = await api(`/api/stickers/${unbind.dataset.archive}/marking/${unbind.dataset.unbindMark}/unbind`,
+        { version: unbind.dataset.version });
+      renderStickerMarking(data, unbind.dataset.archive);
+    } catch (error) { toast(error.message, 'error'); }
+    finally { unbind.disabled = false; }
+    return;
+  }
   const link = event.target.closest('a[data-print-kind="marking:duplicate"]');
   if (!link) return;
   event.preventDefault();
@@ -26,26 +38,32 @@ document.getElementById('sticker-marking-content').addEventListener('click', asy
 document.getElementById('sticker-marking-close').onclick = () => { stickerMarkingModal.hidden = true; };
 stickerMarkingModal.addEventListener('click', (event) => { if (event.target === stickerMarkingModal) stickerMarkingModal.hidden = true; });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') stickerMarkingModal.hidden = true; });
+function renderStickerMarking(data, archiveId) {
+  document.getElementById('sticker-marking-title').textContent = `Честный знак отправления ${data.order_id}`;
+  const rows = data.items.map((item) => {
+    const ok = item.status === 'accepted';
+    const bad = item.status === 'error';
+    const detached = item.status === 'detached';
+    const url = item.history ? `/api/stickers/marking/history/${item.id}.pdf` : `/api/stickers/marking/${item.id}.pdf`;
+    const unbind = data.can_unbind && item.can_unbind
+      ? `<button class="btn small" type="button" data-unbind-mark="${item.id}" data-archive="${archiveId}" data-version="${escapeHtml(item.unbind_version)}">Отвязать от заказа</button>` : '';
+    return `<tr><td>${escapeHtml(item.name)}<div class="small muted">Экземпляр ${item.unit_no}</div></td>
+      <td class="mono small">${escapeHtml(item.gtin)}<div>${escapeHtml(item.serial)}</div></td>
+      <td><span class="badge ${ok ? 'ok' : bad ? 'err' : detached ? '' : 'warn'}">${ok ? 'Принят' : bad ? 'Не принят' : detached ? 'Отвязан' : 'Ожидает проверки'}</span></td>
+      <td>${item.printable === false ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`} ${unbind}</td></tr>`;
+  }).join('');
+  const all = `/api/stickers/${archiveId}/marking.pdf`;
+  document.getElementById('sticker-marking-content').innerHTML =
+    `${data.error ? `<p class="muted small">${escapeHtml(data.error)}</p>` : ''}<div style="overflow-x:auto"><table><thead><tr><th>Товар</th><th>GTIN / серийный номер</th><th>Проверка площадкой</th><th>Действия</th></tr></thead><tbody>${rows}</tbody></table></div>
+     ${data.items.length ? `<div class="row" style="justify-content:flex-end;margin-top:16px"><a class="btn" href="${all}" target="_blank" rel="noopener" data-print-pdf="${all}" data-print-kind="marking:duplicate" data-print-name="Дубликаты «Честный знак»">Печать всех кодов «Честный знак»</a></div>` : ''}`;
+}
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-marking-archive]');
   if (!button || button.disabled) return;
   button.disabled = true;
   try {
     const data = await api(`/api/stickers/${button.dataset.markingArchive}/marking`, undefined, 'GET');
-    document.getElementById('sticker-marking-title').textContent = `Честный знак отправления ${data.order_id}`;
-    const rows = data.items.map((item) => {
-      const ok = item.status === 'accepted';
-      const bad = item.status === 'error';
-      const url = `/api/stickers/marking/${item.id}.pdf`;
-      return `<tr><td>${escapeHtml(item.name)}<div class="small muted">Экземпляр ${item.unit_no}</div></td>
-        <td class="mono small">${escapeHtml(item.gtin)}<div>${escapeHtml(item.serial)}</div></td>
-        <td><span class="badge ${ok ? 'ok' : bad ? 'err' : 'warn'}">${ok ? 'Принят' : bad ? 'Не принят' : 'Ожидает проверки'}</span></td>
-        <td>${bad ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`}</td></tr>`;
-    }).join('');
-    const all = `/api/stickers/${button.dataset.markingArchive}/marking.pdf`;
-    document.getElementById('sticker-marking-content').innerHTML =
-      `${data.error ? `<p class="muted small">${escapeHtml(data.error)}</p>` : ''}<div style="overflow-x:auto"><table><thead><tr><th>Товар</th><th>GTIN / серийный номер</th><th>Проверка площадкой</th><th>Действия</th></tr></thead><tbody>${rows}</tbody></table></div>
-       ${data.items.length ? `<div class="row" style="justify-content:flex-end;margin-top:16px"><a class="btn" href="${all}" target="_blank" rel="noopener" data-print-pdf="${all}" data-print-kind="marking:duplicate" data-print-name="Дубликаты «Честный знак»">Печать всех кодов «Честный знак»</a></div>` : ''}`;
+    renderStickerMarking(data, button.dataset.markingArchive);
     stickerMarkingModal.hidden = false;
     document.getElementById('sticker-marking-close').focus();
   } catch (error) { toast(error.message, 'error'); }

@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, crypto, db, exemplar_data, marking_codes, order_lock, pack_state
+from . import accounts, crypto, db, exemplar_data, marking_codes, marking_registry, order_lock, pack_state
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class Rejected(ValueError):
     def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров'):
         super().__init__(message)
         self.errors = errors
-SCHEMA = order_lock.SCHEMA + """
+SCHEMA = order_lock.SCHEMA + marking_registry.SCHEMA + """
 CREATE TABLE IF NOT EXISTS marking_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -211,7 +211,7 @@ def archive_for_code(value: str) -> int | None:
         return None
     row = db.query_one('SELECT c.code, m.archive_id FROM marking_codes c '
                        'JOIN marking_orders m ON m.id=c.marking_order_id '
-                       'WHERE c.fingerprint=? AND c.active=1', (_fingerprint(parsed),))
+                       "WHERE c.fingerprint=? AND (c.active=1 OR c.status='detached')", (_fingerprint(parsed),))
     if row and marking_codes.equivalent(_open(row['code']), parsed.raw):
         return row['archive_id']
     return None
@@ -299,16 +299,27 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     if not saved:
         raise ValueError('Для этого заказа не получены требования к маркировке')
     fingerprint = _fingerprint(parsed)
+    owner = marking_registry.binding(fingerprint)
+    if owner and owner['state'] != 'released' and not marking_registry.owns(owner, account['id'], order_id):
+        if owner['marketplace'] == 'ozon':
+            from ..markets.ozon.marking_returns import try_release
+            try_release(owner)
+            owner = marking_registry.binding(fingerprint)
+        if owner['state'] != 'released':
+            raise ValueError(marking_registry.conflict(owner))
     same = db.query_one('SELECT * FROM marking_codes WHERE fingerprint = ?', (fingerprint,))
+    if same and owner is None:
+        owner = marking_registry.binding(fingerprint)
     replacing_same = False
     restoring = False
+    recycling = bool(owner and owner['state'] == 'released')
     if same:
         if same['marking_order_id'] == saved['id'] and same['active'] and marking_codes.equivalent(_open(same['code']), parsed.raw) and same['status'] != 'error':
             return {'duplicate': True, 'id': same['id']}
         replacing_same = same['marking_order_id'] == saved['id'] and same['active'] and same['status'] == 'error'
         restoring = same['marking_order_id'] == saved['id'] and not same['active'] and same['status'] == 'removed'
-        if not replacing_same and not restoring:
-            raise ValueError('Этот экземпляр «Честный знак» уже связан с заказом. Один код нельзя использовать повторно.')
+        if not replacing_same and not restoring and not recycling:
+            raise ValueError(marking_registry.conflict(owner))
     slot = pending(account, state, required_only=False)
     if not slot:
         raise ValueError('Сначала отсканируйте ШК маркируемого товара; для каждой единицы нужен отдельный скан')
@@ -320,7 +331,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     known = {str(c).zfill(14) for c in item.get('barcodes') or [] if str(c).isdigit() and len(str(c)) in {12, 13, 14}}
     if known and parsed.gtin not in known:
         raise ValueError('GTIN маркировки не совпадает с отсканированным товаром')
-    mark_id = _store_scan(account, user, saved, parsed, fingerprint, product, unit, same if replacing_same or restoring else None)
+    mark_id = _store_scan(account, user, saved, parsed, fingerprint, product, unit, same if replacing_same or restoring or recycling else None)
     if _worker:
         _worker.wake.set()
     return {'duplicate': bool(replacing_same and marking_codes.equivalent(_open(same['code']), parsed.raw)), 'id': mark_id}
@@ -336,6 +347,9 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
             if not current or (current['account_id'], current['posting_number']) != (account['id'], order_id):
                 raise ValueError('Начатая сборка изменилась. Повторите скан в актуальном заказе.')
             pack_state.claim(conn, account, user, order_id)
+            owner = marking_registry.binding(fingerprint, conn)
+            if owner and owner['state'] != 'released' and not marking_registry.owns(owner, account['id'], order_id):
+                raise ValueError(marking_registry.conflict(owner))
             old = conn.execute('SELECT * FROM marking_codes WHERE marking_order_id = ? AND item_key = ? '
                                'AND unit_no = ? AND active = 1', (saved['id'], product['key'], unit)).fetchone()
             if old:
@@ -345,13 +359,15 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
                     conn.execute('UPDATE marking_codes SET active = 0 WHERE id = ?', (old['id'],))
             if replacing_same:
                 mark_id = same['id']
-                conn.execute("UPDATE marking_codes SET code=?,active=1,status='saved',error=NULL WHERE id=?",
-                             (_seal(parsed.raw), mark_id))
+                conn.execute("UPDATE marking_codes SET marking_order_id=?,item_key=?,unit_no=?,code=?,active=1,status='saved',error=NULL,"
+                             'created_at=?,created_by=? WHERE id=?',
+                             (saved['id'], product['key'], unit, _seal(parsed.raw), db.now_iso(), user['login'], mark_id))
             else:
                 mark_id = conn.execute(
                     'INSERT INTO marking_codes(marking_order_id,item_key,unit_no,fingerprint,code,gtin,serial,created_at,created_by) '
                     'VALUES(?,?,?,?,?,?,?,?,?)', (saved['id'], product['key'], unit, fingerprint, _seal(parsed.raw),
                                                  parsed.gtin, parsed.serial, db.now_iso(), user['login'])).lastrowid
+            marking_registry.claim(conn, fingerprint, account, saved, mark_id)
             conn.execute("UPDATE marking_orders SET revision=revision+1,status='collecting',error=NULL,user_id=? "
                          'WHERE id = ?', (user['id'], saved['id']))
             db.log_event('marking_saved', account_id=account['id'], user=user, posting_number=order_id,
@@ -546,25 +562,33 @@ def archive_details(archive_id: int) -> dict:
     rows = []
     if saved:
         by_key = {p['key']: p for p in products(saved)}
-        for mark in codes(saved):
+        for mark in codes(saved) + marking_registry.history(archive_id):
             product = by_key.get(mark['item_key']) or {}
             name = db.query_one('SELECT name FROM products WHERE account_id=? AND sku=?',
                                 (archived['account_id'], product.get('sku', '')))
-            rows.append({k: mark[k] for k in ('id', 'item_key', 'unit_no', 'gtin', 'serial', 'status', 'error', 'created_at', 'created_by')}
-                        | {'name': (name['name'] if name else None) or product.get('sku') or mark['item_key']})
+            historical = 'released_at' in mark
+            owner = None if historical else marking_registry.binding(mark['fingerprint'])
+            rows.append({k: mark.get(k) for k in ('id', 'item_key', 'unit_no', 'gtin', 'serial', 'status', 'error', 'created_at', 'created_by')}
+                        | {'name': (name['name'] if name else None) or product.get('sku') or mark['item_key'],
+                           'history': historical, 'status': 'detached' if historical else mark['status'],
+                           'printable': mark['status'] != 'error',
+                           'can_unbind': not historical and archived['marketplace'] == 'ozon' and saved['status'] not in marking_registry.BUSY,
+                           'unbind_version': str(owner['revision']) if owner else None})
     return {'order_id': archived['order_id'], 'marketplace': archived['marketplace'], 'items': rows,
             'status': saved['status'] if saved else 'collecting', 'error': saved.get('error') if saved else None}
 
 
-def print_pdf(ids: list[int]) -> bytes:
+def print_pdf(ids: list[int], *, history_ids=()) -> bytes:
     from . import printers
 
-    if not ids or len(ids) > 100:
+    if not (ids or history_ids) or len(ids) + len(history_ids) > 100:
         raise ValueError('Выберите от 1 до 100 кодов «Честный знак»')
     selected = []
-    for mark_id in dict.fromkeys(ids):
-        row = db.query_one('SELECT c.*, o.archive_id FROM marking_codes c JOIN marking_orders o ON o.id=c.marking_order_id '
-                           'WHERE c.id=? AND c.active=1', (mark_id,))
+    entries = [(mark_id, False) for mark_id in dict.fromkeys(ids)] + [(mark_id, True) for mark_id in dict.fromkeys(history_ids)]
+    for mark_id, historical in entries:
+        row = (db.query_one('SELECT * FROM marking_releases WHERE id=?', (mark_id,)) if historical else
+               db.query_one('SELECT c.*, o.archive_id FROM marking_codes c JOIN marking_orders o ON o.id=c.marking_order_id '
+                            'WHERE c.id=? AND c.active=1', (mark_id,)))
         if not row or not retained(row['archive_id']):
             raise LookupError('Код «Честный знак» не найден или срок хранения истёк')
         if row['status'] == 'error':
