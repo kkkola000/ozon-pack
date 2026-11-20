@@ -274,11 +274,30 @@ def _filters(account_id: int | None, market: str, q: str, since: str, until: str
     if market:
         conditions.append('o.marketplace = ?')
         params.append(market)
+    # Clipboard padding is not part of a GS1 code. Trailing spaces may be
+    # part of its crypto fields and must survive the exact comparison.
+    q = q.lstrip(' \t\r\n')
     if q:
-        conditions.append('(instr(lower(o.order_id), lower(?)) > 0 OR instr(lower(o.order_number), lower(?)) > 0 '
-                          'OR EXISTS(SELECT 1 FROM sticker_aliases a WHERE a.archive_id = o.id '
-                          'AND instr(lower(a.alias), lower(?)) > 0))')
-        params += [q, q, q]
+        from . import marking, marking_codes
+
+        if marking_codes.looks_like(q):
+            # A full code must identify exactly one active binding. Never
+            # fall back to GTIN alone if its serial or crypto fields differ.
+            conditions.append('o.id = ?')
+            params.append(marking.archive_for_code(q) or 0)
+        else:
+            q = q.strip()
+            matches = ['instr(lower(o.order_id), lower(?)) > 0',
+                       'instr(lower(o.order_number), lower(?)) > 0',
+                       'EXISTS(SELECT 1 FROM sticker_aliases a WHERE a.archive_id = o.id '
+                       'AND instr(lower(a.alias), lower(?)) > 0)']
+            params += [q, q, q]
+            if q.isascii() and q.isdigit() and len(q) in {12, 13, 14}:
+                matches.append('o.id IN (SELECT m.archive_id FROM marking_codes c '
+                               'JOIN marking_orders m ON m.id=c.marking_order_id '
+                               'WHERE c.active=1 AND c.gtin=?)')
+                params.append(q.zfill(14))
+            conditions.append('(' + ' OR '.join(matches) + ')')
     if since:
         conditions.append(f'date({_SAVED_AT}, ?) >= ?')
         params += [f'{settings.timezone_offset:+d} hours', since]

@@ -5,7 +5,7 @@
   <div class="stickers-header">
     <h2>Стикеры</h2>
   </div>
-  <form class="sticker-filters" method="get">
+  <form class="sticker-filters" method="post" action="/reports/stickers">
     <label class="sticker-filter"><span>Кабинет</span>
       <select name="account_id"><option value="">Все кабинеты</option>{% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if filters.account_id == a.id }}>{{ a.title }}</option>{% endfor %}</select>
     </label>
@@ -14,7 +14,7 @@
       <label class="sticker-filter"><span>Дата по</span><div class="sticker-date-control"><input type="date" name="until" value="{{ filters.until }}" data-empty="{{ 'false' if filters.until else 'true' }}"><span class="sticker-date-placeholder" aria-hidden="true">—</span></div></label>
     </div>
     <label class="sticker-filter"><span>Поиск</span>
-      <input type="search" name="q" value="{{ filters.q }}" placeholder="Номер заказа / отправления">
+      <input type="search" name="q" value="{{ filters.q }}" placeholder="Отправление, GTIN или код Честного знака" autocomplete="off">
     </label>
     <div class="sticker-filter-actions">
       <button class="btn" type="submit">Найти</button>

@@ -4,10 +4,10 @@ from __future__ import annotations
 from datetime import date
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-from ..core import accounts, db, labels, marking, sticker_archive
+from ..core import accounts, db, labels, marking, marking_codes, sticker_archive
 from ..core.config import settings
 from ..core.deps import check_csrf, pdf_response, require_section, safe_filename, templates
 from ..markets import registry
@@ -66,7 +66,7 @@ def archive_page(request: Request, account_id: str = '', market: str = '', q: st
     since, until = _date(since), _date(until)
     if since and until and since > until:
         raise HTTPException(400, 'Начало периода позже окончания')
-    items, total = sticker_archive.search(account_id=chosen, market=market, q=q.strip(), since=since,
+    items, total = sticker_archive.search(account_id=chosen, market=market, q=q, since=since,
                                          until=until, state=state, page=page)
     filters = dict(account_id=chosen or '', market=market, q=q, since=since, until=until, state=state)
 
@@ -80,7 +80,20 @@ def archive_page(request: Request, account_id: str = '', market: str = '', q: st
         'previous': page_url(page - 1), 'following': page_url(page + 1),
         'accounts': accounts.all_accounts(), 'markets': registry.all_markets(), 'filters': filters,
         'sync_enabled': settings.sync_enabled, 'csrf': request.state.session.get('csrf'), 'active_tab': 'stickers',
-    })
+    }, headers={'Cache-Control': 'no-store'})
+
+
+@router.post('/reports/stickers', response_class=HTMLResponse)
+def archive_search(request: Request, account_id: str = Form(''), q: str = Form(''),
+                   since: str = Form(''), until: str = Form(''),
+                   user: dict = Depends(require_section('stickers'))):
+    # Read-only search. Full codes stay in the request body, outside URLs,
+    # access logs and pagination links (an exact code has at most one match).
+    q = q.lstrip(' \t\r\n')
+    if marking_codes.looks_like(q):
+        return archive_page(request, account_id=account_id, q=q, since=since, until=until, page=1, user=user)
+    filters = dict(account_id=account_id, q=q.strip(), since=since, until=until)
+    return RedirectResponse('/reports/stickers?' + urlencode({k: v for k, v in filters.items() if v}), status_code=303)
 
 
 @router.get('/api/stickers/{version_id}.pdf')

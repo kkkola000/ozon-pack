@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS marking_codes (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_marking_unit ON marking_codes(marking_order_id,item_key,unit_no)
     WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_marking_pending ON marking_orders(status,checked_at);
+CREATE INDEX IF NOT EXISTS idx_marking_gtin ON marking_codes(gtin) WHERE active = 1;
 """
 
 
@@ -194,6 +195,28 @@ def codes(saved: dict, *, full: bool = False, active: bool = True) -> list[dict]
     return rows
 
 
+def _fingerprint(parsed: marking_codes.Code) -> str:
+    return hashlib.sha256((parsed.gtin + '\0' + parsed.serial).encode('ascii')).hexdigest()
+
+
+def archive_for_code(value: str) -> int | None:
+    """Find the active binding of a full code, including its crypto fields.
+
+    The existing unique fingerprint limits decryption to one candidate. It
+    identifies a unit only: the full payload must still match, case included.
+    """
+    try:
+        parsed = marking_codes.parse(value)
+    except ValueError:
+        return None
+    row = db.query_one('SELECT c.code, m.archive_id FROM marking_codes c '
+                       'JOIN marking_orders m ON m.id=c.marking_order_id '
+                       'WHERE c.fingerprint=? AND c.active=1', (_fingerprint(parsed),))
+    if row and marking_codes.equivalent(_open(row['code']), parsed.raw):
+        return row['archive_id']
+    return None
+
+
 def needs_validation(saved: dict | None) -> bool:
     return bool(saved and (has_required(saved) or exemplar_data.required(saved) or codes(saved)))
 
@@ -275,7 +298,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     saved = order(account['id'], order_id)
     if not saved:
         raise ValueError('Для этого заказа не получены требования к маркировке')
-    fingerprint = hashlib.sha256((parsed.gtin + '\0' + parsed.serial).encode('ascii')).hexdigest()
+    fingerprint = _fingerprint(parsed)
     same = db.query_one('SELECT * FROM marking_codes WHERE fingerprint = ?', (fingerprint,))
     replacing_same = False
     restoring = False
