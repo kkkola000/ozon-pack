@@ -181,14 +181,14 @@ def test_sync_releases_definitely_cancelled_order_without_reshipping(account, us
     assert len(marking_registry.history(saved['archive_id'])) == 1
 
 
-@pytest.mark.parametrize('accepted,status,quantity,original,expected', [
-    (True, 'ReceivedBySeller', 1, 1, True),
-    (False, 'ReceivedBySeller', 1, 1, False),
-    (True, 'ArrivedAtReturnPlace', 1, 1, False),
-    (True, 'ReceivedBySeller', 1, 2, False),
-    (True, 'ReceivedBySeller', 2, 2, True),
+@pytest.mark.parametrize('accepted,status,quantity,original', [
+    (True, 'ReceivedBySeller', 1, 1),
+    (False, 'ReceivedBySeller', 1, 1),
+    (True, 'ArrivedAtReturnPlace', 1, 1),
+    (True, 'ReceivedBySeller', 1, 2),
+    (True, 'ReceivedBySeller', 2, 2),
 ])
-def test_return_requires_received_and_accepted_entire_sku(account, user, accepted, status, quantity, original, expected):
+def test_return_status_or_mark_without_act_does_not_release(account, user, accepted, status, quantity, original):
     api, number, sku, saved = accepted_order(account, user, original)
     api._postings[number]['status'] = 'delivered'
     raw = {'id': 12345, 'schema': 'Fbs', 'posting_number': number,
@@ -201,9 +201,8 @@ def test_return_requires_received_and_accepted_entire_sku(account, user, accepte
         db.execute("UPDATE returns SET mark='ok' WHERE account_id=? AND id='12345'", (account['id'],))
     target(account, user, api, number)
     result = scan(account, user, code('SERIAL0000000'))
-    assert (result['action'] == 'marking_saved') is expected, result
-    if not expected:
-        assert result['message'] == f'Данный Честный знак уже используется в заказе: {number}'
+    assert result['message'] == f'Данный Честный знак уже используется в заказе: {number}'
+    assert len(marking.codes(saved)) == original
 
 
 def test_unavailable_ozon_does_not_free_code_or_expose_error(account, user, monkeypatch):

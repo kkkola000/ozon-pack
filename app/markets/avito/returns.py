@@ -252,6 +252,11 @@ def pdf_table(pdf, orders: list[dict], everywhere: bool) -> None:
             row.cell(cut(order.get("note"), 60))
 
 
+def marking_orders(conn, act_id: str) -> list[tuple[int, str]]:
+    return [(r['account_id'], str(r['id'])) for r in conn.execute(
+        'SELECT account_id,id FROM avito_orders WHERE act_id=?', (act_id,))]
+
+
 SOURCE = ReturnsSource(
     table="avito_orders",
     label="Avito",
@@ -272,4 +277,5 @@ SOURCE = ReturnsSource(
     claim=claim,
     find=find,
     scan_view=scan_view,
+    marking_orders=marking_orders,
 )

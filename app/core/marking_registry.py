@@ -37,12 +37,13 @@ CREATE INDEX IF NOT EXISTS idx_marking_release_gtin ON marking_releases(gtin);
 """
 
 
-def backfill(conn):
+def backfill(conn, *, account_id=None, order_id=None):
     # INSERT OR IGNORE preserves explicit releases across every restart.
+    where, params = (' WHERE m.account_id=? AND m.order_id=?', (account_id, order_id)) if account_id is not None else ('', ())
     conn.execute('INSERT OR IGNORE INTO marking_registry(fingerprint,account_id,marketplace,order_id,code_id,updated_at) '
                  'SELECT c.fingerprint,m.account_id,a.marketplace,m.order_id,c.id,c.created_at '
                  'FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id '
-                 'JOIN accounts a ON a.id=m.account_id')
+                 'JOIN accounts a ON a.id=m.account_id' + where, params)
 
 
 def binding(fingerprint: str, conn=None):
@@ -90,29 +91,50 @@ def release(archive_id: int, code_id: int, *, user: dict | None = None, reason='
         if not row:
             raise LookupError('Код уже относится к другому отправлению или недоступен')
         owner = binding(row['fingerprint'], conn)
-        if not owns(owner, row['account_id'], row['order_id']):
-            raise ValueError(conflict(owner))
-        if owner['state'] == 'released':
-            return False
-        if expected_version is not None and str(owner['revision']) != expected_version:
-            raise ValueError('Привязка Честного знака изменилась. Откройте список кодов заново.')
-        if row['order_status'] in BUSY and reason != 'ozon_cancelled_before_assembly':
-            raise ValueError('Дождитесь завершения передачи и проверки Честного знака площадкой перед отвязкой')
-        if not row['active']:
-            raise ValueError('Код уже снят с активной привязки')
-        now = db.now_iso()
-        conn.execute('INSERT INTO marking_releases(archive_id,account_id,fingerprint,item_key,unit_no,code,gtin,serial,status,'
-                     'created_at,created_by,released_at,released_by,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                     (archive_id, row['account_id'], row['fingerprint'], row['item_key'], row['unit_no'], row['code'],
-                      row['gtin'], row['serial'], row['status'], row['created_at'], row['created_by'], now,
-                      user['login'] if user else 'Ozon', reason))
-        conn.execute("UPDATE marking_codes SET active=0,status='detached',error=NULL WHERE id=?", (code_id,))
-        conn.execute("UPDATE marking_registry SET state='released',revision=revision+1,updated_at=? WHERE fingerprint=?", (now, row['fingerprint']))
-        conn.execute("UPDATE marking_orders SET status='collecting',revision=revision+1,submitted_revision=NULL,error=NULL,checked_at=NULL WHERE id=?",
-                     (row['marking_order_id'],))
-        db.log_event('marking_unbound', account_id=row['account_id'], user=user, posting_number=row['order_id'],
-                     message=f'Честный знак отвязан: позиция {row["item_key"]}, единица {row["unit_no"]}; {reason}', conn=conn)
-        return True
+        return _release_record(conn, row, owner, user=user, reason=reason, expected_version=expected_version)
+
+
+def _release_record(conn, row, owner, *, user, reason, expected_version=None, from_act=False):
+    if not owns(owner, row['account_id'], row['order_id']):
+        raise ValueError(conflict(owner))
+    if owner['state'] == 'released':
+        return False
+    if expected_version is not None and str(owner['revision']) != expected_version:
+        raise ValueError('Привязка Честного знака изменилась. Откройте список кодов заново.')
+    if row['order_status'] in BUSY and reason != 'ozon_cancelled_before_assembly' and not from_act:
+        raise ValueError('Дождитесь завершения передачи и проверки Честного знака площадкой перед отвязкой')
+    if not row['active'] and not from_act:
+        raise ValueError('Код уже снят с активной привязки')
+    now = db.now_iso()
+    conn.execute('INSERT INTO marking_releases(archive_id,account_id,fingerprint,item_key,unit_no,code,gtin,serial,status,'
+                 'created_at,created_by,released_at,released_by,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                 (row['archive_id'], row['account_id'], row['fingerprint'], row['item_key'], row['unit_no'], row['code'],
+                  row['gtin'], row['serial'], row['status'], row['created_at'], row['created_by'], now,
+                  user['login'] if user else 'Ozon', reason))
+    conn.execute("UPDATE marking_codes SET active=0,status='detached',error=NULL WHERE id=?", (row['id'],))
+    conn.execute("UPDATE marking_registry SET state='released',revision=revision+1,updated_at=? WHERE fingerprint=?", (now, row['fingerprint']))
+    conn.execute("UPDATE marking_orders SET status='collecting',revision=revision+1,submitted_revision=NULL,error=NULL,checked_at=NULL WHERE id=?",
+                 (row['marking_order_id'],))
+    db.log_event('marking_unbound', account_id=row['account_id'], user=user, posting_number=row['order_id'],
+                 message=f'Честный знак отвязан: позиция {row["item_key"]}, единица {row["unit_no"]}; {reason}', conn=conn)
+    return True
+
+
+def release_for_act(conn, owner: dict, act_id: str, user: dict) -> bool:
+    """Called inside the return job's order lease and SQLite transaction."""
+    row = conn.execute('SELECT c.*,m.archive_id,m.account_id,m.order_id,m.status AS order_status '
+                       'FROM marking_codes c JOIN marking_orders m ON m.id=c.marking_order_id WHERE c.id=?',
+                       (owner['code_id'],)).fetchone()
+    if row:
+        return _release_record(conn, row, owner, user=user, reason=f'return_act:{act_id}', from_act=True)
+    if owner['code_id'] is not None:
+        raise ValueError('Не удалось сверить привязку Честного знака для акта')
+    # Full code/PDF may have expired; its durable reservation can still be released.
+    conn.execute("UPDATE marking_registry SET state='released',revision=revision+1,updated_at=? WHERE fingerprint=?",
+                 (db.now_iso(), owner['fingerprint']))
+    db.log_event('marking_unbound', account_id=owner['account_id'], user=user, posting_number=owner['order_id'],
+                 message=f'Честный знак отвязан по акту {act_id}; срок хранения полного кода истёк', conn=conn)
+    return True
 
 
 def history(archive_id):

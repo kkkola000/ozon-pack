@@ -143,7 +143,11 @@ def from_received(source, account_id: int, day: str, *, user: dict | None = None
             return {"status": "warning", "act_id": None, "added": 0,
                     "message": "Эти возвраты только что попали в другой акт"}
         _drop_empty_spares(conn)
+        from . import marking_returns
 
+        marking_returns.enqueue_act(conn, act_id, user)
+
+    marking_returns.process_act(act_id)
     act = detail(act_id)
     db.log_event(
         "return_act_received", account_id=account_id, user=user,

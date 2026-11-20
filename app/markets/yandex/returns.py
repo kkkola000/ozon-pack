@@ -544,6 +544,11 @@ def pdf_table(pdf, rows: list[dict], everywhere: bool) -> None:
             row.cell(cut(item.get("note"), 60))
 
 
+def marking_orders(conn, act_id: str) -> list[tuple[int, str]]:
+    return [(r['account_id'], str(r['order_id'])) for r in conn.execute(
+        "SELECT DISTINCT account_id,order_id FROM yandex_returns WHERE act_id=? AND COALESCE(order_id,'')<>''", (act_id,))]
+
+
 SOURCE = ReturnsSource(
     table="yandex_returns",
     label="Яндекс Маркет",
@@ -564,4 +569,5 @@ SOURCE = ReturnsSource(
     claim=claim,
     find=find,
     scan_view=scan_view,
+    marking_orders=marking_orders,
 )

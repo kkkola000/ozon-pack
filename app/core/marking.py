@@ -13,7 +13,7 @@ import logging
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import accounts, crypto, db, exemplar_data, marking_codes, marking_registry, order_lock, pack_state
+from . import accounts, crypto, db, exemplar_data, marking_codes, marking_registry, marking_returns, order_lock, pack_state
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class Rejected(ValueError):
     def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров'):
         super().__init__(message)
         self.errors = errors
-SCHEMA = order_lock.SCHEMA + marking_registry.SCHEMA + """
+SCHEMA = order_lock.SCHEMA + marking_registry.SCHEMA + marking_returns.SCHEMA + """
 CREATE TABLE IF NOT EXISTS marking_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
@@ -300,6 +300,9 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
         raise ValueError('Для этого заказа не получены требования к маркировке')
     fingerprint = _fingerprint(parsed)
     owner = marking_registry.binding(fingerprint)
+    if owner and owner['state'] != 'released':
+        marking_returns.process_order(owner['account_id'], owner['order_id'])
+        owner = marking_registry.binding(fingerprint)
     if owner and owner['state'] != 'released' and not marking_registry.owns(owner, account['id'], order_id):
         if owner['marketplace'] == 'ozon':
             from ..markets.ozon.marking_returns import try_release
@@ -456,6 +459,7 @@ def _connection_failure(account, saved, exc):
 
 def process(account: dict, order_id: str, *, force: bool = False) -> None:
     """Одна запись/проверка. Неопределённый результат записи — только опрос."""
+    marking_returns.process_order(account['id'], order_id)
     statuses = {'queued', 'checking', 'uncertain'}
     saved = order(account['id'], order_id)
     if not saved or saved['status'] not in statuses:
@@ -494,6 +498,7 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
 
 
 def run_once() -> None:
+    marking_returns.process_pending()
     for row in db.query("SELECT account_id,order_id FROM marking_orders WHERE status IN "
                         "('queued','checking','uncertain') ORDER BY COALESCE(checked_at,'') LIMIT 20"):
         account = accounts.get(row['account_id'])

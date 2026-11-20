@@ -110,6 +110,8 @@ class ReturnsSource:
     # каталога, по ней ядро берёт штрихкоды товара и сопоставленных карточек.
     find: Callable[[list[int], str], list[tuple[int, str]]] | None = None
     scan_view: Callable[[dict], dict] | None = None
+    # Exact assembly order IDs represented by this return act: [(account_id, order_id)].
+    marking_orders: Callable[[Any, str], list[tuple[int, str]]] | None = None
 
 
 @dataclass(frozen=True)

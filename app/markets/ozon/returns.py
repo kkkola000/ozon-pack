@@ -943,6 +943,15 @@ def pdf_table(pdf, items: list[dict], everywhere: bool) -> None:
             row.cell(cut(item.get("note"), 60))
 
 
+def marking_orders(conn, act_id: str) -> list[tuple[int, str]]:
+    rows = conn.execute(
+        "SELECT account_id,posting_number AS order_id FROM returns WHERE act_id=? AND COALESCE(posting_number,'')<>'' "
+        "UNION SELECT r.account_id,p.posting_number FROM returns r JOIN postings p ON p.account_id=r.account_id "
+        "AND ((r.order_id>0 AND p.order_id=r.order_id) OR (COALESCE(r.order_number,'')<>'' AND p.order_number=r.order_number)) "
+        "WHERE r.act_id=? AND COALESCE(r.posting_number,'')=''", (act_id, act_id))
+    return [(r['account_id'], str(r['order_id'])) for r in rows]
+
+
 SOURCE = ReturnsSource(
     table="returns",
     label="Ozon",
@@ -964,4 +973,5 @@ SOURCE = ReturnsSource(
     giveout=giveout,
     find=find,
     scan_view=scan_view,
+    marking_orders=marking_orders,
 )

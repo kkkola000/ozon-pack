@@ -465,7 +465,7 @@ CORE_TABLES_WITH_NEW_COLUMNS = (
     "product_sets", "product_set_items", "return_acts", "shipped_items",
     "sticker_orders", "sticker_versions", "sticker_aliases",
     "marking_orders", "marking_codes", "order_operations", "ready_requests",
-    "marking_registry", "marking_releases",
+    "marking_registry", "marking_releases", "marking_return_jobs",
     "cargo_orders", "cargo_labels", "cargo_barcodes", "cargo_split_children", "cargo_split_intents",
 )
 
@@ -597,7 +597,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 # Таблицы с данными кабинета: чистятся вместе с ним. product_link_skips сюда
 # не входит — в ней решение про артикул, а не про кабинет.
-CORE_DATA_TABLES = ("cargo_barcodes", "cargo_labels", "cargo_orders", "cargo_split_children", "cargo_split_intents", "ready_requests", "order_operations", "marking_releases", "marking_orders", "sticker_aliases", "sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
+CORE_DATA_TABLES = ("cargo_barcodes", "cargo_labels", "cargo_orders", "cargo_split_children", "cargo_split_intents", "ready_requests", "order_operations", "marking_return_jobs", "marking_releases", "marking_orders", "sticker_aliases", "sticker_versions", "sticker_orders", "products", "product_barcodes", "product_links",
                     "product_sets", "product_set_items")
 
 
@@ -780,6 +780,9 @@ def init_db() -> None:
             from . import marking_registry
 
             marking_registry.backfill(conn)
+            from . import marking_returns
+
+            marking_returns.backfill(conn)
             # После правок площадок: отметка «в «Ожидает отгрузки» с …» для
             # заказов, лежавших там до обновления (core/labels.py).
             from . import labels as core_labels
@@ -797,6 +800,7 @@ def init_db() -> None:
             raise
         conn.execute("COMMIT")
     _seed_admin()
+    marking_returns.process_pending(limit=None)
 
 
 def _seed_admin() -> None:
