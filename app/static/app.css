@@ -875,6 +875,8 @@ body.pack-open { overflow: hidden; }
 .sticker-check { width: 42px; }
 .sticker-table input[type=checkbox] { display: block; margin: 0; }
 .sticker-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sticker-marking-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sticker-marking-actions .btn { flex: 0 0 auto; white-space: nowrap; }
 .sticker-pagination { margin-top: 20px; justify-content: center; }
 .sticker-saved-date { color: var(--accent); }
 .sticker-date-control { position: relative; }

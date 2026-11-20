@@ -46,11 +46,11 @@ function renderStickerMarking(data, archiveId) {
     const detached = item.status === 'detached';
     const url = item.history ? `/api/stickers/marking/history/${item.id}.pdf` : `/api/stickers/marking/${item.id}.pdf`;
     const unbind = data.can_unbind && item.can_unbind
-      ? `<button class="btn small" type="button" data-unbind-mark="${item.id}" data-archive="${archiveId}" data-version="${escapeHtml(item.unbind_version)}">Отвязать от заказа</button>` : '';
+      ? `<button class="btn small" type="button" data-unbind-mark="${item.id}" data-archive="${archiveId}" data-version="${escapeHtml(item.unbind_version)}">Отвязать</button>` : '';
     return `<tr><td>${escapeHtml(item.name)}<div class="small muted">Экземпляр ${item.unit_no}</div></td>
       <td class="mono small">${escapeHtml(item.gtin)}<div>${escapeHtml(item.serial)}</div></td>
       <td><span class="badge ${ok ? 'ok' : bad ? 'err' : detached ? '' : 'warn'}">${ok ? 'Принят' : bad ? 'Не принят' : detached ? 'Отвязан' : 'Ожидает проверки'}</span></td>
-      <td>${item.printable === false ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`} ${unbind}</td></tr>`;
+      <td><div class="sticker-marking-actions">${item.printable === false ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`} ${unbind}</div></td></tr>`;
   }).join('');
   const all = `/api/stickers/${archiveId}/marking.pdf`;
   document.getElementById('sticker-marking-content').innerHTML =
