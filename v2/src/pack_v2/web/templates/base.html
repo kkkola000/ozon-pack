@@ -4,8 +4,8 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="csrf-token" content="{{ csrf }}">
   <title>{{ title or 'Pack' }}</title>
-  <link rel="stylesheet" href="/static-v2/app.css">
-  <script src="/static-v2/app.js" defer></script>
+  <link rel="stylesheet" href="/static-v2/app.css?v={{ version }}">
+  <script src="/static-v2/app.js?v={{ version }}" defer></script>
 </head>
 <body>
 {% if user %}

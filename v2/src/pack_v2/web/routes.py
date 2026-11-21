@@ -1,7 +1,6 @@
 import hmac
 import secrets
 from typing import Annotated
-from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -9,21 +8,8 @@ from itsdangerous import BadSignature, SignatureExpired
 from pydantic import BaseModel, Field, SecretStr
 
 from pack_v2.bootstrap.registry import MODULES
-from pack_v2.modules.identity.public import ROLES, Authenticated
-
-COOKIE = "pack_v2_session"
-LOGIN_CSRF = "pack_v2_login_csrf"
-NAV = (
-    ("pack", "Сборка", "/pack"),
-    ("orders", "Заказы", "/orders"),
-    ("returns", "Возвраты", "/returns"),
-    ("products", "Товары", "/products"),
-)
-REPORTS = (
-    ("reports", "Отчёты", "/reports"),
-    ("logs", "Журнал", "/logs"),
-    ("stickers", "Стикеры", "/reports/stickers"),
-)
+from pack_v2.web.deps import COOKIE, LOGIN_CSRF, check_csrf, current
+from pack_v2.web.views import NAV, REPORTS, render, settings_page
 
 
 def safe_next(value: str) -> str:
@@ -32,43 +18,6 @@ def safe_next(value: str) -> str:
     if any(ord(c) < 32 or ord(c) == 127 for c in value):
         return "/"
     return value
-
-
-def current(request: Request) -> Authenticated:
-    saved = request.app.state.identity.current(request.cookies.get(COOKIE))
-    if not saved:
-        if request.url.path.startswith("/api/"):
-            raise HTTPException(401, "Войдите в панель")
-        raise HTTPException(303, headers={"Location": "/login?next=" + quote(request.url.path, safe="/")})
-    request.state.current = saved
-    return saved
-
-
-def check_csrf(saved: Authenticated, token: str) -> None:
-    if (
-        not token
-        or len(token) > 128
-        or not token.isascii()
-        or not hmac.compare_digest(saved.csrf_token, token)
-    ):
-        raise HTTPException(403, "Обновите страницу и повторите действие")
-
-
-def render(request: Request, template: str, *, saved: Authenticated | None = None, **context):
-    user = saved.user if saved else None
-    return request.app.state.templates.TemplateResponse(
-        request=request,
-        name=template,
-        context={
-            "user": user,
-            "csrf": saved.csrf_token if saved else "",
-            "roles": ROLES,
-            "nav": [v for v in NAV if user and user.can(v[0])],
-            "reports_nav": [v for v in REPORTS if user and user.can(v[0])],
-            "active_tab": "",
-            **context,
-        },
-    )
 
 
 def build_router() -> APIRouter:
@@ -177,26 +126,7 @@ def build_router() -> APIRouter:
     @router.get("/settings")
     def settings(request: Request, tab: str = "printing"):
         saved = current(request)
-        saved.user.require("settings")
-        tabs = {
-            "printing": (
-                "Сборка и печать",
-                "Параметры сборки и принтеров будут доступны после подключения рабочих операций.",
-            ),
-            "accounts": ("Кабинеты", "Подключение кабинетов будет доступно на следующем этапе."),
-            "returns": ("Возвраты", "Параметры возвратов будут перенесены вместе с приёмкой и актами."),
-            "staff": ("Сотрудники", "Форма управления сотрудниками будет добавлена на следующем этапе."),
-        }
-        selected = tab if tab in tabs else "printing"
-        return render(
-            request,
-            "settings.html",
-            saved=saved,
-            tabs=tabs,
-            selected=selected,
-            title="Настройки",
-            active_tab="settings",
-        )
+        return settings_page(request, saved, tab)
 
     @router.get("/settings/printing")
     def printing(request: Request):

@@ -1,6 +1,7 @@
 import os
 import re
 
+import httpx
 import pytest
 from alembic import command
 from cryptography.fernet import Fernet
@@ -16,6 +17,14 @@ from pack_v2.infrastructure.database import Base, Database
 from pack_v2.modules.identity.public import Identity
 
 PASSWORD = "Strong-password-123!"
+
+
+@pytest.fixture(autouse=True)
+def no_live_http(monkeypatch):
+    def blocked(*args, **kwargs):
+        raise AssertionError("Tests must use a mock transport, not a live marketplace")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", blocked)
 
 
 @pytest.fixture(scope="session")

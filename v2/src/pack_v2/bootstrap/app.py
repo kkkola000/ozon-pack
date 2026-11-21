@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -12,18 +13,24 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from pack_v2 import __version__
 from pack_v2.infrastructure.config import Settings, load_settings
+from pack_v2.infrastructure.crypto import SecretBox
 from pack_v2.infrastructure.database import Database
+from pack_v2.integrations.api import build_router as connections_router
+from pack_v2.integrations.contracts import AccessChecker
+from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.public import Connections
 from pack_v2.modules.identity.public import Identity
-from pack_v2.shared.errors import Conflict, DomainError, Forbidden, RateLimited
+from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound, RateLimited
 from pack_v2.web.body_limit import AuthBodyLimit
-from pack_v2.web.routes import build_router, render
+from pack_v2.web.routes import build_router
+from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0001_foundation"
+SCHEMA_REVISION = "0002_accounts"
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, checker: AccessChecker | None = None) -> FastAPI:
     settings = settings or load_settings()
     load_models()
     db = Database(settings)
@@ -43,6 +50,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings, app.state.db = settings, db
     app.state.identity = Identity(db, settings)
+    app.state.connections = Connections(
+        db,
+        SecretBox(settings.encryption_key.get_secret_value()),
+        checker if checker is not None else OzonAccessChecker(),
+    )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
     )
@@ -84,7 +96,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(DomainError)
     async def domain_error(request: Request, exc: DomainError):
         status = (
-            403
+            404
+            if isinstance(exc, NotFound)
+            else 403
             if isinstance(exc, Forbidden)
             else 409
             if isinstance(exc, Conflict)
@@ -94,6 +108,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         headers = {"Retry-After": str(settings.login_window_seconds)} if status == 429 else None
         return error(request, status, str(exc), headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        # FastAPI's default errors may echo the whole body, including API keys.
+        return error(request, 422, "Проверьте обязательные поля и формат данных")
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):
@@ -123,4 +142,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(build_router())
+    app.include_router(connections_router())
     return app

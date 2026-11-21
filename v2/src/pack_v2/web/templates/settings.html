@@ -2,5 +2,7 @@
 {% block content %}
 <h1>Настройки</h1>
 <div class="tabs">{% for code,(label,description) in tabs.items() %}<a class="tab {{ 'active' if selected == code }}" href="/settings?tab={{ code }}">{{ label }}</a>{% endfor %}</div>
+{% if selected == 'accounts' %}{% include '_accounts.html' %}{% else %}
 <section class="panel"><h2>{{ tabs[selected][0] }}</h2><p class="muted">{{ tabs[selected][1] }}</p></section>
+{% endif %}
 {% endblock %}

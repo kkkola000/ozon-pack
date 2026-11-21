@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import inspect, text
 
-from pack_v2.bootstrap.app import create_app
+from pack_v2.bootstrap.app import SCHEMA_REVISION, create_app
 from pack_v2.cli import generate_env, migration_config
 from pack_v2.infrastructure.config import Settings
 from pack_v2.infrastructure.crypto import SecretBox
@@ -62,7 +62,10 @@ def test_readiness_rejects_schema_drift(client, db):
         assert client.get("/healthz").status_code == 200
     finally:
         with db.engine.begin() as conn:
-            conn.execute(text("UPDATE pack_v2.alembic_version SET version_num='0001_foundation'"))
+            conn.execute(
+                text("UPDATE pack_v2.alembic_version SET version_num=:revision"),
+                {"revision": SCHEMA_REVISION},
+            )
 
 
 def test_wrong_host_rejected(client):

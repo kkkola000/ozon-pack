@@ -10,7 +10,7 @@ class Module:
 
 MODULES = (
     Module("identity", "Пользователи и доступ", "foundation"),
-    Module("integrations", "Интеграции", "schema"),
+    Module("integrations", "Интеграции", "connections"),
     Module("catalog", "Товары", "schema"),
     Module("orders", "Заказы", "schema"),
     Module("assembly", "Сборка", "planned"),

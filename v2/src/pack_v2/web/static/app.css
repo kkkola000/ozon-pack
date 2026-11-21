@@ -1,4 +1,6 @@
 :root {
+  --warn: #b06a00;
+  --warn-soft: #fff3e0;
   --bg:#fff;
   --surface:#f7f8fa;
   --surface-2:#f2f3f5;
@@ -15,6 +17,45 @@
   --err-soft:#ffebf0;
   --radius:16px;
   --shadow:0 1px 2px rgba(0,26,52,.05),0 4px 16px rgba(0,26,52,.04);
+}
+
+.account-card + .account-card, .account-add {
+  margin-top: 16px;
+}
+.account-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.account-heading h2 { margin-bottom: 6px; }
+.account-badges, .account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.account-actions { margin-top: 16px; }
+.account-actions form { margin: 0; }
+.account-editor { margin-top: 16px; }
+.account-editor > summary, .account-add > details > summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+.account-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.account-form label { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.account-form select { padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5; }
+.account-form .btn { justify-self: start; align-self: end; }
+.account-form-note { grid-column: 1 / -1; margin: 0; }
+.account-access { list-style: none; padding: 0; margin: 16px 0 0; }
+.account-access li { display: grid; grid-template-columns: 140px 1fr; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.account-access li:last-child { border-bottom: none; }
+.notice.success { background: var(--ok-soft); color: var(--ok); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.err { background: var(--err-soft); color: var(--err); }
+.badge.accent { background: var(--accent-soft); color: var(--accent); }
+.access-ok { color: var(--ok); }
+.access-error { color: var(--err); }
+.btn:disabled, .btn.primary:disabled { cursor: default; color: var(--muted); background: var(--surface-2); }
+.btn.is-pending::before { content: ''; width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: pending-spin .8s linear infinite; }
+@keyframes pending-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn.is-pending::before { animation: none; } }
+@media (max-width: 700px) {
+  .account-form { grid-template-columns: 1fr; }
+  .account-access li { grid-template-columns: 1fr; gap: 4px; }
 }
 
 * {

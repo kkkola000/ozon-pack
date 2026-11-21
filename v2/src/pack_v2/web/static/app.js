@@ -26,3 +26,30 @@ document.querySelectorAll('.dropdown').forEach((menu) => {
   });
   document.addEventListener('click', (event) => { if (!menu.contains(event.target)) menu.open = false; });
 });
+
+document.querySelectorAll('form[data-pending]').forEach((form) => {
+  form.addEventListener('submit', (event) => {
+    if (form.dataset.busy === 'true') { event.preventDefault(); return; }
+    const button = event.submitter || form.querySelector('button[type=submit]');
+    if (!button) return;
+    form.dataset.busy = 'true';
+    form.setAttribute('aria-busy', 'true');
+    button.dataset.originalText = button.textContent;
+    button.disabled = true;
+    button.classList.add('is-pending');
+    button.textContent = button.dataset.pendingText || 'Сохраняем…';
+  });
+});
+
+window.addEventListener('pageshow', () => {
+  document.querySelectorAll('form[data-busy=true]').forEach((form) => {
+    form.dataset.busy = 'false';
+    form.removeAttribute('aria-busy');
+    const button = form.querySelector('button.is-pending');
+    if (button) {
+      button.disabled = false;
+      button.classList.remove('is-pending');
+      button.textContent = button.dataset.originalText;
+    }
+  });
+});

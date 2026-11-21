@@ -10,5 +10,9 @@ class Conflict(DomainError):
     pass
 
 
+class NotFound(DomainError):
+    pass
+
+
 class RateLimited(DomainError):
     pass
