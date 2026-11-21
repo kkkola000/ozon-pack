@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block wrap_class %}narrow login-wrap{% endblock %}
+{% block content %}
+<section class="panel"><h1>Вход в панель</h1>
+{% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+<form action="/login" method="post" class="login-form">
+  <input type="hidden" name="csrf" value="{{ login_csrf }}">
+  <input type="hidden" name="next" value="{{ next_path }}">
+  <label>Логин<input name="login" type="text" value="{{ login or '' }}" maxlength="64" autocomplete="username" required autofocus></label>
+  <label>Пароль<input name="password" type="password" maxlength="128" autocomplete="current-password" required></label>
+  <button type="submit" class="btn primary">Войти</button>
+</form></section>
+{% endblock %}

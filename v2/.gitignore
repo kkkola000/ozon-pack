@@ -1,0 +1,8 @@
+.venv/
+.env.v2
+.env.v2.*
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+test-results/
