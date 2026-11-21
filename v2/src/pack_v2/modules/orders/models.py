@@ -33,6 +33,7 @@ class OrderLine(Record, Base):
     account_id: Mapped[UUID]
     order_id: Mapped[UUID] = mapped_column(index=True)
     offer_id: Mapped[UUID | None]
+    quantity_source: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
     external_line_id: Mapped[str | None] = mapped_column(String(200))
     name: Mapped[str] = mapped_column(String(500))
     quantity: Mapped[int] = mapped_column(Integer)
@@ -42,6 +43,7 @@ class OrderLine(Record, Base):
         ForeignKeyConstraint(["account_id", "order_id"], ["pack_v2.orders.account_id", "pack_v2.orders.id"]),
         ForeignKeyConstraint(["account_id", "offer_id"], ["pack_v2.offers.account_id", "pack_v2.offers.id"]),
         CheckConstraint("quantity > 0", name="quantity"),
+        CheckConstraint("quantity_source IN ('manual','allocated')", name="quantity_source"),
         CheckConstraint("price IS NULL OR price >= 0", name="price"),
         UniqueConstraint("order_id", "external_line_id"),
         UniqueConstraint("order_id", "id"),
@@ -74,6 +76,7 @@ class Shipment(Record, Base):
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    assembly_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -117,6 +120,7 @@ class ShipmentUnit(Record, Base):
             ["order_id", "unit_id"], ["pack_v2.order_units.order_id", "pack_v2.order_units.id"]
         ),
         UniqueConstraint("shipment_id", "id"),
+        UniqueConstraint("shipment_id", "unit_id", "id"),
         Index(
             "uq_shipment_units_current", "unit_id", unique=True, postgresql_where=text("released_at IS NULL")
         ),
@@ -238,6 +242,8 @@ class OrderSync(Record, Base):
     requested_by: Mapped[UUID | None]
     since: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    target_shipment_id: Mapped[UUID | None]
+    expected_shipment_revision: Mapped[int | None] = mapped_column(Integer)
     mode: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(20), default="queued", server_default="queued")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -247,9 +253,23 @@ class OrderSync(Record, Base):
     error: Mapped[str | None] = mapped_column(Text)
     retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
+        CheckConstraint(
+            "(mode='point') = (target_shipment_id IS NOT NULL) AND (mode='point') = (expected_shipment_revision IS NOT NULL)",
+            name="target",
+        ),
+        Index(
+            "uq_order_syncs_point",
+            "account_id",
+            "target_shipment_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued','running','retrying') AND mode='point'"),
+        ),
         UniqueConstraint("account_id", "id"),
         CheckConstraint("since <= until", name="period"),
-        CheckConstraint("mode IN ('full','working')", name="mode"),
+        CheckConstraint(
+            "expected_shipment_revision IS NULL OR expected_shipment_revision >= 0", name="target_revision"
+        ),
+        CheckConstraint("mode IN ('full','working','point')", name="mode"),
         CheckConstraint(
             "status IN ('queued','running','retrying','succeeded','failed','stale')", name="status"
         ),
@@ -259,7 +279,7 @@ class OrderSync(Record, Base):
             "uq_order_syncs_active",
             "account_id",
             unique=True,
-            postgresql_where=text("status IN ('queued','running','retrying')"),
+            postgresql_where=text("status IN ('queued','running','retrying') AND mode <> 'point'"),
         ),
     )
 
@@ -289,6 +309,7 @@ class ShipmentItem(Record, Base):
         ),
         ForeignKeyConstraint(["account_id", "offer_id"], ["pack_v2.offers.account_id", "pack_v2.offers.id"]),
         UniqueConstraint("shipment_id", "source_line_id"),
+        UniqueConstraint("shipment_id", "id"),
         CheckConstraint("quantity > 0", name="quantity"),
         CheckConstraint("price IS NULL OR price >= 0", name="price"),
         CheckConstraint("match_state IN ('matched','unmatched','conflict')", name="match_state"),

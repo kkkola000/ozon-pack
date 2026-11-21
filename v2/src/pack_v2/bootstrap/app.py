@@ -21,6 +21,8 @@ from pack_v2.integrations.ozon.access import OzonAccessChecker
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.integrations.reading import ReaderFactory
+from pack_v2.modules.assembly.api import build_router as assembly_router
+from pack_v2.modules.assembly.public import Assembly
 from pack_v2.modules.catalog.api import build_router as catalog_router
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
@@ -33,7 +35,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0004_orders"
+SCHEMA_REVISION = "0005_assembly"
 
 
 def create_app(
@@ -69,6 +71,13 @@ def create_app(
     app.state.catalog = Catalog(db, app.state.connections)
     app.state.orders = Orders(
         db, app.state.connections, app.state.catalog, lookback_days=settings.orders_lookback_days
+    )
+    app.state.assembly = Assembly(
+        db,
+        app.state.connections,
+        app.state.orders,
+        SecretBox(settings.encryption_key.get_secret_value()),
+        settings.secret_key.get_secret_value(),
     )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
@@ -160,4 +169,5 @@ def create_app(
     app.include_router(connections_router())
     app.include_router(catalog_router())
     app.include_router(orders_router())
+    app.include_router(assembly_router())
     return app

@@ -10,7 +10,7 @@ from pack_v2.shared.errors import DomainError
 
 from . import repository as store
 from .contracts import CatalogPage
-from .models import CatalogSync, Offer, OfferCode
+from .models import CatalogSync, Offer, OfferCode, ProductCode, ProductComponent
 
 
 class Catalog:
@@ -68,6 +68,51 @@ class Catalog:
         if account_id:
             query = query.where(Offer.account_id == account_id)
         return set(tx.scalars(query))
+
+    @staticmethod
+    def packing_cards(tx, ids):
+        """Current scan codes from the offer and explicitly linked warehouse product."""
+        rows = list(tx.scalars(select(Offer).where(Offer.id.in_(ids))))
+        cards = {r.id: r for r in store.views(tx, rows)}
+        product_ids = {r.product_id for r in rows if r.product_id}
+        codes = {}
+        for code in tx.scalars(select(ProductCode).where(ProductCode.product_id.in_(product_ids))):
+            codes.setdefault(code.product_id, set()).add(code.value)
+        siblings = {
+            r.id: r.product_id for r in tx.scalars(select(Offer).where(Offer.product_id.in_(product_ids)))
+        }
+        for code in tx.scalars(select(OfferCode).where(OfferCode.offer_id.in_(siblings))):
+            codes.setdefault(siblings[code.offer_id], set()).add(code.value)
+        components = set(
+            tx.scalars(
+                select(ProductComponent.product_id).where(ProductComponent.product_id.in_(product_ids))
+            )
+        )
+        return {
+            r.id: {
+                "card": cards[r.id],
+                "codes": tuple(sorted(set(cards[r.id].codes) | codes.get(r.product_id, set()))),
+                "has_components": r.product_id in components,
+            }
+            for r in rows
+        }
+
+    @staticmethod
+    def packing_code_offers(tx, code, account_id=None):
+        direct = Catalog.code_offers(tx, code, account_id)
+        product_ids = (
+            select(ProductCode.product_id)
+            .where(ProductCode.value == code)
+            .union(
+                select(Offer.product_id)
+                .join(OfferCode, OfferCode.offer_id == Offer.id)
+                .where(OfferCode.value == code, Offer.product_id.is_not(None))
+            )
+        )
+        query = select(Offer.id).where(Offer.product_id.in_(product_ids))
+        if account_id:
+            query = query.where(Offer.account_id == account_id)
+        return direct | set(tx.scalars(query))
 
     def sync_status(self, actor: Principal) -> list[SyncView]:
         return self.sync.sync_status(actor)

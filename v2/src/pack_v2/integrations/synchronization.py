@@ -63,11 +63,13 @@ class AccountSync:
         begin=lambda tx, run: None,
         prepare_run=lambda tx, source, automatic, now: {},
         context_values=lambda run: {},
+        scope=lambda model: True,
     ):
         self.db, self.connections, self.model = db, connections, model
         self.kind, self.dataset, self.section = kind, dataset, section
         self.complete, self.prepare_run, self.context_values = complete, prepare_run, context_values
         self.begin = begin
+        self.scope = scope
 
     def sync_status(self, actor: Principal) -> list[SyncView]:
         if not actor.can(self.section):
@@ -77,13 +79,14 @@ class AccountSync:
         with self.db.transaction() as tx:
             latest = tx.scalars(
                 select(self.model)
+                .where(self.scope(self.model))
                 .distinct(self.model.account_id)
                 .order_by(self.model.account_id, self.model.created_at.desc(), self.model.id.desc())
             ).all()
             successes = dict(
                 tx.execute(
                     select(self.model.account_id, self.model.finished_at)
-                    .where(self.model.status == "succeeded")
+                    .where(self.model.status == "succeeded", self.scope(self.model))
                     .distinct(self.model.account_id)
                     .order_by(self.model.account_id, self.model.finished_at.desc())
                 ).all()
@@ -149,7 +152,9 @@ class AccountSync:
             source = self.connections.source_for_sync(tx, account_id)
             running = tx.scalar(
                 select(self.model)
-                .where(self.model.account_id == account_id, self.model.status.in_(ACTIVE))
+                .where(
+                    self.model.account_id == account_id, self.model.status.in_(ACTIVE), self.scope(self.model)
+                )
                 .with_for_update()
             )
             if running:
@@ -167,7 +172,7 @@ class AccountSync:
                 tx.flush()
             last = tx.scalar(
                 select(self.model)
-                .where(self.model.account_id == account_id)
+                .where(self.model.account_id == account_id, self.scope(self.model))
                 .order_by(self.model.created_at.desc(), self.model.id.desc())
                 .limit(1)
             )

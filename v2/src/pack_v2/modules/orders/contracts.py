@@ -68,3 +68,53 @@ class ShipmentLink:
 class ShipmentDetail:
     shipment: ShipmentView
     siblings: tuple[ShipmentLink, ...]
+
+
+@dataclass(frozen=True)
+class PackingLine:
+    item_id: UUID
+    source_line_id: str
+    offer_id: UUID | None
+    name: str
+    article: str | None
+    quantity: int
+    references: tuple[tuple[str, str], ...]
+    codes: tuple[str, ...]
+    image_url: str | None
+    marking_hint: bool
+    has_components: bool
+
+
+@dataclass(frozen=True)
+class PackingManifest:
+    shipment_id: UUID
+    order_id: UUID
+    account_id: UUID
+    posting_number: str
+    assembly_revision: int
+    basis: str
+    state: str
+    eligible: bool
+    deadline: datetime | None
+    warehouse_name: str | None
+    items: tuple[PackingLine, ...]
+
+
+@dataclass(frozen=True)
+class PlannedUnit:
+    unit_id: UUID
+    allocation_id: UUID
+    item_id: UUID
+    ordinal: int
+
+
+@dataclass(frozen=True)
+class PackingCandidate:
+    id: UUID
+    account_id: UUID
+    state: str
+    assembly_revision: int
+    posting_number: str
+    quantity: int
+    deadline: datetime | None
+    warehouse_name: str | None

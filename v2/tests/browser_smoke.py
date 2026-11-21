@@ -152,6 +152,120 @@ def check_orders(page, context, url: str, output: Path) -> None:
     page.set_viewport_size({"width": 1440, "height": 1000})
 
 
+def check_assembly(page, context, url: str, output: Path) -> None:
+    """Product verification only, with mock Ozon, FIFO scans and a lost HTTP response."""
+    csrf = context.request.get(url + "/api/v2/me").json()["csrf"]
+    headers = {"x-csrf-token": csrf}
+    response = context.request.post(
+        url + "/api/v2/accounts",
+        headers=headers,
+        data={
+            "title": "Сборка Ozon",
+            "client_id": "5000" + str(time.time_ns())[-12:],
+            "api_key": "assembly-browser-synthetic-key",
+        },
+    )
+    assert response.status == 201
+    account = response.json()["id"]
+    for dataset in ("catalog", "orders"):
+        assert (
+            context.request.post(
+                url + f"/api/v2/{dataset}/sync", headers=headers, data={"account_id": account}
+            ).status
+            == 202
+        )
+        for _ in range(100):
+            runs = context.request.get(url + f"/api/v2/{dataset}/sync").json()
+            if any(r["account_id"] == account and r["status"] == "succeeded" for r in runs):
+                break
+            page.wait_for_timeout(200)
+        else:
+            raise AssertionError("Synthetic source synchronization did not finish")
+    shipments = context.request.get(url + "/api/v2/orders?account_id=" + account).json()["items"]
+    page.goto(url + "/pack?account_id=" + account)
+    home = page.locator("#assembly-home-code")
+    home.fill("OZN634662543")
+    home.press("Enter")
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Проверяем отправление")
+    expect(page.locator("[data-scanner-state]")).to_have_class("badge accent is-loading")
+    page.screenshot(path=str(output / "assembly-opening.png"), full_page=True)
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Проверка товаров", timeout=20000)
+    expect(page.locator("[data-assembly-count]")).to_have_text("1 из 3")
+    page.screenshot(path=str(output / "assembly-desktop.png"), full_page=True)
+    assert page.locator(".assembly-mark").count() == 1
+    assert page.locator(".assembly-mark").get_attribute("aria-label") == "Честный знак не проверен"
+    number = page.locator("[data-assembly-number]").inner_text()
+    shipment = next(s for s in shipments if s["posting_number"] == number)
+    page.reload()
+    expect(page.locator("[data-assembly-count]")).to_have_text("1 из 3")
+
+    # Let the server commit, then discard the response. A retry must use the same command ID.
+    discarded = []
+
+    def lose_response(route):
+        if discarded:
+            route.continue_()
+            return
+        response = route.fetch()
+        assert response.status == 200
+        discarded.append(response.json())
+        route.abort("failed")
+
+    pattern = "**/api/v2/assembly/*/scan"
+    page.route(pattern, lose_response)
+    scanner = page.locator("#assembly-code")
+    scanner.fill("OZN6225436164")
+    scanner.press("Enter")
+    retry = page.locator("[data-assembly-modal] [data-network-retry]")
+    expect(retry).to_be_visible()
+    # Metadata can recover a command after reload; raw scanned data must not be stored in the browser.
+    stored = page.evaluate("JSON.stringify(sessionStorage)")
+    assert "OZN6225436164" not in stored and "needsCode" in stored
+    retry.click()
+    expect(page.locator("[data-assembly-count]")).to_have_text("2 из 3")
+    page.unroute(pattern, lose_response)
+    expect(retry).to_be_hidden()
+    page.reload()
+    expect(page.locator("[data-assembly-count]")).to_have_text("2 из 3")
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(output / "assembly-scanning-mobile.png"), full_page=True)
+    scanner.fill("OZN6225436164")
+    scanner.press("Enter")
+    expect(page.locator("[data-assembly-count]")).to_have_text("3 из 3")
+    page.locator("[data-assembly-action=verify]").click()
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Товары проверены")
+    page.screenshot(path=str(output / "assembly-verified-mobile.png"), full_page=True)
+    after = context.request.get(url + "/api/v2/orders/" + shipment["id"]).json()["shipment"]
+    assert after["state"] == shipment["state"] and not after["requirements_complete"]
+    page.locator("[data-assembly-queue]").click()
+    expect(page.locator("[data-assembly-modal]")).to_be_hidden()
+    page.set_viewport_size({"width": 1440, "height": 1000})
+
+    # Rapid repeated Enter events for two units are queued with successive revisions.
+    shipments = context.request.get(url + "/api/v2/orders?account_id=" + account).json()["items"]
+    other = next(s for s in shipments if s["id"] != shipment["id"])
+    page.goto(url + "/pack?account_id=" + account + "&shipment_id=" + other["id"])
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Проверка товаров", timeout=20000)
+    scanner.evaluate(
+        "el => { for (let i = 0; i < 2; i++) { el.value = 'OZN6225436164'; el.form.requestSubmit(); } }"
+    )
+    expect(page.locator("[data-assembly-count]")).to_have_text("2 из 3")
+    discarded.clear()
+    page.route(pattern, lose_response)
+    scanner.fill("OZN634662543")
+    scanner.press("Enter")
+    expect(retry).to_be_visible()
+    page.reload()
+    expect(page.locator("[data-assembly-count]")).to_have_text("3 из 3")
+    expect(retry).to_be_hidden()
+    page.unroute(pattern, lose_response)
+    assert "needsCode" not in page.evaluate("JSON.stringify(sessionStorage)")
+    page.locator("[data-assembly-action=verify]").click()
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Товары проверены")
+    page.locator("[data-assembly-queue]").click()
+
+
 def check(
     url: str,
     login: str,
@@ -161,6 +275,7 @@ def check(
     include_accounts: bool = False,
     include_catalog: bool = False,
     include_orders: bool = False,
+    include_assembly: bool = False,
 ) -> None:
     output.mkdir(parents=True, exist_ok=True)
     errors = []
@@ -175,7 +290,7 @@ def check(
         page.locator("input[name=password]").fill(password)
         page.get_by_role("button", name="Войти", exact=True).click()
         page.wait_for_url("**/pack")
-        assert page.locator("h1").inner_text() == "Сборка"
+        assert page.locator("h1").first.inner_text() == "Сборка"
         assert page.locator(".topbar nav>a").first.inner_text() == "Сборка"
         accent = page.evaluate(
             "getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()"
@@ -200,6 +315,8 @@ def check(
             check_catalog(page, context, url, output)
         if include_orders:
             check_orders(page, context, url, output)
+        if include_assembly:
+            check_assembly(page, context, url, output)
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(url + "/pack")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -247,6 +364,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--check-orders", action="store_true", help="Test orders using an isolated worker and mocked Ozon"
     )
+    parser.add_argument(
+        "--check-assembly",
+        action="store_true",
+        help="Test product scans using an isolated worker and mocked Ozon",
+    )
     args = parser.parse_args()
     password = os.environ.get("PACK_V2_BROWSER_PASSWORD") or getpass.getpass("Пароль тестового владельца: ")
     check(
@@ -258,5 +380,6 @@ if __name__ == "__main__":
         args.check_accounts,
         args.check_catalog,
         args.check_orders,
+        args.check_assembly,
     )
     print("Browser checks passed: desktop hover/click, mobile touch, logout; no JavaScript errors")

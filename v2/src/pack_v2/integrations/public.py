@@ -86,6 +86,12 @@ class Connections:
                 )
             ]
 
+    @staticmethod
+    def account_label(tx, account_id):
+        """Backend read port. Callers authorize their own section; no secrets are returned."""
+        saved = store.account(tx, account_id)
+        return AccountLabel(saved.id, saved.title, saved.marketplace, saved.active, saved.credential_revision)
+
     def sync_accounts(self) -> list[AccountSource]:
         """Backend scheduler only; no credentials or user-facing endpoint."""
         with self.db.transaction() as tx:

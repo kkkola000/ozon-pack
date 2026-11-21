@@ -121,7 +121,7 @@ def build_router() -> APIRouter:
         return endpoint
 
     for section, title, href in (*NAV, *REPORTS):
-        if section not in {"products", "orders"}:
+        if section not in {"products", "orders", "pack"}:
             router.add_api_route(href, shell(section, title), methods=["GET"], name=section)
 
     @router.get("/settings")

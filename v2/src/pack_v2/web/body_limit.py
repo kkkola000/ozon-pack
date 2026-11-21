@@ -11,6 +11,7 @@ class AuthBodyLimit:
         protected = scope.get("path") in {"/login", "/logout", "/api/v2/users"}
         protected |= scope.get("path", "").startswith(
             (
+                "/api/v2/assembly",
                 "/api/v2/accounts",
                 "/settings/accounts",
                 "/api/v2/catalog",

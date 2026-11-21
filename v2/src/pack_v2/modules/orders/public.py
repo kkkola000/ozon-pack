@@ -9,7 +9,7 @@ from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Principal
 from pack_v2.shared.errors import DomainError
 
-from . import queries
+from . import packing, queries
 from . import repository as store
 from .models import OrderSync
 
@@ -36,10 +36,17 @@ class Orders:
             kind="orders.sync",
             dataset="shipments",
             section="orders",
-            complete=store.complete,
+            complete=self._complete,
+            scope=lambda model: model.mode != "point",
             begin=self._begin,
             prepare_run=self._prepare,
-            context_values=lambda run: {"since": run.since, "until": run.until, "mode": run.mode},
+            context_values=lambda run: {
+                "since": run.since,
+                "until": run.until,
+                "mode": run.mode,
+                "target": run.target_shipment_id,
+                "expected_revision": run.expected_shipment_revision,
+            },
         )
 
     def _prepare(self, tx, source, automatic, now):
@@ -61,6 +68,11 @@ class Orders:
         # A command may have waited for a stopped/busy worker. Read a current window.
         run.until = run.started_at
         run.since = run.until - timedelta(days=self.lookback_days)
+        if run.mode == "point":
+            saved = packing.lock_shipment(tx, run.target_shipment_id)
+            if saved.account_id != run.account_id:
+                raise DomainError("Кабинет отправления не совпадает с заданием")
+            run.expected_shipment_revision = saved.revision
         if run.mode == "working":
             recent = tx.scalar(
                 select(OrderSync.id)
@@ -75,6 +87,36 @@ class Orders:
             )
             if recent is None:
                 run.mode = "full"
+
+    @staticmethod
+    def _complete(tx, run):
+        if run.mode == "point":
+            target = packing.lock_shipment(tx, run.target_shipment_id)
+            store.complete(tx, run, order_id=target.order_id)
+        else:
+            store.complete(tx, run)
+
+    def packing_manifest(self, tx, shipment_id):
+        return packing.manifest(tx, shipment_id, self.catalog)
+
+    @staticmethod
+    def packing_lock(tx, shipment_id):
+        packing.lock_shipment(tx, shipment_id)
+
+    @staticmethod
+    def packing_plan(tx, manifest):
+        return packing.plan_units(tx, manifest)
+
+    def packing_candidates(self, tx, **kwargs):
+        return packing.candidates(tx, self.catalog, **kwargs)
+
+    @staticmethod
+    def packing_refresh(tx, source, shipment_id, actor_id=None):
+        return packing.queue_refresh(tx, source, shipment_id, actor_id)
+
+    @staticmethod
+    def packing_refresh_status(tx, run_id, account_id, shipment_id):
+        return packing.refresh_status(tx, run_id, account_id, shipment_id)
 
     def list_shipments(self, actor: Principal, *, account_id=None, query="", state="all", page=1):
         actor.require("orders")
@@ -105,6 +147,25 @@ class Orders:
     def _read(self, context, reader):
         final = False
         config = context.values
+        if config["mode"] == "point":
+            target = context.write(lambda tx, run: self.packing_manifest(tx, run.target_shipment_id))
+            snapshot = reader.get_shipment(target.posting_number)
+
+            def apply(tx, run):
+                saved = packing.lock_shipment(tx, run.target_shipment_id)
+                if saved.revision != config["expected_revision"]:
+                    raise ReadError("incomplete")
+                if snapshot is None:
+                    store.missing(tx, run, saved.id)
+                else:
+                    if snapshot.source != context.source or snapshot.source_id != target.posting_number:
+                        raise ReadError("invalid_response")
+                    store.apply_page(tx, run, (snapshot,), self.catalog)
+                    run.items = 1
+                run.pages = 1
+
+            context.write(apply)
+            return
         states = (
             None if config["mode"] == "full" else ("awaiting_assembly", "awaiting_dispatch", "in_delivery")
         )

@@ -170,6 +170,11 @@ def apply_page(tx, run, snapshots, catalog):
                 requirements_complete=False,
             )
             tx.add(saved)
+        old_eligible = (
+            saved.state in ("awaiting_assembly", "awaiting_dispatch")
+            and not saved.needs_review
+            and not saved.transition_failed
+        )
         before_status = (saved.source_status, saved.source_substatus, saved.state)
         changed = fresh
         changed |= _assign(saved, "source_status", snapshot.source_status)
@@ -233,6 +238,11 @@ def apply_page(tx, run, snapshots, catalog):
         if not line_ids or len(set(line_ids)) != len(line_ids):
             raise ReadError("invalid_response")
         current_items = items.get(saved.id, {})
+        old_physical = sorted(
+            (r.source_line_id, r.quantity, str(r.offer_id), r.match_state)
+            for r in current_items.values()
+            if r.source_present
+        )
         for line in snapshot.items:
             item = current_items.get(line.source_line_id)
             new = item is None
@@ -284,6 +294,26 @@ def apply_page(tx, run, snapshots, catalog):
                 item.source_present = False
                 item.revision += 1
                 changed = True
+        new_physical = sorted(
+            (
+                r.source_line_id,
+                r.quantity,
+                str(matches[(snapshot.source_id, r.source_line_id)].offer_id),
+                matches[(snapshot.source_id, r.source_line_id)].state,
+            )
+            for r in snapshot.items
+        )
+        if (
+            fresh
+            or old_physical != new_physical
+            or old_eligible
+            != (
+                saved.state in ("awaiting_assembly", "awaiting_dispatch")
+                and not saved.needs_review
+                and not saved.transition_failed
+            )
+        ):
+            saved.assembly_revision = (saved.assembly_revision or 0) + 1
         saved.observed_at = snapshot.observed_at
         saved.checked_at = saved.synced_at = datetime.now(UTC)
         saved.last_seen_run_id = run.id
@@ -318,16 +348,18 @@ def missing(tx, run, shipment_id):
         raise ReadError("invalid_response")
     if not saved.needs_review:
         saved.needs_review = True
+        saved.assembly_revision += 1
         saved.revision += 1
         tx.get(Order, saved.order_id).revision += 1
     saved.checked_at = datetime.now(UTC)
 
 
-def complete(tx, run):
+def complete(tx, run, order_id=None):
     # Work on relationship columns only; do not materialize the entire order archive.
     rows = tx.execute(
         select(Shipment.id, Shipment.order_id, Shipment.parent_source_number, Shipment.parent_id).where(
             Shipment.account_id == run.account_id,
+            True if order_id is None else Shipment.order_id == order_id,
             or_(Shipment.parent_source_number.is_not(None), Shipment.parent_id.is_not(None)),
         )
     ).all()
@@ -397,6 +429,7 @@ def relink_batch(tx, run, catalog, after=None):
     changed_orders = set()
     for shipment in tx.scalars(select(Shipment).where(Shipment.id.in_(changed_shipments))):
         shipment.revision += 1
+        shipment.assembly_revision += 1
         changed_orders.add(shipment.order_id)
     for order in tx.scalars(select(Order).where(Order.id.in_(changed_orders))):
         order.revision += 1
