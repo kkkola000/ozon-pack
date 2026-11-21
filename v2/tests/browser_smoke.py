@@ -7,7 +7,7 @@ import os
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 
 def check_accounts(page, context, url: str, output: Path) -> None:
@@ -58,8 +58,52 @@ def check_accounts(page, context, url: str, output: Path) -> None:
     page.set_viewport_size({"width": 1440, "height": 1000})
 
 
+def check_catalog(page, context, url: str, output: Path) -> None:
+    """Requires an isolated server with a live worker and mocked Ozon reader."""
+    csrf = context.request.get(url + "/api/v2/me").json()["csrf"]
+    response = context.request.post(
+        url + "/api/v2/accounts",
+        headers={"x-csrf-token": csrf},
+        data={
+            "title": "Каталог Ozon",
+            "client_id": "7000" + str(time.time_ns())[-12:],
+            "api_key": "catalog-browser-synthetic-key",
+        },
+    )
+    assert response.status == 201
+    account = response.json()["id"]
+    page.goto(url + "/products?account_id=" + account)
+    page.get_by_role("button", name="Обновить товары", exact=True).click()
+    page.wait_for_url("**queued=1*")
+    badge = page.locator(f'[data-account-id="{account}"] [data-sync-badge]')
+    expect(badge).to_have_text("Загружено", timeout=20000)
+    refresh = page.locator("#catalog-refresh")
+    if refresh.is_visible():
+        refresh.click()
+    else:
+        page.reload()
+    expect(page.locator(".catalog-table tr[data-offer-id]")).to_have_count(2)
+    page.screenshot(path=str(output / "catalog-desktop.png"), full_page=True)
+    page.locator('input[name="q"]').fill("04660291070982")
+    page.get_by_role("button", name="Найти", exact=True).click()
+    page.wait_for_url("**q=04660291070982*")
+    expect(page.locator(".catalog-table tr[data-offer-id]")).to_have_count(1)
+    assert "OZN634662543" in page.locator(".catalog-table").inner_text()
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(url + "/products?account_id=" + account)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(output / "catalog-mobile.png"), full_page=True)
+    page.set_viewport_size({"width": 1440, "height": 1000})
+
+
 def check(
-    url: str, login: str, password: str, chromium: str, output: Path, include_accounts: bool = False
+    url: str,
+    login: str,
+    password: str,
+    chromium: str,
+    output: Path,
+    include_accounts: bool = False,
+    include_catalog: bool = False,
 ) -> None:
     output.mkdir(parents=True, exist_ok=True)
     errors = []
@@ -95,6 +139,8 @@ def check(
         page.screenshot(path=str(output / "settings-desktop.png"), full_page=True)
         if include_accounts:
             check_accounts(page, context, url, output)
+        if include_catalog:
+            check_catalog(page, context, url, output)
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(url + "/pack")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -134,7 +180,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Create a synthetic account on an isolated server with mocked Ozon",
     )
+    parser.add_argument(
+        "--check-catalog",
+        action="store_true",
+        help="Test catalog load using mocked Ozon and an isolated worker",
+    )
     args = parser.parse_args()
     password = os.environ.get("PACK_V2_BROWSER_PASSWORD") or getpass.getpass("Пароль тестового владельца: ")
-    check(args.url.rstrip("/"), args.login, password, args.chromium, args.output, args.check_accounts)
+    check(
+        args.url.rstrip("/"),
+        args.login,
+        password,
+        args.chromium,
+        args.output,
+        args.check_accounts,
+        args.check_catalog,
+    )
     print("Browser checks passed: desktop hover/click, mobile touch, logout; no JavaScript errors")

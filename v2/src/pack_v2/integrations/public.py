@@ -6,7 +6,9 @@ from uuid import UUID
 
 from cryptography.fernet import InvalidToken
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from pack_v2.infrastructure.crypto import SecretBox
 from pack_v2.infrastructure.database import Database
@@ -14,7 +16,7 @@ from pack_v2.modules.identity.public import Principal
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 
 from . import repository as store
-from .contracts import AccessChecker, AccountView, OzonCredentials
+from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials
 from .models import AccountCheck, MarketplaceAccount
 from .reading import (
     AccountSource,
@@ -25,6 +27,10 @@ from .reading import (
     ReadPage,
     ShipmentSnapshot,
 )
+
+
+class SourceChanged(Conflict):
+    pass
 
 
 def _manager(actor: Principal) -> None:
@@ -69,35 +75,69 @@ class Connections:
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
 
+    def account_labels(self, actor: Principal) -> list[AccountLabel]:
+        if not actor.can("products"):
+            actor.require("settings")
+        with self.db.transaction() as tx:
+            return [
+                AccountLabel(a.id, a.title, a.marketplace, a.active, a.credential_revision)
+                for a in tx.scalars(
+                    select(MarketplaceAccount).order_by(MarketplaceAccount.title, MarketplaceAccount.id)
+                )
+            ]
+
+    def sync_accounts(self) -> list[AccountSource]:
+        """Backend scheduler only; no credentials or user-facing endpoint."""
+        with self.db.transaction() as tx:
+            return [
+                AccountSource(a.id, a.marketplace, a.credential_revision)
+                for a in tx.scalars(
+                    select(MarketplaceAccount).where(
+                        MarketplaceAccount.active.is_(True), MarketplaceAccount.marketplace == "ozon"
+                    )
+                )
+            ]
+
+    def source_for_sync(self, tx: Session, account_id: UUID) -> AccountSource:
+        """Backend UoW boundary; callers authorize the command before entering here."""
+        saved = store.account(tx, account_id, lock=True)
+        if not saved.active:
+            raise SourceChanged("Кабинет отключён")
+        if saved.marketplace != "ozon":
+            raise DomainError("Адаптер этой площадки ещё не подключён")
+        return AccountSource(saved.id, saved.marketplace, saved.credential_revision)
+
+    def lock_source(self, tx: Session, source: AccountSource) -> None:
+        current = self.source_for_sync(tx, source.account_id)
+        if current != source:
+            raise SourceChanged("Ключи кабинета изменились. Повторите загрузку")
+
     @contextmanager
-    def reader(self, actor: Principal, account_id: UUID):
-        """Read an active account without holding a database connection during HTTP."""
-        _manager(actor)
+    def reader_for_sync(self, source: AccountSource):
+        """Trusted backend entry point: source comes from a persisted, authorized job."""
         if self.reader_factory is None:
             raise DomainError("Адаптер чтения не настроен")
         with self.db.transaction() as tx:
-            saved = store.account(tx, account_id)
-            if not saved.active:
-                raise Conflict("Кабинет отключён")
-            if saved.marketplace != "ozon":
-                raise DomainError("Адаптер этой площадки ещё не подключён")
-            source = AccountSource(saved.id, saved.marketplace, saved.credential_revision)
-            credentials = self._credentials(tx, account_id)
+            self.lock_source(tx, source)
+            credentials = self._credentials(tx, source.account_id)
         with self.reader_factory(source, credentials) as reader:
             yield reader
-        self.assert_source_current(actor, source)
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
 
-    def assert_source_current(self, actor: Principal, source: AccountSource) -> None:
-        """Freshness check only. Future writes must revalidate under their own UoW lock."""
+    @contextmanager
+    def reader(self, actor: Principal, account_id: UUID):
         _manager(actor)
         with self.db.transaction() as tx:
-            saved = store.account(tx, source.account_id)
-            if (
-                not saved.active
-                or saved.marketplace != source.marketplace
-                or saved.credential_revision != source.credential_revision
-            ):
-                raise Conflict("Кабинет отключён или ключ изменился. Повторите загрузку")
+            source = self.source_for_sync(tx, account_id)
+        with self.reader_for_sync(source) as reader:
+            yield reader
+
+    def assert_source_current(self, actor: Principal, source: AccountSource) -> None:
+        """Freshness check only. Writes must use lock_source in the same UoW."""
+        _manager(actor)
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
 
     def _credentials(self, tx, account_id: UUID) -> OzonCredentials:
         values = store.secrets_for(tx, account_id)
@@ -271,7 +311,9 @@ class Connections:
 __all__ = [
     "Connections",
     "AccountView",
+    "AccountLabel",
     "AccountSource",
+    "SourceChanged",
     "MarketplaceReader",
     "OfferSnapshot",
     "ShipmentSnapshot",

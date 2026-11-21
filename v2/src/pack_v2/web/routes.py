@@ -121,7 +121,8 @@ def build_router() -> APIRouter:
         return endpoint
 
     for section, title, href in (*NAV, *REPORTS):
-        router.add_api_route(href, shell(section, title), methods=["GET"], name=section)
+        if section != "products":
+            router.add_api_route(href, shell(section, title), methods=["GET"], name=section)
 
     @router.get("/settings")
     def settings(request: Request, tab: str = "printing"):

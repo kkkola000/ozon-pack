@@ -39,3 +39,12 @@ class AccountView:
     checked_at: datetime | None
     results: list[dict]
     configuration_error: str | None = None
+
+
+@dataclass(frozen=True)
+class AccountLabel:
+    id: UUID
+    title: str
+    marketplace: str
+    active: bool
+    credential_revision: int

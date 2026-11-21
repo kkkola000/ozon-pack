@@ -11,7 +11,7 @@ class Module:
 MODULES = (
     Module("identity", "Пользователи и доступ", "foundation"),
     Module("integrations", "Интеграции", "connections"),
-    Module("catalog", "Товары", "schema"),
+    Module("catalog", "Товары", "synchronization"),
     Module("orders", "Заказы", "schema"),
     Module("assembly", "Сборка", "planned"),
     Module("instance_data", "Данные экземпляров", "planned"),

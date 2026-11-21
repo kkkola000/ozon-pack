@@ -443,3 +443,28 @@ tbody tr:last-child td {
   }
 
 }
+
+[hidden] { display: none !important; }
+.section-heading, .catalog-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.section-heading { margin: 8px 0 22px; }
+.section-heading h1 { margin: 0; }
+.section-heading form { margin: 0; }
+.sync-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.sync-card { padding: 16px; min-width: 0; }
+.sync-card p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.sync-card[data-run-status=running] [data-sync-badge]::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: pending-spin .8s linear infinite; }
+.catalog-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.catalog-filters label { display: flex; flex-direction: column; gap: 6px; min-width: 160px; flex: 1; }
+.catalog-filters .catalog-search { flex: 2; min-width: 240px; }
+.catalog-filters select { width: 100%; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5; }
+.catalog-table { min-width: 760px; }
+.catalog-table td:first-child { width: 35%; }
+.product-name { display: flex; align-items: flex-start; gap: 12px; }
+.product-name img { flex: 0 0 48px; object-fit: contain; border-radius: 8px; border: 1px solid var(--line); }
+.code-value { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+.catalog-codes { display: flex; flex-direction: column; gap: 4px; max-width: 250px; }
+.catalog-codes summary { color: var(--accent); cursor: pointer; }
+.catalog-pagination { margin-top: 18px; }
+.catalog-pagination > div { display: flex; gap: 8px; }
+@media (prefers-reduced-motion: reduce) { .sync-card[data-run-status=running] [data-sync-badge]::before { animation: none; } }
+@media (max-width: 700px) { .catalog-filters label, .catalog-filters .catalog-search { min-width: 0; flex-basis: 100%; } }

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     session_hours: int = Field(default=12, ge=1, le=168)
     login_limit: int = Field(default=10, ge=1, le=100)
     login_window_seconds: int = Field(default=300, ge=10, le=3600)
+    catalog_sync_minutes: int = Field(default=15, ge=0, le=1440)
 
     @model_validator(mode="after")
     def validate_separation(self) -> Self:

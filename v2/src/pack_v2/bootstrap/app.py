@@ -21,6 +21,8 @@ from pack_v2.integrations.ozon.access import OzonAccessChecker
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.integrations.reading import ReaderFactory
+from pack_v2.modules.catalog.api import build_router as catalog_router
+from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound, RateLimited
 from pack_v2.web.body_limit import AuthBodyLimit
@@ -29,7 +31,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0002_accounts"
+SCHEMA_REVISION = "0003_catalog"
 
 
 def create_app(
@@ -62,6 +64,7 @@ def create_app(
         checker if checker is not None else OzonAccessChecker(),
         reader_factory if reader_factory is not None else OzonReadAdapter,
     )
+    app.state.catalog = Catalog(db, app.state.connections)
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
     )
@@ -78,7 +81,7 @@ def create_app(
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; "
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
         if not request.url.path.startswith("/static-v2/"):
@@ -150,4 +153,5 @@ def create_app(
 
     app.include_router(build_router())
     app.include_router(connections_router())
+    app.include_router(catalog_router())
     return app

@@ -87,3 +87,35 @@ def test_foundation_worker_runs_cleanup_and_rejects_unknown_handler(db, identity
     worker(db, identity, once=True)
     with db.transaction() as tx:
         assert tx.scalar(select(Job.status).where(Job.kind == "identity.cleanup")) == "succeeded"
+
+
+def test_lease_renewal_requires_current_unexpired_token(db):
+    with db.transaction() as tx:
+        enqueue(tx, "test", "renew")
+    queue = Queue(db)
+    first = queue.claim(lease_seconds=30)
+    assert queue.renew(first, lease_seconds=120)
+    with db.transaction() as tx:
+        saved = tx.get(Job, first.id)
+        assert saved.lease_until > datetime.now(UTC) + timedelta(seconds=110)
+        saved.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+    assert not queue.renew(first)
+    second = queue.claim()
+    assert second.lease_token != first.lease_token
+    assert not queue.renew(first) and queue.renew(second)
+
+
+def test_job_finish_in_same_transaction_rolls_back_with_business_changes(db):
+    from pack_v2.modules.catalog.models import Product
+
+    with db.transaction() as tx:
+        enqueue(tx, "test", "atomic-finish")
+    queue = Queue(db)
+    job = queue.claim()
+    with pytest.raises(RuntimeError), db.transaction() as tx:
+        tx.add(Product(name="must roll back"))
+        Queue.finish_in(tx, job)
+        raise RuntimeError("rollback")
+    with db.transaction() as tx:
+        assert tx.get(Job, job.id).status == "running"
+        assert tx.scalar(select(func.count()).select_from(Product)) == 0

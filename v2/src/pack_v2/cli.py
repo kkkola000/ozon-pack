@@ -5,6 +5,7 @@ import os
 import secrets
 import signal
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,8 +19,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from pack_v2.bootstrap.app import SCHEMA_REVISION
 from pack_v2.bootstrap.models import load_models
 from pack_v2.infrastructure.config import Settings, load_settings
+from pack_v2.infrastructure.crypto import SecretBox
 from pack_v2.infrastructure.database import Database
 from pack_v2.infrastructure.jobs import Queue, enqueue
+from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.ozon.reader import OzonReadAdapter
+from pack_v2.integrations.public import Connections
+from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
 from pack_v2.shared.errors import DomainError
 
@@ -42,6 +48,7 @@ def generate_env(path: Path) -> None:
         f"PACK_V2_ENCRYPTION_KEY={Fernet.generate_key().decode()}\n"
         'PACK_V2_ALLOWED_HOSTS=["localhost","127.0.0.1"]\n'
         "PACK_V2_SECURE_COOKIES=false\n"
+        "PACK_V2_CATALOG_SYNC_MINUTES=15\n"
     )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as stream:
@@ -49,10 +56,13 @@ def generate_env(path: Path) -> None:
     print(f"Создан {path}; существующие файлы не перезаписываются")
 
 
-def worker(db: Database, identity: Identity, once: bool) -> None:
-    # Only this explicitly idempotent handler is enabled in the foundation.
+def worker(
+    db: Database, identity: Identity, once: bool, catalog: Catalog | None = None, catalog_minutes: int = 15
+) -> None:
+    # Only idempotent cleanup and read synchronization are registered.
     queue, stopped = Queue(db), threading.Event()
     scheduled_date = None
+    catalog_scheduled_at = None
     if not once:
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: stopped.set())
@@ -62,9 +72,19 @@ def worker(db: Database, identity: Identity, once: bool) -> None:
             with db.transaction() as tx:
                 enqueue(tx, "identity.cleanup", "identity.cleanup:" + today)
             scheduled_date = today
-        job = queue.claim()
+        if catalog and (catalog_scheduled_at is None or time.monotonic() - catalog_scheduled_at >= 60):
+            try:
+                catalog.schedule(catalog_minutes)
+            except SQLAlchemyError:
+                logging.warning("catalog scheduler delayed")
+            else:
+                catalog_scheduled_at = time.monotonic()
+        job = queue.claim(lease_seconds=120)
         if job:
-            if job.kind != "identity.cleanup":
+            if job.kind == "catalog.sync" and catalog:
+                with queue.keep_alive(job):
+                    catalog.perform(job)
+            elif job.kind != "identity.cleanup":
                 queue.finish(job, failed=True)
             else:
                 try:
@@ -118,7 +138,19 @@ def main(argv: list[str] | None = None) -> int:
                 result = Identity(db, settings).bootstrap_owner(args.login, password)
                 print(f"Владелец {result.login} создан")
             elif args.command == "worker":
-                worker(db, Identity(db, settings), args.once)
+                connections = Connections(
+                    db,
+                    SecretBox(settings.encryption_key.get_secret_value()),
+                    OzonAccessChecker(),
+                    OzonReadAdapter,
+                )
+                worker(
+                    db,
+                    Identity(db, settings),
+                    args.once,
+                    Catalog(db, connections),
+                    settings.catalog_sync_minutes,
+                )
         finally:
             db.close()
     except (DomainError, ValidationError) as exc:
