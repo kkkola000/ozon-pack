@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -15,6 +16,15 @@ from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 from . import repository as store
 from .contracts import AccessChecker, AccountView, OzonCredentials
 from .models import AccountCheck, MarketplaceAccount
+from .reading import (
+    AccountSource,
+    MarketplaceReader,
+    OfferSnapshot,
+    ReaderFactory,
+    ReadError,
+    ReadPage,
+    ShipmentSnapshot,
+)
 
 
 def _manager(actor: Principal) -> None:
@@ -49,8 +59,57 @@ def _key(value: SecretStr) -> bytes:
 
 
 class Connections:
-    def __init__(self, db: Database, box: SecretBox, checker: AccessChecker):
+    def __init__(
+        self,
+        db: Database,
+        box: SecretBox,
+        checker: AccessChecker,
+        reader_factory: ReaderFactory | None = None,
+    ):
         self.db, self.box, self.checker = db, box, checker
+        self.reader_factory = reader_factory
+
+    @contextmanager
+    def reader(self, actor: Principal, account_id: UUID):
+        """Read an active account without holding a database connection during HTTP."""
+        _manager(actor)
+        if self.reader_factory is None:
+            raise DomainError("Адаптер чтения не настроен")
+        with self.db.transaction() as tx:
+            saved = store.account(tx, account_id)
+            if not saved.active:
+                raise Conflict("Кабинет отключён")
+            if saved.marketplace != "ozon":
+                raise DomainError("Адаптер этой площадки ещё не подключён")
+            source = AccountSource(saved.id, saved.marketplace, saved.credential_revision)
+            credentials = self._credentials(tx, account_id)
+        with self.reader_factory(source, credentials) as reader:
+            yield reader
+        self.assert_source_current(actor, source)
+
+    def assert_source_current(self, actor: Principal, source: AccountSource) -> None:
+        """Freshness check only. Future writes must revalidate under their own UoW lock."""
+        _manager(actor)
+        with self.db.transaction() as tx:
+            saved = store.account(tx, source.account_id)
+            if (
+                not saved.active
+                or saved.marketplace != source.marketplace
+                or saved.credential_revision != source.credential_revision
+            ):
+                raise Conflict("Кабинет отключён или ключ изменился. Повторите загрузку")
+
+    def _credentials(self, tx, account_id: UUID) -> OzonCredentials:
+        values = store.secrets_for(tx, account_id)
+        try:
+            return OzonCredentials(
+                self.box.open(values["client_id"]).decode("ascii"),
+                SecretStr(self.box.open(values["api_key"]).decode("ascii")),
+            )
+        except (KeyError, InvalidToken, UnicodeError):
+            raise DomainError(
+                "Не удалось прочитать ключи кабинета. Проверьте ключ шифрования панели"
+            ) from None
 
     def create(self, actor: Principal, title: str, client_id: str, api_key: SecretStr) -> UUID:
         _manager(actor)
@@ -159,16 +218,7 @@ class Connections:
             if pending and pending.lease_until > now:
                 raise Conflict("Проверка этого кабинета уже выполняется")
             store.invalidate_running(tx, account_id)
-            values = store.secrets_for(tx, account_id)
-            try:
-                credentials = OzonCredentials(
-                    self.box.open(values["client_id"]).decode("ascii"),
-                    SecretStr(self.box.open(values["api_key"]).decode("ascii")),
-                )
-            except (KeyError, InvalidToken, UnicodeError) as exc:
-                raise DomainError(
-                    "Не удалось прочитать ключи кабинета. Проверьте ключ шифрования панели"
-                ) from exc
+            credentials = self._credentials(tx, account_id)
             check = AccountCheck(
                 account_id=account_id,
                 credential_revision=saved.credential_revision,
@@ -218,4 +268,13 @@ class Connections:
             raise Conflict("Настройки кабинета изменились. Обновите страницу и повторите действие")
 
 
-__all__ = ["Connections", "AccountView"]
+__all__ = [
+    "Connections",
+    "AccountView",
+    "AccountSource",
+    "MarketplaceReader",
+    "OfferSnapshot",
+    "ShipmentSnapshot",
+    "ReadPage",
+    "ReadError",
+]

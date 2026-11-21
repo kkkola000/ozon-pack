@@ -18,7 +18,9 @@ from pack_v2.infrastructure.database import Database
 from pack_v2.integrations.api import build_router as connections_router
 from pack_v2.integrations.contracts import AccessChecker
 from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.public import Connections
+from pack_v2.integrations.reading import ReaderFactory
 from pack_v2.modules.identity.public import Identity
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound, RateLimited
 from pack_v2.web.body_limit import AuthBodyLimit
@@ -30,7 +32,11 @@ from .models import load_models
 SCHEMA_REVISION = "0002_accounts"
 
 
-def create_app(settings: Settings | None = None, checker: AccessChecker | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    checker: AccessChecker | None = None,
+    reader_factory: ReaderFactory | None = None,
+) -> FastAPI:
     settings = settings or load_settings()
     load_models()
     db = Database(settings)
@@ -54,6 +60,7 @@ def create_app(settings: Settings | None = None, checker: AccessChecker | None =
         db,
         SecretBox(settings.encryption_key.get_secret_value()),
         checker if checker is not None else OzonAccessChecker(),
+        reader_factory if reader_factory is not None else OzonReadAdapter,
     )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"

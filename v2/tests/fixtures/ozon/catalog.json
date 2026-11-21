@@ -1,0 +1,15 @@
+{
+  "list": {"result": {"items": [
+    {"product_id": 101, "offer_id": "PF-M02", "sku": 634662543, "archived": false},
+    {"product_id": 102, "offer_id": "OZ-03", "archived": true}
+  ], "last_id": "catalog-next", "total_items": 2, "total": 999}},
+  "details": {"items": [
+    {"id": 102, "offer_id": "OZ-03", "name": "Тестовый стульчик", "sku": 2113641643,
+     "sources": [{"sku": 5568530098}], "barcodes": ["OZN2113641643"], "is_archived": true},
+    {"id": 101, "offer_id": "PF-M02", "name": "Тестовые муфты", "sku": 634662543,
+     "sources": [{"sku": 634662543}, {"sku": 6220834780}],
+     "barcodes": ["04660291070982", "OZN634662543", "04660291070982"],
+     "primary_image": ["https://cdn.example.invalid/101.png"], "is_archived": false}
+  ]},
+  "last": {"result": {"items": [], "last_id": "catalog-next", "total_items": 2}}
+}
