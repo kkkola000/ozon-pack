@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from pack_v2.integrations.public import OfferSnapshot
 from pack_v2.shared.errors import Conflict, DomainError
 
-from .contracts import CatalogPage, OfferView
+from .contracts import CatalogPage, OfferMatch, OfferView
 from .models import Offer, OfferCode, OfferRef
 
 
@@ -152,6 +152,10 @@ def listing(tx: Session, *, account_id: UUID | None, query: str, state: str, pag
         .offset((page - 1) * 30)
         .limit(30)
     ).all()
+    return CatalogPage(views(tx, rows), total, page, max(1, (total + 29) // 30))
+
+
+def views(tx: Session, rows) -> tuple[OfferView, ...]:
     refs, codes = {}, {}
     ids = [r.id for r in rows]
     for r in tx.scalars(
@@ -160,24 +164,41 @@ def listing(tx: Session, *, account_id: UUID | None, query: str, state: str, pag
         refs.setdefault(r.offer_id, []).append((r.kind, r.value))
     for r in tx.scalars(select(OfferCode).where(OfferCode.offer_id.in_(ids)).order_by(OfferCode.value)):
         codes.setdefault(r.offer_id, []).append(r.value)
-    return CatalogPage(
-        tuple(
-            OfferView(
-                r.id,
-                r.account_id,
-                r.name,
-                r.article,
-                r.image_url,
-                r.archived,
-                r.source_present,
-                r.revision,
-                r.observed_at,
-                tuple(refs.get(r.id, ())),
-                tuple(dict.fromkeys(codes.get(r.id, ()))),
-            )
-            for r in rows
-        ),
-        total,
-        page,
-        max(1, (total + 29) // 30),
+    return tuple(
+        OfferView(
+            r.id,
+            r.account_id,
+            r.name,
+            r.article,
+            r.image_url,
+            r.archived,
+            r.source_present,
+            r.revision,
+            r.observed_at,
+            tuple(refs.get(r.id, ())),
+            tuple(dict.fromkeys(codes.get(r.id, ()))),
+        )
+        for r in rows
     )
+
+
+def matching(tx: Session, account_id: UUID, groups) -> dict:
+    wanted = {(r.kind, r.value) for refs in groups.values() for r in refs}
+    index = {
+        (r.kind, r.value): r.offer_id
+        for r in tx.scalars(
+            select(OfferRef).where(
+                OfferRef.account_id == account_id, tuple_(OfferRef.kind, OfferRef.value).in_(wanted)
+            )
+        )
+    }
+    result = {}
+    for key, refs in groups.items():
+        primary = [(r.kind, r.value) for r in refs if r.kind in {"product_id", "sku"}]
+        selected = primary or [(r.kind, r.value) for r in refs if r.kind == "offer_id"]
+        found = {index[ref] for ref in selected if ref in index}
+        result[key] = OfferMatch(
+            next(iter(found)) if len(found) == 1 else None,
+            "matched" if len(found) == 1 else "conflict" if found else "unmatched",
+        )
+    return result

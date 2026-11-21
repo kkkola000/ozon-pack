@@ -10,7 +10,14 @@ class AuthBodyLimit:
     async def __call__(self, scope, receive, send):
         protected = scope.get("path") in {"/login", "/logout", "/api/v2/users"}
         protected |= scope.get("path", "").startswith(
-            ("/api/v2/accounts", "/settings/accounts", "/api/v2/catalog", "/products/sync")
+            (
+                "/api/v2/accounts",
+                "/settings/accounts",
+                "/api/v2/catalog",
+                "/api/v2/orders/sync",
+                "/orders/sync",
+                "/products/sync",
+            )
         )
         if scope["type"] != "http" or scope.get("method") not in {"POST", "PATCH"} or not protected:
             return await self.app(scope, receive, send)

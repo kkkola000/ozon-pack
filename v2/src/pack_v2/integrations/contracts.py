@@ -48,3 +48,17 @@ class AccountLabel:
     marketplace: str
     active: bool
     credential_revision: int
+
+
+@dataclass(frozen=True)
+class SyncView:
+    id: UUID
+    account_id: UUID
+    status: str
+    pages: int
+    items: int
+    error: str | None
+    created_at: datetime
+    finished_at: datetime | None
+    last_success_at: datetime | None
+    retry_at: datetime | None

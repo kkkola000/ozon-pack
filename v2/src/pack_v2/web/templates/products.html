@@ -3,20 +3,7 @@
 <div class="section-heading"><h1>Товары</h1>{% if user.can('settings') %}
 <form action="/products/sync" method="post" data-pending><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="account_id" value="{{ selected_account or '' }}"><button class="btn primary" type="submit" data-pending-text="Ставим в очередь…">Обновить товары</button></form>{% endif %}</div>
 {% if queued %}<p class="notice success" role="status">{% if queued == '0' %}Новых заданий нет. Проверьте кабинеты и состояние загрузки.{% else %}Загрузка запрошена. Состояние показано ниже.{% endif %}</p>{% endif %}
-{% if accounts %}
-<div class="sync-grid" data-catalog-status data-sync-labels='{{ sync_statuses|tojson }}'>
-{% for account in accounts if not selected_account or account.id == selected_account %}
-{% set sync = syncs|selectattr('account_id','equalto',account.id)|first %}
-<section class="panel sync-card" data-account-id="{{ account.id }}" data-run-status="{{ sync.status if sync else '' }}" data-run-id="{{ sync.id if sync else '' }}">
-  <div class="account-heading"><b>{{ account.title }}</b><span class="badge {{ sync_statuses[sync.status][1] if sync else '' }}" data-sync-badge>{{ sync_statuses[sync.status][0] if sync else 'Ещё не загружен' }}</span></div>
-  {% if not account.active %}<p class="muted small">Кабинет отключён</p>{% endif %}
-  <p class="muted small" data-sync-progress>{% if sync %}Карточек: {{ sync.items }} · Страниц: {{ sync.pages }}{% else %}Загрузите каталог кабинета{% endif %}</p>
-  <p class="muted small" data-sync-time>Последняя полная загрузка: {{ msk(sync.last_success_at) if sync else '—' }}</p>
-  <p class="small {{ 'access-error' if sync and sync.status == 'failed' else 'muted' }}" data-sync-error {% if not sync or not sync.error %}hidden{% endif %}>{{ sync.error if sync and sync.error else '' }}</p>
-</section>{% endfor %}
-</div>
-{% endif %}
-<p><a class="btn" id="catalog-refresh" href="{{ page_url(result.page) }}" hidden>Каталог обновлён — показать товары</a></p>
+{% include "_sync_status.html" %}
 <section class="panel">
 <form action="/products" method="get" class="catalog-filters">
   <label>Кабинет<select name="account_id"><option value="">Все кабинеты</option>{% for account in accounts %}<option value="{{ account.id }}" {% if account.id == selected_account %}selected{% endif %}>{{ account.title }}{% if not account.active %} · отключён{% endif %}</option>{% endfor %}</select></label>

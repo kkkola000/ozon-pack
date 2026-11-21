@@ -107,7 +107,7 @@ def moment(value) -> datetime | None:
 
 
 def references(values) -> tuple[ExternalReference, ...]:
-    return tuple(sorted(set(values), key=lambda r: (r.kind, r.value, r.authoritative)))
+    return tuple(sorted(set(values), key=lambda r: (r.kind, r.value, r.authoritative, r.origin or "")))
 
 
 def _archived(item: dict) -> bool | None:
@@ -239,12 +239,16 @@ def shipment(source: AccountSource, raw: dict, observed: datetime) -> ShipmentSn
     refs = [ExternalReference("posting_number", number, True)]
     tracking = identifier(raw.get("tracking_number"), optional=True)
     if tracking:
-        refs.append(ExternalReference("tracking_number", tracking))
+        refs.append(ExternalReference("tracking_number", tracking, origin="tracking_number"))
     labels = mapping(raw.get("barcodes"))
-    for value in (labels.get("upper_barcode"), labels.get("lower_barcode"), raw.get("scanit")):
+    for origin, value in (
+        ("upper_barcode", labels.get("upper_barcode")),
+        ("lower_barcode", labels.get("lower_barcode")),
+        ("scanit", raw.get("scanit")),
+    ):
         code = identifier(value, optional=True)
         if code:
-            refs.append(ExternalReference("label_barcode", code))
+            refs.append(ExternalReference("label_barcode", code, origin=origin))
     order_refs = [
         ExternalReference(key, identifier(raw[key]), True)
         for key in ("order_id", "order_number")
@@ -283,6 +287,27 @@ def shipment(source: AccountSource, raw: dict, observed: datetime) -> ShipmentSn
                 currency,
                 tuple(sorted(k for k, values in hints.items() if sku in values)),
                 ("cis",) if sku in possible else (),
+                frozenset(
+                    field
+                    for field, present in (
+                        ("name", "name" in item and item["name"] is not None),
+                        ("article", "offer_id" in item and item["offer_id"] is not None),
+                        (
+                            "price",
+                            item.get("price") is not None
+                            and (
+                                not isinstance(item["price"], dict) or item["price"].get("amount") is not None
+                            ),
+                        ),
+                        (
+                            "currency",
+                            item.get("currency_code") is not None
+                            or isinstance(item.get("price"), dict)
+                            and item["price"].get("currency") is not None,
+                        ),
+                    )
+                    if present
+                ),
             )
         )
     if not lines:
@@ -311,6 +336,25 @@ def shipment(source: AccountSource, raw: dict, observed: datetime) -> ShipmentSn
         )
         if key in raw and raw[key] is not None
     }
+    for origin in ("scanit", "tracking_number"):
+        if origin in raw:
+            fields.add("reference:" + origin)
+    for origin in ("upper_barcode", "lower_barcode"):
+        if origin in labels:
+            fields.add("reference:" + origin)
+    for field, key in (
+        ("parent", "parent_posting_number"),
+        ("substatus", "substatus"),
+        ("package_count_hint", "multi_box_qty"),
+    ):
+        if key in raw:
+            fields.add(field)
+    if isinstance(raw.get("related_postings"), dict) and "related_posting_numbers" in raw["related_postings"]:
+        fields.add("related")
+    if any(row.get("warehouse_id") is not None for row in (delivery, analytics)):
+        fields.add("warehouse_id")
+    if any(row.get("warehouse") is not None for row in (delivery, analytics)):
+        fields.add("warehouse_name")
     if order_refs:
         fields.add("order_identity")
     if raw.get("barcodes") is not None or raw.get("scanit") not in (None, ""):

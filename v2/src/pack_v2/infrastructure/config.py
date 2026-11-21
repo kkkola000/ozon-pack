@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     login_limit: int = Field(default=10, ge=1, le=100)
     login_window_seconds: int = Field(default=300, ge=10, le=3600)
     catalog_sync_minutes: int = Field(default=15, ge=0, le=1440)
+    orders_sync_minutes: int = Field(default=5, ge=0, le=1440)
+    orders_lookback_days: int = Field(default=30, ge=1, le=90)
 
     @model_validator(mode="after")
     def validate_separation(self) -> Self:

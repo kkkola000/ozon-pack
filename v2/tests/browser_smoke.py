@@ -96,6 +96,62 @@ def check_catalog(page, context, url: str, output: Path) -> None:
     page.set_viewport_size({"width": 1440, "height": 1000})
 
 
+def check_orders(page, context, url: str, output: Path) -> None:
+    csrf = context.request.get(url + "/api/v2/me").json()["csrf"]
+    response = context.request.post(
+        url + "/api/v2/accounts",
+        headers={"x-csrf-token": csrf},
+        data={
+            "title": "Заказы Ozon",
+            "client_id": "6000" + str(time.time_ns())[-12:],
+            "api_key": "orders-browser-synthetic-key",
+        },
+    )
+    assert response.status == 201
+    account = response.json()["id"]
+    response = context.request.post(
+        url + "/api/v2/catalog/sync", headers={"x-csrf-token": csrf}, data={"account_id": account}
+    )
+    assert response.status == 202
+    page.goto(url + "/products?account_id=" + account)
+    expect(page.locator(f'[data-account-id="{account}"] [data-sync-badge]')).to_have_text(
+        "Загружено", timeout=20000
+    )
+    page.goto(url + "/orders?account_id=" + account)
+    page.get_by_role("button", name="Обновить заказы", exact=True).click()
+    page.wait_for_url("**queued=1*")
+    expect(page.locator(f'[data-account-id="{account}"] [data-sync-badge]')).to_have_text(
+        "Загружено", timeout=20000
+    )
+    refresh = page.locator("#orders-refresh")
+    if refresh.is_visible():
+        refresh.click()
+    else:
+        page.reload()
+    expect(page.locator(".orders-table tr[data-shipment-id]")).to_have_count(2)
+    page.screenshot(path=str(output / "orders-desktop.png"), full_page=True)
+    page.locator('input[name="q"]').fill("ii50082908916")
+    page.get_by_role("button", name="Найти", exact=True).click()
+    page.wait_for_url("**q=ii50082908916*")
+    expect(page.locator(".orders-table tr[data-shipment-id]")).to_have_count(1)
+    page.get_by_role("link", name="Открыть", exact=True).click()
+    expect(page.locator("h1")).to_have_text("59511155-0034-1")
+    assert "04660291070982" in page.locator(".order-items").first.inner_text()
+    expect(page.locator(".order-item[data-item-id]")).to_have_count(2)
+    page.screenshot(path=str(output / "order-detail-desktop.png"), full_page=True)
+    page.get_by_role("link", name="59511155-0034-2", exact=True).click()
+    expect(page.locator("h1")).to_have_text("59511155-0034-2")
+    child_url = page.url
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.goto(url + "/orders?account_id=" + account)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(output / "orders-mobile.png"), full_page=True)
+    page.goto(child_url)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.screenshot(path=str(output / "order-detail-mobile.png"), full_page=True)
+    page.set_viewport_size({"width": 1440, "height": 1000})
+
+
 def check(
     url: str,
     login: str,
@@ -104,6 +160,7 @@ def check(
     output: Path,
     include_accounts: bool = False,
     include_catalog: bool = False,
+    include_orders: bool = False,
 ) -> None:
     output.mkdir(parents=True, exist_ok=True)
     errors = []
@@ -141,6 +198,8 @@ def check(
             check_accounts(page, context, url, output)
         if include_catalog:
             check_catalog(page, context, url, output)
+        if include_orders:
+            check_orders(page, context, url, output)
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(url + "/pack")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -185,6 +244,9 @@ if __name__ == "__main__":
         action="store_true",
         help="Test catalog load using mocked Ozon and an isolated worker",
     )
+    parser.add_argument(
+        "--check-orders", action="store_true", help="Test orders using an isolated worker and mocked Ozon"
+    )
     args = parser.parse_args()
     password = os.environ.get("PACK_V2_BROWSER_PASSWORD") or getpass.getpass("Пароль тестового владельца: ")
     check(
@@ -195,5 +257,6 @@ if __name__ == "__main__":
         args.output,
         args.check_accounts,
         args.check_catalog,
+        args.check_orders,
     )
     print("Browser checks passed: desktop hover/click, mobile touch, logout; no JavaScript errors")

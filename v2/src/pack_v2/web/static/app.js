@@ -54,17 +54,16 @@ window.addEventListener('pageshow', () => {
   });
 });
 
-const catalogStatus = document.querySelector('[data-catalog-status]');
-if (catalogStatus) {
+document.querySelectorAll('[data-sync-status]').forEach((catalogStatus) => {
   const labels = JSON.parse(catalogStatus.dataset.syncLabels);
   const cards = [...catalogStatus.querySelectorAll('[data-account-id]')];
-  const formatter = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', dateStyle: 'short', timeStyle: 'short' });
+  const formatter = new Intl.DateTimeFormat('ru-RU', { timeZone: 'Europe/Moscow', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   const active = () => cards.some(card => ['queued', 'running', 'retrying'].includes(card.dataset.runStatus));
   const poll = async () => {
     let delay = 30000;
     if (!document.hidden) {
       try {
-        const response = await fetch('/api/v2/catalog/sync', { headers: { Accept: 'application/json' } });
+        const response = await fetch(catalogStatus.dataset.syncUrl, { headers: { Accept: 'application/json' } });
         if ([401, 403].includes(response.status)) return;
         if (!response.ok) throw new Error('status unavailable');
         const statuses = await response.json();
@@ -72,14 +71,14 @@ if (catalogStatus) {
           const row = statuses.find(item => item.account_id === card.dataset.accountId);
           if (!row || !labels[row.status]) continue;
           const changed = card.dataset.runId !== row.id || card.dataset.runStatus !== row.status;
-          if (changed && row.status === 'succeeded') document.querySelector('#catalog-refresh').hidden = false;
+          if (changed && row.status === 'succeeded') document.getElementById(catalogStatus.dataset.refreshId).hidden = false;
           card.dataset.runId = row.id;
           card.dataset.runStatus = row.status;
           const badge = card.querySelector('[data-sync-badge]');
           badge.textContent = labels[row.status][0];
           badge.className = `badge ${labels[row.status][1]}`;
-          card.querySelector('[data-sync-progress]').textContent = `Карточек: ${row.items} · Страниц: ${row.pages}`;
-          card.querySelector('[data-sync-time]').textContent = 'Последняя полная загрузка: ' + (row.last_success_at ? formatter.format(new Date(row.last_success_at)) : '—');
+          card.querySelector('[data-sync-progress]').textContent = `${catalogStatus.dataset.syncUnit}: ${row.items} · Страниц: ${row.pages}`;
+          card.querySelector('[data-sync-time]').textContent = catalogStatus.dataset.syncCaption + ': ' + (row.last_success_at ? formatter.format(new Date(row.last_success_at)) : '—');
           const error = card.querySelector('[data-sync-error]');
           error.textContent = row.error || '';
           error.hidden = !row.error;
@@ -91,4 +90,4 @@ if (catalogStatus) {
     window.setTimeout(poll, delay);
   };
   window.setTimeout(poll, active() ? 1500 : 30000);
-}
+});

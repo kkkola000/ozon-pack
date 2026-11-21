@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
+from pack_v2.integrations.public import SyncView as SyncView
+
 
 @dataclass(frozen=True)
 class OfferView:
@@ -27,14 +29,6 @@ class CatalogPage:
 
 
 @dataclass(frozen=True)
-class SyncView:
-    id: UUID
-    account_id: UUID
-    status: str
-    pages: int
-    items: int
-    error: str | None
-    created_at: datetime
-    finished_at: datetime | None
-    last_success_at: datetime | None
-    retry_at: datetime | None
+class OfferMatch:
+    offer_id: UUID | None
+    state: str

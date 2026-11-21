@@ -16,21 +16,21 @@ from pack_v2.modules.identity.public import Principal
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 
 from . import repository as store
-from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials
+from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials, SyncView
 from .models import AccountCheck, MarketplaceAccount
 from .reading import (
     AccountSource,
+    ExternalReference,
+    LineSnapshot,
     MarketplaceReader,
     OfferSnapshot,
     ReaderFactory,
     ReadError,
     ReadPage,
     ShipmentSnapshot,
+    SourceChanged,
 )
-
-
-class SourceChanged(Conflict):
-    pass
+from .synchronization import AccountSync
 
 
 def _manager(actor: Principal) -> None:
@@ -75,8 +75,8 @@ class Connections:
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
 
-    def account_labels(self, actor: Principal) -> list[AccountLabel]:
-        if not actor.can("products"):
+    def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
+        if not actor.can(section):
             actor.require("settings")
         with self.db.transaction() as tx:
             return [
@@ -313,6 +313,10 @@ __all__ = [
     "AccountView",
     "AccountLabel",
     "AccountSource",
+    "SyncView",
+    "ExternalReference",
+    "LineSnapshot",
+    "AccountSync",
     "SourceChanged",
     "MarketplaceReader",
     "OfferSnapshot",

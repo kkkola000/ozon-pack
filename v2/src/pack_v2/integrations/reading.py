@@ -7,9 +7,14 @@ from decimal import Decimal
 from typing import Callable, ContextManager, Literal, Protocol
 from uuid import UUID
 
-from pack_v2.shared.errors import DomainError
+from pack_v2.shared.errors import Conflict, DomainError
 
 from .contracts import OzonCredentials
+
+
+class SourceChanged(Conflict):
+    pass
+
 
 WORKING_STATES = ("awaiting_assembly", "awaiting_dispatch")
 
@@ -44,6 +49,7 @@ class ExternalReference:
     kind: str
     value: str
     authoritative: bool = False
+    origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,7 @@ class LineSnapshot:
     currency: str | None
     required_fields: tuple[str, ...]
     optional_fields: tuple[str, ...]
+    fields_present: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)

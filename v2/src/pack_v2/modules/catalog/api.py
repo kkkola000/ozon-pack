@@ -1,17 +1,13 @@
 from dataclasses import asdict
 from typing import Annotated, Literal
 from urllib.parse import urlencode
-from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, BeforeValidator, ConfigDict
 
 from pack_v2.web.deps import current, manager
+from pack_v2.web.query import SYNC_STATUSES, AccountFilter, SyncRequest, msk
 from pack_v2.web.views import render
-
-AccountFilter = Annotated[UUID | None, BeforeValidator(lambda value: None if value == "" else value)]
 
 STATES = {
     "all": "Все товары",
@@ -19,19 +15,6 @@ STATES = {
     "archived": "В архиве",
     "missing": "Нет в последней загрузке",
 }
-SYNC_STATUSES = {
-    "queued": ("В очереди", ""),
-    "running": ("Загружается", "accent"),
-    "retrying": ("Ожидает повтора", "warn"),
-    "succeeded": ("Загружено", "ok"),
-    "failed": ("Не завершено", "err"),
-    "stale": ("Требует обновления", "warn"),
-}
-
-
-class SyncRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    account_id: AccountFilter = None
 
 
 def build_router() -> APIRouter:
@@ -74,9 +57,7 @@ def build_router() -> APIRouter:
             state=state,
             page_url=page_url,
             queued=request.query_params.get("queued"),
-            msk=lambda value: (
-                value.astimezone(ZoneInfo("Europe/Moscow")).strftime("%d.%m.%Y %H:%M") if value else "—"
-            ),
+            msk=msk,
         )
 
     @router.get("/api/v2/products")

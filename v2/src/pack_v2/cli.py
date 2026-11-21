@@ -27,6 +27,7 @@ from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
+from pack_v2.modules.orders.public import Orders
 from pack_v2.shared.errors import DomainError
 
 
@@ -49,6 +50,8 @@ def generate_env(path: Path) -> None:
         'PACK_V2_ALLOWED_HOSTS=["localhost","127.0.0.1"]\n'
         "PACK_V2_SECURE_COOKIES=false\n"
         "PACK_V2_CATALOG_SYNC_MINUTES=15\n"
+        "PACK_V2_ORDERS_SYNC_MINUTES=5\n"
+        "PACK_V2_ORDERS_LOOKBACK_DAYS=30\n"
     )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as stream:
@@ -57,12 +60,18 @@ def generate_env(path: Path) -> None:
 
 
 def worker(
-    db: Database, identity: Identity, once: bool, catalog: Catalog | None = None, catalog_minutes: int = 15
+    db: Database,
+    identity: Identity,
+    once: bool,
+    catalog: Catalog | None = None,
+    catalog_minutes: int = 15,
+    orders: Orders | None = None,
+    orders_minutes: int = 5,
 ) -> None:
     # Only idempotent cleanup and read synchronization are registered.
     queue, stopped = Queue(db), threading.Event()
     scheduled_date = None
-    catalog_scheduled_at = None
+    scheduled_at = {}
     if not once:
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: stopped.set())
@@ -72,18 +81,23 @@ def worker(
             with db.transaction() as tx:
                 enqueue(tx, "identity.cleanup", "identity.cleanup:" + today)
             scheduled_date = today
-        if catalog and (catalog_scheduled_at is None or time.monotonic() - catalog_scheduled_at >= 60):
-            try:
-                catalog.schedule(catalog_minutes)
-            except SQLAlchemyError:
-                logging.warning("catalog scheduler delayed")
-            else:
-                catalog_scheduled_at = time.monotonic()
+        for service, minutes, kind in (
+            (catalog, catalog_minutes, "catalog.sync"),
+            (orders, orders_minutes, "orders.sync"),
+        ):
+            if service and (kind not in scheduled_at or time.monotonic() - scheduled_at[kind] >= 60):
+                try:
+                    service.schedule(minutes)
+                except SQLAlchemyError:
+                    logging.warning("%s scheduler delayed", kind)
+                else:
+                    scheduled_at[kind] = time.monotonic()
         job = queue.claim(lease_seconds=120)
         if job:
-            if job.kind == "catalog.sync" and catalog:
+            service = {"catalog.sync": catalog, "orders.sync": orders}.get(job.kind)
+            if service:
                 with queue.keep_alive(job):
-                    catalog.perform(job)
+                    service.perform(job)
             elif job.kind != "identity.cleanup":
                 queue.finish(job, failed=True)
             else:
@@ -144,12 +158,16 @@ def main(argv: list[str] | None = None) -> int:
                     OzonAccessChecker(),
                     OzonReadAdapter,
                 )
+                catalog = Catalog(db, connections)
+                orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)
                 worker(
                     db,
                     Identity(db, settings),
                     args.once,
-                    Catalog(db, connections),
+                    catalog,
                     settings.catalog_sync_minutes,
+                    orders,
+                    settings.orders_sync_minutes,
                 )
         finally:
             db.close()

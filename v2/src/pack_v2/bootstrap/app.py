@@ -24,6 +24,8 @@ from pack_v2.integrations.reading import ReaderFactory
 from pack_v2.modules.catalog.api import build_router as catalog_router
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
+from pack_v2.modules.orders.api import build_router as orders_router
+from pack_v2.modules.orders.public import Orders
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound, RateLimited
 from pack_v2.web.body_limit import AuthBodyLimit
 from pack_v2.web.routes import build_router
@@ -31,7 +33,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0003_catalog"
+SCHEMA_REVISION = "0004_orders"
 
 
 def create_app(
@@ -65,6 +67,9 @@ def create_app(
         reader_factory if reader_factory is not None else OzonReadAdapter,
     )
     app.state.catalog = Catalog(db, app.state.connections)
+    app.state.orders = Orders(
+        db, app.state.connections, app.state.catalog, lookback_days=settings.orders_lookback_days
+    )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
     )
@@ -154,4 +159,5 @@ def create_app(
     app.include_router(build_router())
     app.include_router(connections_router())
     app.include_router(catalog_router())
+    app.include_router(orders_router())
     return app
