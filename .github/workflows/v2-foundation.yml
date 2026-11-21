@@ -23,7 +23,7 @@ jobs:
           POSTGRES_DB: pack_v2_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U pack_v2 -d pack_v2_test'
+          --health-cmd "pg_isready -U pack_v2 -d pack_v2_test"
           --health-interval 5s --health-timeout 3s --health-retries 10
     env:
       PACK_V2_TEST_DATABASE_URL: postgresql+psycopg://pack_v2:ci-only-password@127.0.0.1:5432/pack_v2_test
