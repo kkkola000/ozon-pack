@@ -10,17 +10,25 @@ from decimal import Decimal, InvalidOperation
 
 from . import db, pack_state
 
-LABELS = {'gtd': 'Указать ГТД', 'rnpt': 'Указать РНПТ', 'uin': 'Указать УИН',
+LABELS = {'gtd': 'Указать ГТД', 'rnpt': 'Указать РНПТ',
           'imei': 'Указать IMEI', 'weight': 'Указать вес, г'}
 
 
 def values(saved: dict | None) -> dict:
     from . import marking
-    return json.loads(marking._open(saved['details'])) if saved and saved.get('details') else {}
+    stored = json.loads(marking._open(saved['details'])) if saved and saved.get('details') else {}
+    supported = {}
+    for key, units in stored.items():
+        for unit in units:
+            fields = at(stored, key, unit)
+            if fields:
+                supported.setdefault(key, {})[unit] = fields
+    return supported
 
 
 def at(details: dict, key: str, unit: int) -> dict:
-    return details.get(str(key), {}).get(str(unit), {})
+    # Old encrypted snapshots can contain fields no longer collected by the panel.
+    return {f: v for f, v in details.get(str(key), {}).get(str(unit), {}).items() if f in LABELS}
 
 
 def required(saved: dict | None) -> bool:
@@ -82,8 +90,8 @@ def _clean(field: str, value, product: dict):
             return int(number)
         except InvalidOperation as exc:
             raise ValueError('Укажите вес в граммах') from exc
-    if field in {'uin', 'imei'} and (not value.isascii() or not value.isdigit() or len(value) != (16 if field == 'uin' else 15)):
-        raise ValueError('УИН должен содержать 16 цифр' if field == 'uin' else 'IMEI должен содержать 15 цифр')
+    if field == 'imei' and (not value.isascii() or not value.isdigit() or len(value) != 15):
+        raise ValueError('IMEI должен содержать 15 цифр')
     return value
 
 

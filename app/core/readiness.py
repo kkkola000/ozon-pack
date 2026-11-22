@@ -111,12 +111,7 @@ def complete_guard(account: dict, user: dict, order_id: str):
         if marking.needs_validation(saved):
             context = exemplar_data.context(saved)
             codes = marking.codes(saved, full=True)
-            outcome = marking.source(account).poll(account, order_id, context, codes)
-            if outcome['status'] != 'accepted':
-                db.execute("UPDATE marking_orders SET status='uncertain',error=? WHERE id=?",
-                           ('Площадка пока не подтвердила актуальные данные экземпляров. Завершение заблокировано.', saved['id']))
-                raise ValueError('Дождитесь подтверждения данных экземпляров площадкой')
-            marking.source(account).finalize(account, order_id, context, codes)
+            marking.confirm(account, saved, context, codes)
         call(account, user, order_id)
         if context is not None:
-            marking.source(account).finalize(account, order_id, context, codes)
+            marking.confirm(account, saved, context, codes, poll=False)

@@ -173,7 +173,10 @@ def _refresh(saved: dict, data: dict) -> dict:
 
 
 def products(saved: dict) -> list[dict]:
-    return json.loads(saved['products'])
+    rows = json.loads(saved['products'])
+    for product in rows:
+        product['fields'] = [f for f in product.get('fields', []) if f in exemplar_data.LABELS]
+    return rows
 
 
 def retire(account: dict, saved: dict, ids: list[int], context: dict) -> None:
@@ -443,6 +446,30 @@ def _rejection(account, saved, marks, exc):
                 'Площадка отклонила данные. Замените отмеченную марку или исправьте обязательные данные заказа.')
 
 
+def confirm(account: dict, saved: dict, context: dict, marks: list[dict], *, poll: bool = True) -> None:
+    """Completion must persist a failed recheck instead of retaining a stale green M."""
+    provider = source(account)
+    try:
+        if poll:
+            outcome = provider.poll(account, saved['order_id'], context, marks)
+            if outcome['status'] == 'error':
+                raise Rejected(outcome.get('errors') or {})
+            if outcome['status'] != 'accepted':
+                raise ValueError('Дождитесь подтверждения данных экземпляров площадкой')
+        provider.finalize(account, saved['order_id'], context, marks)
+    except Rejected as exc:
+        _rejection(account, saved, marks, exc)
+        raise
+    except Exception:
+        with db.write() as conn:
+            conn.execute("UPDATE marking_orders SET status='uncertain',error=?,checked_at=? WHERE id=?",
+                         ('Площадка пока не подтвердила актуальные данные экземпляров. Завершение заблокировано.',
+                          db.now_iso(), saved['id']))
+            conn.execute("UPDATE marking_codes SET status='saved',error=NULL WHERE marking_order_id=? "
+                         "AND active=1 AND status='accepted'", (saved['id'],))
+        raise
+
+
 def _accept(account, saved, provider, context, marks):
     from . import readiness
 
@@ -509,6 +536,17 @@ def _connection_failure(account, saved, exc):
                 'Пока не удалось подтвердить передачу кодов «Честный знак». Проверка будет повторена.', saved['id']))
 
 
+def _actionable(saved: dict | None, statuses: set[str]) -> bool:
+    if not saved or saved['status'] not in statuses:
+        return False
+    if needs_validation(saved):
+        return True
+    # Stop obsolete field-only jobs without claiming marketplace acceptance.
+    db.execute("UPDATE marking_orders SET status='collecting',error=NULL,field_errors='{}' WHERE id=?",
+               (saved['id'],))
+    return False
+
+
 def process(account: dict, order_id: str, *, force: bool = False) -> None:
     """Одна запись/проверка. Неопределённый результат записи — только опрос."""
     marking_returns.process_order(account['id'], order_id)
@@ -522,7 +560,7 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
     with order_lock.hold(account['id'], order_id):
         saved = order(account['id'], order_id)
         provider = source(account)
-        if not provider or not saved or saved['status'] not in statuses:
+        if not provider or not _actionable(saved, statuses):
             return
         marks = []
         try:

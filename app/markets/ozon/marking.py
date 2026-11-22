@@ -86,8 +86,8 @@ def _reconcile(account: dict, saved: dict, data: dict) -> None:
 
 def _fields(product, key, requirements):
     fields = [f for f, flag in (('gtd', 'is_gtd_needed'), ('rnpt', 'is_rnpt_needed'),
-                                ('uin', 'is_jw_uin_needed'), ('weight', 'is_weight_needed')) if product.get(flag)]
-    for f, suffix in (('gtd', 'gtd'), ('rnpt', 'rnpt'), ('uin', 'jw_uin'), ('imei', 'imei'), ('weight', 'weight')):
+                                ('weight', 'is_weight_needed')) if product.get(flag)]
+    for f, suffix in (('gtd', 'gtd'), ('rnpt', 'rnpt'), ('imei', 'imei'), ('weight', 'weight')):
         if key in {str(s) for s in (requirements or {}).get('products_requiring_' + suffix) or []} and f not in fields:
             fields.append(f)
     return fields
@@ -138,10 +138,9 @@ def _seed_details(data, products):
         fields = next(p['fields'] for p in products if p['key'] == key)
         for unit, e in enumerate(product['exemplars'], 1):
             values = {f: e[f] for f in fields if f in e and e[f] and not e.get('is_' + f + '_absent')}
-            for f, kind in (('uin', 'jw_uin'), ('imei', 'imei')):
-                found = [m['mark'] for m in e.get('marks') or [] if m.get('mark_type') == kind and m.get('mark')]
-                if f in fields and len(found) == 1:
-                    values[f] = found[0]
+            found = [m['mark'] for m in e.get('marks') or [] if m.get('mark_type') == 'imei' and m.get('mark')]
+            if 'imei' in fields and len(found) == 1:
+                values['imei'] = found[0]
             if values:
                 details.setdefault(key, {})[str(unit)] = values
     return details
@@ -166,10 +165,9 @@ def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> lis
                     exemplar[field] = value
                     if field != 'weight' and not validate:
                         exemplar['is_' + field + '_absent'] = False
-                elif field in {'uin', 'imei'}:
-                    kind = 'jw_uin' if field == 'uin' else 'imei'
-                    exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != kind]
-                    exemplar['marks'].append({'mark': value, 'mark_type': kind})
+                elif field == 'imei':
+                    exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'imei']
+                    exemplar['marks'].append({'mark': value, 'mark_type': 'imei'})
             if (key, unit) in values:
                 exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'mandatory_mark']
                 exemplar['marks'].append({'mark': values[key, unit], 'mark_type': 'mandatory_mark'})
@@ -231,14 +229,15 @@ def _checks(data, context):
                     errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
                 failed = failed or status == 'failed'
             for mark in exemplar.get('marks') or []:
+                if mark.get('mark_type') not in {'mandatory_mark', 'imei'}:
+                    continue
                 status = str(mark.get('check_status') or '').lower()
                 if mark.get('mark_type') == 'mandatory_mark':
                     actual[key, str(exemplar.get('exemplar_id')), marking_codes.comparison_key(mark.get('mark'))] = mark.get('check_status')
                     if mark.get('error_codes') or status in {'error', 'invalid'}:
                         errors[error_key] = 'Код «Честный знак» не принят Ozon'
-                elif mark.get('mark_type') in {'jw_uin', 'imei'} and (mark.get('error_codes') or status in {'error', 'invalid'}):
-                    field = 'uin' if mark['mark_type'] == 'jw_uin' else 'imei'
-                    errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
+                elif mark.get('error_codes') or status in {'error', 'invalid'}:
+                    errors[f'data:{key}:{unit}:imei'] = 'Ozon отклонил данные поля'
                 failed = failed or status == 'failed'
     return actual, errors, failed
 
@@ -283,8 +282,7 @@ def _checked_details(data: dict, context: dict) -> tuple[bool, dict]:
                     matches = got.get(field) == value and not got.get('is_' + field + '_absent')
                     bad = got.get(field + '_error_codes')
                 else:
-                    kind = 'jw_uin' if field == 'uin' else 'imei'
-                    mark = next((m for m in got.get('marks') or [] if m.get('mark_type') == kind and m.get('mark') == value), {})
+                    mark = next((m for m in got.get('marks') or [] if m.get('mark_type') == 'imei' and m.get('mark') == value), {})
                     status, matches, bad = mark.get('check_status'), bool(mark), mark.get('error_codes')
                 if bad or str(status).lower() in {'error', 'invalid'}:
                     errors[f'data:{key}:{unit}:{field}'] = 'Площадка отклонила значение поля'
@@ -305,11 +303,7 @@ def _applied(raw: dict, codes: list[dict], context: dict | None = None) -> bool:
         for unit, e in enumerate(product['exemplars'], 1):
             row = actual.get((key, str(e['exemplar_id'])), {})
             for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
-                if field == 'uin':
-                    found = next((p.get('jw_uin') or [] for p in raw.get('products') or [] if str(p['sku']) == key), [])
-                    if value not in found:
-                        return False
-                elif field == 'imei':
+                if field == 'imei':
                     if value not in (row.get('imei') or []):
                         return False
                 elif row.get(field) != value or row.get('is_' + field + '_absent'):

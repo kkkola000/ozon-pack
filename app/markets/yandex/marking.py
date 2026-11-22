@@ -36,7 +36,7 @@ def prepare(account: dict, order_id: str) -> dict:
         products.append({'key': key, 'sku': sku, 'quantity': quantity,
                          'required': bool(types & {'CIS', 'CIS_OPTIONAL'}),
                          'possible': bool(types & {'CIS', 'CIS_OPTIONAL'}),
-                         'fields': [f.lower() for f in ('GTD', 'RNPT', 'UIN') if f in types]})
+                         'fields': [f.lower() for f in ('GTD', 'RNPT') if f in types]})
         for unit, instance in enumerate(item.get('instances') or [], 1):
             values = {f: instance[f] for f in products[-1]['fields'] if instance.get(f)}
             if values:
@@ -145,7 +145,7 @@ def _box_instances(entry, item, start, quantity, codes):
     previous = entry.get('instances') or (item.get('instances') or [])[start:start + quantity]
     instances = []
     for offset in range(quantity):
-        # Сохраняем УИН/ГТД/РНПТ/страну; cisFull — только поле ответа.
+        # Preserve existing remote fields; cisFull is response-only.
         base = previous[offset] if offset < len(previous) else {}
         instance = {k: v for k, v in base.items() if k in {'uin', 'rnpt', 'gtd', 'countryCode', 'cis'}}
         code = next((c for c in codes if c['item_key'] == str(item['id']) and c['unit_no'] == start + offset + 1), None)
@@ -237,6 +237,8 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     raw = api.order_details(order_id)
     if str(raw.get('campaignId')) != context['campaign'] or not _same_items(context['order'], raw):
         return {'status': 'error', 'errors': {c['item_key']: 'Состав заказа изменился' for c in codes}}
+    if raw.get('status') != 'PROCESSING' or raw.get('programType') not in {'FBS', 'EXPRESS'}:
+        raise ValueError('Маркет изменил состояние или схему работы заказа. Обновите заказ перед продолжением.')
     # Доказываем, что проверяется именно последний полный код, не старый CIS.
     if not _saved_data(raw, context, codes):
         _closed_layout(raw, context, codes)
@@ -244,13 +246,22 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
     if not codes:
         return {'status': 'accepted' if context.get('_panel_details') else 'checking'}
     data = api.identifiers_status(context['campaign'], order_id)
-    if data.get('status') != 'OK':
-        return {'status': 'checking'}
     return _code_checks(data, raw, codes)
 
 
+def _cis_by_item(data):
+    # Other identifier types never prove CIS acceptance.
+    by_item = {}
+    for item in (data.get('result') or {}).get('items') or []:
+        # Keep repeated entries: an ambiguous response must not overwrite a failed check with OK.
+        by_item.setdefault(str(item.get('id')), []).extend(item.get('cis') or [])
+    return by_item
+
+
 def _code_checks(data, raw, codes):
-    by_item = {str(i.get('id')): i.get('cis') or [] for i in (data.get('result') or {}).get('items') or []}
+    if data.get('status') != 'OK':
+        return {'status': 'checking'}
+    by_item = _cis_by_item(data)
     errors = {}
     pending = False
     failed = False
@@ -274,8 +285,12 @@ def _code_checks(data, raw, codes):
 
 
 def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
-    if not _saved_data(client.get_client(account).order_details(order_id), context, codes):
-        raise ValueError('Маркет пока не подтвердил сохранение полных данных экземпляров')
+    # Repeat both proofs before and after readiness: a previous OK can become stale.
+    outcome = poll(account, order_id, context, codes)
+    if outcome['status'] == 'error':
+        raise marking.Rejected(outcome['errors'], 'Маркет не подтвердил проверку кодов «Честный знак»')
+    if outcome['status'] != 'accepted':
+        raise ValueError('Маркет пока не подтвердил сохранение полных данных экземпляров и успешную проверку кодов «Честный знак»')
 
 
 def complete_local(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
@@ -294,7 +309,7 @@ def complete_local(account: dict, order_id: str, context: dict, codes: list[dict
         raise ValueError('В заказе Маркета записан другой Честный знак. Сверьте коды перед завершением.')
     if present:
         checked = api.identifiers_status(context['campaign'], order_id)
-        if checked.get('status') != 'OK' or _code_checks(checked, raw, present)['status'] != 'accepted':
+        if _code_checks(checked, raw, present)['status'] != 'accepted':
             raise ValueError('Маркет не подтвердил проверку уже записанных кодов. Завершение заблокировано.')
 
 

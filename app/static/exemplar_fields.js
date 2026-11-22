@@ -21,7 +21,7 @@ const ExemplarFields = (() => {
         <span class="sr-only">${escapeHtml(f.label)}</span>
         <input type="text" name="${escapeHtml(f.name)}" data-unit="${u.unit}" placeholder="${escapeHtml(f.label)}"
           aria-label="${escapeHtml(f.label)}" value="${escapeHtml(String(drafts.get(`${data.key}:${u.unit}:${f.name}`) ?? f.value))}" maxlength="150"
-          ${f.name === 'weight' || f.name === 'uin' || f.name === 'imei' ? 'inputmode="numeric"' : ''}
+          ${f.name === 'weight' || f.name === 'imei' ? 'inputmode="numeric"' : ''}
           required ${disabled ? 'disabled' : ''}>
         ${f.error ? `<span class="err small">${escapeHtml(f.error)}</span>` : ''}
       </label>`).join('')}`).join('');

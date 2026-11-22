@@ -21,14 +21,14 @@ from .markets.ozon import client as ozon
 from .markets.yandex import client as yandex
 
 OZON_FLAGS = ('is_mandatory_mark_needed', 'is_mandatory_mark_possible', 'is_gtd_needed',
-              'is_rnpt_needed', 'is_jw_uin_needed', 'is_weight_needed', 'has_imei')
+              'is_rnpt_needed', 'is_weight_needed', 'has_imei')
 OZON_REQUIREMENTS = ('products_requiring_mandatory_mark', 'products_requiring_gtd',
-                     'products_requiring_rnpt', 'products_requiring_imei', 'products_requiring_jw_uin',
+                     'products_requiring_rnpt', 'products_requiring_imei',
                      'products_requiring_weight', 'products_requiring_country', 'products_requiring_change_country')
 OZON_ACTIONS = {'ship', 'cancel', 'ship_async', 'ship_async_in_process', 'ship_async_retry',
                 'ship_with_additional_info', 'update_cis', 'label_download', 'label_download_small', 'label_download_big'}
-MARK_TYPES = {'mandatory_mark', 'jw_uin', 'imei', 'CIS', 'KIZ', 'DATA_MATRIX', 'GTIN', 'QR_CODE'}
-YANDEX_TYPES = {'CIS', 'CIS_OPTIONAL', 'GTD', 'RNPT', 'UIN'}
+MARK_TYPES = {'mandatory_mark', 'imei', 'CIS', 'KIZ', 'DATA_MATRIX', 'GTIN', 'QR_CODE'}
+YANDEX_TYPES = {'CIS', 'CIS_OPTIONAL', 'GTD', 'RNPT'}
 TABLES = {'ozon': ('postings', 'posting_number'), 'yandex': ('yandex_orders', 'id')}
 
 

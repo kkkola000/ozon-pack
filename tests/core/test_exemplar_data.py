@@ -60,7 +60,7 @@ def test_ozon_gtd_is_separate_required_input_and_verified_before_completion(acco
 
 
 def test_all_required_ozon_fields_are_transmitted_and_read_back(account, user):
-    fields = {'gtd': GTD, 'rnpt': '12345678901234', 'uin': '1234567890123456', 'imei': '490154203237518', 'weight': 1500}
+    fields = {'gtd': GTD, 'rnpt': '12345678901234', 'imei': '490154203237518', 'weight': 1500}
     api, number, sku = require_ozon(account, fields=fields, cz=False)
     scan(account, user, BARCODE)
     enter(account, user, number, sku, fields)
@@ -68,7 +68,7 @@ def test_all_required_ozon_fields_are_transmitted_and_read_back(account, user):
     assert marking.order(account['id'], number)['status'] == 'accepted'
     e = api.marking_requests[-1]['products'][0]['exemplars'][0]
     assert {k: e[k] for k in ('gtd', 'rnpt', 'weight')} == {k: fields[k] for k in ('gtd', 'rnpt', 'weight')}
-    assert {m['mark_type'] for m in e['marks']} == {'jw_uin', 'imei'}
+    assert {m['mark_type'] for m in e['marks']} == {'imei'}
 
 
 def test_two_units_wait_for_each_gtd_and_do_not_cross_assign(account, user):
@@ -145,7 +145,7 @@ def test_yandex_required_data_and_optional_cis_are_mandatory(yandex_account, use
         scan(yandex_account, user, code())
     fields = {'gtd': GTD}
     if 'RNPT' in types:
-        fields.update(rnpt='12345678901234', uin='1234567890123456')
+        fields.update(rnpt='12345678901234')
     enter(yandex_account, user, number, key, fields)
     finish_job(yandex_account, number)
     saved = marking.order(yandex_account['id'], number)

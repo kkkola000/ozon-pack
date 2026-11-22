@@ -65,6 +65,11 @@ def test_yandex_order_types_control_collection_without_offer_access(yandex_accou
     assert read.called
     catalog.assert_not_called()
     state = result['state']
+    if kind == 'UIN':
+        assert state['complete'] and not state['items'][0].get('exemplar_data')
+        assert not state['items'][0].get('marking')
+        assert scan(yandex_account, user, number)['action'] == 'completed'
+        return
     assert not state['complete']
     assert packing.complete(user)['status'] == 'error'
     if kind in {'CIS', 'CIS_OPTIONAL'}:
