@@ -35,6 +35,11 @@ class Heartbeat(BaseModel):
     lease_token: UUID
 
 
+class Gtd(SessionCommand):
+    unit_id: UUID
+    value: str = Field(min_length=1, max_length=100)
+
+
 def _actor(request, *, write=False):
     saved = current(request)
     saved.user.require("pack")
@@ -150,5 +155,29 @@ def build_router():
     def heartbeat(request: Request, session_id: UUID, payload: Heartbeat):
         saved = _actor(request, write=True)
         return _response(request.app.state.assembly.heartbeat(saved.user, session_id, payload.lease_token))
+
+    @router.post("/api/v2/assembly/{session_id}/gtd")
+    def gtd(request: Request, session_id: UUID, payload: Gtd):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.gtd(
+                saved.user,
+                payload.command_id,
+                session_id,
+                payload.lease_token,
+                payload.revision,
+                payload.unit_id,
+                payload.value,
+            )
+        )
+
+    @router.post("/api/v2/assembly/{session_id}/check_data")
+    def check_data(request: Request, session_id: UUID, payload: SessionCommand):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.check_data(
+                saved.user, payload.command_id, session_id, payload.lease_token, payload.revision
+            )
+        )
 
     return router

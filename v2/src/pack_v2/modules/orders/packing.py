@@ -65,6 +65,9 @@ def manifest(tx, shipment_id, catalog):
                 card["card"].image_url if card else None,
                 "cis" in row.required_fields or "cis" in row.optional_fields,
                 card["has_components"] if card else False,
+                tuple(row.required_fields),
+                tuple(row.optional_fields),
+                card["gtins"] if card else (),
             )
         )
     physical = [

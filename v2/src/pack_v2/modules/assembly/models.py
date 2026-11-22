@@ -36,6 +36,7 @@ class AssemblySession(Record, Base):
     lease_token: Mapped[UUID]
     lease_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     refresh_run_id: Mapped[UUID]
+    instance_context_id: Mapped[UUID | None]
     last_unit_id: Mapped[UUID | None]
     initial_code: Mapped[bytes | None] = mapped_column(LargeBinary)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -53,6 +54,14 @@ class AssemblySession(Record, Base):
         ),
         UniqueConstraint("id", "shipment_id", "order_id"),
         UniqueConstraint("user_id", "id"),
+        ForeignKeyConstraint(
+            ["account_id", "shipment_id", "instance_context_id"],
+            [
+                "pack_v2.instance_contexts.account_id",
+                "pack_v2.instance_contexts.shipment_id",
+                "pack_v2.instance_contexts.id",
+            ],
+        ),
         ForeignKeyConstraint(
             ["order_id", "last_unit_id"], ["pack_v2.order_units.order_id", "pack_v2.order_units.id"]
         ),

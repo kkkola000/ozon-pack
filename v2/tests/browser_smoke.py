@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -152,8 +153,63 @@ def check_orders(page, context, url: str, output: Path) -> None:
     page.set_viewport_size({"width": 1440, "height": 1000})
 
 
+def complete_instance_data(page, context, url):
+    """Complete required values only for already scanned physical units."""
+    draft_checked = False
+    for _ in range(20):
+        saved = context.request.get(url + "/api/v2/assembly/current").json()["session"]
+        if not saved:
+            return
+        if saved["data"]["can_verify"]:
+            expect(page.locator(".assembly-mark.accepted")).to_have_count(1, timeout=10000)
+            return
+        missing = [
+            u
+            for item in saved["data"]["items"].values()
+            for u in item["units"]
+            if u["scanned"] and u["gtd_required"] and not u["gtd"]
+        ]
+        if missing:
+            unit = missing[0]
+            field = page.locator(f'[data-gtd-unit="{unit["id"]}"]')
+            if not draft_checked:
+                field.fill("10719040/")
+                page.wait_for_timeout(5500)
+                expect(field).to_have_value("10719040/")
+                latest = context.request.get(url + "/api/v2/assembly/current").json()["session"]
+                assert not next(
+                    u
+                    for item in latest["data"]["items"].values()
+                    for u in item["units"]
+                    if u["id"] == unit["id"]
+                )["gtd"]
+                draft_checked = True
+            field.fill("10719040/123456/1234567")
+            field.press("Enter")
+            expect(page.locator(f'[data-gtd-form="{unit["id"]}"]')).to_contain_text("ГТД сохранена")
+            continue
+        if saved["data"]["pending_unit_id"]:
+            code = "010950600013435221" + uuid4().hex[:13] + "\x1d91ABCD\x1d92abcdefghijklmnop"
+            scanner = page.locator("#assembly-code")
+            pieces = code.split("\x1d")
+            scanner.fill(pieces[0])
+            for piece in pieces[1:]:
+                scanner.press("Control+]")
+                page.keyboard.insert_text(piece)
+            assert scanner.input_value() == code, "Keyboard wedge must preserve ASCII 29"
+            scanner.press("Enter")
+            expect(scanner).to_have_attribute("placeholder", "Сканируйте товар…", timeout=10000)
+            assert code not in page.evaluate("JSON.stringify(sessionStorage)")
+            continue
+        if saved["data"]["status"] in ("prepared", "checking"):
+            expect(page.locator(".assembly-mark.accepted")).to_have_count(1, timeout=45000)
+            return
+        raise AssertionError("Unexpected instance-data state: " + saved["data"]["status"])
+    raise AssertionError("Required instance data did not settle")
+
+
 def check_assembly(page, context, url: str, output: Path) -> None:
-    """Product verification only, with mock Ozon, FIFO scans and a lost HTTP response."""
+    """Product/CZ/GTD checks with mock Ozon, FIFO scans and lost HTTP responses."""
     csrf = context.request.get(url + "/api/v2/me").json()["csrf"]
     headers = {"x-csrf-token": csrf}
     response = context.request.post(
@@ -196,6 +252,8 @@ def check_assembly(page, context, url: str, output: Path) -> None:
     assert page.locator(".assembly-mark").get_attribute("aria-label") == "Честный знак не проверен"
     number = page.locator("[data-assembly-number]").inner_text()
     shipment = next(s for s in shipments if s["posting_number"] == number)
+    complete_instance_data(page, context, url)
+    page.screenshot(path=str(output / "assembly-chz-accepted.png"), full_page=True)
     page.reload()
     expect(page.locator("[data-assembly-count]")).to_have_text("1 из 3")
 
@@ -261,6 +319,7 @@ def check_assembly(page, context, url: str, output: Path) -> None:
     expect(retry).to_be_hidden()
     page.unroute(pattern, lose_response)
     assert "needsCode" not in page.evaluate("JSON.stringify(sessionStorage)")
+    complete_instance_data(page, context, url)
     page.locator("[data-assembly-action=verify]").click()
     expect(page.locator("[data-assembly-stage]")).to_have_text("Товары проверены")
     page.locator("[data-assembly-queue]").click()

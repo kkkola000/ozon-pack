@@ -109,7 +109,7 @@ class OzonTransport:
             self.wait(delay)
         raise last from None
 
-    def _once(self, path: str, payload: dict) -> dict:
+    def _once(self, path: str, payload: dict, *, allow_empty: bool = False) -> dict:
         with self.client.stream("POST", path, json=payload) as response:
             status = response.status_code
             if status != 200:
@@ -125,6 +125,8 @@ class OzonTransport:
                 data.extend(chunk)
                 if len(data) > self.response_limit:
                     raise ReadError("invalid_response")
+            if not data and allow_empty:
+                return {}
             try:
                 parsed = json.loads(data, parse_float=Decimal, parse_constant=_reject_constant)
             except (ValueError, RecursionError):

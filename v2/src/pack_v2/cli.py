@@ -23,10 +23,13 @@ from pack_v2.infrastructure.crypto import SecretBox
 from pack_v2.infrastructure.database import Database
 from pack_v2.infrastructure.jobs import Queue, enqueue
 from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
+from pack_v2.modules.instance_data.public import InstanceData
+from pack_v2.modules.marking.public import Marking
 from pack_v2.modules.orders.public import Orders
 from pack_v2.shared.errors import DomainError
 
@@ -67,8 +70,9 @@ def worker(
     catalog_minutes: int = 15,
     orders: Orders | None = None,
     orders_minutes: int = 5,
+    instance_data: InstanceData | None = None,
 ) -> None:
-    # Only idempotent cleanup and read synchronization are registered.
+    # Instance writes use durable dispatch intents and reconcile ambiguous outcomes.
     queue, stopped = Queue(db), threading.Event()
     scheduled_date = None
     scheduled_at = {}
@@ -94,7 +98,12 @@ def worker(
                     scheduled_at[kind] = time.monotonic()
         job = queue.claim(lease_seconds=120)
         if job:
-            service = {"catalog.sync": catalog, "orders.sync": orders}.get(job.kind)
+            service = {
+                "catalog.sync": catalog,
+                "orders.sync": orders,
+                "instances.discover": instance_data,
+                "instances.submit": instance_data,
+            }.get(job.kind)
             if service:
                 with queue.keep_alive(job):
                     service.perform(job)
@@ -157,9 +166,14 @@ def main(argv: list[str] | None = None) -> int:
                     SecretBox(settings.encryption_key.get_secret_value()),
                     OzonAccessChecker(),
                     OzonReadAdapter,
+                    OzonInstanceAdapter,
                 )
                 catalog = Catalog(db, connections)
                 orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)
+                box = SecretBox(settings.encryption_key.get_secret_value())
+                instance_data = InstanceData(
+                    db, connections, orders, Marking(box, settings.secret_key.get_secret_value()), box
+                )
                 worker(
                     db,
                     Identity(db, settings),
@@ -168,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                     settings.catalog_sync_minutes,
                     orders,
                     settings.orders_sync_minutes,
+                    instance_data,
                 )
         finally:
             db.close()

@@ -76,13 +76,23 @@ class Catalog:
         cards = {r.id: r for r in store.views(tx, rows)}
         product_ids = {r.product_id for r in rows if r.product_id}
         codes = {}
+        gtins = {}
+        own_gtins = {}
+        for code in tx.scalars(
+            select(OfferCode).where(OfferCode.offer_id.in_(ids), OfferCode.kind == "gtin")
+        ):
+            own_gtins.setdefault(code.offer_id, set()).add(code.value)
         for code in tx.scalars(select(ProductCode).where(ProductCode.product_id.in_(product_ids))):
             codes.setdefault(code.product_id, set()).add(code.value)
+            if code.kind == "gtin":
+                gtins.setdefault(code.product_id, set()).add(code.value)
         siblings = {
             r.id: r.product_id for r in tx.scalars(select(Offer).where(Offer.product_id.in_(product_ids)))
         }
         for code in tx.scalars(select(OfferCode).where(OfferCode.offer_id.in_(siblings))):
             codes.setdefault(siblings[code.offer_id], set()).add(code.value)
+            if code.kind == "gtin":
+                gtins.setdefault(siblings[code.offer_id], set()).add(code.value)
         components = set(
             tx.scalars(
                 select(ProductComponent.product_id).where(ProductComponent.product_id.in_(product_ids))
@@ -93,6 +103,7 @@ class Catalog:
                 "card": cards[r.id],
                 "codes": tuple(sorted(set(cards[r.id].codes) | codes.get(r.product_id, set()))),
                 "has_components": r.product_id in components,
+                "gtins": tuple(sorted(own_gtins.get(r.id, set()) | gtins.get(r.product_id, set()))),
             }
             for r in rows
         }

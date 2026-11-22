@@ -83,6 +83,9 @@ class PackingLine:
     image_url: str | None
     marking_hint: bool
     has_components: bool
+    required_fields: tuple[str, ...] = ()
+    optional_fields: tuple[str, ...] = ()
+    gtins: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

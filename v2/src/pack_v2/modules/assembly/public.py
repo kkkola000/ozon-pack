@@ -3,7 +3,7 @@ import hmac
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy import or_, select, update
@@ -41,10 +41,11 @@ def _scan_code(value):
 
 
 class Assembly:
-    def __init__(self, db, connections, orders, box, secret, *, lease_seconds=180):
+    def __init__(self, db, connections, orders, box, secret, *, instance_data, lease_seconds=180):
         self.db, self.connections, self.orders, self.box = db, connections, orders, box
         self.secret = secret.encode()
         self.lease_seconds = lease_seconds
+        self.instances = instance_data
 
     def _until(self):
         return datetime.now(UTC) + timedelta(seconds=self.lease_seconds)
@@ -86,8 +87,22 @@ class Assembly:
                 refresh_message or "Не удалось проверить отправление. Повторите проверку",
             )
         scanned = {}
-        for unit in tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == row.id)):
+        physical = list(tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == row.id)))
+        for unit in physical:
             scanned[unit.item_id] = scanned.get(unit.item_id, 0) + int(unit.scanned_at is not None)
+        data = self.instances.view(
+            tx,
+            row.instance_context_id,
+            manifest,
+            {u.unit_id for u in physical if u.scanned_at is not None},
+            row.last_unit_id,
+        )
+        if status == "stale":
+            data["can_verify"] = False
+            for info in data["items"].values():
+                info["mark_status"] = "pending"
+        if status == "opening" and data["status"] == "blocked":
+            status, message = "blocked", data["message"]
         current = {i.item_id: i for i in manifest.items}
         items = []
         for line in tx.scalars(
@@ -143,6 +158,7 @@ class Assembly:
             "items": items,
             "scanned": sum(i["scanned"] for i in items),
             "need": sum(i["need"] for i in items),
+            "data": data,
         }
 
     def current(self, actor):
@@ -237,7 +253,11 @@ class Assembly:
             ensure_ascii=False,
             default=str,
         )
-        fingerprint = hmac.new(self.secret, raw.encode(), hashlib.sha256).hexdigest()
+        try:
+            encoded = raw.encode()
+        except UnicodeError:
+            raise DomainError("Проверьте формат переданных данных") from None
+        fingerprint = hmac.new(self.secret, encoded, hashlib.sha256).hexdigest()
         try:
             with self.db.transaction() as tx:
                 previous = tx.get(AssemblyCommand, (actor.id, command_id))
@@ -497,10 +517,23 @@ class Assembly:
                 row.status, row.message = "stale", "Состав изменился. Нужна повторная проверка"
                 row.revision += 1
                 return row, _result(False, row.message, "stale")
+            data_status, data_error = self.instances.ensure_context(tx, row, manifest)
+            if data_status in ("queued", "reading"):
+                return row, _result(
+                    False, "Получаем требования к Честному знаку и ГТД", "waiting_data", pending=True
+                )
+            if data_status != "ready":
+                row.status, row.message = (
+                    "blocked",
+                    data_error or "Не удалось получить требования Ozon. Повторите сверку",
+                )
+                row.revision += 1
+                return row, _result(False, row.message, "blocked")
             try:
                 with tx.begin_nested():
                     planned = self.orders.packing_plan(tx, manifest)
-            except Conflict as error:
+                    self.instances.bind(tx, actor, row.instance_context_id, manifest, planned)
+            except DomainError as error:
                 row.status, row.message = "blocked", str(error)
                 row.revision += 1
                 return row, _result(False, row.message, "blocked")
@@ -568,8 +601,41 @@ class Assembly:
         )
 
     def _count(self, tx, actor, row, manifest, code):
+        checked = list(
+            tx.scalars(
+                select(AssemblyUnit).where(
+                    AssemblyUnit.session_id == row.id, AssemblyUnit.scanned_at.is_not(None)
+                )
+            )
+        )
+        data = self.instances.view(
+            tx, row.instance_context_id, manifest, {u.unit_id for u in checked}, row.last_unit_id
+        )
+        pending = data.get("pending_unit_id")
+        if _mark_like(code) and pending:
+            try:
+                with tx.begin_nested():
+                    saved = self.instances.capture(
+                        tx, actor, row.instance_context_id, manifest, UUID(pending), code
+                    )
+            except DomainError as error:
+                self.instances.input_error(tx, row.instance_context_id, UUID(pending), "cis")
+                return _result(False, str(error), "data_error")
+            row.revision += 1
+            row.lease_until = self._until()
+            return _result(
+                True,
+                "Честный знак сохранён. Ожидаем подтверждения Ozon"
+                if saved["changed"]
+                else "Честный знак уже сохранён",
+                "mark_saved" if saved["changed"] else "mark_duplicate",
+            )
         if _mark_like(code):
             return _result(False, "Сейчас нужен штрихкод товара", "wrong_phase")
+        if pending:
+            return _result(
+                False, "Сначала отсканируйте Честный знак выбранной единицы товара", "mark_required"
+            )
         candidates = [i.item_id for i in manifest.items if code in i.codes]
         pending = tx.scalars(
             select(AssemblyUnit)
@@ -641,6 +707,18 @@ class Assembly:
             units = list(tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == row.id)))
             if not units or any(u.scanned_at is None for u in units):
                 return row, _result(False, "Сначала отсканируйте все товары", "incomplete")
+            manifest = self.orders.packing_manifest(tx, row.shipment_id)
+            data = self.instances.view(
+                tx, row.instance_context_id, manifest, {u.unit_id for u in units}, row.last_unit_id
+            )
+            if not data["can_verify"]:
+                return row, _result(
+                    False,
+                    data.get("message")
+                    or "Сначала передайте Честный знак и ГТД и дождитесь подтверждения Ozon",
+                    "instance_data_required",
+                    pending=data["status"] in ("prepared", "checking"),
+                )
             row.status, row.verified_at, row.finished_at = "verified", datetime.now(UTC), datetime.now(UTC)
             row.revision += 1
             tx.add(
@@ -707,6 +785,7 @@ class Assembly:
                 return row, error
             source = AccountSource(row.account_id, "ozon", row.credential_revision)
             row.refresh_run_id = self.orders.packing_refresh(tx, source, row.shipment_id, actor.id)
+            row.instance_context_id = None
             row.status, row.message = "opening", None
             row.revision += 1
             return row, _result(True, "Проверяем отправление", "opening")
@@ -715,6 +794,59 @@ class Assembly:
             actor,
             command_id,
             "retry",
+            {"session_id": session_id, "token": token, "revision": revision},
+            operation,
+        )
+
+    def gtd(self, actor, command_id, session_id, token, revision, unit_id, value):
+        def operation(tx):
+            row, manifest, error = self._locked(tx, actor, session_id, token, revision)
+            if error:
+                return row, error
+            unit = tx.scalar(
+                select(AssemblyUnit).where(AssemblyUnit.session_id == row.id, AssemblyUnit.unit_id == unit_id)
+            )
+            if row.status != "scanning" or unit is None or unit.scanned_at is None:
+                return row, _result(False, "Сначала отсканируйте товар", "not_scanned")
+            try:
+                with tx.begin_nested():
+                    self.instances.save_gtd(tx, actor, row.instance_context_id, manifest, unit_id, value)
+            except DomainError as error:
+                return row, _result(False, str(error), "data_error")
+            row.revision += 1
+            row.lease_until = self._until()
+            return row, _result(True, "ГТД сохранена", "gtd_saved")
+
+        return self._execute(
+            actor,
+            command_id,
+            "gtd",
+            {
+                "session_id": session_id,
+                "token": token,
+                "revision": revision,
+                "unit_id": unit_id,
+                "value": value,
+            },
+            operation,
+        )
+
+    def check_data(self, actor, command_id, session_id, token, revision):
+        def operation(tx):
+            row, _, error = self._locked(tx, actor, session_id, token, revision)
+            if error:
+                return row, error
+            try:
+                self.instances.recheck(tx, row.instance_context_id)
+            except DomainError as error:
+                return row, _result(False, str(error), "data_error")
+            row.revision += 1
+            return row, _result(True, "Проверяем результат передачи в Ozon", "data_checking")
+
+        return self._execute(
+            actor,
+            command_id,
+            "check_data",
             {"session_id": session_id, "token": token, "revision": revision},
             operation,
         )

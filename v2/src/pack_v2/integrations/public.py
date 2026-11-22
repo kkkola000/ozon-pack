@@ -17,6 +17,7 @@ from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 
 from . import repository as store
 from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials, SyncView
+from .instances import InstanceFactory, InstanceSnapshot, OutcomeUnknown
 from .models import AccountCheck, MarketplaceAccount
 from .reading import (
     AccountSource,
@@ -71,9 +72,11 @@ class Connections:
         box: SecretBox,
         checker: AccessChecker,
         reader_factory: ReaderFactory | None = None,
+        instance_factory: InstanceFactory | None = None,
     ):
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
+        self.instance_factory = instance_factory
 
     def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
         if not actor.can(section):
@@ -128,6 +131,18 @@ class Connections:
             credentials = self._credentials(tx, source.account_id)
         with self.reader_factory(source, credentials) as reader:
             yield reader
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+
+    @contextmanager
+    def instance_client(self, source: AccountSource):
+        if self.instance_factory is None:
+            raise DomainError("Адаптер данных экземпляров не настроен")
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+            credentials = self._credentials(tx, source.account_id)
+        with self.instance_factory(source, credentials) as client:
+            yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
 
@@ -329,4 +344,7 @@ __all__ = [
     "ShipmentSnapshot",
     "ReadPage",
     "ReadError",
+    "InstanceFactory",
+    "InstanceSnapshot",
+    "OutcomeUnknown",
 ]

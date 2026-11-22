@@ -526,3 +526,7 @@ body.assembly-is-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .is-loading::before { animation: none; } }
 @media (max-width: 700px) { .assembly-modal { inset: 8px; border-radius: 20px; } .assembly-modal-header, .assembly-modal-footer, .assembly-modal-body { padding: 16px; } .assembly-modal-header { align-items: flex-start; flex-wrap: wrap; } .assembly-modal-header h1 { font-size: 24px; } .assembly-modal-scanner, .assembly-home-scanner { padding: 12px; gap: 10px; flex-wrap: wrap; } .assembly-scan-icon { display: none; } .assembly-modal-scanner input, .assembly-home-scanner input { font-size: 16px; padding: 6px; } .assembly-modal-scanner form, .assembly-home-scanner form { padding: 8px; gap: 4px; } .assembly-item { padding: 12px; gap: 10px; flex-wrap: wrap; } .assembly-item .product-name { flex-basis: 100%; } .assembly-description > b { font-size: 17px; } .assembly-modal-footer { flex-wrap: wrap; } .assembly-amount b { font-size: 22px; } }
 @media (max-width: 700px) { .assembly-scan-body, .assembly-home-scanner form { flex-basis: 100%; } .assembly-modal-scanner form .btn, .assembly-home-scanner form .btn { font-size: 12px; padding: 8px; } .assembly-modal-scanner > .badge, .assembly-home-scanner > .badge { margin-left: auto; } }
+.assembly-mark.accepted { background: var(--ok-soft); color: var(--ok); }
+.assembly-mark.rejected { background: var(--err-soft); color: var(--err); }
+.assembly-gtd { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; max-width: 460px; }
+.assembly-gtd input { font-size: 15px; }

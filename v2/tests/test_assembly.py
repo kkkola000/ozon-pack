@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from conftest import PASSWORD, login
+from product_verification_port import ProductVerificationPort
 from pydantic import SecretStr
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -47,6 +48,7 @@ def assembly(setup_orders, owner, db, settings):
         orders,
         SecretBox(settings.encryption_key.get_secret_value()),
         settings.secret_key.get_secret_value(),
+        instance_data=ProductVerificationPort(),
     )
     return service
 
