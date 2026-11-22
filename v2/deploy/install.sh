@@ -9,6 +9,8 @@ v2_branch=refactor/modular-architecture
 v2_units_dir=/etc/systemd/system
 v2_runtime_dir=/run/systemd/system
 v2_python=
+v2_db_port=
+v2_pg_version=
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 # Sourcing defines functions without executing the installation; used by isolated contract tests.
@@ -27,44 +29,76 @@ v2_find_python() {
 }
 
 v2_preflight() {
-    local v2_listeners v2_containers v2_volumes v2_volume v2_existing_units v2_listing v2_env
+    local v2_existing_units v2_listing v2_env
     v2_require_root
     while IFS= read -r v2_env; do
         [[ $v2_env != PACK_V2_* ]] || fail 'В окружении уже заданы PACK_V2_*. Откройте чистую сессию для первой установки.'
     done < <(compgen -e)
-    for v2_program in git docker systemctl ss curl useradd; do
+    for v2_program in apt-get systemctl; do
         command -v "$v2_program" >/dev/null || fail "Не установлено: $v2_program. Установка остановлена до изменений."
     done
-    v2_find_python
-    docker compose version >/dev/null || fail 'Нужен Docker Compose v2.'
-    docker info >/dev/null 2>&1 || fail 'Docker не запущен или недоступен.'
     [[ -d $v2_runtime_dir ]] || fail 'Нужен сервер с systemd.'
     [[ ! -e $v2_checkout ]] || fail "$v2_checkout уже существует. Этот скрипт предназначен для первой установки; ничего не перезаписано."
-    v2_listeners=$(ss -H -ltn '( sport = :8001 or sport = :55432 )') || fail 'Не удалось проверить занятость портов.'
-    [[ -z $v2_listeners ]] || fail 'Порт 8001 или 55432 занят. Ничего не изменено.'
-    v2_containers=$(docker ps -aq --filter label=com.docker.compose.project=ozon-pack-v2) || fail 'Не удалось проверить контейнеры v2.'
-    [[ -z $v2_containers ]] || fail 'Контейнеры v2 уже существуют. Установка остановлена для сохранения их данных.'
-    v2_volumes=$(docker volume ls --format '{{.Name}}') || fail 'Не удалось проверить тома Docker.'
-    while IFS= read -r v2_volume; do
-        [[ $v2_volume != ozon-pack-v2_postgres_v2 ]] || fail 'Том PostgreSQL v2 уже существует. Установка остановлена для сохранения его данных.'
-    done <<< "$v2_volumes"
+    if command -v ss >/dev/null; then v2_check_port; fi
     for v2_listing in list-unit-files list-units; do
         v2_existing_units=$(systemctl "$v2_listing" --all --type=service --no-legend --no-pager 'ozon-pack-v2-*.service') || fail 'Не удалось проверить службы v2.'
         [[ -z $v2_existing_units ]] || fail 'Службы v2 уже существуют. Ничего не изменено.'
     done
 }
 
+v2_check_port() {
+    local v2_listeners
+    v2_listeners=$(ss -H -ltn '( sport = :8001 )') || fail 'Не удалось проверить занятость порта панели.'
+    [[ -z $v2_listeners ]] || fail 'Порт 8001 занят. Ничего не перезаписано.'
+}
+
+v2_psql() {
+    (cd /; runuser -u postgres -- psql -X --quiet --no-password \
+        --set=ON_ERROR_STOP=1 --set=VERBOSITY=terse --host=/var/run/postgresql \
+        --port="$v2_db_port" --username=postgres --dbname=postgres "$@")
+}
+
+v2_database_preflight() {
+    local v2_clusters v2_version v2_name v2_port v2_status v2_owner v2_rest v2_best=0 v2_chosen_status v2_server v2_exists
+    v2_clusters=$(pg_lsclusters --no-header) || fail 'Не удалось получить список кластеров PostgreSQL.'
+    while read -r v2_version v2_name v2_port v2_status v2_owner v2_rest; do
+        if [[ $v2_version =~ ^[0-9]+$ && $v2_name == main && $v2_owner == postgres ]] && \
+            (( v2_version >= 16 && v2_version > v2_best )); then
+            v2_best=$v2_version
+            v2_pg_version=$v2_version
+            v2_db_port=$v2_port
+            v2_chosen_status=$v2_status
+        fi
+    done <<< "$v2_clusters"
+    (( v2_best >= 16 )) || fail 'Нужна системная PostgreSQL 16 или новее с кластером main.'
+    [[ $v2_db_port =~ ^[0-9]+$ ]] && (( v2_db_port >= 1 && v2_db_port <= 65535 )) || fail 'Некорректный порт PostgreSQL.'
+    if [[ $v2_chosen_status == down ]]; then
+        pg_ctlcluster "$v2_pg_version" main start
+    elif [[ $v2_chosen_status != online ]]; then
+        fail 'Кластер PostgreSQL недоступен для записи.'
+    fi
+    v2_server=$(v2_psql -Atc 'SHOW server_version_num') || fail 'Не удалось подключиться к системной PostgreSQL от postgres.'
+    [[ $v2_server =~ ^[0-9]+$ ]] && (( v2_server >= 160000 )) || fail 'Нужна PostgreSQL 16 или новее.'
+    v2_exists=$(v2_psql -Atc "SELECT (EXISTS (SELECT FROM pg_roles WHERE rolname='ozon_pack_v2') OR EXISTS (SELECT FROM pg_database WHERE datname='ozon_pack_v2'))::int") || fail 'Не удалось проверить базу v2.'
+    [[ $v2_exists == 0 ]] || fail 'База или роль ozon_pack_v2 уже существует. Перезапись запрещена.'
+}
+
 v2_install() {
     printf '%s\n' 'Установка отдельной v2. Каталог старой панели /opt/ozon-pack не используется.'
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        python3 python3-venv git curl ca-certificates iproute2 postgresql postgresql-client util-linux
+    v2_find_python
+    v2_check_port
+    v2_database_preflight
     git clone --single-branch --branch "$v2_branch" https://github.com/kkkola000/ozon-pack.git "$v2_checkout"
     cd "$v2_app"
     "$v2_python" -m venv .venv
     .venv/bin/python -m pip install -r requirements.lock
     .venv/bin/python -m pip install --no-deps -e .
     .venv/bin/python -m pip check
-    .venv/bin/python -m pack_v2 generate-env
-    docker compose --project-name ozon-pack-v2 --file "$v2_app/compose.yaml" \
-        --env-file .env.v2 up -d --wait --wait-timeout 120 postgres
+    .venv/bin/python -m pack_v2 generate-env --native-postgres --database-port "$v2_db_port"
+    .venv/bin/python "$v2_app/deploy/native_database.py" --env-file .env.v2 | v2_psql
     .venv/bin/python -m pack_v2 --env-file .env.v2 migrate
     .venv/bin/python -m pack_v2 --env-file .env.v2 check
     printf '%s\n' 'Создайте пароль владельца новой панели (не менее 12 символов).'
@@ -83,8 +117,8 @@ v2_install() {
         cat > "$v2_units_dir/ozon-pack-v2-$v2_part.service" <<UNIT
 [Unit]
 Description=Ozon Pack v2 $v2_part
-After=network-online.target docker.service
-Wants=network-online.target
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
 
 [Service]
 Type=simple
@@ -106,7 +140,7 @@ UNIT
         chmod 644 "$v2_units_dir/ozon-pack-v2-$v2_part.service"
     done
     systemctl daemon-reload
-    systemctl enable --now docker.service ozon-pack-v2-web.service ozon-pack-v2-worker.service
+    systemctl enable --now postgresql.service ozon-pack-v2-web.service ozon-pack-v2-worker.service
     curl --fail --silent --show-error --retry 15 --retry-connrefused --retry-delay 1 --retry-max-time 45 http://127.0.0.1:8001/readyz
     printf '\n'
     curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8001/login

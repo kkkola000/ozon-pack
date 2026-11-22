@@ -69,20 +69,24 @@ Client-Id закрепляется за кабинетом при создани
 
 ## Установка отдельного стенда на сервере
 
-Первая установка на Linux с systemd, Python 3.12 или новее с venv, Git, curl и запущенным
-Docker Compose v2:
+Первая установка на Ubuntu/Debian с systemd. Установщик сам ставит системные
+пакеты, Python с venv и PostgreSQL через `apt`. Нужны репозитории с Python 3.12+
+и PostgreSQL 16+ (например, Ubuntu 24.04 и новее или Debian 13). Docker не используется.
 
 ```bash
 sudo bash -c 'set -e; v2_setup=$(mktemp); curl -fLsS --retry 3 https://raw.githubusercontent.com/kkkola000/ozon-pack/refactor/modular-architecture/v2/deploy/install.sh -o "$v2_setup"; bash "$v2_setup"; rm -f "$v2_setup"'
 ```
 
-Установщик создаёт `/opt/ozon-pack-v2`, собственный том PostgreSQL и службы
+Установщик создаёт `/opt/ozon-pack-v2`, отдельные базу и роль `ozon_pack_v2` в
+системной PostgreSQL и службы
 `ozon-pack-v2-web` / `ozon-pack-v2-worker`. Пароль владельца `admin` вводится
 интерактивно; ключи генерируются на сервере. Каталог `/opt/ozon-pack` не используется.
 Python выбирается автоматически: сначала подходящий `python3`, затем доступные
 `python3.14`, `python3.13`, `python3.12`. Системные ссылки Python не меняются.
-Если каталог, база, контейнеры, службы v2 или порты уже заняты, установка
-останавливается до изменений. Это первая установка, а не команда обновления.
+Порт PostgreSQL берётся из системного кластера `main`; существующие базы и роли
+не перезаписываются, настройки PostgreSQL не переписываются. Если каталог,
+службы, порт панели или база v2 уже заняты, установка останавливается. Это первая
+установка, а не команда обновления. Docker и существующие контейнеры не изменяются.
 
 Панель слушает только `127.0.0.1:8001`. На компьютере откройте SSH-туннель
 `ssh -N -L 18001:127.0.0.1:8001 пользователь@сервер`, затем `http://localhost:18001`.
@@ -91,14 +95,15 @@ Python выбирается автоматически: сначала подх�
 
 ## Запуск с нуля для разработки
 
-Нужны Python 3.12+ и отдельная PostgreSQL 17. Команды ниже выполняются из `v2/`.
+Нужны Python 3.12+ и отдельная PostgreSQL 16+. Команды ниже выполняются из `v2/`.
+Для ручного запуска с уже установленной системной PostgreSQL:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install --no-deps -e .
-.venv/bin/python -m pack_v2 generate-env
-docker compose --env-file .env.v2 up -d --wait postgres
+.venv/bin/python -m pack_v2 generate-env --native-postgres
+.venv/bin/python deploy/native_database.py --env-file .env.v2 | sudo -u postgres psql -X --set=ON_ERROR_STOP=1 --set=VERBOSITY=terse --host=/var/run/postgresql --port=5432 --dbname=postgres
 .venv/bin/python -m pack_v2 --env-file .env.v2 migrate
 .venv/bin/python -m pack_v2 --env-file .env.v2 create-owner --login admin
 .venv/bin/python -m pack_v2 --env-file .env.v2 check
@@ -109,9 +114,11 @@ docker compose --env-file .env.v2 up -d --wait postgres
 владелец создаётся только CLI, публичного маршрута регистрации владельца нет.
 `generate-env` создаёт файл с правами 0600 и отказывается перезаписывать его.
 
-Если PostgreSQL уже установлен, Docker не нужен: создайте отдельную базу и
-пользователя v2, укажите их в `PACK_V2_DATABASE_URL`. SQLite и другие драйверы
-отклоняются настройками. Не направляйте тесты на рабочую базу.
+Для разработки по-прежнему доступен необязательный `compose.yaml` с PostgreSQL 17:
+создайте конфигурацию командой `generate-env` без `--native-postgres`, затем
+`docker compose --env-file .env.v2 up -d --wait postgres`. Серверный установщик
+этот путь не использует. SQLite и другие драйверы отклоняются настройками.
+Не направляйте тесты на рабочую базу.
 
 Приложение читает только переменные `PACK_V2_*`. CLI читает файл только через
 `--env-file`; веб-сервер — через явно переданный ему `--env-file .env.v2`.

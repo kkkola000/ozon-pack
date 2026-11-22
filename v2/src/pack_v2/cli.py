@@ -43,13 +43,17 @@ def migration_config(settings: Settings) -> Config:
     return cfg
 
 
-def generate_env(path: Path) -> None:
+def generate_env(path: Path, *, native_postgres: bool = False, database_port: int | None = None) -> None:
+    port = database_port if database_port is not None else (5432 if native_postgres else 55432)
+    if not 1 <= port <= 65535:
+        raise DomainError("Порт PostgreSQL должен быть от 1 до 65535")
+    database = "ozon_pack_v2" if native_postgres else "pack_v2"
     password = secrets.token_urlsafe(32)
     contents = (
         "# Только новая панель. Старый .env не используется.\n"
         "PACK_V2_ENVIRONMENT=development\n"
-        f"PACK_V2_POSTGRES_PASSWORD={password}\n"
-        f"PACK_V2_DATABASE_URL=postgresql+psycopg://pack_v2:{password}@127.0.0.1:55432/pack_v2\n"
+        + ("" if native_postgres else f"PACK_V2_POSTGRES_PASSWORD={password}\n")
+        + f"PACK_V2_DATABASE_URL=postgresql+psycopg://{database}:{password}@127.0.0.1:{port}/{database}\n"
         f"PACK_V2_SECRET_KEY={secrets.token_urlsafe(48)}\n"
         f"PACK_V2_ENCRYPTION_KEY={Fernet.generate_key().decode()}\n"
         'PACK_V2_ALLOWED_HOSTS=["localhost","127.0.0.1"]\n'
@@ -134,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     env = commands.add_parser("generate-env")
     env.add_argument("--output", type=Path, default=Path(".env.v2"))
+    env.add_argument("--native-postgres", action="store_true", help="Отдельная база в системной PostgreSQL")
+    env.add_argument("--database-port", type=int, help="Порт PostgreSQL")
     commands.add_parser("migrate")
     commands.add_parser("check")
     owner = commands.add_parser("create-owner")
@@ -143,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "generate-env":
-            generate_env(args.output)
+            generate_env(args.output, native_postgres=args.native_postgres, database_port=args.database_port)
             return 0
         settings = load_settings(args.env_file)
         load_models()
