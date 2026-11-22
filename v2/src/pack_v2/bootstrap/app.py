@@ -20,10 +20,12 @@ from pack_v2.integrations.contracts import AccessChecker
 from pack_v2.integrations.ozon.access import OzonAccessChecker
 from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
+from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.integrations.reading import ReaderFactory
 from pack_v2.modules.assembly.api import build_router as assembly_router
 from pack_v2.modules.assembly.public import Assembly
+from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.api import build_router as catalog_router
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
@@ -38,7 +40,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0006_instances"
+SCHEMA_REVISION = "0007_readiness"
 
 
 def create_app(
@@ -46,6 +48,7 @@ def create_app(
     checker: AccessChecker | None = None,
     reader_factory: ReaderFactory | None = None,
     instance_factory=None,
+    shipping_factory=None,
 ) -> FastAPI:
     settings = settings or load_settings()
     load_models()
@@ -72,6 +75,7 @@ def create_app(
         checker if checker is not None else OzonAccessChecker(),
         reader_factory if reader_factory is not None else OzonReadAdapter,
         instance_factory if instance_factory is not None else OzonInstanceAdapter,
+        shipping_factory if shipping_factory is not None else OzonShippingAdapter,
     )
     app.state.catalog = Catalog(db, app.state.connections)
     app.state.orders = Orders(
@@ -82,6 +86,7 @@ def create_app(
     app.state.instance_data = InstanceData(
         db, app.state.connections, app.state.orders, app.state.marking, box
     )
+    app.state.readiness = Readiness(db, app.state.connections, app.state.orders, app.state.instance_data)
     app.state.assembly = Assembly(
         db,
         app.state.connections,
@@ -89,6 +94,7 @@ def create_app(
         SecretBox(settings.encryption_key.get_secret_value()),
         settings.secret_key.get_secret_value(),
         instance_data=app.state.instance_data,
+        readiness=app.state.readiness,
     )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"

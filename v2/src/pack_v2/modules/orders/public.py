@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -99,6 +99,9 @@ class Orders:
     def packing_manifest(self, tx, shipment_id):
         return packing.manifest(tx, shipment_id, self.catalog)
 
+    def packing_ready_manifest(self, tx, shipment_id):
+        return packing.manifest(tx, shipment_id, self.catalog, allow_ship_failed=True)
+
     @staticmethod
     def packing_lock(tx, shipment_id):
         packing.lock_shipment(tx, shipment_id)
@@ -117,6 +120,66 @@ class Orders:
     @staticmethod
     def packing_refresh_status(tx, run_id, account_id, shipment_id):
         return packing.refresh_status(tx, run_id, account_id, shipment_id)
+
+    @staticmethod
+    def packing_label_matches(tx, shipment_id, code):
+        from .models import ShipmentRef
+
+        return (
+            tx.scalar(
+                select(ShipmentRef.value)
+                .where(ShipmentRef.shipment_id == shipment_id, ShipmentRef.value == code)
+                .limit(1)
+            )
+            is not None
+        )
+
+    @staticmethod
+    def packing_confirm_ready(tx, manifest, observed_at, substatus):
+        """Persist an exact, fresh GET observation; assembly cannot invent a source status."""
+        from pack_v2.infrastructure.models import AuditEvent
+
+        row = packing.lock_shipment(tx, manifest.shipment_id)
+        if (
+            row.assembly_revision != manifest.assembly_revision
+            or row.state not in packing.ELIGIBLE
+            and not (
+                row.source_substatus == "ship_failed"
+                and row.source_status in ("awaiting_packaging", "awaiting_deliver")
+            )
+            or row.needs_review
+        ):
+            raise DomainError("Состояние отправления изменилось во время сборки")
+        if row.observed_at and row.observed_at > observed_at:
+            raise DomainError("Получено более новое состояние отправления. Повторите сверку")
+        changed = (row.state, row.source_status, row.source_substatus) != (
+            "awaiting_dispatch",
+            "awaiting_deliver",
+            substatus,
+        )
+        row.state, row.source_status, row.source_substatus = (
+            "awaiting_dispatch",
+            "awaiting_deliver",
+            substatus,
+        )
+        row.transition_failed = False
+        row.observed_at, row.checked_at = observed_at, datetime.now(UTC)
+        if changed:
+            from .models import Order
+
+            tx.get(Order, row.order_id).revision += 1
+            row.revision += 1
+            tx.add(
+                AuditEvent(
+                    kind="shipment_readiness_observed",
+                    subject_id=row.id,
+                    details={
+                        "account_id": str(row.account_id),
+                        "state": row.state,
+                        "observed_at": observed_at.isoformat(),
+                    },
+                )
+            )
 
     def list_shipments(self, actor: Principal, *, account_id=None, query="", state="all", page=1):
         actor.require("orders")

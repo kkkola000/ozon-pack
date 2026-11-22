@@ -31,6 +31,7 @@ from .reading import (
     ShipmentSnapshot,
     SourceChanged,
 )
+from .shipping import ShippingFactory
 from .synchronization import AccountSync
 
 
@@ -73,10 +74,12 @@ class Connections:
         checker: AccessChecker,
         reader_factory: ReaderFactory | None = None,
         instance_factory: InstanceFactory | None = None,
+        shipping_factory: ShippingFactory | None = None,
     ):
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
         self.instance_factory = instance_factory
+        self.shipping_factory = shipping_factory
 
     def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
         if not actor.can(section):
@@ -142,6 +145,18 @@ class Connections:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
         with self.instance_factory(source, credentials) as client:
+            yield client
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+
+    @contextmanager
+    def shipping_client(self, source: AccountSource):
+        if self.shipping_factory is None:
+            raise DomainError("Адаптер сборки не настроен")
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+            credentials = self._credentials(tx, source.account_id)
+        with self.shipping_factory(source, credentials) as client:
             yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)

@@ -25,7 +25,9 @@ from pack_v2.infrastructure.jobs import Queue, enqueue
 from pack_v2.integrations.ozon.access import OzonAccessChecker
 from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
+from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
+from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.identity.public import Identity
 from pack_v2.modules.instance_data.public import InstanceData
@@ -71,6 +73,7 @@ def worker(
     orders: Orders | None = None,
     orders_minutes: int = 5,
     instance_data: InstanceData | None = None,
+    readiness: Readiness | None = None,
 ) -> None:
     # Instance writes use durable dispatch intents and reconcile ambiguous outcomes.
     queue, stopped = Queue(db), threading.Event()
@@ -103,6 +106,7 @@ def worker(
                 "orders.sync": orders,
                 "instances.discover": instance_data,
                 "instances.submit": instance_data,
+                "assembly.ready": readiness,
             }.get(job.kind)
             if service:
                 with queue.keep_alive(job):
@@ -167,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                     OzonAccessChecker(),
                     OzonReadAdapter,
                     OzonInstanceAdapter,
+                    OzonShippingAdapter,
                 )
                 catalog = Catalog(db, connections)
                 orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)
@@ -183,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                     orders,
                     settings.orders_sync_minutes,
                     instance_data,
+                    Readiness(db, connections, orders, instance_data),
                 )
         finally:
             db.close()

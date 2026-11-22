@@ -13,7 +13,7 @@ MODULES = (
     Module("integrations", "Интеграции", "connections"),
     Module("catalog", "Товары", "synchronization"),
     Module("orders", "Заказы", "synchronization"),
-    Module("assembly", "Сборка", "instance_capture"),
+    Module("assembly", "Сборка", "ozon_readiness"),
     Module("instance_data", "Данные экземпляров", "ozon_submission"),
     Module("marking", "Честный знак", "assignments"),
     Module("returns", "Возвраты", "planned"),

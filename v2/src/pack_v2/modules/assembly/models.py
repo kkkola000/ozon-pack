@@ -18,7 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from pack_v2.infrastructure.database import Base, Record
 
-ACTIVE = ("opening", "scanning", "blocked")
+ACTIVE = ("opening", "scanning", "blocked", "preparing")
 
 
 class AssemblySession(Record, Base):
@@ -66,7 +66,7 @@ class AssemblySession(Record, Base):
             ["order_id", "last_unit_id"], ["pack_v2.order_units.order_id", "pack_v2.order_units.id"]
         ),
         CheckConstraint(
-            "status IN ('opening','scanning','blocked','verified','cancelled','stale','expired')",
+            "status IN ('opening','scanning','blocked','verified','cancelled','stale','expired','preparing','ready')",
             name="status",
         ),
         CheckConstraint(
@@ -76,13 +76,13 @@ class AssemblySession(Record, Base):
             "uq_assembly_active_user",
             "user_id",
             unique=True,
-            postgresql_where=text("status IN ('opening','scanning','blocked')"),
+            postgresql_where=text("status IN ('opening','scanning','blocked','preparing')"),
         ),
         Index(
             "uq_assembly_active_shipment",
             "shipment_id",
             unique=True,
-            postgresql_where=text("status IN ('opening','scanning','blocked')"),
+            postgresql_where=text("status IN ('opening','scanning','blocked','preparing')"),
         ),
         Index(
             "uq_assembly_verified_basis",
@@ -169,5 +169,57 @@ class AssemblyCommand(Base):
     __table_args__ = (
         ForeignKeyConstraint(
             ["user_id", "session_id"], ["pack_v2.assembly_sessions.user_id", "pack_v2.assembly_sessions.id"]
+        ),
+    )
+
+
+class AssemblyDispatch(Record, Base):
+    __tablename__ = "assembly_dispatches"
+    account_id: Mapped[UUID]
+    order_id: Mapped[UUID]
+    shipment_id: Mapped[UUID]
+    proof_session_id: Mapped[UUID]
+    context_id: Mapped[UUID]
+    credential_revision: Mapped[int] = mapped_column(Integer)
+    source_revision: Mapped[int] = mapped_column(Integer)
+    basis: Mapped[str] = mapped_column(String(64))
+    data_fingerprint: Mapped[str] = mapped_column(String(64))
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("pack_v2.jobs.id"), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued", server_default="queued")
+    send_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ship_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retry_allowed: Mapped[bool] = mapped_column(default=False, server_default="false")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(String(500))
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["account_id", "shipment_id"], ["pack_v2.shipments.account_id", "pack_v2.shipments.id"]
+        ),
+        ForeignKeyConstraint(
+            ["order_id", "shipment_id"], ["pack_v2.shipments.order_id", "pack_v2.shipments.id"]
+        ),
+        ForeignKeyConstraint(
+            ["proof_session_id", "shipment_id", "order_id"],
+            [
+                "pack_v2.assembly_sessions.id",
+                "pack_v2.assembly_sessions.shipment_id",
+                "pack_v2.assembly_sessions.order_id",
+            ],
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "shipment_id", "context_id"],
+            [
+                "pack_v2.instance_contexts.account_id",
+                "pack_v2.instance_contexts.shipment_id",
+                "pack_v2.instance_contexts.id",
+            ],
+        ),
+        UniqueConstraint("shipment_id", "source_revision"),
+        CheckConstraint(
+            "status IN ('queued','checking','accepted','rejected','uncertain','stale')", name="status"
+        ),
+        CheckConstraint(
+            "send_count BETWEEN 0 AND 3 AND source_revision >= 0 AND credential_revision >= 0",
+            name="revision",
         ),
     )

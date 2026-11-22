@@ -133,6 +133,24 @@ def build_router():
             )
         )
 
+    @router.post("/api/v2/assembly/{session_id}/complete")
+    def complete(request: Request, session_id: UUID, payload: SessionCommand):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.complete(
+                saved.user, payload.command_id, session_id, payload.lease_token, payload.revision
+            )
+        )
+
+    @router.post("/api/v2/assembly/{session_id}/check_ready")
+    def check_ready(request: Request, session_id: UUID, payload: SessionCommand):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.check_ready(
+                saved.user, payload.command_id, session_id, payload.lease_token, payload.revision
+            )
+        )
+
     @router.post("/api/v2/assembly/{session_id}/cancel")
     def cancel(request: Request, session_id: UUID, payload: SessionCommand):
         saved = _actor(request, write=True)

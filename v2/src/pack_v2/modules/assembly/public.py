@@ -41,11 +41,14 @@ def _scan_code(value):
 
 
 class Assembly:
-    def __init__(self, db, connections, orders, box, secret, *, instance_data, lease_seconds=180):
+    def __init__(
+        self, db, connections, orders, box, secret, *, instance_data, readiness=None, lease_seconds=180
+    ):
         self.db, self.connections, self.orders, self.box = db, connections, orders, box
         self.secret = secret.encode()
         self.lease_seconds = lease_seconds
         self.instances = instance_data
+        self.readiness = readiness
 
     def _until(self):
         return datetime.now(UTC) + timedelta(seconds=self.lease_seconds)
@@ -65,20 +68,26 @@ class Assembly:
             return None
         status, message = row.status, row.message
         label = self.connections.account_label(tx, row.account_id)
-        manifest = self.orders.packing_manifest(tx, row.shipment_id)
+        manifest = (
+            self.orders.packing_ready_manifest(tx, row.shipment_id)
+            if row.status == "preparing" and self.readiness
+            else self.orders.packing_manifest(tx, row.shipment_id)
+        )
         refresh_status, refresh_message = self.orders.packing_refresh_status(
             tx, row.refresh_run_id, row.account_id, row.shipment_id
         )
-        if status in ACTIVE and row.lease_until <= datetime.now(UTC):
+        if status in ACTIVE and status != "preparing" and row.lease_until <= datetime.now(UTC):
             status, message = "expired", "Время сборки истекло. Откройте отправление заново"
-        elif status in (*ACTIVE, "verified") and (
+        elif status in (*ACTIVE, "verified", "ready") and (
             not label.active or label.credential_revision != row.credential_revision
         ):
             status, message = "stale", "Кабинет отключён или ключи изменились. Откройте отправление заново"
-        elif status in ("scanning", "verified") and (
+        elif status in ("scanning", "verified", "preparing", "ready") and (
             not manifest.eligible
             or row.source_revision != manifest.assembly_revision
             or row.basis != manifest.basis
+            or status == "ready"
+            and manifest.state != "awaiting_dispatch"
         ):
             status, message = "stale", "Состав или состояние отправления изменились. Нужна повторная проверка"
         elif status == "opening" and refresh_status in ("failed", "stale"):
@@ -159,6 +168,7 @@ class Assembly:
             "scanned": sum(i["scanned"] for i in items),
             "need": sum(i["need"] for i in items),
             "data": data,
+            "readiness": self.readiness.view(tx, row) if self.readiness else None,
         }
 
     def current(self, actor):
@@ -193,7 +203,10 @@ class Assembly:
                     select(AssemblySession).where(
                         AssemblySession.shipment_id.in_(ids),
                         AssemblySession.status.in_(ACTIVE),
-                        AssemblySession.lease_until > datetime.now(UTC),
+                        or_(
+                            AssemblySession.status == "preparing",
+                            AssemblySession.lease_until > datetime.now(UTC),
+                        ),
                     )
                 )
             }
@@ -201,7 +214,8 @@ class Assembly:
                 (r.shipment_id, r.source_revision)
                 for r in tx.scalars(
                     select(AssemblySession).where(
-                        AssemblySession.shipment_id.in_(ids), AssemblySession.status == "verified"
+                        AssemblySession.shipment_id.in_(ids),
+                        AssemblySession.status.in_(("verified", "ready")),
                     )
                 )
                 if r.account_id in labels
@@ -304,7 +318,7 @@ class Assembly:
                         False, "Сейчас нужен штрихкод товара или стикер отправления", "wrong_code"
                     )
                 proofs = select(AssemblySession.shipment_id, AssemblySession.source_revision).where(
-                    AssemblySession.status == "verified",
+                    AssemblySession.status.in_(("verified", "ready")),
                     or_(
                         *(
                             (AssemblySession.account_id == key) & (AssemblySession.credential_revision == rev)
@@ -315,7 +329,9 @@ class Assembly:
                 )
                 busy = select(AssemblySession.shipment_id).where(
                     AssemblySession.status.in_(ACTIVE),
-                    AssemblySession.lease_until > datetime.now(UTC),
+                    or_(
+                        AssemblySession.status == "preparing", AssemblySession.lease_until > datetime.now(UTC)
+                    ),
                     AssemblySession.user_id != actor.id,
                 )
                 kind, rows = self.orders.packing_candidates(
@@ -344,7 +360,7 @@ class Assembly:
             tx.execute(
                 update(AssemblySession)
                 .where(
-                    AssemblySession.status.in_(ACTIVE),
+                    AssemblySession.status.in_(tuple(s for s in ACTIVE if s != "preparing")),
                     AssemblySession.lease_until <= now,
                     or_(AssemblySession.user_id == actor.id, AssemblySession.shipment_id == target),
                 )
@@ -376,7 +392,7 @@ class Assembly:
             verified = tx.scalar(
                 select(AssemblySession).where(
                     AssemblySession.shipment_id == target,
-                    AssemblySession.status == "verified",
+                    AssemblySession.status.in_(("verified", "ready")),
                     AssemblySession.source_revision == manifest.assembly_revision,
                 )
             )
@@ -384,6 +400,8 @@ class Assembly:
                 verified.basis != manifest.basis
                 or not manifest.eligible
                 or verified.credential_revision != source.credential_revision
+                or verified.status == "ready"
+                and manifest.state != "awaiting_dispatch"
             ):
                 verified.status, verified.message = "stale", "Состав или состояние изменились"
                 verified.revision += 1
@@ -395,6 +413,28 @@ class Assembly:
                         True, "Товары этого отправления уже проверены", "already_verified"
                     )
                 return None, _result(False, "Товары этого отправления уже проверены", "already_verified")
+            if self.readiness:
+                from .models import AssemblyDispatch
+
+                ongoing = tx.scalar(
+                    select(AssemblyDispatch)
+                    .where(
+                        AssemblyDispatch.shipment_id == target,
+                        or_(
+                            AssemblyDispatch.status.in_(("queued", "checking", "uncertain")),
+                            AssemblyDispatch.ship_started_at.is_not(None)
+                            & (AssemblyDispatch.status != "accepted"),
+                        ),
+                    )
+                    .limit(1)
+                )
+                if ongoing:
+                    previous_session = tx.get(AssemblySession, ongoing.proof_session_id)
+                    if previous_session.user_id == actor.id:
+                        return previous_session, _result(
+                            True, "Проверяем результат предыдущей сборки", "readiness_pending"
+                        )
+                    return None, _result(False, "Ozon ещё обрабатывает сборку этого отправления", "busy")
             previous = tx.scalar(
                 select(AssemblySession)
                 .where(AssemblySession.shipment_id == target)
@@ -470,7 +510,7 @@ class Assembly:
             )
         if row.status not in ACTIVE:
             return row, None, _result(False, "Эта проверка уже закрыта", "closed")
-        if row.lease_until <= datetime.now(UTC):
+        if row.status != "preparing" and row.lease_until <= datetime.now(UTC):
             row.status, row.message = "expired", "Время сборки истекло. Откройте отправление заново"
         elif source_error:
             row.status, row.message = "stale", source_error
@@ -687,6 +727,8 @@ class Assembly:
                 return row, error
             if row.status != "scanning":
                 return row, _result(False, "Дождитесь проверки отправления", "not_scanning")
+            if self.readiness and self.orders.packing_label_matches(tx, row.shipment_id, code):
+                return self._begin_ready(tx, row)
             return row, self._count(tx, actor, row, manifest, code)
 
         return self._execute(
@@ -739,6 +781,82 @@ class Assembly:
             actor,
             command_id,
             "verify",
+            {"session_id": session_id, "token": token, "revision": revision},
+            operation,
+        )
+
+    def _begin_ready(self, tx, row):
+        manifest = self.orders.packing_manifest(tx, row.shipment_id)
+        if (
+            not manifest.eligible
+            or manifest.basis != row.basis
+            or manifest.assembly_revision != row.source_revision
+        ):
+            return row, _result(
+                False, "Состав или состояние отправления изменились. Повторите проверку", "stale"
+            )
+        units = list(tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == row.id)))
+        if not units or any(u.scanned_at is None for u in units):
+            return row, _result(False, "Сначала отсканируйте все товары", "incomplete")
+        if self.readiness is None:
+            raise DomainError("Операция готовности не настроена")
+        dispatch = self.readiness.request(tx, row, manifest)
+        row.status, row.verified_at, row.finished_at = (
+            ("ready" if dispatch.status == "accepted" else "preparing"),
+            datetime.now(UTC),
+            None,
+        )
+        row.revision += 1
+        return row, _result(
+            True,
+            "Ozon обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке",
+            "readiness_queued",
+        )
+
+    def complete(self, actor, command_id, session_id, token, revision):
+        def operation(tx):
+            row = self._owned(tx, actor, session_id)
+            self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+            self.orders.packing_lock(tx, row.shipment_id)
+            row = self._owned(tx, actor, session_id, lock=True)
+            if row.lease_token != token or row.revision != revision:
+                return row, _result(False, "Окно сборки устарело. Обновите его", "revision_conflict")
+            if row.status not in ("scanning", "verified", "preparing", "ready"):
+                return row, _result(False, "Проверка товаров ещё не завершена", "not_scanning")
+            if row.status in ("preparing", "ready"):
+                return row, _result(True, "Проверяем результат сборки", "readiness_existing")
+            if row.status == "scanning" and row.lease_until <= datetime.now(UTC):
+                return row, _result(False, "Время сборки истекло. Откройте отправление заново", "expired")
+            return self._begin_ready(tx, row)
+
+        return self._execute(
+            actor,
+            command_id,
+            "complete",
+            {"session_id": session_id, "token": token, "revision": revision},
+            operation,
+        )
+
+    def check_ready(self, actor, command_id, session_id, token, revision):
+        def operation(tx):
+            row = self._owned(tx, actor, session_id)
+            self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+            self.orders.packing_lock(tx, row.shipment_id)
+            row = self._owned(tx, actor, session_id, lock=True)
+            if row.lease_token != token or row.revision != revision:
+                return row, _result(False, "Окно сборки устарело. Обновите его", "revision_conflict")
+            if self.readiness is None:
+                raise DomainError("Операция готовности не настроена")
+            self.readiness.recheck(tx, row)
+            row.revision += 1
+            return row, _result(
+                True, "Проверяем фактическую готовность отправления в Ozon", "readiness_checking"
+            )
+
+        return self._execute(
+            actor,
+            command_id,
+            "check_ready",
             {"session_id": session_id, "token": token, "revision": revision},
             operation,
         )

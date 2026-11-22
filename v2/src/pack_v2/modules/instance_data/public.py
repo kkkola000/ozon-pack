@@ -502,6 +502,63 @@ class InstanceData:
             "batch_id": str(batch.id) if batch else None,
         }
 
+    def dispatch_evidence(self, tx, context_id, manifest):
+        """Trusted backend port: current, confirmed full data; never an API projection."""
+        row = self._context(tx, context_id)
+        self._guard_context(row, manifest)
+        if not self.view(tx, context_id, manifest)["can_verify"]:
+            raise Conflict("Сначала дождитесь подтверждения Честного знака и ГТД")
+        fingerprint, details, marks = self._fingerprint(tx, row)
+        return fingerprint, {
+            "baseline": self._open(row.encrypted_snapshot),
+            "requirements": row.requirements,
+            "request": policy.to_request(self._open(row.encrypted_snapshot), details, marks),
+            "unit_ids": {(d.product_id, d.exemplar_id): str(d.unit_id) for d in details},
+            "has_fields": self._has_fields(row),
+        }
+
+    @staticmethod
+    def check_dispatch(client, manifest, evidence):
+        """Fresh requirements and exact values are required immediately before ship."""
+        fresh = client.discover(manifest.posting_number)
+        baseline, req, payload = evidence["baseline"], evidence["requirements"], evidence["request"]
+        if (
+            fresh.posting_number != manifest.posting_number
+            or fresh.source.account_id != manifest.account_id
+            or fresh.source.marketplace != "ozon"
+        ):
+            raise Conflict("Получен ответ другого отправления или кабинета")
+        if not policy.compatible(fresh, baseline, req, policy.requirements(manifest, fresh)):
+            raise Conflict("Ozon изменил требования или экземпляры. Повторите проверку данных")
+        if fresh.multi_box_qty != baseline.get("multi_box_qty") or not all(
+            policy.same_unit(got, want, check_id=True)
+            for product in fresh.products
+            for got, want in zip(
+                product["exemplars"],
+                next(
+                    p["exemplars"]
+                    for p in payload["products"]
+                    if str(p["product_id"]) == str(product["product_id"])
+                ),
+                strict=True,
+            )
+        ):
+            raise Conflict("Данные экземпляров изменились в Ozon. Повторите проверку данных")
+        posting = client.posting(manifest.posting_number)
+        if evidence["has_fields"]:
+            passed, errors, _ = policy.checked_status(
+                client.status(manifest.posting_number), payload, req, evidence["unit_ids"]
+            )
+            if (
+                not passed
+                or errors
+                or posting.get("status") == "awaiting_deliver"
+                and posting.get("substatus") != "ship_failed"
+                and not policy.applied(posting, payload)
+            ):
+                raise Conflict("Ozon не подтвердил текущие данные Честного знака и ГТД")
+        return posting
+
     def recheck(self, tx, context_id):
         row = self._context(tx, context_id)
         fingerprint, _, _ = self._fingerprint(tx, row)

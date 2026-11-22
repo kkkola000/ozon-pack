@@ -30,7 +30,7 @@ def lock_shipment(tx, shipment_id):
     )
 
 
-def manifest(tx, shipment_id, catalog):
+def manifest(tx, shipment_id, catalog, *, allow_ship_failed=False):
     shipment = tx.get(Shipment, shipment_id)
     if shipment is None:
         raise NotFound("Отправление не найдено")
@@ -82,7 +82,13 @@ def manifest(tx, shipment_id, catalog):
         shipment.assembly_revision,
         basis,
         shipment.state,
-        shipment.state in ELIGIBLE and not shipment.needs_review and not shipment.transition_failed,
+        not shipment.needs_review
+        and (
+            (shipment.state in ELIGIBLE and not shipment.transition_failed)
+            or allow_ship_failed
+            and shipment.source_substatus == "ship_failed"
+            and shipment.source_status in ("awaiting_packaging", "awaiting_deliver")
+        ),
         shipment.deadline,
         shipment.warehouse_name,
         tuple(lines),

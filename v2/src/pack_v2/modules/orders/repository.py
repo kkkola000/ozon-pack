@@ -72,6 +72,17 @@ def _aliases(tx, account_id, shipment_id, rows, snapshot):
     return changed
 
 
+def _physical_eligible(row):
+    # A confirmed shipping failure is retryable; it does not erase product scans.
+    # Normal scanner eligibility still rejects transition_failed in packing.manifest.
+    return not row.needs_review and (
+        row.state in ("awaiting_assembly", "awaiting_dispatch")
+        or row.transition_failed
+        and row.source_substatus == "ship_failed"
+        and row.source_status in ("awaiting_packaging", "awaiting_deliver")
+    )
+
+
 def apply_page(tx, run, snapshots, catalog):
     account_id = run.account_id
     numbers = [s.source_id for s in snapshots]
@@ -125,6 +136,10 @@ def apply_page(tx, run, snapshots, catalog):
             for r in snapshot.references
         ):
             raise ReadError("invalid_response")
+        previous = existing.get(snapshot.source_id)
+        if previous and previous.observed_at and snapshot.observed_at < previous.observed_at:
+            # A slow list/get started before readiness must not roll back a newer GET.
+            continue
         identity_refs = [r for r in snapshot.order_references if r.authoritative]
         if not identity_refs:
             raise ReadError("incomplete")
@@ -170,11 +185,7 @@ def apply_page(tx, run, snapshots, catalog):
                 requirements_complete=False,
             )
             tx.add(saved)
-        old_eligible = (
-            saved.state in ("awaiting_assembly", "awaiting_dispatch")
-            and not saved.needs_review
-            and not saved.transition_failed
-        )
+        old_eligible = _physical_eligible(saved)
         before_status = (saved.source_status, saved.source_substatus, saved.state)
         changed = fresh
         changed |= _assign(saved, "source_status", snapshot.source_status)
@@ -303,16 +314,7 @@ def apply_page(tx, run, snapshots, catalog):
             )
             for r in snapshot.items
         )
-        if (
-            fresh
-            or old_physical != new_physical
-            or old_eligible
-            != (
-                saved.state in ("awaiting_assembly", "awaiting_dispatch")
-                and not saved.needs_review
-                and not saved.transition_failed
-            )
-        ):
+        if fresh or old_physical != new_physical or old_eligible != _physical_eligible(saved):
             saved.assembly_revision = (saved.assembly_revision or 0) + 1
         saved.observed_at = snapshot.observed_at
         saved.checked_at = saved.synced_at = datetime.now(UTC)

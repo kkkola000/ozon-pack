@@ -291,11 +291,22 @@ def check_assembly(page, context, url: str, output: Path) -> None:
     scanner.fill("OZN6225436164")
     scanner.press("Enter")
     expect(page.locator("[data-assembly-count]")).to_have_text("3 из 3")
-    page.locator("[data-assembly-action=verify]").click()
-    expect(page.locator("[data-assembly-stage]")).to_have_text("Товары проверены")
-    page.screenshot(path=str(output / "assembly-verified-mobile.png"), full_page=True)
+    discarded.clear()
+    complete_pattern = "**/api/v2/assembly/*/complete"
+    page.route(complete_pattern, lose_response)
+    page.locator("[data-assembly-action=complete]").click()
+    expect(retry).to_be_visible()
+    retry.click()
+    expect(retry).to_be_hidden()
+    page.unroute(complete_pattern, lose_response)
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Ozon обрабатывает сборку")
+    assert "error" not in page.locator("[data-assembly-message]").get_attribute("class")
+    page.screenshot(path=str(output / "assembly-waiting-mobile.png"), full_page=True)
+    page.reload()
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Готов к отгрузке", timeout=45000)
+    page.screenshot(path=str(output / "assembly-ready-mobile.png"), full_page=True)
     after = context.request.get(url + "/api/v2/orders/" + shipment["id"]).json()["shipment"]
-    assert after["state"] == shipment["state"] and not after["requirements_complete"]
+    assert after["state"] == "awaiting_dispatch" and not after["requirements_complete"]
     page.locator("[data-assembly-queue]").click()
     expect(page.locator("[data-assembly-modal]")).to_be_hidden()
     page.set_viewport_size({"width": 1440, "height": 1000})
@@ -318,10 +329,12 @@ def check_assembly(page, context, url: str, output: Path) -> None:
     expect(page.locator("[data-assembly-count]")).to_have_text("3 из 3")
     expect(retry).to_be_hidden()
     page.unroute(pattern, lose_response)
-    assert "needsCode" not in page.evaluate("JSON.stringify(sessionStorage)")
+    page.wait_for_function(
+        "() => !Object.values(sessionStorage).some(value => { try { return JSON.parse(value).needsCode; } catch (_) { return false; } })"
+    )
     complete_instance_data(page, context, url)
-    page.locator("[data-assembly-action=verify]").click()
-    expect(page.locator("[data-assembly-stage]")).to_have_text("Товары проверены")
+    page.locator("[data-assembly-action=complete]").click()
+    expect(page.locator("[data-assembly-stage]")).to_have_text("Готов к отгрузке", timeout=45000)
     page.locator("[data-assembly-queue]").click()
 
 

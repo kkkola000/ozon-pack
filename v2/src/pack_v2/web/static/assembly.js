@@ -19,7 +19,7 @@
   const uuid = () => crypto.randomUUID();
   const input = () => session ? root.querySelector('#assembly-code') : root.querySelector('#assembly-home-code');
   const stages = { opening: 'Проверяем отправление', scanning: 'Проверка товаров', blocked: 'Проверка приостановлена',
-    verified: 'Товары проверены', stale: 'Нужна повторная проверка', expired: 'Время истекло', cancelled: 'Отменено' };
+    verified: 'Товары проверены', preparing: 'Ozon обрабатывает сборку', ready: 'Готов к отгрузке', stale: 'Нужна повторная проверка', expired: 'Время истекло', cancelled: 'Отменено' };
   const make = (tag, cls, text) => {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -44,10 +44,10 @@
     find('assembly-account').textContent = `Ozon · ${session.account_title}`;
     find('assembly-number').textContent = session.posting_number;
     find('assembly-stage').textContent = stages[session.status] || session.status;
-    find('assembly-stage').className = `badge ${session.status === 'verified' ? 'ok' : session.status === 'opening' ? 'accent' : ''}`;
+    find('assembly-stage').className = `badge ${['verified', 'ready'].includes(session.status) ? 'ok' : session.status === 'opening' ? 'accent' : ''}`;
     const scanner = find('scanner-state');
     scanner.textContent = session.status === 'opening' ? 'Проверяем…' : paused ? 'Нет связи' : session.status === 'scanning' ? 'Сканер готов' : stages[session.status];
-    scanner.className = `badge ${session.status === 'opening' ? 'accent is-loading' : session.status === 'scanning' && !paused ? 'ok' : 'warn'}`;
+    scanner.className = `badge ${['opening', 'preparing'].includes(session.status) && !['rejected', 'uncertain', 'stale'].includes(session.readiness?.status) ? 'accent is-loading' : session.status === 'scanning' && !paused ? 'ok' : 'warn'}`;
     find('assembly-progress').max = Math.max(1, session.need);
     find('assembly-progress').value = session.scanned;
     find('assembly-count').textContent = `${session.scanned} из ${session.need}`;
@@ -104,22 +104,25 @@
         if (field && !field.disabled) { field.focus(); field.setSelectionRange(...selection); }
       }
     } finally { rendering = false; }
-    const verify = root.querySelector('[data-assembly-action=verify]');
-    verify.hidden = session.status !== 'scanning';
+    const verify = root.querySelector('[data-assembly-action=complete]');
+    verify.hidden = !['scanning', 'verified'].includes(session.status);
     verify.disabled = busy || paused || queue.length > 0 || session.need === 0 || session.scanned !== session.need || session.data?.can_verify === false;
     root.querySelector('[data-assembly-action=retry]').hidden = session.status !== 'blocked';
     root.querySelector('[data-assembly-action=check_data]').hidden = !['uncertain', 'rejected'].includes(session.data?.status);
     root.querySelector('[data-assembly-action=cancel]').disabled = busy || paused || queue.length > 0;
-    find('assembly-queue').hidden = !['verified', 'cancelled'].includes(session.status);
+    root.querySelector('[data-assembly-action=check_ready]').hidden = !session.readiness?.can_recheck;
+    find('assembly-queue').hidden = !['ready', 'cancelled'].includes(session.status) && !['uncertain', 'rejected', 'stale'].includes(session.readiness?.status);
     if (!paused) {
       if (session.status === 'opening') notice(session.refresh_status === 'retrying' ? 'Ozon временно недоступен. Повторяем проверку…' : 'Получаем актуальный состав и состояние отправления…');
-      else if (session.status === 'verified') notice('Товары проверены. Готовность отправления на площадке проверяется отдельно.');
+      else if (session.status === 'ready' || session.readiness?.status === 'accepted') notice('Ozon подтвердил готовность отправления к отгрузке.');
+      else if (session.readiness?.message) notice(session.readiness.message, ['rejected', 'stale'].includes(session.readiness.status));
+      else if (session.status === 'verified') notice('Товары проверены. Завершите сборку для подтверждения готовности Ozon.');
       else if (lastIssue) notice(lastIssue, true);
       else if (session.message) notice(session.message, session.status === 'stale');
       else if (session.data?.message) notice(session.data.message, ['rejected', 'uncertain', 'blocked'].includes(session.data.status));
       else if (session.data?.status === 'accepted') notice('');
     }
-    input().placeholder = session.status === 'scanning' ? session.data?.pending_unit_id ? 'Сканируйте код «Честный знак» этого товара…' : 'Сканируйте товар…' : stages[session.status];
+    input().placeholder = session.status === 'scanning' ? session.data?.pending_unit_id ? 'Сканируйте код «Честный знак» этого товара…' : session.scanned === session.need && session.data?.can_verify ? 'Сканируйте стикер отправления или завершите сборку…' : 'Сканируйте товар…' : stages[session.status];
     if (['prepared', 'checking'].includes(session.data?.status)) { scanner.textContent = 'Проверяем данные…'; scanner.className = 'badge accent is-loading'; }
   }
   function apply(next) {
@@ -235,7 +238,7 @@
     } catch (_) { paused = true; notice('Не удалось проверить предыдущий запрос. Повторите попытку.', true); }
   }
   async function poll() {
-    if (!busy && !paused && session && !document.hidden && ['opening', 'scanning', 'blocked'].includes(session.status)) {
+    if (!busy && !paused && session && !document.hidden && (['opening', 'scanning', 'blocked', 'preparing'].includes(session.status) || ['queued', 'checking'].includes(session.readiness?.status))) {
       try {
         const response = await fetch(`/api/v2/assembly/${session.id}`);
         if (response.ok) {
@@ -244,10 +247,10 @@
         }
       } catch (_) { /* Read failures never advance the product counter. */ }
     }
-    setTimeout(poll, session?.status === 'opening' || ['prepared', 'checking'].includes(session?.data?.status) ? 1000 : 5000);
+    setTimeout(poll, ['opening', 'preparing'].includes(session?.status) || ['prepared', 'checking'].includes(session?.data?.status) ? 1000 : 5000);
   }
   setInterval(async () => {
-    if (!session || busy || paused || document.hidden || !['opening', 'scanning', 'blocked'].includes(session.status)) return;
+    if (!session || busy || paused || document.hidden || !['opening', 'scanning', 'blocked', 'preparing'].includes(session.status)) return;
     try {
       const response = await fetch(`/api/v2/assembly/${session.id}/heartbeat`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify({ lease_token: session.lease_token }) });
       const result = await decode(response); if (result.session) apply(result.session);
