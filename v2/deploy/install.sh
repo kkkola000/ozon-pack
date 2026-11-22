@@ -78,7 +78,7 @@ v2_access_address() {
         curl -fLsS --retry 3 "https://raw.githubusercontent.com/kkkola000/ozon-pack/$v2_branch/v2/deploy/public_access.py" -o "$v2_access_helper"
     fi
     if [[ -n $v2_public_ip ]]; then v2_arguments+=(--ip "$v2_public_ip"); fi
-    v2_public_ip=$("$v2_python" "$v2_access_helper" "${v2_arguments[@]}")
+    v2_public_ip=$("$v2_python" -I "$v2_access_helper" "${v2_arguments[@]}")
     [[ -n $v2_public_ip ]] || fail 'Не удалось определить IPv4 сервера.'
 }
 
@@ -113,7 +113,7 @@ v2_configure_access() {
     [[ -f $v2_units_dir/ozon-pack-v2-web.service ]] || fail 'Служба v2 не найдена.'
     v2_python="$v2_app/.venv/bin/python"
     v2_access_address
-    "$v2_python" "$v2_access_helper" --env-file "$v2_app/.env.v2" --ip "$v2_public_ip" >/dev/null
+    "$v2_python" -I "$v2_access_helper" --env-file "$v2_app/.env.v2" --ip "$v2_public_ip" >/dev/null
     mkdir -p "$v2_units_dir/ozon-pack-v2-web.service.d"
     cat > "$v2_units_dir/ozon-pack-v2-web.service.d/20-public-access.conf" <<UNIT
 [Service]
@@ -125,6 +125,7 @@ UNIT
     systemctl daemon-reload
     systemctl restart ozon-pack-v2-web.service
     v2_check_web
+    systemctl is-active --quiet ozon-pack-v2-web.service
     printf '\nПанель доступна: http://%s:8001\n' "$v2_public_ip"
 }
 
@@ -175,7 +176,7 @@ v2_install() {
     .venv/bin/python -m pip install --no-deps -e .
     .venv/bin/python -m pip check
     .venv/bin/python -m pack_v2 generate-env --native-postgres --database-port "$v2_db_port"
-    .venv/bin/python "$v2_access_helper" --env-file .env.v2 --ip "$v2_public_ip" >/dev/null
+    .venv/bin/python -I "$v2_access_helper" --env-file .env.v2 --ip "$v2_public_ip" >/dev/null
     .venv/bin/python "$v2_app/deploy/native_database.py" --env-file .env.v2 | v2_psql
     .venv/bin/python -m pack_v2 --env-file .env.v2 migrate
     .venv/bin/python -m pack_v2 --env-file .env.v2 check

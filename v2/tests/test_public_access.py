@@ -3,6 +3,8 @@
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,7 @@ spec = importlib.util.spec_from_file_location(
 )
 access = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(access)
+run_python = subprocess.run
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +110,20 @@ def test_configuration_refuses_a_symlink(tmp_path):
     with pytest.raises(ValueError):
         access.configure(link, "203.0.113.10")
     assert original.read_bytes() == content
+
+
+def test_configuration_runs_in_isolated_installed_python(tmp_path):
+    path = tmp_path / ".env.v2"
+    generate_env(path, native_postgres=True)
+    result = run_python(
+        [sys.executable, "-I", str(spec.origin), "--ip", "203.0.113.10", "--env-file", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert result.stdout.strip() == "203.0.113.10"
+    assert "203.0.113.10" in Settings(_env_file=path).allowed_hosts
 
 
 def test_application_accepts_the_configured_ip_and_rejects_another_host(tmp_path, settings, db, owner):

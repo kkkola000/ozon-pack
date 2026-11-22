@@ -25,6 +25,7 @@ v2_fake_python() {
     local v2_name=$1
     shift
     record "$v2_name" "$@"
+    if [[ $1 == -I ]]; then shift; fi
     if [[ $1 == -c ]]; then
         case "$CASE:$v2_name" in
             unsupported_python:*|fallback:python3|only_313:python3|only_313:python3.14|only_312:python3|only_312:python3.14|only_312:python3.13)
@@ -129,6 +130,7 @@ fi
 PYTHON_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "python $*" >> "$TEST_ROOT/trace"
+if [[ $1 == -I ]]; then shift; fi
 if [[ $* == *generate-env* ]]; then
     printf '%s\n' 'synthetic-test-only' > .env.v2
 fi
@@ -278,6 +280,8 @@ def test_installation_creates_separate_web_and_worker_services(tmp_path):
     assert "v2 установлена" in result.stdout
     assert "http://203.0.113.10:8001" in result.stdout
     assert "--env-file .env.v2 --ip 203.0.113.10" in trace
+    assert "python3 -I /tmp/ozon-pack-v2-access." in trace
+    assert "python -I /tmp/ozon-pack-v2-access." in trace
     assert "--header Host: 203.0.113.10:8001 http://127.0.0.1:8001/login" in trace
 
 
