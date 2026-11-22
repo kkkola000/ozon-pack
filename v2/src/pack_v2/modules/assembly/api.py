@@ -40,6 +40,10 @@ class Gtd(SessionCommand):
     value: str = Field(min_length=1, max_length=100)
 
 
+class Layout(SessionCommand):
+    groups: list[list[UUID]] = Field(min_length=1, max_length=100)
+
+
 def _actor(request, *, write=False):
     saved = current(request)
     saved.user.require("pack")
@@ -57,6 +61,20 @@ def _response(result):
 
 def build_router():
     router = APIRouter()
+
+    @router.post("/api/v2/assembly/{session_id}/layout")
+    def layout(request: Request, session_id: UUID, payload: Layout):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.layout(
+                saved.user,
+                payload.command_id,
+                session_id,
+                payload.lease_token,
+                payload.revision,
+                [[str(uid) for uid in group] for group in payload.groups],
+            )
+        )
 
     @router.get("/pack")
     def page(request: Request, account_id: AccountFilter = None, shipment_id: UUID | None = None):

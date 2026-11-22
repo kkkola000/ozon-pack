@@ -110,6 +110,56 @@ class Orders:
     def packing_plan(tx, manifest):
         return packing.plan_units(tx, manifest)
 
+    @staticmethod
+    def packing_layout(tx, manifest, units, *, automatic=False):
+        from . import layout
+
+        return layout.groups(tx, manifest, units, automatic=automatic)
+
+    @staticmethod
+    def packing_save_layout(tx, manifest, units, groups):
+        from . import layout
+
+        return layout.save(tx, manifest, units, groups)
+
+    def packing_confirm_split(self, tx, original_id, snapshots, mapping, source):
+        from . import layout
+
+        original = packing.lock_shipment(tx, original_id)
+        return layout.confirm(tx, original, snapshots, mapping, self.catalog, source)
+
+    @staticmethod
+    def packing_ids(tx, account_id, numbers):
+        from .models import ShipmentRef
+
+        return tuple(
+            tx.scalars(
+                select(ShipmentRef.shipment_id).where(
+                    ShipmentRef.account_id == account_id,
+                    ShipmentRef.kind == "posting_number",
+                    ShipmentRef.value.in_(numbers),
+                )
+            )
+        )
+
+    @staticmethod
+    def packing_split_current(tx, children):
+        from .models import Shipment
+
+        rows = {
+            str(r.id): r
+            for r in tx.scalars(
+                select(Shipment).where(Shipment.id.in_([UUID(child["shipment_id"]) for child in children]))
+            )
+        }
+        return bool(children) and all(
+            (row := rows.get(child["shipment_id"]))
+            and not row.needs_review
+            and row.state == "awaiting_dispatch"
+            and row.assembly_revision == child["source_revision"]
+            for child in children
+        )
+
     def packing_candidates(self, tx, **kwargs):
         return packing.candidates(tx, self.catalog, **kwargs)
 

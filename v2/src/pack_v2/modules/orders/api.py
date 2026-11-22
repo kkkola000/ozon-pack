@@ -17,6 +17,7 @@ STATES = {
     "in_delivery": ("В доставке", ""),
     "delivered": ("Доставлен", "ok"),
     "cancelled": ("Отменён", ""),
+    "split": ("Разделён", ""),
     "unknown": ("Уточняется", "warn"),
     "review": ("Нужна проверка", "warn"),
 }

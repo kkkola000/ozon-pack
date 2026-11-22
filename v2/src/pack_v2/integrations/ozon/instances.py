@@ -219,6 +219,8 @@ class OzonInstanceAdapter:
                 "product_exemplars",
                 "requirements",
                 "optional",
+                "related_postings",
+                "parent_posting_number",
             )
         }
 

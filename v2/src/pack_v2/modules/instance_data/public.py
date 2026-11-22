@@ -171,8 +171,19 @@ class InstanceData:
             slots = source[key]
             if len(units) != len(slots):
                 raise Conflict("Распределение экземпляров не совпадает с отправлением")
-            for unit, slot in zip(units, slots, strict=True):
+            known = {existing[u.unit_id].exemplar_id for u in units if u.unit_id in existing}
+            free = iter(slot for slot in slots if slot["exemplar_id"] not in known)
+            for unit in units:
                 detail = existing.get(unit.unit_id)
+                slot = (
+                    next((s for s in slots if s["exemplar_id"] == detail.exemplar_id), None)
+                    if detail
+                    else next(free, None)
+                )
+                if slot is None:
+                    raise Conflict(
+                        "Идентификаторы экземпляров изменились. Требуется сверка привязки Честного знака"
+                    )
                 if detail and (
                     detail.exemplar_id != slot["exemplar_id"]
                     or detail.product_id != key
@@ -515,6 +526,62 @@ class InstanceData:
             "request": policy.to_request(self._open(row.encrypted_snapshot), details, marks),
             "unit_ids": {(d.product_id, d.exemplar_id): str(d.unit_id) for d in details},
             "has_fields": self._has_fields(row),
+        }
+
+    def freeze_dispatch(self, tx, context_id, manifest):
+        from .splitting import freeze
+
+        return freeze(self, tx, context_id, manifest)
+
+    def open_dispatch(self, sealed):
+        from .splitting import thaw
+
+        return thaw(self, sealed)
+
+    def prove_split(self, client, evidence, groups, snapshots):
+        from .splitting import prove
+
+        return prove(self, client, evidence, groups, snapshots)
+
+    def accept_split(self, tx, children, proofs, source):
+        from .splitting import accept
+
+        return accept(self, tx, children, proofs, source)
+
+    @staticmethod
+    def split_products(evidence, groups):
+        from collections import Counter
+
+        from .splitting import expected_units
+
+        expected = expected_units(evidence)
+        return [
+            {
+                "products": [
+                    {"product_id": int(key), "quantity": count}
+                    for key, count in sorted(Counter(expected[uid]["product_id"] for uid in group).items())
+                ]
+            }
+            for group in groups
+        ]
+
+    def completed_split_view(self, tx, context_id, lines):
+        req = self._context(tx, context_id).requirements
+        return {
+            "status": "accepted",
+            "can_verify": True,
+            "message": "",
+            "pending_unit_id": None,
+            "items": {
+                str(line.item_id): {
+                    "cis": req.get(next((v for k, v in line.references if k == "sku"), ""), {}).get(
+                        "cis", False
+                    ),
+                    "mark_status": "accepted",
+                    "units": [],
+                }
+                for line in lines
+            },
         }
 
     @staticmethod

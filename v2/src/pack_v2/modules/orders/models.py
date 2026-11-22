@@ -28,6 +28,16 @@ class Order(Record, Base):
     __table_args__ = (UniqueConstraint("account_id", "id"),)
 
 
+class PackingLayout(Base):
+    __tablename__ = "packing_layouts"
+    shipment_id: Mapped[UUID] = mapped_column(ForeignKey("pack_v2.shipments.id"), primary_key=True)
+    source_revision: Mapped[int] = mapped_column(Integer)
+    basis: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    groups: Mapped[list] = mapped_column(JSONB)
+    __table_args__ = (CheckConstraint("revision > 0 AND source_revision >= 0", name="revision"),)
+
+
 class OrderLine(Record, Base):
     __tablename__ = "order_lines"
     account_id: Mapped[UUID]
@@ -85,6 +95,7 @@ class Shipment(Record, Base):
     parent_source_number: Mapped[str | None] = mapped_column(String(256))
     package_count_hint: Mapped[int | None] = mapped_column(Integer)
     needs_review: Mapped[bool] = mapped_column(default=False, server_default="false")
+    layout_review: Mapped[bool] = mapped_column(default=False, server_default="false")
     transition_failed: Mapped[bool] = mapped_column(default=False, server_default="false")
     requirements_complete: Mapped[bool] = mapped_column(default=False, server_default="false")
     last_seen_run_id: Mapped[UUID | None]
@@ -103,6 +114,7 @@ class Shipment(Record, Base):
         UniqueConstraint("order_id", "id"),
         UniqueConstraint("account_id", "id"),
         Index("ix_shipments_queue", "account_id", "state", "deadline"),
+        Index("ix_shipments_parent", "parent_id"),
     )
 
 

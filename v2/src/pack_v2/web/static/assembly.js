@@ -15,6 +15,8 @@
   let pending = null;
   let recovery = null;
   let paused = false;
+  let layoutDraft = null;
+  let draggingUnit = null;
   const find = (name) => root.querySelector(`[data-${name}]`);
   const uuid = () => crypto.randomUUID();
   const input = () => session ? root.querySelector('#assembly-code') : root.querySelector('#assembly-home-code');
@@ -34,11 +36,12 @@
     target.className = `notice ${error ? 'error' : ''}`;
   }
   function render() {
+    if (draggingUnit) return;
     modal.hidden = backdrop.hidden = !session;
     document.body.classList.toggle('assembly-is-open', Boolean(session));
     root.querySelector('.assembly-home-scanner').hidden = Boolean(session);
     const waiting = busy && !session || session?.status === 'opening';
-    root.querySelectorAll('[data-scan-input]').forEach(node => { node.readOnly = paused || waiting || Boolean(session && session.status !== 'scanning'); });
+    root.querySelectorAll('[data-scan-input]').forEach(node => { node.readOnly = paused || waiting || Boolean(layoutDraft) || Boolean(session && session.status !== 'scanning'); });
     root.querySelectorAll('[data-network-retry]').forEach(node => { node.hidden = !paused; });
     if (!session) return;
     find('assembly-account').textContent = `Ozon · ${session.account_title}`;
@@ -58,13 +61,33 @@
       const editing = document.activeElement?.dataset.gtdUnit;
       const selection = editing ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       container.replaceChildren();
+      const editable = session.layout?.editable && session.status === 'scanning';
+      const groups = layoutDraft || session.layout?.groups || [];
+      const display = [];
+      if (editable && groups.length) {
+        groups.forEach((group, index) => {
+          const zone = make('section', 'assembly-layout-group'); zone.dataset.layoutGroup = index;
+          zone.append(make('h3', 'small', `Отправление ${index + 1}`)); container.append(zone);
+          for (const uid of group) {
+            const unit = session.layout.units.find(u => u.id === uid);
+            const item = session.items.find(i => i.id === unit?.item_id);
+            if (item) display.push({ ...item, need: 1, scanned: unit.scanned ? 1 : 0, _unitId: uid, _zone: zone });
+          }
+        });
+      } else display.push(...session.items);
       let highlighted = false;
-      for (const item of session.items) {
+      for (const item of display) {
         const complete = item.scanned >= item.need;
         const selected = !complete && !highlighted;
         if (selected) highlighted = true;
         const card = make('article', `assembly-item ${complete ? 'complete' : selected ? 'selected' : ''}`);
         card.dataset.itemId = item.id;
+        if (item._unitId) {
+          card.draggable = !busy && !paused && !queue.length; card.dataset.layoutUnit = item._unitId;
+          const grip = make('button', 'assembly-layout-handle', '⠿'); grip.type = 'button'; grip.draggable = card.draggable;
+          grip.title = 'Перетащите товар в другое отправление. Клавиатура: Ctrl + стрелка вправо или влево';
+          grip.setAttribute('aria-label', `Переместить ${item.name}`); grip.disabled = !card.draggable; card.append(grip);
+        }
         const info = make('div', 'product-name');
         if (item.image_url?.startsWith('https://')) {
           const img = make('img'); img.src = item.image_url; img.width = img.height = 64; img.alt = ''; img.referrerPolicy = 'no-referrer'; info.append(img);
@@ -84,6 +107,7 @@
           mark.setAttribute('aria-label', mark.title); card.append(mark);
         }
         for (const [index, unit] of (extra?.units || []).entries()) {
+          if (item._unitId && unit.id !== item._unitId) continue;
           if (!unit.gtd_required) continue;
           const form = make('form', 'assembly-gtd'); form.dataset.gtdForm = unit.id;
           const field = make('input'); field.type = 'text'; field.autocomplete = 'off'; field.maxLength = 100;
@@ -97,7 +121,20 @@
           description.append(form);
         }
         const amount = make('div', 'assembly-amount'); amount.append(make('b', '', `${complete ? '✓ ' : ''}${item.scanned} / ${item.need}`), make('span', 'small muted', complete ? 'проверено' : 'шт')); card.append(amount);
-        container.append(card);
+        (item._zone || container).append(card);
+      }
+      if (editable && groups.length < Math.min(session.layout.units.length, 100)) {
+        const drop = make('section', 'assembly-layout-new'); drop.dataset.layoutGroup = groups.length;
+        drop.append(make('b', '', `Новое отправление ${groups.length + 1}`), make('span', 'muted small', 'Перетащите товар сюда'));
+        container.append(drop);
+      }
+      if (layoutDraft) {
+        const save = make('button', 'btn small assembly-layout-save', 'Сохранить'); save.type = 'button';
+        save.dataset.saveLayout = ''; save.disabled = busy || paused || queue.length > 0; container.append(save);
+      }
+      for (const child of session.readiness?.children || []) {
+        const link = make('a', 'btn assembly-layout-result', child.posting_number);
+        link.href = `/pack?shipment_id=${encodeURIComponent(child.shipment_id)}`; container.append(link);
       }
       if (editing) {
         const field = root.querySelector(`[data-gtd-unit="${editing}"]`);
@@ -106,7 +143,7 @@
     } finally { rendering = false; }
     const verify = root.querySelector('[data-assembly-action=complete]');
     verify.hidden = !['scanning', 'verified'].includes(session.status);
-    verify.disabled = busy || paused || queue.length > 0 || session.need === 0 || session.scanned !== session.need || session.data?.can_verify === false;
+    verify.disabled = busy || paused || Boolean(layoutDraft) || queue.length > 0 || session.need === 0 || session.scanned !== session.need || session.data?.can_verify === false;
     root.querySelector('[data-assembly-action=retry]').hidden = session.status !== 'blocked';
     root.querySelector('[data-assembly-action=check_data]').hidden = !['uncertain', 'rejected'].includes(session.data?.status);
     root.querySelector('[data-assembly-action=cancel]').disabled = busy || paused || queue.length > 0;
@@ -127,6 +164,7 @@
   }
   function apply(next) {
     if (next && session?.id === next.id && next.revision < session.revision) return;
+    if (session?.id !== next?.id || next?.status !== 'scanning') { layoutDraft = null; draggingUnit = null; }
     session = next;
     render();
   }
@@ -154,6 +192,7 @@
         queuedValues.delete(request.payload.unit_id);
         if (result.ok) drafts.delete(request.payload.unit_id);
       }
+      if (request.action === 'layout' && result.ok) layoutDraft = null;
       if (result.session) apply(result.session);
       notice(result.message || result.detail || '', result.ok === false && !result.pending);
       if (!response.ok && !result.session) {
@@ -174,6 +213,7 @@
     }
     Object.assign(payload, { lease_token: session.lease_token, revision: session.revision });
     if (action === 'gtd') { payload.unit_id = target; payload.value = code; }
+    else if (action === 'layout') payload.groups = code;
     else if (code !== undefined) payload.code = code;
     return { action, url: `/api/v2/assembly/${session.id}/${action}`, payload };
   }
@@ -183,6 +223,59 @@
     const request = task.request || build(task.action, task.code, task.target);
     send(request);
   }
+  function moveUnit(uid, target) {
+    if (!session?.layout?.editable || session.status !== 'scanning' || busy || paused || queue.length) return;
+    const groups = (layoutDraft || session.layout.groups).map(group => [...group]);
+    if (!session.layout.units.some(u => u.id === uid) || target < 0 || target > groups.length || target >= 100) return;
+    if (groups[target]?.includes(uid)) return;
+    const destination = groups[target] || [];
+    if (target === groups.length) groups.push(destination);
+    groups.forEach(group => { const at = group.indexOf(uid); if (at >= 0) group.splice(at, 1); });
+    destination.push(uid); layoutDraft = groups.filter(group => group.length);
+    render(); notice('Сохраните распределение товаров');
+  }
+  root.addEventListener('dragstart', event => {
+    const card = event.target.closest('[data-layout-unit]');
+    if (!card?.draggable || busy || paused) { event.preventDefault(); return; }
+    draggingUnit = card.dataset.layoutUnit; event.dataTransfer.setData('text/plain', draggingUnit); event.dataTransfer.effectAllowed = 'move';
+    root.classList.add('assembly-layout-dragging');
+  });
+  root.addEventListener('dragover', event => { if (draggingUnit && event.target.closest('[data-layout-group]')) event.preventDefault(); });
+  root.addEventListener('drop', event => {
+    const zone = event.target.closest('[data-layout-group]');
+    if (!draggingUnit) return;
+    event.preventDefault(); const uid = draggingUnit; draggingUnit = null; root.classList.remove('assembly-layout-dragging');
+    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup)); else render();
+  });
+  root.addEventListener('dragend', () => { draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render(); });
+  root.addEventListener('pointerdown', event => {
+    const grip = event.target.closest('.assembly-layout-handle');
+    if (!grip || grip.disabled || event.pointerType === 'mouse') return;
+    draggingUnit = grip.closest('[data-layout-unit]').dataset.layoutUnit; root.classList.add('assembly-layout-dragging'); grip.setPointerCapture(event.pointerId);
+  });
+  root.addEventListener('pointerup', event => {
+    if (event.pointerType === 'mouse' || !draggingUnit) return;
+    const zone = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-layout-group]');
+    const uid = draggingUnit; draggingUnit = null; root.classList.remove('assembly-layout-dragging');
+    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup)); else render();
+  });
+  root.addEventListener('pointercancel', event => {
+    // Native mouse drag cancels the pointer stream; rebuilding its source aborts HTML drag-and-drop.
+    if (event.pointerType === 'mouse') return;
+    draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render();
+  });
+  root.addEventListener('click', event => {
+    if (event.target.closest('[data-save-layout]') && layoutDraft && !busy && !paused) {
+      queue.push({ action: 'layout', code: layoutDraft.map(group => [...group]) }); drain();
+    }
+  });
+  root.addEventListener('keydown', event => {
+    const grip = event.target.closest('.assembly-layout-handle');
+    if (!grip || !event.ctrlKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault(); const card = grip.closest('[data-layout-unit]');
+    moveUnit(card.dataset.layoutUnit, Number(card.closest('[data-layout-group]').dataset.layoutGroup) + (event.key === 'ArrowRight' ? 1 : -1));
+    root.querySelector(`[data-layout-unit="${card.dataset.layoutUnit}"] .assembly-layout-handle`)?.focus();
+  });
   root.querySelectorAll('[data-scan-form]').forEach(form => form.addEventListener('submit', event => {
     event.preventDefault();
     const field = form.querySelector('input');

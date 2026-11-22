@@ -186,6 +186,7 @@ def apply_page(tx, run, snapshots, catalog):
             )
             tx.add(saved)
         old_eligible = _physical_eligible(saved)
+        was_split = saved.state == "split"
         before_status = (saved.source_status, saved.source_substatus, saved.state)
         changed = fresh
         changed |= _assign(saved, "source_status", snapshot.source_status)
@@ -230,7 +231,7 @@ def apply_page(tx, run, snapshots, catalog):
             ):
                 saved.parent_id = None
                 changed = True
-        changed |= _assign(saved, "needs_review", False)
+        changed |= _assign(saved, "needs_review", bool(saved.layout_review))
         changed |= _assign(saved, "requirements_complete", snapshot.requirements_complete)
         changed |= _aliases(tx, account_id, saved.id, refs.get(saved.id, []), snapshot)
         if "related" in snapshot.fields_present:
@@ -316,6 +317,10 @@ def apply_page(tx, run, snapshots, catalog):
         )
         if fresh or old_physical != new_physical or old_eligible != _physical_eligible(saved):
             saved.assembly_revision = (saved.assembly_revision or 0) + 1
+        if not fresh:
+            from .layout import observe
+
+            observe(tx, saved, snapshot, was_split=was_split, physical_changed=old_physical != new_physical)
         saved.observed_at = snapshot.observed_at
         saved.checked_at = saved.synced_at = datetime.now(UTC)
         saved.last_seen_run_id = run.id

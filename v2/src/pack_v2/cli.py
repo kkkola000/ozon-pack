@@ -57,6 +57,7 @@ def generate_env(path: Path) -> None:
         "PACK_V2_CATALOG_SYNC_MINUTES=15\n"
         "PACK_V2_ORDERS_SYNC_MINUTES=5\n"
         "PACK_V2_ORDERS_LOOKBACK_DAYS=30\n"
+        "PACK_V2_SPLIT_ORDERS_ON_PACK=true\n"
     )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as stream:
@@ -188,7 +189,9 @@ def main(argv: list[str] | None = None) -> int:
                     orders,
                     settings.orders_sync_minutes,
                     instance_data,
-                    Readiness(db, connections, orders, instance_data),
+                    Readiness(
+                        db, connections, orders, instance_data, auto_split=settings.split_orders_on_pack
+                    ),
                 )
         finally:
             db.close()

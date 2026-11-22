@@ -530,3 +530,14 @@ body.assembly-is-open { overflow: hidden; }
 .assembly-mark.rejected { background: var(--err-soft); color: var(--err); }
 .assembly-gtd { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; max-width: 460px; }
 .assembly-gtd input { font-size: 15px; }
+
+/* Ozon layouts reuse the assembly cards and the existing palette. */
+.assembly-layout-group { margin: 16px 0; padding: 12px; border: 1px solid var(--line); border-radius: 16px; }
+.assembly-layout-group h3 { margin: 0 0 12px; }
+.assembly-layout-group .assembly-item:last-child { margin-bottom: 0; }
+.assembly-layout-new { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 108px; margin: 16px 0; border: 1px dashed var(--line); border-radius: 16px; }
+.assembly-layout-handle { flex: 0 0 28px; align-self: center; padding: 8px 4px; background: transparent; color: var(--muted); border: 0; cursor: grab; touch-action: none; }
+.assembly-layout-handle:focus-visible { outline: 2px solid var(--accent); border-radius: 8px; }
+.assembly-layout-save { display: block; margin: 12px auto; }
+.assembly-layout-result { display: inline-block; margin: 8px 8px 0 0; }
+.assembly-layout-dragging .assembly-gtd input { pointer-events: none; }

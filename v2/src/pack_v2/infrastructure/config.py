@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     catalog_sync_minutes: int = Field(default=15, ge=0, le=1440)
     orders_sync_minutes: int = Field(default=5, ge=0, le=1440)
     orders_lookback_days: int = Field(default=30, ge=1, le=90)
+    split_orders_on_pack: bool = True
 
     @model_validator(mode="after")
     def validate_separation(self) -> Self:

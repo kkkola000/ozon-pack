@@ -67,6 +67,14 @@ class Assembly:
         if row is None:
             return None
         status, message = row.status, row.message
+        readiness = self.readiness.view(tx, row) if self.readiness else None
+        split_done = status == "ready" and bool(readiness and readiness["children"])
+        split_pending = (
+            status == "preparing"
+            and readiness
+            and readiness["package_count"] > 1
+            and readiness["status"] in ("queued", "checking", "uncertain")
+        )
         label = self.connections.account_label(tx, row.account_id)
         manifest = (
             self.orders.packing_ready_manifest(tx, row.shipment_id)
@@ -82,12 +90,16 @@ class Assembly:
             not label.active or label.credential_revision != row.credential_revision
         ):
             status, message = "stale", "Кабинет отключён или ключи изменились. Откройте отправление заново"
-        elif status in ("scanning", "verified", "preparing", "ready") and (
-            not manifest.eligible
-            or row.source_revision != manifest.assembly_revision
-            or row.basis != manifest.basis
-            or status == "ready"
-            and manifest.state != "awaiting_dispatch"
+        elif (
+            not (split_done or split_pending)
+            and status in ("scanning", "verified", "preparing", "ready")
+            and (
+                not manifest.eligible
+                or row.source_revision != manifest.assembly_revision
+                or row.basis != manifest.basis
+                or status == "ready"
+                and manifest.state != "awaiting_dispatch"
+            )
         ):
             status, message = "stale", "Состав или состояние отправления изменились. Нужна повторная проверка"
         elif status == "opening" and refresh_status in ("failed", "stale"):
@@ -110,15 +122,24 @@ class Assembly:
             data["can_verify"] = False
             for info in data["items"].values():
                 info["mark_status"] = "pending"
+        if split_pending:
+            data["status"], data["can_verify"] = "checking", False
+            for info in data["items"].values():
+                info["mark_status"] = "pending"
         if status == "opening" and data["status"] == "blocked":
             status, message = "blocked", data["message"]
         current = {i.item_id: i for i in manifest.items}
         items = []
-        for line in tx.scalars(
-            select(AssemblyLine)
-            .where(AssemblyLine.session_id == row.id)
-            .order_by(AssemblyLine.source_line_id)
-        ):
+        lines = list(
+            tx.scalars(
+                select(AssemblyLine)
+                .where(AssemblyLine.session_id == row.id)
+                .order_by(AssemblyLine.source_line_id)
+            )
+        )
+        if split_done:
+            data = self.instances.completed_split_view(tx, row.instance_context_id, lines)
+        for line in lines:
             live = current.get(line.item_id)
             items.append(
                 {
@@ -168,7 +189,21 @@ class Assembly:
             "scanned": sum(i["scanned"] for i in items),
             "need": sum(i["need"] for i in items),
             "data": data,
-            "readiness": self.readiness.view(tx, row) if self.readiness else None,
+            "readiness": readiness,
+            "layout": {
+                "editable": status == "scanning"
+                and manifest.state == "awaiting_assembly"
+                and len(physical) > 1,
+                "groups": self.orders.packing_layout(
+                    tx, manifest, physical, automatic=bool(self.readiness and self.readiness.auto_split)
+                )
+                if status == "scanning" and manifest.eligible and row.basis == manifest.basis and physical
+                else [],
+                "units": [
+                    {"id": str(u.unit_id), "item_id": str(u.item_id), "scanned": u.scanned_at is not None}
+                    for u in physical
+                ],
+            },
         }
 
     def current(self, actor):
@@ -356,6 +391,12 @@ class Assembly:
             source = self.connections.source_for_sync(tx, manifest.account_id)
             self.orders.packing_lock(tx, target)
             manifest = self.orders.packing_manifest(tx, target)
+            if self.readiness and self.readiness.blocks_other_shipment(tx, manifest):
+                return None, _result(
+                    False,
+                    "Ozon разделяет этот заказ. Сначала дождитесь сверки новых отправлений",
+                    "split_pending",
+                )
             now = datetime.now(UTC)
             tx.execute(
                 update(AssemblySession)
@@ -834,6 +875,32 @@ class Assembly:
             command_id,
             "complete",
             {"session_id": session_id, "token": token, "revision": revision},
+            operation,
+        )
+
+    def layout(self, actor, command_id, session_id, token, revision, groups):
+        def operation(tx):
+            row, manifest, error = self._locked(tx, actor, session_id, token, revision)
+            if error:
+                return row, error
+            if row.status != "scanning":
+                return row, _result(
+                    False, "Распределение меняется только до отправки сборки Ozon", "not_scanning"
+                )
+            old = self.readiness.find(tx, row) if self.readiness else None
+            if old and old.ship_started_at:
+                return row, _result(False, "Результат предыдущей сборки требует сверки", "readiness_pending")
+            units = list(tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == row.id)))
+            self.orders.packing_save_layout(tx, manifest, units, groups)
+            row.revision += 1
+            row.lease_until = self._until()
+            return row, _result(True, "Распределение товаров сохранено", "layout_saved")
+
+        return self._execute(
+            actor,
+            command_id,
+            "layout",
+            {"session_id": session_id, "token": token, "revision": revision, "groups": groups},
             operation,
         )
 

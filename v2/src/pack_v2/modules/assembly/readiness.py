@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from pack_v2.infrastructure.jobs import LeaseLost, Queue, enqueue
@@ -19,8 +19,9 @@ WAITING = "Ozon обрабатывает сборку. Ожидаем подтв
 
 
 class Readiness:
-    def __init__(self, db, connections, orders, instance_data):
+    def __init__(self, db, connections, orders, instance_data, *, auto_split=False):
         self.db, self.connections, self.orders, self.instances = db, connections, orders, instance_data
+        self.auto_split = auto_split
 
     @staticmethod
     def find(tx, session):
@@ -31,11 +32,34 @@ class Readiness:
             )
         )
 
+    @staticmethod
+    def blocks_other_shipment(tx, manifest):
+        return (
+            tx.scalar(
+                select(AssemblyDispatch.id)
+                .where(
+                    AssemblyDispatch.order_id == manifest.order_id,
+                    AssemblyDispatch.shipment_id != manifest.shipment_id,
+                    func.jsonb_array_length(AssemblyDispatch.layout) > 1,
+                    AssemblyDispatch.status != "accepted",
+                    or_(AssemblyDispatch.status.in_(PENDING), AssemblyDispatch.ship_started_at.is_not(None)),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
     def view(self, tx, session):
         row = self.find(tx, session)
         if row is None:
             return None
         status = row.status
+        if (
+            status == "accepted"
+            and row.split_result
+            and not self.orders.packing_split_current(tx, row.split_result)
+        ):
+            status = "stale"
         job = tx.get(Job, row.job_id)
         if status in ("queued", "checking") and (
             job.status in ("failed", "succeeded")
@@ -46,12 +70,31 @@ class Readiness:
             status = "uncertain" if row.ship_started_at else "rejected"
         return {
             "status": status,
-            "message": row.error or (WAITING if status in PENDING else ""),
+            "message": "Распределение отправлений изменилось. Обновите заказы и выполните сверку"
+            if status == "stale" and row.split_result
+            else row.error or (WAITING if status in PENDING else ""),
             "can_recheck": status in ("uncertain", "rejected"),
+            "children": row.split_result if status == "accepted" else [],
+            "package_count": len(row.layout) or 1,
         }
 
     def request(self, tx, session, manifest):
         fingerprint, _ = self.instances.dispatch_evidence(tx, session.instance_context_id, manifest)
+        units = list(
+            tx.scalars(
+                select(AssemblyUnit)
+                .where(AssemblyUnit.session_id == session.id)
+                .order_by(AssemblyUnit.item_id, AssemblyUnit.ordinal)
+            )
+        )
+        groups = (
+            self.orders.packing_layout(tx, manifest, units, automatic=self.auto_split)
+            if manifest.state == "awaiting_assembly"
+            else []
+        )
+        frozen = None
+        if len(groups) > 1:
+            fingerprint, frozen = self.instances.freeze_dispatch(tx, session.instance_context_id, manifest)
         old = self.find(tx, session)
         if old:
             if (
@@ -64,6 +107,8 @@ class Readiness:
                 old.proof_session_id, old.context_id = session.id, session.instance_context_id
                 old.credential_revision, old.basis = session.credential_revision, manifest.basis
                 old.data_fingerprint = fingerprint
+                if old.ship_started_at is None:
+                    old.layout, old.encrypted_evidence = groups, frozen
                 old.job_id = enqueue(
                     tx,
                     "assembly.ready",
@@ -112,6 +157,8 @@ class Readiness:
             source_revision=session.source_revision,
             basis=session.basis,
             data_fingerprint=fingerprint,
+            layout=groups,
+            encrypted_evidence=frozen,
         )
         row.job_id = enqueue(
             tx, "assembly.ready", "assembly.ready:" + str(row.id), {"dispatch_id": str(row.id)}
@@ -169,7 +216,20 @@ class Readiness:
             .with_for_update()
             .execution_options(populate_existing=True)
         )
+        if row.status == "accepted":
+            return row, session, source, None, None
         manifest = self.orders.packing_ready_manifest(tx, row.shipment_id)
+        if len(row.layout) > 1 and row.ship_started_at:
+            # After an irreversible split, the original composition may legitimately disappear.
+            # Only reads are allowed; keep the immutable original proof for child reconciliation.
+            units = list(tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == session.id)))
+            if (
+                not session.verified_at
+                or any(u.scanned_at is None for u in units)
+                or {str(u.unit_id) for u in units} != {uid for group in row.layout for uid in group}
+            ):
+                raise SourceChanged("Исходные сканы разделённого отправления не подтверждены")
+            return row, session, source, manifest, self.instances.open_dispatch(row.encrypted_evidence)
         if (
             not manifest.eligible
             or manifest.assembly_revision != row.source_revision
@@ -270,12 +330,19 @@ class Readiness:
                 row.ship_started_at,
                 row.send_count,
                 session.status == "cancelled",
+                row.layout,
+                row.split_targets,
             )
 
         saved = self.write(job, begin)
         if saved is None:
             return
-        source, manifest, evidence, started, count, cancelled = saved
+        source, manifest, evidence, started, count, cancelled, layout, targets = saved
+        if len(layout) > 1:
+            from .splitting import SplitExecution
+
+            SplitExecution(self).run(job, source, manifest, evidence, started, cancelled, layout, targets)
+            return
         if cancelled and not started:
             self.fail(job, "Локальная сборка отменена до передачи запроса Ozon")
             return
@@ -375,6 +442,8 @@ class Readiness:
                 if row.status == "accepted":
                     Queue.finish_in(tx, job)
                     return
+                if stale and len(row.layout) > 1 and row.ship_started_at:
+                    stale = False  # The split happened; an unresolved child observation remains recheckable.
                 # Bounded background polling; explicit recheck only resumes observations.
                 job_row = tx.get(Job, job.id)
                 recent = datetime.now(UTC) - job_row.created_at < timedelta(minutes=10)

@@ -131,6 +131,48 @@ class Marking:
         }
 
     @staticmethod
+    def relocate(tx, binding):
+        """Only a confirmed split may transfer the reservation of the same physical unit."""
+        old = tx.scalar(
+            select(MarkingAssignment)
+            .where(MarkingAssignment.unit_id == binding.unit_id, MarkingAssignment.released_at.is_(None))
+            .with_for_update()
+        )
+        if old is None:
+            return None
+        if old.account_id != binding.account_id or old.order_id != binding.order_id:
+            raise Conflict("Нельзя перенести Честный знак в другой заказ или кабинет")
+        if old.shipment_id == binding.shipment_id and old.allocation_id == binding.allocation_id:
+            return old.id
+        old.released_at, old.release_reason = datetime.now(UTC), "shipment_split"
+        tx.flush()
+        row = MarkingAssignment(
+            id=uuid4(),
+            mark_id=old.mark_id,
+            account_id=binding.account_id,
+            order_id=binding.order_id,
+            shipment_id=binding.shipment_id,
+            unit_id=binding.unit_id,
+            allocation_id=binding.allocation_id,
+            posting_number=binding.posting_number,
+            actor_id=old.actor_id,
+        )
+        tx.add(row)
+        tx.flush()
+        tx.add(
+            AuditEvent(
+                kind="marking_relocated",
+                subject_id=row.id,
+                details={
+                    "previous_assignment_id": str(old.id),
+                    "shipment_id": str(row.shipment_id),
+                    "unit_id": str(row.unit_id),
+                },
+            )
+        )
+        return row.id
+
+    @staticmethod
     def transmissions(tx, batch_id, assignment_ids, status):
         for assignment_id in assignment_ids:
             tx.execute(

@@ -8,6 +8,7 @@ from .reading import AccountSource
 
 class ShippingClient(Protocol):
     def ship(self, payload: dict) -> None: ...
+    def split(self, payload: dict) -> tuple[str, ...]: ...
 
 
 ShippingFactory = Callable[[AccountSource, OzonCredentials], ContextManager[ShippingClient]]

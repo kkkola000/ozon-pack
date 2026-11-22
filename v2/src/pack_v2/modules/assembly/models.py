@@ -191,6 +191,10 @@ class AssemblyDispatch(Record, Base):
     retry_allowed: Mapped[bool] = mapped_column(default=False, server_default="false")
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(String(500))
+    layout: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    encrypted_evidence: Mapped[bytes | None] = mapped_column(LargeBinary)
+    split_targets: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    split_result: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
     __table_args__ = (
         ForeignKeyConstraint(
             ["account_id", "shipment_id"], ["pack_v2.shipments.account_id", "pack_v2.shipments.id"]

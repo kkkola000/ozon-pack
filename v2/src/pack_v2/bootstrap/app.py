@@ -40,7 +40,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0007_readiness"
+SCHEMA_REVISION = "0008_split"
 
 
 def create_app(
@@ -86,7 +86,13 @@ def create_app(
     app.state.instance_data = InstanceData(
         db, app.state.connections, app.state.orders, app.state.marking, box
     )
-    app.state.readiness = Readiness(db, app.state.connections, app.state.orders, app.state.instance_data)
+    app.state.readiness = Readiness(
+        db,
+        app.state.connections,
+        app.state.orders,
+        app.state.instance_data,
+        auto_split=settings.split_orders_on_pack,
+    )
     app.state.assembly = Assembly(
         db,
         app.state.connections,
