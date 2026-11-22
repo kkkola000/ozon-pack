@@ -29,7 +29,7 @@ v2_find_python() {
 }
 
 v2_preflight() {
-    local v2_existing_units v2_listing v2_env
+    local v2_env
     v2_require_root
     while IFS= read -r v2_env; do
         [[ $v2_env != PACK_V2_* ]] || fail 'В окружении уже заданы PACK_V2_*. Откройте чистую сессию для первой установки.'
@@ -40,9 +40,21 @@ v2_preflight() {
     [[ -d $v2_runtime_dir ]] || fail 'Нужен сервер с systemd.'
     [[ ! -e $v2_checkout ]] || fail "$v2_checkout уже существует. Этот скрипт предназначен для первой установки; ничего не перезаписано."
     if command -v ss >/dev/null; then v2_check_port; fi
+    v2_check_services
+}
+
+v2_check_services() {
+    local v2_listing v2_existing_units v2_unit v2_details
     for v2_listing in list-unit-files list-units; do
-        v2_existing_units=$(systemctl "$v2_listing" --all --type=service --no-legend --no-pager 'ozon-pack-v2-*.service') || fail 'Не удалось проверить службы v2.'
-        [[ -z $v2_existing_units ]] || fail 'Службы v2 уже существуют. Ничего не изменено.'
+        # A filtered list-unit-files returns 1 for no matches on recent systemd.
+        # Enumerate without a glob; actual enumeration/bus errors still stop installation.
+        v2_existing_units=$(SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0 systemctl "$v2_listing" --all --type=service --no-legend --no-pager --plain) || \
+            fail "Не удалось проверить службы v2 ($v2_listing). Подробности systemctl — выше."
+        while read -r v2_unit v2_details; do
+            case "$v2_unit" in
+                ozon-pack-v2-*.service) fail "Службы v2 уже существуют ($v2_unit). Ничего не изменено." ;;
+            esac
+        done <<< "$v2_existing_units"
     done
 }
 

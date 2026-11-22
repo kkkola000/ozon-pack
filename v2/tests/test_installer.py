@@ -1,6 +1,7 @@
 """Exercise native installation and failure paths without privileges or server mutations."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -84,8 +85,17 @@ ss() {
 systemctl() {
     record systemctl "$@"
     if [[ $1 == list-unit-files || $1 == list-units ]]; then
-        [[ $CASE != units_error ]] || return 1
+        if [[ $CASE == units_error || $CASE == loaded_units_error && $1 == list-units ]]; then
+            echo 'synthetic systemd bus error' >&2
+            return 1
+        fi
+        # Real systemctl returns 1 when a service glob finds no matches.
+        [[ $* != *'ozon-pack-v2-*.service'* ]] || return 1
+        printf '%s\n' 'ssh.service enabled enabled'
         if [[ $CASE == "$1" ]]; then printf '%s\n' 'ozon-pack-v2-web.service enabled'; fi
+        if [[ $CASE == loaded_failed && $1 == list-units ]]; then
+            printf '%s\n' 'ozon-pack-v2-worker.service loaded failed failed synthetic'
+        fi
     fi
 }
 id() {
@@ -180,6 +190,8 @@ def test_root_is_required_for_installation():
         "list-units",
         "ports_error",
         "units_error",
+        "loaded_units_error",
+        "loaded_failed",
         "inherited_config",
         "missing_python",
         "unsupported_python",
@@ -213,6 +225,8 @@ def test_installation_creates_separate_web_and_worker_services(tmp_path):
     assert "--host=/var/run/postgresql --port=5432 --username=postgres --dbname=postgres" in trace
     assert "native_database.py --env-file .env.v2" in trace
     assert "docker" not in trace
+    assert "ozon-pack-v2-*.service" not in trace
+    assert "--no-pager --plain" in trace
     assert "synthetic-test-only" not in trace + result.stdout + result.stderr
     assert trace.index(" generate-env") < trace.index(" migrate") < trace.index(" create-owner")
     assert trace.index(" migrate") < trace.index("systemctl enable")
@@ -284,3 +298,46 @@ def test_failed_readiness_is_not_reported_as_success(tmp_path):
     result, _ = run_installer(tmp_path, "ready_error")
     assert result.returncode != 0
     assert "v2 установлена" not in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("systemctl") is None, reason="A real systemctl client is required")
+@pytest.mark.parametrize("existing_v2", [False, True])
+def test_service_check_with_real_systemctl_offline_unit_files(tmp_path, existing_v2):
+    root = tmp_path / "systemd-root"
+    units = root / "etc" / "systemd" / "system"
+    units.mkdir(parents=True)
+    unit_text = "[Unit]\nDescription=Installer regression test\n[Service]\nExecStart=/bin/true\n"
+    (units / "ssh.service").write_text(unit_text)
+    if existing_v2:
+        (units / "ozon-pack-v2-web.service").write_text(unit_text)
+    # --root exercises the real unit-file query without touching PID 1 or host services.
+    check = r"""
+source "$1"
+systemctl() {
+    if [[ $1 == list-unit-files ]]; then
+        "$SYSTEMCTL_BIN" --root "$UNIT_TEST_ROOT" "$@"
+    else
+        printf '%s\n' 'ssh.service loaded active running synthetic'
+    fi
+}
+v2_check_services
+"""
+    result = subprocess.run(
+        ["bash", "-c", check, "real-systemctl-test", str(INSTALLER)],
+        env={
+            **os.environ,
+            "SYSTEMCTL_BIN": shutil.which("systemctl"),
+            "UNIT_TEST_ROOT": str(root),
+            "SYSTEMD_COLORS": "1",
+            "SYSTEMD_URLIFY": "1",
+        },
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert (result.returncode != 0) == existing_v2, result.stderr
+    if existing_v2:
+        assert "уже существуют" in result.stderr
+        assert "ozon-pack-v2-web.service" in result.stderr
+    else:
+        assert not result.stderr
