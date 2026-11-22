@@ -18,12 +18,22 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 KV_AUTO = 'print_marking_duplicates'
+NOT_RECORDED = 'Не записан ЧЗ на маркете'
+LOCAL_ONLY_MESSAGE = ('Честный знак нужно передавать в статусе заказа Ожидает сборки, '
+                      'завершите эту сборку отсканировав стикер отправления')
 
 
 class Rejected(ValueError):
     def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров'):
         super().__init__(message)
         self.errors = errors
+
+
+class NotRecorded(Rejected):
+    """The full code is retained locally but is absent from a closed remote layout."""
+    def __init__(self, errors: dict[str, str], *, local_completion: bool = False):
+        super().__init__(errors, NOT_RECORDED)
+        self.local_completion = local_completion
 SCHEMA = order_lock.SCHEMA + marking_registry.SCHEMA + marking_returns.SCHEMA + """
 CREATE TABLE IF NOT EXISTS marking_orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -228,6 +238,13 @@ def guard(account: dict, order_id: str) -> None:
         raise ValueError(saved.get('error') or 'Передайте обязательные коды «Честный знак» и данные товара и дождитесь принятия площадкой')
 
 
+def local_only(account: dict, saved: dict | None) -> bool:
+    """Local retention never means marketplace acceptance; completion is rechecked separately."""
+    return bool(account['marketplace'] == 'yandex' and saved and saved['status'] == 'not_recorded'
+                and json.loads(_open(saved['context'])).get('_local_completion')
+                and exemplar_data.ready(saved))
+
+
 def item_key(account: dict, item: dict) -> str:
     provider = source(account)
     return str(provider.item_key(item)) if provider else ''
@@ -268,22 +285,26 @@ def enrich(account: dict, state: dict) -> dict:
         related = [m for m in marks if m['item_key'] == product['key']]
         if not product.get('required') and not related:
             continue
-        failed = any(m['status'] == 'error' for m in related) or (
+        not_recorded = any(m['status'] == 'not_recorded' for m in related)
+        failed = not_recorded or any(m['status'] == 'error' for m in related) or (
             saved['status'] == 'error' and not json.loads(saved.get('field_errors') or '{}') and
             not any(m['status'] == 'error' for m in marks))
         ready = len(related) >= int(product['quantity']) and all(m['status'] == 'accepted' for m in related)
         item['marking'] = {
             'key': product['key'],
             'status': 'error' if failed else 'accepted' if ready else 'waiting',
-            'title': 'Честный знак не прошёл проверку' if failed else 'Честный знак принят площадкой' if ready else
+            'title': NOT_RECORDED if not_recorded else 'Честный знак не прошёл проверку' if failed else 'Честный знак принят площадкой' if ready else
                      saved.get('error') or 'Честный знак не отсканирован или проверяется',
         }
     waiting = pending(account, state)
-    blocked = needs_validation(saved) and saved['status'] != 'accepted'
+    local_completion = local_only(account, saved)
+    blocked = needs_validation(saved) and saved['status'] != 'accepted' and not local_completion
     state['marking'] = {'pending_key': waiting[0]['key'] if waiting else None,
                         'pending_unit': waiting[1] if waiting else None,
                         'status': saved['status'], 'error': saved.get('error'), 'blocked': blocked,
-                        'poll': saved['status'] in {'queued', 'checking', 'uncertain'}}
+                        'poll': saved['status'] in {'queued', 'checking', 'uncertain', 'not_recorded'},
+                        'local_only': local_completion,
+                        'message': LOCAL_ONLY_MESSAGE if local_completion else ''}
     if blocked:
         state['complete'] = False
     return state
@@ -391,6 +412,37 @@ def _reject(saved: dict, marks: list[dict], errors: dict[str, str], message: str
                      (message, json.dumps(field_errors), db.now_iso(), saved['id']))
 
 
+def _not_recorded(account: dict, saved: dict, marks: list[dict], exc: NotRecorded):
+    # Local retention is independent of remote acceptance: keep the encrypted code,
+    # its archive and its global reservation. Subsequent jobs reconcile by reading.
+    payload = {'marking_order_id': saved['id'], 'revision': saved['revision']}
+    context = json.loads(_open(saved['context']))
+    context['_local_completion'] = exc.local_completion
+    with db.write() as conn:
+        for mark in marks:
+            if f'{mark["item_key"]}:{mark["unit_no"]}' in exc.errors:
+                conn.execute("UPDATE marking_codes SET status='not_recorded',error=? WHERE id=?",
+                             (NOT_RECORDED, mark['id']))
+        conn.execute("UPDATE marking_orders SET status='not_recorded',error=?,context=?,checked_at=?,attempts=attempts+1 WHERE id=?",
+                     (NOT_RECORDED, _seal(json.dumps(context, ensure_ascii=False)), db.now_iso(), saved['id']))
+        recorded = conn.execute("SELECT 1 FROM events WHERE kind='marking_not_recorded' AND account_id=? "
+                                'AND posting_number=? AND payload=? LIMIT 1',
+                                (account['id'], saved['order_id'], json.dumps(payload, ensure_ascii=False))).fetchone()
+        if not recorded:
+            actor = conn.execute('SELECT id,login FROM users WHERE id=?', (saved['user_id'],)).fetchone()
+            db.log_event('marking_not_recorded', level='error', account_id=account['id'],
+                         user=dict(actor) if actor else None, posting_number=saved['order_id'],
+                         message=NOT_RECORDED, payload=payload, conn=conn)
+
+
+def _rejection(account, saved, marks, exc):
+    if isinstance(exc, NotRecorded):
+        _not_recorded(account, saved, marks, exc)
+    else:
+        _reject(saved, marks, exc.errors,
+                'Площадка отклонила данные. Замените отмеченную марку или исправьте обязательные данные заказа.')
+
+
 def _accept(account, saved, provider, context, marks):
     from . import readiness
 
@@ -460,7 +512,7 @@ def _connection_failure(account, saved, exc):
 def process(account: dict, order_id: str, *, force: bool = False) -> None:
     """Одна запись/проверка. Неопределённый результат записи — только опрос."""
     marking_returns.process_order(account['id'], order_id)
-    statuses = {'queued', 'checking', 'uncertain'}
+    statuses = {'queued', 'checking', 'uncertain', 'not_recorded'}
     saved = order(account['id'], order_id)
     if not saved or saved['status'] not in statuses:
         return
@@ -491,16 +543,17 @@ def process(account: dict, order_id: str, *, force: bool = False) -> None:
             else:
                 _check(account, saved, provider, context, marks)
         except Rejected as exc:
-            _reject(saved, marks, exc.errors,
-                    'Площадка отклонила данные. Замените отмеченную марку или исправьте обязательные данные заказа.')
+            _rejection(account, saved, marks, exc)
         except Exception as exc:
             _connection_failure(account, saved, exc)
 
 
 def run_once() -> None:
     marking_returns.process_pending()
-    for row in db.query("SELECT account_id,order_id FROM marking_orders WHERE status IN "
-                        "('queued','checking','uncertain') ORDER BY COALESCE(checked_at,'') LIMIT 20"):
+    for row in db.query("SELECT account_id,order_id FROM marking_orders m WHERE status IN "
+                        "('queued','checking','uncertain','not_recorded') AND (status!='not_recorded' OR EXISTS "
+                        '(SELECT 1 FROM pack_state p WHERE p.account_id=m.account_id AND p.posting_number=m.order_id)) '
+                        "ORDER BY CASE WHEN status='not_recorded' THEN 1 ELSE 0 END,COALESCE(checked_at,'') LIMIT 20"):
         account = accounts.get(row['account_id'])
         if account and account['active'] and accounts.is_configured(account):
             try:

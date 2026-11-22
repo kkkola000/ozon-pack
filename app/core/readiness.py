@@ -101,6 +101,11 @@ def complete_guard(account: dict, user: dict, order_id: str):
             raise ValueError('Дождитесь подтверждения Честный знак новых отправлений Ozon')
         cargo.complete_guard(account, order_id)
         saved = marking.prepare(account, order_id)
+        if marking.local_only(account, saved):
+            provider = marking.source(account)
+            if provider.local_complete:
+                provider.local_complete(account, order_id, exemplar_data.context(saved), marking.codes(saved, full=True))
+                return
         marking.guard(account, order_id)
         context, codes = None, []
         if marking.needs_validation(saved):

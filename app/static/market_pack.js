@@ -311,7 +311,7 @@ function paintModal(state) {
   const waiting = items.findIndex((item) => item.wait);
   const markingNext = state.marking?.pending_key ? items.findIndex((item) => item.marking?.key === state.marking.pending_key) : -1;
   input.placeholder = markingNext >= 0 ? 'Сканируйте код «Честный знак» этого товара…'
-    : state.marking?.poll ? 'Дождитесь проверки кодов «Честный знак»…'
+    : state.marking?.poll && !state.marking?.local_only ? 'Дождитесь проверки кодов «Честный знак»…'
     : complete ? `${pack.words.close || 'Отсканируйте наклейку'}…`
     : waiting >= 0 ? `Вложите «${items[waiting].wait}» и отсканируйте его…` : 'Сканируйте товар…';
   document.getElementById('pack-bar').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
@@ -333,7 +333,7 @@ function paintModal(state) {
   if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
   document.getElementById('btn-release').onclick = releaseActive;
   const force = document.getElementById('btn-force');
-  if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked) || CargoPack.editing()
+  if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked || state.marking?.local_only) || CargoPack.editing()
     || Boolean(state.cargo?.boxes?.length > 1 && state.cargo.checked.length < state.cargo.boxes.length); }
   if (print) print.disabled = CargoPack.editing() || ['draft', 'uncertain'].includes(state.cargo?.status);
   document.querySelectorAll('#pack-actions a').forEach((link) => {
@@ -341,6 +341,9 @@ function paintModal(state) {
     link.setAttribute('aria-disabled', String(blocked));
     if (blocked) link.onclick = (event) => event.preventDefault();
   });
+  if (state.marking?.local_only && flash !== 'error' && banner.querySelector('.text').textContent !== state.marking.message) {
+    setBanner('warning', state.marking.message);
+  }
 }
 
 /* Какая это площадка, говорит сам ответ сервера (state.market): заказ мог
@@ -362,7 +365,7 @@ function renderActive(state) {
   paintZone();
   downloadOpenedSticker(state);
   const key = orderKey(state);
-  if (state.marking?.status === 'accepted' && deferredLabels.delete(key)) {
+  if ((state.marking?.status === 'accepted' || state.marking?.local_only) && deferredLabels.delete(key)) {
     printLabel(pack.activeId(state.active));
   }
 }
@@ -424,7 +427,8 @@ function applyResult(result, code, printWindow = null) {
   }
   renderActive(result.state || { active: null });
   if (finished) showDone(finished);
-  setBanner(result.status, result.message, shownCode(code || ''));
+  const localMessage = result.status === 'ok' && result.state?.marking?.local_only ? result.state.marking.message : '';
+  setBanner(localMessage ? 'warning' : result.status, localMessage || result.message, shownCode(code || ''));
   beep(result.sound || result.status);
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(shownCode(code), result);

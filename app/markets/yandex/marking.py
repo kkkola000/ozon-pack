@@ -56,11 +56,42 @@ def _instances(raw: dict) -> dict[str, list[dict]]:
     return {str(i['id']): i.get('instances') or [] for i in raw.get('items') or []}
 
 
-def _saved_codes(raw: dict, codes: list[dict]) -> bool:
+def _missing_codes(raw: dict, codes: list[dict]) -> list[dict]:
     instances = _instances(raw)
-    wanted = Counter((c['item_key'], marking_codes.comparison_key(c['raw'])) for c in codes)
     got = Counter((key, marking_codes.comparison_key(i.get('cisFull'))) for key, rows in instances.items() for i in rows)
-    return not (wanted - got)
+    missing = []
+    for code in codes:
+        key = code['item_key'], marking_codes.comparison_key(code['raw'])
+        if got[key]:
+            got[key] -= 1
+        else:
+            missing.append(code)
+    return missing
+
+
+def _saved_codes(raw: dict, codes: list[dict]) -> bool:
+    return not _missing_codes(raw, codes)
+
+
+def _compatible_codes(raw: dict, codes: list[dict]) -> bool:
+    wanted = Counter((c['item_key'], marking_codes.comparison_key(c['raw'])) for c in codes)
+    keys = {c['item_key'] for c in codes}
+    instances = [(key, instance) for key, rows in _instances(raw).items() if key in keys for instance in rows]
+    if any(instance.get('cis') and not instance.get('cisFull') for _, instance in instances):
+        return False  # A short CIS alone cannot prove which full code the marketplace holds.
+    actual = Counter((key, marking_codes.comparison_key(instance['cisFull']))
+                     for key, instance in instances if instance.get('cisFull'))
+    return not (actual - wanted)
+
+
+def _closed_layout(raw: dict, context: dict, codes: list[dict]) -> None:
+    if raw.get('status') == 'PROCESSING' and raw.get('substatus') == 'READY_TO_SHIP':
+        missing = _missing_codes(raw, codes)
+        if missing:
+            missing_units = {(c['item_key'], c['unit_no']) for c in missing}
+            present = [c for c in codes if (c['item_key'], c['unit_no']) not in missing_units]
+            raise marking.NotRecorded({f'{c["item_key"]}:{c["unit_no"]}': marking.NOT_RECORDED for c in missing},
+                                      local_completion=_saved_data(raw, context, present) and _compatible_codes(raw, codes))
 
 
 def with_details(raw: dict, details: dict, *, layout: bool = True) -> dict:
@@ -190,6 +221,7 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
     if raw.get('substatus') == 'READY_TO_SHIP':
         if _saved_data(raw, context, codes):
             return  # коды уже переданы, теперь проверяем их результат
+        _closed_layout(raw, context, codes)
         raise marking.Rejected({'data:' + key + ':' + unit: 'Маркет запрещает менять данные после готовности к отгрузке. Исправьте заказ в кабинете Маркета.'
                                 for key, rows in context.get('_panel_details', {}).items() for unit in rows} or
                                {c['item_key']: 'Маркет запрещает менять раскладку после готовности к отгрузке' for c in codes})
@@ -207,6 +239,7 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
         return {'status': 'error', 'errors': {c['item_key']: 'Состав заказа изменился' for c in codes}}
     # Доказываем, что проверяется именно последний полный код, не старый CIS.
     if not _saved_data(raw, context, codes):
+        _closed_layout(raw, context, codes)
         return {'status': 'checking'}
     if not codes:
         return {'status': 'accepted' if context.get('_panel_details') else 'checking'}
@@ -245,4 +278,25 @@ def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> 
         raise ValueError('Маркет пока не подтвердил сохранение полных данных экземпляров')
 
 
-SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('item_id') or ''))
+def complete_local(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
+    """Read-only exception: finish an already-ready order, keeping missing CIS unaccepted."""
+    api = client.get_client(account)
+    raw = api.order_details(order_id)
+    if (str(raw.get('campaignId')) != context['campaign'] or not _same_items(context['order'], raw)
+            or raw.get('programType') not in {'FBS', 'EXPRESS'}
+            or raw.get('status') != 'PROCESSING' or raw.get('substatus') != 'READY_TO_SHIP'):
+        raise ValueError('Маркет изменил состав или состояние заказа. Обновите заказ перед завершением.')
+    missing = {(c['item_key'], c['unit_no']) for c in _missing_codes(raw, codes)}
+    present = [c for c in codes if (c['item_key'], c['unit_no']) not in missing]
+    if not _saved_data(raw, context, present):
+        raise ValueError('Маркет не подтвердил остальные обязательные данные экземпляров. Завершение заблокировано.')
+    if not _compatible_codes(raw, codes):
+        raise ValueError('В заказе Маркета записан другой Честный знак. Сверьте коды перед завершением.')
+    if present:
+        checked = api.identifiers_status(context['campaign'], order_id)
+        if checked.get('status') != 'OK' or _code_checks(checked, raw, present)['status'] != 'accepted':
+            raise ValueError('Маркет не подтвердил проверку уже записанных кодов. Завершение заблокировано.')
+
+
+SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('item_id') or ''),
+                       local_complete=complete_local)

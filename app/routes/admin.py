@@ -19,6 +19,7 @@ router = APIRouter()
 MIN_PASSWORD = 12
 
 EVENT_LABELS = {
+    'marking_not_recorded': 'Не записан ЧЗ на маркете',
     'cargo_saved': 'Распределены грузоместа',
     'cargo_scan': 'Подтверждено грузоместо',
     'cargo_split': 'Разделён заказ Ozon',

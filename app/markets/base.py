@@ -226,6 +226,8 @@ class MarkingSource:
     discover: Callable[[dict, str], dict] | None = None
     # После разделения отправления перенести ЧЗ только по подтверждённым экземплярам.
     redistribute: Callable[[dict, dict, str, list[dict]], bool] | None = None
+    # Explicit local-only completion for a layout the marketplace already closed.
+    local_complete: Callable[[dict, str, dict, list[dict]], None] | None = None
 
 
 @dataclass(frozen=True)

@@ -769,6 +769,9 @@ def complete_active(account: dict, user: dict, reason: str = "ручное за�
     state = load_state(account, user)
     if not state["active"]:
         raise ValueError("Нет активного заказа")
+    from ...core import marking
+    if marking.local_only(account, marking.order(account['id'], state['active']['id'])):
+        raise ValueError(marking.LOCAL_ONLY_MESSAGE)
     if settings.require_all_items and not state["complete"] and not access.is_manager(user):
         raise ValueError("Сначала отсканируйте все товары. Осталось: " + "; ".join(missing_items(state)))
     return complete(account, user, state["active"]["id"], code=reason)
