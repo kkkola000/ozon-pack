@@ -69,7 +69,7 @@ Client-Id закрепляется за кабинетом при создани
 
 ## Установка отдельного стенда на сервере
 
-Первая установка на Linux с systemd, Python 3.12 с venv, Git, curl и запущенным
+Первая установка на Linux с systemd, Python 3.12 или новее с venv, Git, curl и запущенным
 Docker Compose v2:
 
 ```bash
@@ -79,6 +79,8 @@ sudo bash -c 'set -e; v2_setup=$(mktemp); curl -fLsS --retry 3 https://raw.githu
 Установщик создаёт `/opt/ozon-pack-v2`, собственный том PostgreSQL и службы
 `ozon-pack-v2-web` / `ozon-pack-v2-worker`. Пароль владельца `admin` вводится
 интерактивно; ключи генерируются на сервере. Каталог `/opt/ozon-pack` не используется.
+Python выбирается автоматически: сначала подходящий `python3`, затем доступные
+`python3.14`, `python3.13`, `python3.12`. Системные ссылки Python не меняются.
 Если каталог, база, контейнеры, службы v2 или порты уже заняты, установка
 останавливается до изменений. Это первая установка, а не команда обновления.
 
@@ -92,7 +94,7 @@ sudo bash -c 'set -e; v2_setup=$(mktemp); curl -fLsS --retry 3 https://raw.githu
 Нужны Python 3.12+ и отдельная PostgreSQL 17. Команды ниже выполняются из `v2/`.
 
 ```bash
-python3.12 -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install --no-deps -e .
 .venv/bin/python -m pack_v2 generate-env

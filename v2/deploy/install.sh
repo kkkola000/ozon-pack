@@ -8,10 +8,23 @@ v2_user=ozon-v2
 v2_branch=refactor/modular-architecture
 v2_units_dir=/etc/systemd/system
 v2_runtime_dir=/run/systemd/system
+v2_python=
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 # Sourcing defines functions without executing the installation; used by isolated contract tests.
 v2_require_root() { [[ $EUID -eq 0 ]] || fail 'Запустите скрипт под root.'; }
+
+v2_find_python() {
+    local v2_candidate
+    for v2_candidate in python3 python3.14 python3.13 python3.12; do
+        if command -v "$v2_candidate" >/dev/null && "$v2_candidate" -c \
+            'import sys, venv, ensurepip; assert sys.version_info >= (3, 12)' >/dev/null 2>&1; then
+            v2_python=$v2_candidate
+            return 0
+        fi
+    done
+    fail 'Нужен Python 3.12 или новее с модулем venv. Установите python3 и python3-venv.'
+}
 
 v2_preflight() {
     local v2_listeners v2_containers v2_volumes v2_volume v2_existing_units v2_listing v2_env
@@ -19,10 +32,10 @@ v2_preflight() {
     while IFS= read -r v2_env; do
         [[ $v2_env != PACK_V2_* ]] || fail 'В окружении уже заданы PACK_V2_*. Откройте чистую сессию для первой установки.'
     done < <(compgen -e)
-    for v2_program in git python3.12 docker systemctl ss curl useradd; do
+    for v2_program in git docker systemctl ss curl useradd; do
         command -v "$v2_program" >/dev/null || fail "Не установлено: $v2_program. Установка остановлена до изменений."
     done
-    python3.12 -c 'import sys, venv, ensurepip; assert sys.version_info >= (3, 12)' || fail 'Нужен Python 3.12 с модулем venv.'
+    v2_find_python
     docker compose version >/dev/null || fail 'Нужен Docker Compose v2.'
     docker info >/dev/null 2>&1 || fail 'Docker не запущен или недоступен.'
     [[ -d $v2_runtime_dir ]] || fail 'Нужен сервер с systemd.'
@@ -45,7 +58,7 @@ v2_install() {
     printf '%s\n' 'Установка отдельной v2. Каталог старой панели /opt/ozon-pack не используется.'
     git clone --single-branch --branch "$v2_branch" https://github.com/kkkola000/ozon-pack.git "$v2_checkout"
     cd "$v2_app"
-    python3.12 -m venv .venv
+    "$v2_python" -m venv .venv
     .venv/bin/python -m pip install -r requirements.lock
     .venv/bin/python -m pip install --no-deps -e .
     .venv/bin/python -m pip check

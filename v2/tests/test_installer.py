@@ -16,13 +16,29 @@ v2_runtime_dir="$TEST_ROOT/runtime"
 record() { printf '%s\n' "$*" >> "$TEST_ROOT/trace"; }
 v2_require_root() { :; }
 git() { record git "$@"; mkdir -p "$v2_app"; }
-python3.12() {
-    record python3.12 "$@"
+command() {
+    if [[ $CASE == missing_python && $1 == -v && $2 == python3* ]]; then return 1; fi
+    builtin command "$@"
+}
+v2_fake_python() {
+    local v2_name=$1
+    shift
+    record "$v2_name" "$@"
+    if [[ $1 == -c ]]; then
+        case "$CASE:$v2_name" in
+            unsupported_python:*|fallback:python3|only_313:python3|only_313:python3.14|only_312:python3|only_312:python3.14|only_312:python3.13)
+                return 1 ;;
+        esac
+    fi
     if [[ $1 == -m ]]; then
         mkdir -p .venv/bin
         cp -p "$TEST_ROOT/python-stub" .venv/bin/python
     fi
 }
+python3() { v2_fake_python python3 "$@"; }
+python3.14() { v2_fake_python python3.14 "$@"; }
+python3.13() { v2_fake_python python3.13 "$@"; }
+python3.12() { v2_fake_python python3.12 "$@"; }
 docker() {
     record docker "$@"
     case "$1 ${2:-}" in
@@ -147,6 +163,8 @@ def test_root_is_required_for_installation():
         "volumes_error",
         "units_error",
         "inherited_config",
+        "missing_python",
+        "unsupported_python",
     ],
 )
 def test_existing_data_or_unreadable_preflight_stops_before_installation(tmp_path, case):
@@ -188,6 +206,17 @@ def test_installation_creates_separate_web_and_worker_services(tmp_path):
         else:
             assert " worker\n" in unit
     assert "v2 установлена" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("case", "python"),
+    [("ok", "python3"), ("fallback", "python3.14"), ("only_313", "python3.13"), ("only_312", "python3.12")],
+)
+def test_venv_uses_the_first_supported_available_python(tmp_path, case, python):
+    result, trace = run_installer(tmp_path, case)
+    assert result.returncode == 0, result.stderr
+    assert f"{python} -m venv .venv" in trace
+    assert trace.count(" -m venv .venv") == 1
 
 
 def test_failed_migration_never_starts_services(tmp_path):
