@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First installation of the separate v2 development instance. Contains no server credentials.
+# Native v2 installation and IP access configuration. Contains no server credentials.
 set -euo pipefail
 umask 077
 v2_checkout=/opt/ozon-pack-v2
@@ -11,6 +11,8 @@ v2_runtime_dir=/run/systemd/system
 v2_python=
 v2_db_port=
 v2_pg_version=
+v2_public_ip=
+v2_access_helper=
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 
 # Sourcing defines functions without executing the installation; used by isolated contract tests.
@@ -28,12 +30,16 @@ v2_find_python() {
     fail 'Нужен Python 3.12 или новее с модулем venv. Установите python3 и python3-venv.'
 }
 
-v2_preflight() {
+v2_require_clean_environment() {
     local v2_env
-    v2_require_root
     while IFS= read -r v2_env; do
-        [[ $v2_env != PACK_V2_* ]] || fail 'В окружении уже заданы PACK_V2_*. Откройте чистую сессию для первой установки.'
+        [[ $v2_env != PACK_V2_* ]] || fail 'В окружении уже заданы PACK_V2_*. Откройте чистую сессию.'
     done < <(compgen -e)
+}
+
+v2_preflight() {
+    v2_require_root
+    v2_require_clean_environment
     for v2_program in apt-get systemctl; do
         command -v "$v2_program" >/dev/null || fail "Не установлено: $v2_program. Установка остановлена до изменений."
     done
@@ -62,6 +68,64 @@ v2_check_port() {
     local v2_listeners
     v2_listeners=$(ss -H -ltn '( sport = :8001 )') || fail 'Не удалось проверить занятость порта панели.'
     [[ -z $v2_listeners ]] || fail 'Порт 8001 занят. Ничего не перезаписано.'
+}
+
+v2_access_address() {
+    local v2_arguments=()
+    if [[ -z $v2_access_helper ]]; then
+        v2_access_helper=$(mktemp /tmp/ozon-pack-v2-access.XXXXXX.py)
+        trap 'rm -f -- "$v2_access_helper"' EXIT
+        curl -fLsS --retry 3 "https://raw.githubusercontent.com/kkkola000/ozon-pack/$v2_branch/v2/deploy/public_access.py" -o "$v2_access_helper"
+    fi
+    if [[ -n $v2_public_ip ]]; then v2_arguments+=(--ip "$v2_public_ip"); fi
+    v2_public_ip=$("$v2_python" "$v2_access_helper" "${v2_arguments[@]}")
+    [[ -n $v2_public_ip ]] || fail 'Не удалось определить IPv4 сервера.'
+}
+
+v2_open_firewall() {
+    local v2_firewall
+    if command -v ufw >/dev/null; then
+        v2_firewall=$(LC_ALL=C ufw status) || fail 'Не удалось проверить UFW.'
+        if [[ $v2_firewall == *'Status: active'* ]]; then ufw allow 8001/tcp; fi
+    fi
+}
+
+v2_check_web() {
+    local v2_startup_errors
+    printf '%s\n' 'Ожидаем запуск панели...'
+    v2_startup_errors=$(mktemp)
+    if curl --fail --silent --show-error --retry 15 --retry-connrefused --retry-delay 1 --retry-max-time 45 \
+        http://127.0.0.1:8001/readyz 2>"$v2_startup_errors"; then
+        rm -f -- "$v2_startup_errors"
+    else
+        cat "$v2_startup_errors" >&2
+        rm -f -- "$v2_startup_errors"
+        fail 'Панель не запустилась. Проверьте: sudo journalctl -u ozon-pack-v2-web -n 80 --no-pager'
+    fi
+    curl --fail --silent --show-error --output /dev/null --header "Host: $v2_public_ip:8001" http://127.0.0.1:8001/login
+    printf '\n'
+}
+
+v2_configure_access() {
+    v2_require_root
+    v2_require_clean_environment
+    [[ -f $v2_app/.env.v2 && -x $v2_app/.venv/bin/python ]] || fail 'Установленная v2 не найдена.'
+    [[ -f $v2_units_dir/ozon-pack-v2-web.service ]] || fail 'Служба v2 не найдена.'
+    v2_python="$v2_app/.venv/bin/python"
+    v2_access_address
+    "$v2_python" "$v2_access_helper" --env-file "$v2_app/.env.v2" --ip "$v2_public_ip" >/dev/null
+    mkdir -p "$v2_units_dir/ozon-pack-v2-web.service.d"
+    cat > "$v2_units_dir/ozon-pack-v2-web.service.d/20-public-access.conf" <<UNIT
+[Service]
+ExecStart=
+ExecStart=$v2_app/.venv/bin/uvicorn pack_v2.bootstrap.app:create_app --factory --env-file $v2_app/.env.v2 --host 0.0.0.0 --port 8001
+UNIT
+    chmod 644 "$v2_units_dir/ozon-pack-v2-web.service.d/20-public-access.conf"
+    v2_open_firewall
+    systemctl daemon-reload
+    systemctl restart ozon-pack-v2-web.service
+    v2_check_web
+    printf '\nПанель доступна: http://%s:8001\n' "$v2_public_ip"
 }
 
 v2_psql() {
@@ -102,6 +166,7 @@ v2_install() {
         python3 python3-venv git curl ca-certificates iproute2 postgresql postgresql-client util-linux
     v2_find_python
     v2_check_port
+    v2_access_address
     v2_database_preflight
     git clone --single-branch --branch "$v2_branch" https://github.com/kkkola000/ozon-pack.git "$v2_checkout"
     cd "$v2_app"
@@ -110,6 +175,7 @@ v2_install() {
     .venv/bin/python -m pip install --no-deps -e .
     .venv/bin/python -m pip check
     .venv/bin/python -m pack_v2 generate-env --native-postgres --database-port "$v2_db_port"
+    .venv/bin/python "$v2_access_helper" --env-file .env.v2 --ip "$v2_public_ip" >/dev/null
     .venv/bin/python "$v2_app/deploy/native_database.py" --env-file .env.v2 | v2_psql
     .venv/bin/python -m pack_v2 --env-file .env.v2 migrate
     .venv/bin/python -m pack_v2 --env-file .env.v2 check
@@ -122,7 +188,7 @@ v2_install() {
     chmod 600 .env.v2
     for v2_part in web worker; do
         if [[ $v2_part == web ]]; then
-            v2_exec="$v2_app/.venv/bin/uvicorn pack_v2.bootstrap.app:create_app --factory --env-file $v2_app/.env.v2 --host 127.0.0.1 --port 8001"
+            v2_exec="$v2_app/.venv/bin/uvicorn pack_v2.bootstrap.app:create_app --factory --env-file $v2_app/.env.v2 --host 0.0.0.0 --port 8001"
         else
             v2_exec="$v2_app/.venv/bin/python -m pack_v2 --env-file $v2_app/.env.v2 worker"
         fi
@@ -151,19 +217,29 @@ WantedBy=multi-user.target
 UNIT
         chmod 644 "$v2_units_dir/ozon-pack-v2-$v2_part.service"
     done
+    v2_open_firewall
     systemctl daemon-reload
     systemctl enable --now postgresql.service ozon-pack-v2-web.service ozon-pack-v2-worker.service
-    curl --fail --silent --show-error --retry 15 --retry-connrefused --retry-delay 1 --retry-max-time 45 http://127.0.0.1:8001/readyz
-    printf '\n'
-    curl --fail --silent --show-error --output /dev/null http://127.0.0.1:8001/login
+    v2_check_web
     systemctl is-active --quiet ozon-pack-v2-web.service
     systemctl is-active --quiet ozon-pack-v2-worker.service
-    printf '%s\n' 'v2 установлена. Логин: admin. Панель слушает только 127.0.0.1:8001.'
-    printf '%s\n' 'Для браузера используйте SSH-туннель. Старая панель и её база не изменялись.'
+    printf '\nv2 установлена. Логин: admin. Панель доступна: http://%s:8001\n' "$v2_public_ip"
 
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-    v2_preflight
-    v2_install
+    v2_configure_only=0
+    while (( $# )); do
+        case "$1" in
+            --configure-access) v2_configure_only=1; shift ;;
+            --public-ip) (( $# >= 2 )) || fail 'После --public-ip нужен адрес'; v2_public_ip=$2; shift 2 ;;
+            *) fail "Неизвестный параметр: $1" ;;
+        esac
+    done
+    if (( v2_configure_only )); then
+        v2_configure_access
+    else
+        v2_preflight
+        v2_install
+    fi
 fi

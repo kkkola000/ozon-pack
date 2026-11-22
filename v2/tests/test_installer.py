@@ -35,6 +35,10 @@ v2_fake_python() {
         mkdir -p .venv/bin
         cp -p "$TEST_ROOT/python-stub" .venv/bin/python
     fi
+    if [[ $1 == *ozon-pack-v2-access.*.py ]]; then
+        if [[ $CASE == ip_error ]]; then echo 'synthetic address error' >&2; return 1; fi
+        printf '%s\n' 203.0.113.10
+    fi
 }
 python3() { v2_fake_python python3 "$@"; }
 python3.14() { v2_fake_python python3.14 "$@"; }
@@ -105,12 +109,22 @@ id() {
 useradd() { record useradd "$@"; }
 chown() { record chown "$@"; }
 chmod() { record chmod "$@"; }
+ufw() {
+    record ufw "$@"
+    if [[ $1 == status ]]; then
+        if [[ $CASE == firewall_active ]]; then echo 'Status: active'; else echo 'Status: inactive'; fi
+    fi
+}
 curl() {
     record curl "$@"
-    [[ $CASE != ready_error ]] || return 22
+    [[ $CASE != ready_error || $* != *127.0.0.1:8001/readyz* ]] || return 22
 }
-v2_preflight
-v2_install
+if [[ $CASE == configure ]]; then
+    v2_configure_access
+else
+    v2_preflight
+    v2_install
+fi
 """
 PYTHON_STUB = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -120,6 +134,7 @@ if [[ $* == *generate-env* ]]; then
 fi
 if [[ $CASE == migration_error && $* == *' migrate' ]]; then exit 2; fi
 if [[ $* == *native_database.py* ]]; then printf '%s\n' 'SELECT 1;'; fi
+if [[ $1 == *ozon-pack-v2-access.*.py ]]; then printf '%s\n' 203.0.113.10; fi
 """
 
 
@@ -132,6 +147,13 @@ def run_installer(tmp_path, case="ok"):
     stub.chmod(0o700)
     if case == "checkout":
         (tmp_path / "checkout").mkdir()
+    if case == "configure":
+        app = tmp_path / "checkout" / "v2"
+        (app / ".venv" / "bin").mkdir(parents=True)
+        (app / ".venv" / "bin" / "python").write_text(PYTHON_STUB)
+        (app / ".venv" / "bin" / "python").chmod(0o700)
+        (app / ".env.v2").write_text("old-secrets-must-stay\n")
+        (tmp_path / "units" / "ozon-pack-v2-web.service").write_text("old-unit-must-stay\n")
     env = {key: value for key, value in os.environ.items() if not key.startswith("PACK_V2_")}
     if case == "inherited_config":
         env["PACK_V2_DATABASE_URL"] = "postgresql+psycopg://unused/another_database"
@@ -204,6 +226,7 @@ def test_root_is_required_for_installation():
         "connection_error",
         "db_exists",
         "db_read_error",
+        "ip_error",
     ],
 )
 def test_existing_data_or_unreadable_preflight_stops_before_installation(tmp_path, case):
@@ -249,10 +272,13 @@ def test_installation_creates_separate_web_and_worker_services(tmp_path):
         assert "After=network-online.target postgresql.service" in unit
         assert "docker" not in unit
         if part == "web":
-            assert "--host 127.0.0.1 --port 8001" in unit
+            assert "--host 0.0.0.0 --port 8001" in unit
         else:
             assert " worker\n" in unit
     assert "v2 установлена" in result.stdout
+    assert "http://203.0.113.10:8001" in result.stdout
+    assert "--env-file .env.v2 --ip 203.0.113.10" in trace
+    assert "--header Host: 203.0.113.10:8001 http://127.0.0.1:8001/login" in trace
 
 
 @pytest.mark.parametrize(
@@ -298,6 +324,28 @@ def test_failed_readiness_is_not_reported_as_success(tmp_path):
     result, _ = run_installer(tmp_path, "ready_error")
     assert result.returncode != 0
     assert "v2 установлена" not in result.stdout
+
+
+def test_active_ufw_gets_only_the_panel_port_rule(tmp_path):
+    result, trace = run_installer(tmp_path, "firewall_active")
+    assert result.returncode == 0, result.stderr
+    assert "ufw allow 8001/tcp" in trace
+    assert "ufw enable" not in trace and "ufw reset" not in trace
+
+
+def test_existing_installation_access_does_not_reinstall_or_reset_data(tmp_path):
+    result, trace = run_installer(tmp_path, "configure")
+    assert result.returncode == 0, result.stderr
+    assert "git " not in trace and "apt-get" not in trace
+    assert "migrate" not in trace and "generate-env" not in trace and "create-owner" not in trace
+    assert "systemctl restart ozon-pack-v2-web.service" in trace
+    assert "worker.service" not in trace
+    assert (tmp_path / "checkout" / "v2" / ".env.v2").read_text() == "old-secrets-must-stay\n"
+    assert (tmp_path / "units" / "ozon-pack-v2-web.service").read_text() == "old-unit-must-stay\n"
+    override = (tmp_path / "units" / "ozon-pack-v2-web.service.d" / "20-public-access.conf").read_text()
+    assert "ExecStart=\nExecStart=" in override
+    assert "--host 0.0.0.0 --port 8001" in override
+    assert "http://203.0.113.10:8001" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("systemctl") is None, reason="A real systemctl client is required")
