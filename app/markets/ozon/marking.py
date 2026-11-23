@@ -335,5 +335,40 @@ def redistribute(account, user, order_id, codes):
     return cargo.redistribute(account, user, order_id, codes)
 
 
+def replacement_snapshot(account: dict, order_id: str, context: dict, codes: list[dict]) -> set[str] | None:
+    api = client.get_client(account)
+    data = api.exemplars_get(order_id)
+    if str(data.get('posting_number') or '') != order_id:
+        return None
+    slots = {str(p['product_id']): [str(e['exemplar_id']) for e in p['exemplars']] for p in context['products']}
+    expected = {key: set(ids) for key, ids in slots.items()}
+    products = data.get('products') or []
+    if len(products) != len(expected) or {str(p.get('product_id')) for p in products} != set(expected):
+        return None
+    identities, by_slot = set(), {}
+    for product in products:
+        key = str(product['product_id'])
+        exemplars = product.get('exemplars') or []
+        if (int(product.get('quantity') or 0) != len(expected[key]) or len(exemplars) != len(expected[key])
+                or {str(e.get('exemplar_id')) for e in exemplars} != expected[key]):
+            return None
+        for exemplar in exemplars:
+            values = set()
+            for mark in exemplar.get('marks') or []:
+                if mark.get('mark_type') in {'imei', 'jw_uin'}:
+                    continue
+                # Unexpected or short CIS cannot be treated as proof of absence.
+                identity = marking._fingerprint(marking_codes.parse(mark.get('mark')))
+                identities.add(identity)
+                values.add(marking_codes.comparison_key(mark['mark']))
+            by_slot[key, str(exemplar['exemplar_id'])] = values
+    for code in codes:
+        exemplar_id = slots[code['item_key']][code['unit_no'] - 1]
+        if marking_codes.comparison_key(code['raw']) not in by_slot[code['item_key'], exemplar_id]:
+            return None
+    return identities if poll(account, order_id, context, codes)['status'] == 'accepted' else None
+
+
 SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('sku') or ''),
-                       discover=lambda account, order_id: prepare(account, order_id, discover=True), redistribute=redistribute)
+                       discover=lambda account, order_id: prepare(account, order_id, discover=True), redistribute=redistribute,
+                       replacement_snapshot=replacement_snapshot)

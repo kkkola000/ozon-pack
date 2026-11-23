@@ -105,18 +105,44 @@ def _release_record(conn, row, owner, *, user, reason, expected_version=None, fr
         raise ValueError('Дождитесь завершения передачи и проверки Честного знака площадкой перед отвязкой')
     if not row['active'] and not from_act:
         raise ValueError('Код уже снят с активной привязки')
+    _release_binding(conn, row, user=user, reason=reason)
+    conn.execute("UPDATE marking_orders SET status='collecting',revision=revision+1,submitted_revision=NULL,error=NULL,checked_at=NULL WHERE id=?",
+                 (row['marking_order_id'],))
+    return True
+
+
+def _release_binding(conn, row, *, user, reason):
+    """Archive and release one identity without changing the accepted replacement."""
     now = db.now_iso()
     conn.execute('INSERT INTO marking_releases(archive_id,account_id,fingerprint,item_key,unit_no,code,gtin,serial,status,'
                  'created_at,created_by,released_at,released_by,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                  (row['archive_id'], row['account_id'], row['fingerprint'], row['item_key'], row['unit_no'], row['code'],
                   row['gtin'], row['serial'], row['status'], row['created_at'], row['created_by'], now,
-                  user['login'] if user else 'Ozon', reason))
+                  user['login'] if user else 'Панель' if reason == 'replaced' else 'Ozon', reason))
     conn.execute("UPDATE marking_codes SET active=0,status='detached',error=NULL WHERE id=?", (row['id'],))
     conn.execute("UPDATE marking_registry SET state='released',revision=revision+1,updated_at=? WHERE fingerprint=?", (now, row['fingerprint']))
-    conn.execute("UPDATE marking_orders SET status='collecting',revision=revision+1,submitted_revision=NULL,error=NULL,checked_at=NULL WHERE id=?",
-                 (row['marking_order_id'],))
+    description = 'Замена кода' if reason == 'replaced' else reason
     db.log_event('marking_unbound', account_id=row['account_id'], user=user, posting_number=row['order_id'],
-                 message=f'Честный знак отвязан: позиция {row["item_key"]}, единица {row["unit_no"]}; {reason}', conn=conn)
+                 message=f'Честный знак отвязан: позиция {row["item_key"]}, единица {row["unit_no"]}; {description}', conn=conn)
+
+
+def release_replaced(conn, saved, candidate) -> bool:
+    """Called only after remote proof, inside the order lease and transaction."""
+    row = conn.execute('SELECT c.*,m.archive_id,m.account_id,m.order_id FROM marking_codes c '
+                       'JOIN marking_orders m ON m.id=c.marking_order_id WHERE c.id=? AND m.id=? '
+                       "AND c.active=0 AND c.status IN ('error','removed')", (candidate['id'], saved['id'])).fetchone()
+    if not row:
+        return False
+    owner = binding(row['fingerprint'], conn)
+    if (not owns(owner, saved['account_id'], saved['order_id']) or owner['state'] != 'bound'
+            or owner['code_id'] != row['id'] or owner['revision'] != candidate['owner_revision']):
+        return False
+    replacement = conn.execute("SELECT id FROM marking_codes WHERE marking_order_id=? AND item_key=? AND unit_no=? "
+                               "AND active=1 AND status='accepted' AND id=?",
+                               (saved['id'], row['item_key'], row['unit_no'], candidate['replacement_id'])).fetchone()
+    if not replacement:
+        return False
+    _release_binding(conn, row, user=None, reason='replaced')
     return True
 
 

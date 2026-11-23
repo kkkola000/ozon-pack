@@ -146,6 +146,14 @@ function setBanner(kind, message, code = '') {
   paintZone();
 }
 
+let markingNoticeKey = null;
+function showMarkingNotice(state) {
+  const notice = state?.marking?.notice;
+  const key = notice ? JSON.stringify([orderKey(state), notice.status, notice.substatus, notice.message]) : null;
+  if (key && key !== markingNoticeKey) setBanner(notice.kind, notice.message);
+  markingNoticeKey = key;
+}
+
 /* Общие куски окна сборки: фото, части набора, срочность. Площадки зовут их
    из своих pack.js при рисовании — к этому времени файл уже загружен. Фото и наборы теперь бывают у любой площадки: их
    даёт сопоставленная карточка другого кабинета. */
@@ -429,6 +437,8 @@ function applyResult(result, code, printWindow = null) {
   if (finished) showDone(finished);
   const localMessage = result.status === 'ok' && result.state?.marking?.local_only ? result.state.marking.message : '';
   setBanner(localMessage ? 'warning' : result.status, localMessage || result.message, shownCode(code || ''));
+  // Keep scan conflicts visible; asynchronous CIS results use their documented text.
+  if (result.status !== 'error') showMarkingNotice(result.state);
   beep(result.sound || result.status);
   if (result.counters) applyCounters(result.counters);
   if (code) pushHistory(shownCode(code), result);
@@ -624,6 +634,7 @@ async function refreshState() {
     const data = await api(STATE_URL, undefined, 'GET');
     if (CargoPack.editing() || ExemplarFields.editing()) return data;
     renderActive(data.state);
+    showMarkingNotice(data.state);
     applyCounters(data.counters);
     /* «Обновлено» здесь не трогаем: это время похода на площадку, а не опроса
        панели. Опрос идёт каждые 30 секунд и к свежести данных площадки
@@ -641,7 +652,10 @@ setInterval(async () => {
   markingPollBusy = true;
   try {
     const data = await api(at('/api/pack/marking/poll'), {});
-    if (!busy && wanted === orderKey(opened)) renderActive(data.state);
+    if (!busy && wanted === orderKey(opened)) {
+      renderActive(data.state);
+      showMarkingNotice(data.state);
+    }
   } catch (error) { /* очередь сохранена; следующий опрос повторит проверку */ }
   finally { markingPollBusy = false; }
 }, 3000);

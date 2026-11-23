@@ -10,10 +10,11 @@ import logging
 import re
 import sqlite3
 import threading
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
 
 from .config import settings
 
@@ -501,7 +502,8 @@ def _schema_columns(table: str) -> list[tuple[str, str]]:
     columns = []
     for part in parts:
         piece = part.strip()
-        if not piece or piece.upper().startswith(("PRIMARY KEY", "FOREIGN KEY", "UNIQUE", "CHECK", "--")):
+        # Match SQL constraint keywords, not columns such as check_status.
+        if not piece or re.match(r'^(?:PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK)\b|^--', piece, re.IGNORECASE):
             continue
         name, _, rest = piece.partition(" ")
         columns.append((name, rest.strip()))

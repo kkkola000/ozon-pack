@@ -220,7 +220,7 @@ class MarkingSource:
     # dispatch фиксирует неопределённый результат непосредственно перед записью.
     submit: Callable[[dict, str, dict, list[dict], Callable[[], None]], None]
     poll: Callable[[dict, str, dict, list[dict]], dict]
-    finalize: Callable[[dict, str, dict, list[dict]], None]
+    finalize: Callable[[dict, str, dict, list[dict]], dict | None]
     item_key: Callable[[dict], str]
     # Уточнение необязательной маркировки только при явном скане ЧЗ.
     discover: Callable[[dict, str], dict] | None = None
@@ -228,6 +228,9 @@ class MarkingSource:
     redistribute: Callable[[dict, dict, str, list[dict]], bool] | None = None
     # Explicit local-only completion for a layout the marketplace already closed.
     local_complete: Callable[[dict, str, dict, list[dict]], None] | None = None
+    # Read-only proof of all remote CIS identities after the current codes passed.
+    # None means absence of an old code cannot be established safely.
+    replacement_snapshot: Callable[[dict, str, dict, list[dict]], set[str] | None] | None = None
 
 
 @dataclass(frozen=True)

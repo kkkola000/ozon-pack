@@ -24,9 +24,20 @@ LOCAL_ONLY_MESSAGE = ('Честный знак нужно передавать �
 
 
 class Rejected(ValueError):
-    def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров'):
-        super().__init__(message)
+    def __init__(self, errors: dict[str, str], message: str = 'Площадка отклонила данные экземпляров', *, checks=None):
+        documented = next((c['message'] for c in (checks or {}).values()
+                           if c.get('status') == 'INVALID' and c.get('message')), None)
+        super().__init__(documented or message)
         self.errors = errors
+        self.checks = checks
+
+
+class AwaitingCheck(ValueError):
+    def __init__(self, outcome: dict):
+        self.checks = outcome.get('checks')
+        message = next((c['message'] for c in (self.checks or {}).values()
+                        if c.get('status') in {'FAILED', 'IN_PROGRESS', 'NOT_ON_VALIDATION'}), None)
+        super().__init__(message or 'Маркет пока не подтвердил сохранение полных данных экземпляров и успешную проверку кодов «Честный знак»')
 
 
 class NotRecorded(Rejected):
@@ -50,6 +61,7 @@ CREATE TABLE IF NOT EXISTS marking_orders (
     error TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     checked_at TEXT,
+    replacements_checked_at TEXT,
     created_at TEXT NOT NULL,
     user_id INTEGER,
     UNIQUE(account_id, order_id)
@@ -66,13 +78,18 @@ CREATE TABLE IF NOT EXISTS marking_codes (
     active INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'saved',
     error TEXT,
+    check_status TEXT,
+    check_substatus TEXT,
+    check_message TEXT,
     created_at TEXT NOT NULL,
     created_by TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_marking_unit ON marking_codes(marking_order_id,item_key,unit_no)
     WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_marking_pending ON marking_orders(status,checked_at);
+CREATE INDEX IF NOT EXISTS idx_marking_replacement_due ON marking_orders(status,replacements_checked_at);
 CREATE INDEX IF NOT EXISTS idx_marking_gtin ON marking_codes(gtin) WHERE active = 1;
+CREATE INDEX IF NOT EXISTS idx_marking_order_history ON marking_codes(marking_order_id,active);
 """
 
 
@@ -238,7 +255,9 @@ def guard(account: dict, order_id: str) -> None:
     """Общая защита завершения, в том числе прямых/старых маршрутов."""
     saved = order(account['id'], order_id)
     if needs_validation(saved) and saved['status'] != 'accepted':
-        raise ValueError(saved.get('error') or 'Передайте обязательные коды «Честный знак» и данные товара и дождитесь принятия площадкой')
+        notice = _notice(codes(saved))
+        raise ValueError(notice['message'] if notice and notice['status'] != 'OK' else saved.get('error') or
+                         'Передайте обязательные коды «Честный знак» и данные товара и дождитесь принятия площадкой')
 
 
 def local_only(account: dict, saved: dict | None) -> bool:
@@ -272,6 +291,17 @@ def pending(account: dict, state: dict, *, required_only: bool = True) -> tuple[
     return None
 
 
+def _notice(marks: list[dict]) -> dict | None:
+    priority = {'INVALID': 0, 'FAILED': 1, 'IN_PROGRESS': 2, 'NOT_ON_VALIDATION': 3, 'OK': 4}
+    checked = [m for m in marks if m.get('check_message') and m.get('check_status') in priority
+               and (m['check_status'] != 'OK' or m['status'] == 'accepted')]
+    if not checked:
+        return None
+    mark = min(checked, key=lambda m: priority[m['check_status']])
+    return {'status': mark['check_status'], 'substatus': mark['check_substatus'], 'message': mark['check_message'],
+            'kind': 'error' if mark['check_status'] == 'INVALID' else 'ok' if mark['check_status'] == 'OK' else 'warning'}
+
+
 def enrich(account: dict, state: dict) -> dict:
     active = state.get('active') or {}
     key = str(active.get('posting_number') or active.get('id') or '')
@@ -293,24 +323,59 @@ def enrich(account: dict, state: dict) -> dict:
             saved['status'] == 'error' and not json.loads(saved.get('field_errors') or '{}') and
             not any(m['status'] == 'error' for m in marks))
         ready = len(related) >= int(product['quantity']) and all(m['status'] == 'accepted' for m in related)
+        notice = _notice(related)
         item['marking'] = {
             'key': product['key'],
             'status': 'error' if failed else 'accepted' if ready else 'waiting',
-            'title': NOT_RECORDED if not_recorded else 'Честный знак не прошёл проверку' if failed else 'Честный знак принят площадкой' if ready else
+            'check_status': notice['status'] if notice else None,
+            'check_substatus': notice['substatus'] if notice else None,
+            'title': NOT_RECORDED if not_recorded else notice['message'] if notice else 'Честный знак не прошёл проверку' if failed else 'Честный знак принят площадкой' if ready else
                      saved.get('error') or 'Честный знак не отсканирован или проверяется',
         }
     waiting = pending(account, state)
     local_completion = local_only(account, saved)
     blocked = needs_validation(saved) and saved['status'] != 'accepted' and not local_completion
+    notice = _notice(marks)
+    if notice and notice['status'] == 'OK' and saved['status'] != 'accepted':
+        notice = None
     state['marking'] = {'pending_key': waiting[0]['key'] if waiting else None,
                         'pending_unit': waiting[1] if waiting else None,
                         'status': saved['status'], 'error': saved.get('error'), 'blocked': blocked,
                         'poll': saved['status'] in {'queued', 'checking', 'uncertain', 'not_recorded'},
                         'local_only': local_completion,
+                        'notice': None if local_completion else notice,
                         'message': LOCAL_ONLY_MESSAGE if local_completion else ''}
     if blocked:
         state['complete'] = False
     return state
+
+
+def _scan_owner(fingerprint, account, order_id):
+    owner = marking_registry.binding(fingerprint)
+    if owner and owner['state'] != 'released':
+        marking_returns.process_order(owner['account_id'], owner['order_id'])
+        owner = marking_registry.binding(fingerprint)
+    if owner and owner['state'] != 'released' and not marking_registry.owns(owner, account['id'], order_id):
+        if owner['marketplace'] == 'ozon':
+            from ..markets.ozon.marking_returns import try_release
+            try_release(owner)
+            owner = marking_registry.binding(fingerprint)
+        if owner['state'] != 'released':
+            from . import marking_replacements
+            owner_account = accounts.get(owner['account_id'])
+            if owner_account and owner_account['active'] and accounts.is_configured(owner_account):
+                marking_replacements.reconcile(owner_account, owner['order_id'])
+                owner = marking_registry.binding(fingerprint)
+        if owner['state'] != 'released':
+            raise ValueError(marking_registry.conflict(owner))
+    return owner
+
+
+def _check_gtin(parsed: marking_codes.Code, item: dict) -> None:
+    # Сопоставление проверяем, если каталог содержит числовой EAN/GTIN.
+    known = {str(c).zfill(14) for c in item.get('barcodes') or [] if str(c).isdigit() and len(str(c)) in {12, 13, 14}}
+    if known and parsed.gtin not in known:
+        raise ValueError('GTIN маркировки не совпадает с отсканированным товаром')
 
 
 def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
@@ -323,17 +388,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     if not saved:
         raise ValueError('Для этого заказа не получены требования к маркировке')
     fingerprint = _fingerprint(parsed)
-    owner = marking_registry.binding(fingerprint)
-    if owner and owner['state'] != 'released':
-        marking_returns.process_order(owner['account_id'], owner['order_id'])
-        owner = marking_registry.binding(fingerprint)
-    if owner and owner['state'] != 'released' and not marking_registry.owns(owner, account['id'], order_id):
-        if owner['marketplace'] == 'ozon':
-            from ..markets.ozon.marking_returns import try_release
-            try_release(owner)
-            owner = marking_registry.binding(fingerprint)
-        if owner['state'] != 'released':
-            raise ValueError(marking_registry.conflict(owner))
+    owner = _scan_owner(fingerprint, account, order_id)
     same = db.query_one('SELECT * FROM marking_codes WHERE fingerprint = ?', (fingerprint,))
     if same and owner is None:
         owner = marking_registry.binding(fingerprint)
@@ -354,10 +409,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     if (replacing_same or restoring) and (same['item_key'], same['unit_no']) != (product['key'], unit):
         raise ValueError('Этот код «Честный знак» относится к другой единице товара')
     item = next(i for i in state['items'] if item_key(account, i) == product['key'])
-    # Сопоставление проверяем, если каталог содержит числовой EAN/GTIN.
-    known = {str(c).zfill(14) for c in item.get('barcodes') or [] if str(c).isdigit() and len(str(c)) in {12, 13, 14}}
-    if known and parsed.gtin not in known:
-        raise ValueError('GTIN маркировки не совпадает с отсканированным товаром')
+    _check_gtin(parsed, item)
     mark_id = _store_scan(account, user, saved, parsed, fingerprint, product, unit, same if replacing_same or restoring or recycling else None)
     if _worker:
         _worker.wake.set()
@@ -387,6 +439,7 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
             if replacing_same:
                 mark_id = same['id']
                 conn.execute("UPDATE marking_codes SET marking_order_id=?,item_key=?,unit_no=?,code=?,active=1,status='saved',error=NULL,"
+                             'check_status=NULL,check_substatus=NULL,check_message=NULL,'
                              'created_at=?,created_by=? WHERE id=?',
                              (saved['id'], product['key'], unit, _seal(parsed.raw), db.now_iso(), user['login'], mark_id))
             else:
@@ -438,12 +491,34 @@ def _not_recorded(account: dict, saved: dict, marks: list[dict], exc: NotRecorde
                          message=NOT_RECORDED, payload=payload, conn=conn)
 
 
+def _record_checks(saved, marks, checks):
+    if checks is None:
+        return
+    with db.write() as conn:
+        for mark in marks:
+            check = checks.get(f'{mark["item_key"]}:{mark["unit_no"]}', {})
+            conn.execute('UPDATE marking_codes SET check_status=?,check_substatus=?,check_message=? '
+                         'WHERE id=? AND marking_order_id=? AND active=1',
+                         (check.get('status'), check.get('substatus'), check.get('message'), mark['id'], saved['id']))
+
+
 def _rejection(account, saved, marks, exc):
+    _record_checks(saved, marks, exc.checks)
     if isinstance(exc, NotRecorded):
         _not_recorded(account, saved, marks, exc)
     else:
         _reject(saved, marks, exc.errors,
                 'Площадка отклонила данные. Замените отмеченную марку или исправьте обязательные данные заказа.')
+
+
+def _finalize(account, saved, provider, context, marks):
+    try:
+        outcome = provider.finalize(account, saved['order_id'], context, marks)
+    except (AwaitingCheck, Rejected) as exc:
+        _record_checks(saved, marks, exc.checks)
+        raise
+    if outcome:
+        _record_checks(saved, marks, outcome.get('checks'))
 
 
 def confirm(account: dict, saved: dict, context: dict, marks: list[dict], *, poll: bool = True) -> None:
@@ -452,18 +527,19 @@ def confirm(account: dict, saved: dict, context: dict, marks: list[dict], *, pol
     try:
         if poll:
             outcome = provider.poll(account, saved['order_id'], context, marks)
+            _record_checks(saved, marks, outcome.get('checks'))
             if outcome['status'] == 'error':
-                raise Rejected(outcome.get('errors') or {})
+                raise Rejected(outcome.get('errors') or {}, checks=outcome.get('checks'))
             if outcome['status'] != 'accepted':
-                raise ValueError('Дождитесь подтверждения данных экземпляров площадкой')
-        provider.finalize(account, saved['order_id'], context, marks)
+                raise AwaitingCheck(outcome)
+        _finalize(account, saved, provider, context, marks)
     except Rejected as exc:
         _rejection(account, saved, marks, exc)
         raise
-    except Exception:
+    except Exception as exc:
         with db.write() as conn:
             conn.execute("UPDATE marking_orders SET status='uncertain',error=?,checked_at=? WHERE id=?",
-                         ('Площадка пока не подтвердила актуальные данные экземпляров. Завершение заблокировано.',
+                         (str(exc) if isinstance(exc, AwaitingCheck) else 'Площадка пока не подтвердила актуальные данные экземпляров. Завершение заблокировано.',
                           db.now_iso(), saved['id']))
             conn.execute("UPDATE marking_codes SET status='saved',error=NULL WHERE marking_order_id=? "
                          "AND active=1 AND status='accepted'", (saved['id'],))
@@ -476,14 +552,14 @@ def _accept(account, saved, provider, context, marks):
     order_id = saved['order_id']
     # Обновление существующего отправления, переход нового и повторное
     # доказательство применения полных кодов после перехода статуса.
-    provider.finalize(account, order_id, context, marks)
+    _finalize(account, saved, provider, context, marks)
     user_row = db.query_one('SELECT id,login,role FROM users WHERE id=?', (saved['user_id'],))
     if not user_row:
         raise ValueError('Не найден сотрудник, отправивший маркировку')
     readiness.call(account, dict(user_row), order_id)
     if provider.redistribute and provider.redistribute(account, dict(user_row), order_id, marks):
         return
-    provider.finalize(account, order_id, context, marks)
+    _finalize(account, saved, provider, context, marks)
     prepare(account, order_id)
     with db.write() as conn:
         conn.execute("UPDATE marking_orders SET status='accepted',error=NULL,field_errors='{}',checked_at=? WHERE id=?",
@@ -491,6 +567,8 @@ def _accept(account, saved, provider, context, marks):
         conn.execute("UPDATE marking_codes SET status='accepted',error=NULL WHERE marking_order_id=? AND active=1", (saved['id'],))
         db.log_event('marking_accepted', account_id=account['id'], user=dict(user_row), posting_number=order_id,
                      message=f'Площадка приняла {len(marks)} кодов «Честный знак»; готовность подтверждена', conn=conn)
+    from . import marking_replacements
+    marking_replacements.reconcile(account, order_id)
 
 
 def _submit(account, saved, provider, context, marks):
@@ -506,6 +584,7 @@ def _submit(account, saved, provider, context, marks):
 
 def _check(account, saved, provider, context, marks):
     outcome = provider.poll(account, saved['order_id'], context, marks)
+    _record_checks(saved, marks, outcome.get('checks'))
     if outcome['status'] == 'error':
         _reject(saved, marks, outcome.get('errors') or {},
                 'Площадка отклонила данные. Исправьте отмеченное поле или повторно отсканируйте код «Честный знак».')
@@ -522,6 +601,12 @@ def _check(account, saved, provider, context, marks):
 def _connection_failure(account, saved, exc):
     # Не сохраняем внешний текст: он может содержать коды и ключи.
     log.warning('Передача кодов «Честный знак»: кабинет %s, заказ %s, %s', account['id'], saved['order_id'], type(exc).__name__)
+    if isinstance(exc, AwaitingCheck):
+        _record_checks(saved, codes(saved), exc.checks)
+        db.execute("UPDATE marking_orders SET status='checking',error=?,checked_at=?,attempts=attempts+1 WHERE id=?",
+                   (str(exc), db.now_iso(), saved['id']))
+        db.execute("UPDATE marking_codes SET status='saved',error=NULL WHERE marking_order_id=? AND active=1 AND status='accepted'", (saved['id'],))
+        return
     status = getattr(exc, 'status', None)
     # Отказ опроса не доказывает отказ предыдущей записи: после 401/429
     # на status нельзя автоматически повторно отправлять уже переданные ЧЗ.
@@ -598,6 +683,8 @@ def run_once() -> None:
                 process(account, row['order_id'])
             except ValueError:  # другой процесс/запрос уже держит аренду
                 continue
+    from . import marking_replacements
+    marking_replacements.run_once()
 
 
 class Worker(threading.Thread):
@@ -664,7 +751,8 @@ def archive_details(archive_id: int) -> dict:
                                 (archived['account_id'], product.get('sku', '')))
             historical = 'released_at' in mark
             owner = None if historical else marking_registry.binding(mark['fingerprint'])
-            rows.append({k: mark.get(k) for k in ('id', 'item_key', 'unit_no', 'gtin', 'serial', 'status', 'error', 'created_at', 'created_by')}
+            rows.append({k: mark.get(k) for k in ('id', 'item_key', 'unit_no', 'gtin', 'serial', 'status', 'error', 'created_at', 'created_by',
+                                                'check_status', 'check_substatus', 'check_message')}
                         | {'name': (name['name'] if name else None) or product.get('sku') or mark['item_key'],
                            'history': historical, 'status': 'detached' if historical else mark['status'],
                            'printable': mark['status'] != 'error',

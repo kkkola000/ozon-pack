@@ -50,8 +50,8 @@ function renderStickerMarking(data, archiveId) {
       ? `<button class="btn small" type="button" data-unbind-mark="${item.id}" data-archive="${archiveId}" data-version="${escapeHtml(item.unbind_version)}">Отвязать</button>` : '';
     return `<tr><td>${escapeHtml(item.name)}<div class="small muted">Экземпляр ${item.unit_no}</div></td>
       <td class="mono small">${escapeHtml(item.gtin)}<div>${escapeHtml(item.serial)}</div></td>
-      <td><span class="badge ${ok ? 'ok' : bad || notRecorded ? 'err' : detached ? '' : 'warn'}">${ok ? 'Принят' : notRecorded ? 'Не записан на маркете' : bad ? 'Не принят' : detached ? 'Отвязан' : 'Ожидает проверки'}</span></td>
-      <td><div class="sticker-marking-actions">${item.printable === false ? '<span class="muted small">Замените марку</span>' : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`} ${unbind}</div></td></tr>`;
+      <td><span class="badge ${ok ? 'ok' : bad || notRecorded ? 'err' : detached ? '' : 'warn'}">${ok ? 'Принят' : notRecorded ? 'Не записан на маркете' : bad ? 'Не принят' : detached ? 'Отвязан' : 'Ожидает проверки'}</span>${item.check_message ? `<div class="small muted">${escapeHtml(item.check_message)}</div>` : ''}</td>
+      <td><div class="sticker-marking-actions">${item.printable === false ? `<span class="muted small">${detached ? '—' : 'Замените марку'}</span>` : `<a class="btn small" href="${url}" target="_blank" rel="noopener" data-print-pdf="${url}" data-print-kind="marking:duplicate" data-print-name="Дубликат «Честный знак»">Печать</a>`} ${unbind}</div></td></tr>`;
   }).join('');
   const all = `/api/stickers/${archiveId}/marking.pdf`;
   document.getElementById('sticker-marking-content').innerHTML =

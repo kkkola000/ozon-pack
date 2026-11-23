@@ -141,3 +141,92 @@ def test_failed_completion_recheck_does_not_leave_a_stale_green_m(yandex_account
     assert packing.state(user)['items'][0]['marking']['status'] == ('error' if status == 'INVALID' else 'waiting')
     assert db.query_one('SELECT local_state FROM yandex_orders WHERE account_id=? AND id=?',
                         (yandex_account['id'], number))['local_state'] != 'packed'
+
+
+@pytest.mark.parametrize(('status', 'message'), [
+    ('FAILED', 'Не удалось проверить код. Повторите попытку позже или удалите код маркировки.'),
+    ('IN_PROGRESS', 'В процессе проверки.'),
+    ('NOT_ON_VALIDATION', 'Код маркировки не отправлен на проверку.'),
+    ('OK', 'Проверка успешно пройдена.'),
+    ('INVALID', 'Проверка не пройдена. Продажа товара с этим кодом запрещена.'),
+])
+def test_documented_cis_messages_reach_the_assembler_and_survive_restart(yandex_account, user, monkeypatch, status, message):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key, status))
+    marking.process(yandex_account, number, force=True)
+    db.init_db()
+    state = packing.state(user)
+    assert state['items'][0]['marking']['title'] == message
+    assert state['marking']['notice']['message'] == message
+    row = marking.codes(marking.order(yandex_account['id'], number))[0]
+    assert row['check_status'] == status and row['check_substatus'] is None
+    assert row['check_message'] == message
+
+
+@pytest.mark.parametrize(('substatus', 'message'), [
+    ('WRONG_OWNER_INN', 'Проверка не пройдена. ИНН владельца кода отличается от ИНН продавца.'),
+    ('CIS_VALIDATION_ERROR', 'Проверка не пройдена.'),
+    ('CIS_GTIN_NOT_FOUND', 'Код маркировки не содержит GTIN.'),
+    ('CIS_SERIAL_NUMBER_NOT_FOUND', 'Код маркировки не содержит серийный номер.'),
+    ('INVALID_SYMBOLS_FOUND', 'Код маркировки содержит недопустимые символы.'),
+    ('CRYPTO_TAIL_FORMAT_MISMATCH_CIS_TYPE', 'Формат криптоподписи не соответствует типу кода маркировки.'),
+    ('INVALID_CRYPTO_TAIL', 'Криптоподпись не валидна.'),
+    ('INVALID_CRYPTO_KEY', 'Криптоключ не валиден.'),
+    ('VERIFICATION_FAILED_IN_EMITTER_COUNTRY', 'Код маркировки не прошел верификацию в стране эмитента.'),
+    ('UNSUPPORTED_AI_FOUND', 'Найденные в коде маркировки AI не поддерживаются.'),
+    ('CIS_NOT_FOUND_IN_GIS_MT', 'Код маркировки не найден в ГИС МТ.'),
+    ('NOT_PLACED_ON_MARKET', 'Код маркировки не введен в оборот.'),
+    ('NOT_PRINTED_ON_PACKAGE', 'Код маркировки не нанесен на упаковку.'),
+    ('EXPIRED_ITEM', 'У маркированного товара истек срок годности.'),
+    ('SALE_BLOCKED_BY_OGB', 'Розничная продажа продукции заблокирована по решению ОГВ.'),
+    ('ITEM_SOLD', 'Маркированный товар был продан.'),
+])
+def test_invalid_displays_only_its_documented_substatus(yandex_account, user, monkeypatch, substatus, message):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    data = status_response(key, 'INVALID')
+    data['result']['items'][0]['cis'][0]['substatus'] = substatus
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: data)
+    marking.process(yandex_account, number, force=True)
+    saved = marking.order(yandex_account['id'], number)
+    row = marking.codes(saved)[0]
+    assert row['status'] == 'error' and row['error'] == message
+    assert row['check_substatus'] == substatus
+    state = packing.state(user)
+    assert state['marking']['notice'] == {'status': 'INVALID', 'substatus': substatus, 'message': message, 'kind': 'error'}
+    assert state['items'][0]['marking']['title'] == message
+    assert marking.archive_details(saved['archive_id'])['items'][0]['check_message'] == message
+
+
+@pytest.mark.parametrize('status', ['OK', 'IN_PROGRESS', 'NOT_ON_VALIDATION', 'FAILED'])
+def test_substatus_is_ignored_outside_invalid(yandex_account, user, monkeypatch, status):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    data = status_response(key, status)
+    data['result']['items'][0]['cis'][0]['substatus'] = 'ITEM_SOLD'
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: data)
+    marking.process(yandex_account, number, force=True)
+    row = marking.codes(marking.order(yandex_account['id'], number))[0]
+    assert row['check_substatus'] is None
+    assert 'продан' not in row['check_message']
+
+
+def test_unknown_substatus_never_displays_external_payload(yandex_account, user, monkeypatch):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    data = status_response(key, 'INVALID')
+    data['result']['items'][0]['cis'][0]['substatus'] = '<script>private token and CIS</script>'
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: data)
+    marking.process(yandex_account, number, force=True)
+    notice = packing.state(user)['marking']['notice']
+    assert notice['substatus'] is None
+    assert notice['message'] == 'Проверка не пройдена. Продажа товара с этим кодом запрещена.'
+
+
+def test_substatus_during_final_recheck_replaces_previous_success(yandex_account, user, monkeypatch):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    marking.process(yandex_account, number, force=True)
+    data = status_response(key, 'INVALID')
+    data['result']['items'][0]['cis'][0]['substatus'] = 'WRONG_OWNER_INN'
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: data)
+    assert scan(yandex_account, user, number)['status'] == 'error'
+    notice = packing.state(user)['marking']['notice']
+    assert notice['substatus'] == 'WRONG_OWNER_INN'
+    assert notice['message'] == 'Проверка не пройдена. ИНН владельца кода отличается от ИНН продавца.'

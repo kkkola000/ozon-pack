@@ -6,7 +6,7 @@ from collections import Counter
 
 from ...core import db, exemplar_data, marking, marking_codes
 from ..base import MarkingSource
-from . import client
+from . import cis_status, client
 
 
 def _campaign(account: dict, order_id: str) -> str:
@@ -259,38 +259,63 @@ def _cis_by_item(data):
 
 
 def _code_checks(data, raw, codes):
-    if data.get('status') != 'OK':
-        return {'status': 'checking'}
-    by_item = _cis_by_item(data)
+    by_item = _cis_by_item(data) if data.get('status') == 'OK' else {}
     errors = {}
+    checks = {}
     pending = False
     failed = False
     for code in codes:
+        key = f'{code["item_key"]}:{code["unit_no"]}'
         found = [c for c in by_item.get(code['item_key'], [])
                  if c.get('value') == marking_codes.short(code['raw']) or marking_codes.equivalent(c.get('value'), code['raw'])]
+        checks[key] = cis_status.describe(found[0] if len(found) == 1 else {})
         if len(found) != 1:
             pending = True
             continue
         status = found[0].get('status')
         if status == 'INVALID':
-            errors[f'{code["item_key"]}:{code["unit_no"]}'] = 'Маркет не разрешил продажу товара с этим кодом «Честный знак»'
+            errors[key] = checks[key]['message']
         elif status != 'OK':
             pending = True  # FAILED — не удалось проверить; это не INVALID.
             failed = failed or status == 'FAILED'
     if errors:
-        return {'status': 'error', 'errors': errors}
+        return {'status': 'error', 'errors': errors, 'checks': checks}
     if failed and raw.get('substatus') == 'STARTED':
-        return {'status': 'retry', 'message': 'Маркет не смог проверить Честный знак. Передача будет повторена.'}
-    return {'status': 'checking' if pending or not codes else 'accepted'}
+        return {'status': 'retry', 'message': cis_status.STATUSES['FAILED'], 'checks': checks}
+    return {'status': 'checking' if pending or not codes else 'accepted', 'checks': checks}
 
 
-def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
+def finalize(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict:
     # Repeat both proofs before and after readiness: a previous OK can become stale.
     outcome = poll(account, order_id, context, codes)
     if outcome['status'] == 'error':
-        raise marking.Rejected(outcome['errors'], 'Маркет не подтвердил проверку кодов «Честный знак»')
+        raise marking.Rejected(outcome['errors'], 'Маркет не подтвердил проверку кодов «Честный знак»', checks=outcome.get('checks'))
     if outcome['status'] != 'accepted':
-        raise ValueError('Маркет пока не подтвердил сохранение полных данных экземпляров и успешную проверку кодов «Честный знак»')
+        raise marking.AwaitingCheck(outcome)
+    return outcome
+
+
+def replacement_snapshot(account: dict, order_id: str, context: dict, codes: list[dict]) -> set[str] | None:
+    """A full order read plus fresh checks; a short CIS never proves absence."""
+    api = client.get_client(account)
+    raw = api.order_details(order_id)
+    if (str(raw.get('campaignId')) != context['campaign'] or not _same_items(context['order'], raw)
+            or raw.get('status') != 'PROCESSING' or raw.get('programType') not in {'FBS', 'EXPRESS'}
+            or not _saved_data(raw, context, codes)):
+        return None
+    identities = set()
+    for item in raw['items']:
+        instances = item.get('instances') or []
+        if len(instances) != int(item['count']):
+            return None
+        for instance in instances:
+            if instance.get('cis') and not instance.get('cisFull'):
+                return None
+            if instance.get('cisFull'):
+                identities.add(marking._fingerprint(marking_codes.parse(instance['cisFull'])))
+    if _code_checks(api.identifiers_status(context['campaign'], order_id), raw, codes)['status'] != 'accepted':
+        return None
+    return identities
 
 
 def complete_local(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:
@@ -314,4 +339,4 @@ def complete_local(account: dict, order_id: str, context: dict, codes: list[dict
 
 
 SOURCE = MarkingSource(prepare, submit, poll, finalize, lambda item: str(item.get('item_id') or ''),
-                       local_complete=complete_local)
+                       local_complete=complete_local, replacement_snapshot=replacement_snapshot)
