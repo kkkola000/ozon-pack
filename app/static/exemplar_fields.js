@@ -1,12 +1,23 @@
 /* Required extra information belongs to its physical item, separately from the CZ scanner. */
 const ExemplarFields = (() => {
   let drafts = new Map();
+  let originals = new Map();
   let saving = false;
   let order = '';
   let seen = new Set();
-  const editing = () => saving || drafts.size > 0 || Boolean(document.activeElement?.closest('.pack-exemplar-data'));
+  // An omitted GTD keeps its text for unchecking, but that text is not submitted.
+  const dirty = () => [...drafts].some(([key, value]) => {
+    if (value === originals.get(key)) return false;
+    const omission = key.replace(/:gtd$/, ':gtd_absent');
+    return !key.endsWith(':gtd') || !(drafts.get(omission) ?? originals.get(omission));
+  });
+  const editing = () => saving || dirty() || Boolean(document.activeElement?.closest('.pack-exemplar-data'));
+  function draft(key, value) {
+    if (value === originals.get(key)) drafts.delete(key);
+    else drafts.set(key, value);
+  }
   function begin(key) {
-    if (key !== order) { drafts.clear(); order = key; }
+    if (key !== order) { drafts.clear(); originals.clear(); order = key; }
     seen = new Set();
   }
   function render(data) {
@@ -18,6 +29,8 @@ const ExemplarFields = (() => {
     const disabled = pending || CargoPack.editing();
     const fields = units.map((u) => `${data.units.length > 1 ? `<div class="muted small">Единица ${u.unit}</div>` : ''}
       ${u.fields.map((f) => {
+        originals.set(`${data.key}:${u.unit}:${f.name}`, String(f.value));
+        if (f.can_omit) originals.set(`${data.key}:${u.unit}:gtd_absent`, Boolean(f.omitted));
         const omitted = f.can_omit && (drafts.get(`${data.key}:${u.unit}:gtd_absent`) ?? f.omitted);
         return `<div class="pack-exemplar-field">
         <span class="sr-only">${escapeHtml(f.label)}</span>
@@ -38,13 +51,13 @@ const ExemplarFields = (() => {
   }
   document.addEventListener('input', (e) => {
     const form = e.target.closest('.pack-exemplar-data');
-    if (form && e.target.name) drafts.set(`${form.dataset.key}:${e.target.dataset.unit}:${e.target.name}`, e.target.value);
+    if (form && e.target.name) draft(`${form.dataset.key}:${e.target.dataset.unit}:${e.target.name}`, e.target.value);
   });
   document.addEventListener('change', (e) => {
     const toggle = e.target;
     const form = toggle.closest('.pack-exemplar-data');
     if (!form || !toggle.hasAttribute('data-gtd-absent')) return;
-    drafts.set(`${form.dataset.key}:${toggle.dataset.unit}:gtd_absent`, toggle.checked);
+    draft(`${form.dataset.key}:${toggle.dataset.unit}:gtd_absent`, toggle.checked);
     const field = toggle.closest('.pack-exemplar-field').querySelector('input[name="gtd"]');
     field.disabled = toggle.checked;
     field.required = !toggle.checked;

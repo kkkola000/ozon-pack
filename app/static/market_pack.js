@@ -304,7 +304,6 @@ function packStep(words, done, total) {
    у всех. Кнопки общие — печать, отмена, завершение без скана; каких у
    площадки нет, те она просто не рисует. */
 function paintModal(state) {
-  ExemplarFields.begin(orderKey(state));
   const card = pack.card(state);
   const active = state.active;
   document.getElementById('pack-dot').className = `dot ${state.market}`;
@@ -371,6 +370,7 @@ function renderActive(state) {
   pack = PACKS[state?.market] || null;
   hasActive = Boolean(state?.active) && pack !== null;
   opened = hasActive ? state : null;
+  ExemplarFields.begin(hasActive ? orderKey(state) : '');
   if (!hasActive) {
     CargoPack.syncControls(state);
     stickerOpening = null;
@@ -486,8 +486,16 @@ function applyCounters(counters) {
 }
 
 async function submitScan(code, printWindow = null) {
-  if (busy || !code || CargoPack.editing() || ExemplarFields.editing()) {
+  if (busy || !code) {
     printWindow?.close();
+    return;
+  }
+  if (CargoPack.editing() || ExemplarFields.editing()) {
+    printWindow?.close();
+    setBanner('warning', CargoPack.editing()
+      ? 'Сначала сохраните или отмените изменения грузомест.'
+      : 'Есть несохранённые данные товара. Нажмите «Передать данные» и повторите скан.', shownCode(code));
+    beep('warning');
     return;
   }
   busy = true;

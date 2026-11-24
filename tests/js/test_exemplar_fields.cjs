@@ -75,8 +75,53 @@ test('toggle keeps the typed draft, restores required and survives a rerender', 
   assert.equal(input.disabled, false);
   assert.equal(input.required, true);
   b.fields.begin('ozon:1:123');
-  html = b.fields.render(data('collecting', true));
+  html = b.fields.render(data());
   assert.doesNotMatch(html, /type="checkbox"[^>]+checked/);
+});
+
+test('returning the checkbox to the saved choice releases the scanner', () => {
+  for (const omitted of [false, true]) {
+    const b = browser();
+    b.fields.render(data('accepted', omitted));
+    const { toggle } = formWithToggle(omitted);
+    toggle.checked = !omitted;
+    b.handlers.change({ target: toggle });
+    assert.equal(b.fields.editing(), true);
+    toggle.checked = omitted;
+    b.handlers.change({ target: toggle });
+    assert.equal(b.fields.editing(), false);
+  }
+});
+
+test('restoring the original GTD number releases the scanner without another write', () => {
+  const b = browser();
+  const saved = data('accepted');
+  saved.units[0].fields[0].value = 'saved-number';
+  b.fields.render(saved);
+  const { input } = formWithToggle();
+  input.value = 'changed-number';
+  b.handlers.input({ target: input });
+  assert.equal(b.fields.editing(), true);
+  input.value = 'saved-number';
+  b.handlers.input({ target: input });
+  assert.equal(b.fields.editing(), false);
+});
+
+test('a number retained under a saved omission does not block the scanner', () => {
+  const b = browser();
+  b.fields.render(data('accepted', true));
+  const { input, toggle } = formWithToggle(true);
+  toggle.checked = false;
+  b.handlers.change({ target: toggle });
+  b.handlers.input({ target: input });
+  toggle.checked = true;
+  b.handlers.change({ target: toggle });
+  assert.equal(b.fields.editing(), false);
+  toggle.checked = false;
+  b.handlers.change({ target: toggle });
+  assert.equal(b.fields.editing(), true);
+  b.fields.begin(''); // Completed/released assembly: clear even an unsent draft.
+  assert.equal(b.fields.editing(), false);
 });
 
 test('omission submits an explicit choice without the retained number and clears drafts', async () => {
