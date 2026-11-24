@@ -104,6 +104,7 @@ class InstanceData:
                 {"context_id": str(context_id)},
             )
             existing = InstanceContext(
+                policy_version=policy.POLICY_VERSION,
                 id=context_id,
                 account_id=manifest.account_id,
                 order_id=manifest.order_id,
@@ -155,7 +156,7 @@ class InstanceData:
             raise Conflict("Ozon вернул неполные требования к Честному знаку или ГТД. Повторите сверку")
         if any(r["unsupported_missing"] for r in row.requirements.values()):
             raise Conflict(
-                "Ozon требует дополнительные сведения (РНПТ, вес, УИН, IMEI или страну). Укажите их в кабинете и повторите сверку"
+                "Ozon требует дополнительные сведения (РНПТ, вес, IMEI или страну). Укажите их в кабинете и повторите сверку"
             )
         snapshot = self._open(row.encrypted_snapshot)
         by_item = {i.item_id: i for i in manifest.items}
@@ -220,6 +221,24 @@ class InstanceData:
                     (m["mark"] for m in slot.get("marks", []) if m["mark_type"] == "mandatory_mark"), None
                 )
                 local_mark = current_marks.get(unit.unit_id)
+                if local_mark and (
+                    not remote_mark or not self.marking.equivalent(remote_mark, local_mark.raw)
+                ):
+                    # A fresh complete read after cancellation may confirm external deletion.
+                    # Never resurrect an accepted code automatically or release its reservation
+                    # before a replacement has been confirmed by the marketplace.
+                    elsewhere = any(
+                        self.marking.equivalent(m["mark"], local_mark.raw)
+                        for p in snapshot["products"]
+                        for e in p["exemplars"]
+                        for m in e.get("marks", [])
+                        if m["mark_type"] == "mandatory_mark"
+                    )
+                    if not elsewhere and self.marking.accepted(tx, local_mark.assignment_id):
+                        self.marking.retire(tx, local_mark.assignment_id, actor.id, "native_removed")
+                        detail.revision += 1
+                        detail.input_errors = [v for v in detail.input_errors if v != "cis"]
+                        local_mark = None
                 if remote_mark and local_mark and not self.marking.equivalent(remote_mark, local_mark.raw):
                     raise Conflict(
                         "Честный знак на площадке отличается от привязанного к единице товара. Нужна сверка"
@@ -268,7 +287,7 @@ class InstanceData:
     def _complete(self, row, details, marks):
         return len(details) == sum(r["quantity"] for r in row.requirements.values()) and all(
             (not row.requirements[d.product_id]["cis"] or d.unit_id in marks)
-            and (not row.requirements[d.product_id]["gtd"] or bool(d.values.get("gtd")))
+            and (not row.requirements[d.product_id]["gtd"] or "gtd" in d.values)
             for d in details
         )
 
@@ -362,18 +381,22 @@ class InstanceData:
             may_replace=may_replace,
         )
         detail.input_errors = [v for v in detail.input_errors if v != "cis"]
-        if changed:
+        if changed or may_replace:
+            detail.revision += 1
+            tx.flush()
             self.prepare(tx, row)
         return {"assignment_id": str(assignment_id), "changed": changed}
 
-    def save_gtd(self, tx, actor, context_id, manifest, unit_id, value):
+    def save_gtd(self, tx, actor, context_id, manifest, unit_id, value, *, absent=False):
         row = self._context(tx, context_id)
         self._guard_context(row, manifest)
         self._editable(tx, row)
         value = value.strip()
+        if type(absent) is not bool or absent and value:
+            raise DomainError("Выберите «Не указывать» либо укажите номер ГТД")
         if self.marking.looks_like(value):
             raise DomainError("Сканируйте Честный знак в поле сканирования, а не в поле ГТД")
-        if not 1 <= len(value) <= 100 or not value.isprintable():
+        if not absent and (not 1 <= len(value) <= 100 or not value.isprintable()):
             raise DomainError("Укажите номер ГТД без управляющих символов, до 100 знаков")
         detail = tx.get(UnitDetail, unit_id)
         if (
@@ -384,7 +407,17 @@ class InstanceData:
             raise Conflict("Для этой единицы не требуется ГТД")
         data = self._open(detail.encrypted_values)
         detail.input_errors = [v for v in detail.input_errors if v != "gtd"]
-        if data.get("gtd") != value:
+        fingerprint, _, _ = self._fingerprint(tx, row)
+        previous = tx.scalar(
+            select(Submission).where(Submission.context_id == row.id, Submission.fingerprint == fingerprint)
+        )
+        retry = bool(
+            previous
+            and previous.status == "rejected"
+            and any(field in previous.field_errors.get(str(unit_id), []) for field in ("gtd", "data"))
+        )
+        value = None if absent else value
+        if "gtd" not in data or data["gtd"] != value or retry:
             data["gtd"] = value
             detail.encrypted_values, detail.revision = self._seal(data), detail.revision + 1
             tx.add(
@@ -450,13 +483,14 @@ class InstanceData:
                         "id": str(d.unit_id),
                         "scanned": d.unit_id in scanned,
                         "gtd_required": bool(req.get("gtd")),
-                        "gtd": d.values.get("gtd", ""),
+                        "gtd": d.values.get("gtd") or "",
+                        "gtd_omitted": "gtd" in d.values and d.values["gtd"] is None,
                         "gtd_status": "rejected"
                         if "gtd" in failures or "data" in failures
                         else "accepted"
                         if current and (status == "accepted" or proof.get("gtd") == "accepted")
                         else "saved"
-                        if d.values.get("gtd")
+                        if "gtd" in d.values
                         else "empty",
                         "cis_status": "rejected"
                         if "cis" in failures

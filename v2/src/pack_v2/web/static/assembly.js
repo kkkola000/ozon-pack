@@ -7,6 +7,7 @@
   const storageKey = `pack-v2:assembly:pending:${root.dataset.user}`;
   const queue = [];
   const drafts = new Map();
+  const omissionDrafts = new Map();
   const queuedValues = new Map();
   let lastIssue = null;
   let rendering = false;
@@ -18,7 +19,14 @@
   let layoutDraft = null;
   let draggingUnit = null;
   const find = (name) => root.querySelector(`[data-${name}]`);
-  const uuid = () => crypto.randomUUID();
+  const uuid = () => {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    // getRandomValues also works when the panel is opened by IP over HTTP.
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;
+    const hex = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
   const input = () => session ? root.querySelector('#assembly-code') : root.querySelector('#assembly-home-code');
   const stages = { opening: 'Проверяем отправление', scanning: 'Проверка товаров', blocked: 'Проверка приостановлена',
     verified: 'Товары проверены', preparing: 'Ozon обрабатывает сборку', ready: 'Готов к отгрузке', stale: 'Нужна повторная проверка', expired: 'Время истекло', cancelled: 'Отменено' };
@@ -28,7 +36,7 @@
     if (text !== undefined && text !== null) node.textContent = text;
     return node;
   };
-  const focus = () => { if (!document.activeElement?.dataset.gtdUnit && !input().readOnly && !document.hidden) input().focus(); };
+  const focus = () => { if (!document.activeElement?.closest('.assembly-gtd') && !input().readOnly && !document.hidden) input().focus(); };
   function notice(message, error = false) {
     const target = session ? find('assembly-message') : find('home-message');
     target.hidden = !message;
@@ -58,8 +66,9 @@
     rendering = true;
     try {
       const container = find('assembly-items');
-      const editing = document.activeElement?.dataset.gtdUnit;
-      const selection = editing ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
+      const editing = document.activeElement?.dataset.gtdUnit || document.activeElement?.dataset.gtdAbsent;
+      const editingAbsent = Boolean(document.activeElement?.dataset.gtdAbsent);
+      const selection = editing && !editingAbsent ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       container.replaceChildren();
       const editable = session.layout?.editable && session.status === 'scanning';
       const groups = layoutDraft || session.layout?.groups || [];
@@ -114,9 +123,15 @@
           field.placeholder = `Указать ГТД${extra.units.length > 1 ? ' · ' + (index + 1) + '/' + extra.units.length : ''}`;
           field.setAttribute('aria-label', field.placeholder); field.dataset.gtdUnit = unit.id;
           field.value = drafts.get(unit.id) ?? unit.gtd;
-          field.disabled = !unit.scanned || paused || session.status !== 'scanning' || ['prepared', 'checking', 'uncertain'].includes(session.data?.status);
-          form.append(field);
-          const label = unit.gtd_status === 'accepted' ? 'ГТД принята Ozon' : unit.gtd_status === 'rejected' ? 'Ozon не принял ГТД' : unit.gtd ? 'ГТД сохранена' : 'Введите ГТД и нажмите Enter';
+          const disabled = !unit.scanned || paused || session.status !== 'scanning' || ['prepared', 'checking', 'uncertain'].includes(session.data?.status);
+          const omitted = omissionDrafts.get(unit.id) ?? unit.gtd_omitted;
+          field.disabled = disabled || omitted;
+          const choice = make('label', 'assembly-gtd-choice');
+          const checkbox = make('input'); checkbox.type = 'checkbox'; checkbox.dataset.gtdAbsent = unit.id;
+          checkbox.checked = Boolean(omitted); checkbox.disabled = disabled;
+          choice.append(checkbox, document.createTextNode('Не указывать'));
+          form.append(field, choice);
+          const label = unit.gtd_status === 'accepted' ? 'ГТД принята Ozon' : unit.gtd_status === 'rejected' ? 'Ozon не принял ГТД' : unit.gtd_omitted ? 'Выбор «Не указывать» сохранён' : unit.gtd ? 'ГТД сохранена' : 'Введите ГТД и нажмите Enter';
           form.append(make('span', `small ${unit.gtd_status === 'accepted' ? 'access-ok' : unit.gtd_status === 'rejected' ? 'access-error' : 'muted'}`, label));
           description.append(form);
         }
@@ -137,8 +152,8 @@
         link.href = `/pack?shipment_id=${encodeURIComponent(child.shipment_id)}`; container.append(link);
       }
       if (editing) {
-        const field = root.querySelector(`[data-gtd-unit="${editing}"]`);
-        if (field && !field.disabled) { field.focus(); field.setSelectionRange(...selection); }
+        const field = root.querySelector(`[data-gtd-${editingAbsent ? 'absent' : 'unit'}="${editing}"]`);
+        if (field && !field.disabled) { field.focus(); if (selection) field.setSelectionRange(...selection); }
       }
     } finally { rendering = false; }
     const verify = root.querySelector('[data-assembly-action=complete]');
@@ -164,6 +179,7 @@
   }
   function apply(next) {
     if (next && session?.id === next.id && next.revision < session.revision) return;
+    if (session?.id !== next?.id) { drafts.clear(); omissionDrafts.clear(); queuedValues.clear(); }
     if (session?.id !== next?.id || next?.status !== 'scanning') { layoutDraft = null; draggingUnit = null; }
     session = next;
     render();
@@ -177,7 +193,7 @@
     const metadata = { ...request, payload: { ...request.payload } };
     metadata.needsCode = Object.hasOwn(metadata.payload, 'code');
     delete metadata.payload.code;
-    metadata.needsGtd = request.action === 'gtd';
+    metadata.needsGtd = request.action === 'gtd' && !request.payload.absent;
     delete metadata.payload.value;
     try { sessionStorage.setItem(storageKey, JSON.stringify(metadata)); } catch (_) { /* Retry still uses the in-memory command. */ }
   }
@@ -190,7 +206,7 @@
       lastIssue = result.ok === false && !result.pending ? result.message || result.detail : null;
       if (request.action === 'gtd') {
         queuedValues.delete(request.payload.unit_id);
-        if (result.ok) drafts.delete(request.payload.unit_id);
+        if (result.ok) { drafts.delete(request.payload.unit_id); omissionDrafts.delete(request.payload.unit_id); }
       }
       if (request.action === 'layout' && result.ok) layoutDraft = null;
       if (result.session) apply(result.session);
@@ -212,7 +228,7 @@
       return { action, url: '/api/v2/assembly/open', payload };
     }
     Object.assign(payload, { lease_token: session.lease_token, revision: session.revision });
-    if (action === 'gtd') { payload.unit_id = target; payload.value = code; }
+    if (action === 'gtd') { payload.unit_id = target; payload.value = code.value; if (code.absent) payload.absent = true; }
     else if (action === 'layout') payload.groups = code;
     else if (code !== undefined) payload.code = code;
     return { action, url: `/api/v2/assembly/${session.id}/${action}`, payload };
@@ -285,34 +301,56 @@
       const request = { ...recovery, payload: { ...recovery.payload, code } };
       paused = false; queue.unshift({ request }); drain(); return;
     }
+    if (hasUnsavedGtd()) { notice('Укажите ГТД или выберите «Не указывать»', true); return; }
     queue.push({ action: session ? 'scan' : 'open', code }); drain();
   }));
   root.addEventListener('input', event => {
     if (event.target.dataset.gtdUnit) drafts.set(event.target.dataset.gtdUnit, event.target.value);
   });
+  const gtdUnit = id => Object.values(session?.data?.items || {}).flatMap(item => item.units).find(unit => unit.id === id);
+  function hasUnsavedGtd() {
+    return [...new Set([...drafts.keys(), ...omissionDrafts.keys()])].some(id => {
+      const saved = gtdUnit(id); if (!saved) return false;
+      const absent = omissionDrafts.get(id) ?? saved.gtd_omitted;
+      return absent !== saved.gtd_omitted || !absent && (drafts.get(id) ?? saved.gtd).trim() !== saved.gtd;
+    });
+  }
   function saveGtd(field) {
-    const unitId = field.dataset.gtdUnit, value = field.value;
-    if (rendering || !field.isConnected || field.disabled || !value || queuedValues.get(unitId) === value) return;
+    const unitId = field.dataset.gtdUnit, saved = gtdUnit(unitId);
+    const absent = omissionDrafts.get(unitId) ?? saved?.gtd_omitted ?? false;
+    const value = absent ? '' : field.value.trim();
+    const choice = JSON.stringify({ value, absent });
+    if (rendering || !field.isConnected || !saved || !absent && (field.disabled || !value) || queuedValues.get(unitId) === choice) return;
+    if (!recovery?.needsGtd && saved.gtd_omitted === absent && (absent || saved.gtd === value) && saved.gtd_status !== 'rejected') {
+      drafts.delete(unitId); omissionDrafts.delete(unitId); return;
+    }
     if (recovery?.needsGtd) {
-      if (recovery.payload.unit_id !== unitId) { notice('Сначала повторите ГТД последнего запроса', true); return; }
+      if (recovery.payload.unit_id !== unitId || absent) { notice('Сначала повторите ГТД последнего запроса', true); return; }
       paused = false; queue.unshift({ request: { ...recovery, payload: { ...recovery.payload, value } } });
     } else if (paused) return;
-    else queue.push({ action: 'gtd', target: unitId, code: value });
-    queuedValues.set(unitId, value); drain();
+    else queue.push({ action: 'gtd', target: unitId, code: { value, absent } });
+    queuedValues.set(unitId, choice); drain();
   }
   root.addEventListener('submit', event => {
     if (!event.target.dataset.gtdForm) return;
-    event.preventDefault(); const field = event.target.querySelector('input'); field.blur(); saveGtd(field); if (!input().readOnly) input().focus();
+    event.preventDefault(); const field = event.target.querySelector('[data-gtd-unit]'); saveGtd(field);
   });
   root.addEventListener('change', event => {
-    if (event.target.dataset.gtdUnit && drafts.has(event.target.dataset.gtdUnit)) saveGtd(event.target);
+    if (event.target.dataset.gtdAbsent) {
+      const id = event.target.dataset.gtdAbsent;
+      omissionDrafts.set(id, event.target.checked);
+      const field = event.target.closest('form').querySelector('[data-gtd-unit]');
+      field.disabled = event.target.checked;
+      saveGtd(field);
+    } else if (event.target.dataset.gtdUnit && drafts.has(event.target.dataset.gtdUnit)) saveGtd(event.target);
   });
   root.addEventListener('focusout', event => {
+    if (event.relatedTarget?.dataset.gtdAbsent === event.target.dataset.gtdUnit) return;
     if (event.target.dataset.gtdUnit && drafts.has(event.target.dataset.gtdUnit)) saveGtd(event.target);
   });
   root.querySelectorAll('[data-clear-code]').forEach(button => button.addEventListener('click', () => { input().value = ''; focus(); }));
   root.querySelectorAll('[data-open-shipment]').forEach(button => button.addEventListener('click', () => { if (!busy && !paused) { queue.push({ action: 'open', target: button.dataset.openShipment }); drain(); } }));
-  root.querySelectorAll('[data-assembly-action]').forEach(button => button.addEventListener('click', () => { if (!busy && !paused && session) { queue.push({ action: button.dataset.assemblyAction }); drain(); } }));
+  root.querySelectorAll('[data-assembly-action]').forEach(button => button.addEventListener('click', () => { if (!busy && !paused && session) { if (button.dataset.assemblyAction === 'complete' && hasUnsavedGtd()) { notice('Укажите ГТД или выберите «Не указывать»', true); return; } queue.push({ action: button.dataset.assemblyAction }); drain(); } }));
   root.querySelectorAll('[data-network-retry]').forEach(button => button.addEventListener('click', () => {
     if (busy) return;
     paused = false;

@@ -9,7 +9,7 @@ from pack_v2.integrations.public import ReadError
 from pack_v2.modules.marking.public import Marking
 from pack_v2.shared.errors import Conflict
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 SUPPORTED = {"cis", "gtd"}
 PASSED = {"passed", "success"}
 
@@ -53,11 +53,10 @@ def requirements(manifest, snapshot):
             unknown.append("cis")
         if not gtd_positive and product.get("is_gtd_needed") is None:
             unknown.append("gtd")
-        other = set(required - SUPPORTED)
+        other = set(required - SUPPORTED - {"uin"})
         for flag, field in (
             ("is_rnpt_needed", "rnpt"),
             ("is_weight_needed", "weight"),
-            ("is_jw_uin_needed", "uin"),
             ("has_imei", "imei"),
         ):
             if product.get(flag):
@@ -132,7 +131,11 @@ def to_request(context, details, marks):
             detail = units[(key, str(original["exemplar_id"]))]
             value = detail.values
             if "gtd" in value:
-                unit["gtd"], unit["is_gtd_absent"] = value["gtd"], False
+                unit["is_gtd_absent"] = value["gtd"] is None
+                if value["gtd"] is None:
+                    unit.pop("gtd", None)
+                else:
+                    unit["gtd"] = value["gtd"]
             if detail.unit_id in marks:
                 unit["marks"] = [m for m in unit.get("marks", []) if m["mark_type"] != "mandatory_mark"]
                 unit["marks"].append({"mark_type": "mandatory_mark", "mark": marks[detail.unit_id].raw})
@@ -168,7 +171,12 @@ def same_unit(left, right, *, check_id=False):
     ):
         return False
     for field in ("gtd", "rnpt", "weight"):
-        if left.get(field) != right.get(field):
+        omitted_gtd = (
+            field == "gtd" and left.get("is_gtd_absent") is True and right.get("is_gtd_absent") is True
+        )
+        if omitted_gtd and (left.get(field) or right.get(field)):
+            return False
+        if not omitted_gtd and left.get(field) != right.get(field):
             return False
         if field != "weight" and bool(left.get("is_" + field + "_absent")) != bool(
             right.get("is_" + field + "_absent")
@@ -255,15 +263,21 @@ def checked_status(data, payload, req, unit_ids):
         proof = results.setdefault(uid, {})
         ready &= same_unit(got, want, check_id=True)
         for name in ("gtd", "rnpt", "weight"):
-            matches = got.get(name) == want.get(name) and not got.get("is_" + name + "_absent")
+            omitted = name == "gtd" and want.get("is_gtd_absent") is True
+            matches = (
+                got.get("is_gtd_absent") is True and not got.get("gtd")
+                if omitted
+                else got.get(name) == want.get(name) and not got.get("is_" + name + "_absent")
+            )
+            check = str(got.get(name + "_check_status") or "").lower()
             bad = bool(
                 got.get(name + "_error_codes")
                 or str(got.get(name + "_check_status")).lower() in ("error", "invalid")
             )
-            passed = matches and not bad and str(got.get(name + "_check_status")).lower() in PASSED
+            passed = matches and not bad and (check in PASSED or omitted and not check)
             if matches and bad:
                 errors.setdefault(uid, []).append(name)
-            if want.get(name) and not want.get("is_" + name + "_absent"):
+            if (omitted and fields["gtd"]) or want.get(name) and not want.get("is_" + name + "_absent"):
                 ready &= passed
                 if name == "gtd":
                     proof[name] = "accepted" if passed else "rejected" if matches and bad else "pending"
@@ -292,6 +306,10 @@ def applied_field_proofs(posting, payload, unit_ids, results):
         for p in (posting.get("product_exemplars") or {}).get("products", [])
         for e in p.get("exemplars", [])
     }
+    if len(actual) != sum(
+        len(p.get("exemplars", [])) for p in (posting.get("product_exemplars") or {}).get("products", [])
+    ):
+        return {uid: {field: "pending" for field in fields} for uid, fields in results.items()}
     out = deepcopy(results)
     for product in payload["products"]:
         for wanted in product["exemplars"]:
@@ -308,7 +326,11 @@ def applied_field_proofs(posting, payload, unit_ids, results):
                     )
                     matches = Marking.equivalent(got.get("mandatory_mark"), code)
                 else:
-                    matches = got.get(field) == wanted.get(field) and not got.get("is_" + field + "_absent")
+                    matches = (
+                        got.get("is_gtd_absent") is True and not got.get("gtd")
+                        if field == "gtd" and wanted.get("is_gtd_absent") is True
+                        else got.get(field) == wanted.get(field) and not got.get("is_" + field + "_absent")
+                    )
                 if not matches:
                     out[uid][field] = "pending"
     return out
@@ -325,6 +347,10 @@ def applied(posting, payload):
         for p in (posting.get("product_exemplars") or {}).get("products", [])
         for e in p.get("exemplars", [])
     }
+    if len(actual) != sum(
+        len(p.get("exemplars", [])) for p in (posting.get("product_exemplars") or {}).get("products", [])
+    ):
+        return False
     if actual.keys() != expected.keys():
         return False
     for key, want in expected.items():

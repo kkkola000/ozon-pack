@@ -40,7 +40,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0008_split"
+SCHEMA_REVISION = "0009_marking"
 
 
 def create_app(

@@ -983,7 +983,7 @@ class Assembly:
             operation,
         )
 
-    def gtd(self, actor, command_id, session_id, token, revision, unit_id, value):
+    def gtd(self, actor, command_id, session_id, token, revision, unit_id, value, *, absent=False):
         def operation(tx):
             row, manifest, error = self._locked(tx, actor, session_id, token, revision)
             if error:
@@ -995,12 +995,14 @@ class Assembly:
                 return row, _result(False, "Сначала отсканируйте товар", "not_scanned")
             try:
                 with tx.begin_nested():
-                    self.instances.save_gtd(tx, actor, row.instance_context_id, manifest, unit_id, value)
+                    self.instances.save_gtd(
+                        tx, actor, row.instance_context_id, manifest, unit_id, value, absent=absent
+                    )
             except DomainError as error:
                 return row, _result(False, str(error), "data_error")
             row.revision += 1
             row.lease_until = self._until()
-            return row, _result(True, "ГТД сохранена", "gtd_saved")
+            return row, _result(True, "Выбор ГТД сохранён" if absent else "ГТД сохранена", "gtd_saved")
 
         return self._execute(
             actor,
@@ -1012,6 +1014,7 @@ class Assembly:
                 "revision": revision,
                 "unit_id": unit_id,
                 "value": value,
+                **({"absent": True} if absent else {}),
             },
             operation,
         )

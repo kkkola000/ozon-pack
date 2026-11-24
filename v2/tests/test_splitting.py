@@ -492,3 +492,39 @@ def test_gtd_obligation_survives_cleared_child_flag(split_pipeline, owner, monke
     current = state(split_pipeline, owner, view)
     assert current["status"] == "preparing" and current["readiness"]["status"] == "uncertain"
     assert not current["readiness"]["children"]
+
+
+def test_explicit_gtd_omission_survives_split_and_child_reopen(split_pipeline, owner, db):
+    from instance_remote import mark
+    from test_instance_data import KONVERT, MUFT, finish_data, target
+    from test_instance_parity import omit
+
+    from pack_v2.modules.instance_data.models import InstanceContext
+
+    assembly, data, _, _ = split_pipeline
+    view = open_window(split_pipeline, owner, code=MUFT)
+    uid = UUID(target(view))
+    view = omit(split_pipeline, owner, view)["session"]
+    view = call(assembly, owner, view, "scan", mark())["session"]
+    view = finish_data(split_pipeline, owner, view)
+    for _ in range(2):
+        view = call(assembly, owner, view, "scan", KONVERT)["session"]
+    view = complete(split_pipeline, owner, view)
+    run_ready(split_pipeline)
+    run_ready(split_pipeline)
+    current = state(split_pipeline, owner, view)
+    assert current["status"] == "ready", current["readiness"]
+    with db.transaction() as tx:
+        detail = tx.get(UnitDetail, uid)
+        assert data._open(detail.encrypted_values)["gtd"] is None
+        assert detail.shipment_id != UUID(view["shipment_id"])
+        manifest = assembly.orders.packing_manifest(tx, detail.shipment_id)
+        context_id = tx.scalar(
+            select(InstanceContext.id).where(
+                InstanceContext.shipment_id == detail.shipment_id, InstanceContext.status == "ready"
+            )
+        )
+        # The child proof remains tied to the same physical unit and explicit choice.
+        child = data.view(tx, context_id, manifest)
+        unit = next(u for item in child["items"].values() for u in item["units"] if u["id"] == str(uid))
+        assert unit["gtd_omitted"] and unit["gtd_status"] == "accepted"

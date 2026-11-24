@@ -13,7 +13,7 @@ from pack_v2.integrations.public import AccountSource, OutcomeUnknown, ReadError
 from pack_v2.shared.errors import Conflict, DomainError
 
 from . import policy
-from .models import InstanceContext, Submission
+from .models import InstanceContext, Submission, UnitDetail
 
 
 class InstanceJobs:
@@ -119,6 +119,34 @@ class InstanceJobs:
                 raise SourceChanged("Проверка требований устарела")
             # Match again in the transaction where the result is saved.
             policy.requirements(manifest, snapshot)
+            previous = tx.scalars(
+                select(InstanceContext)
+                .where(
+                    InstanceContext.shipment_id == row.shipment_id,
+                    InstanceContext.id != row.id,
+                    InstanceContext.encrypted_snapshot.is_not(None),
+                )
+                .order_by(InstanceContext.created_at.desc(), InstanceContext.id.desc())
+            )
+            native_ids = {
+                str(p["product_id"]): {str(e["exemplar_id"]) for e in p["exemplars"]}
+                for p in snapshot.products
+            }
+            for old in previous:
+                baseline = self.s._open(old.encrypted_snapshot)
+                old_ids = {
+                    str(p["product_id"]): {str(e["exemplar_id"]) for e in p["exemplars"]}
+                    for p in baseline["products"]
+                }
+                if old_ids != native_ids:
+                    continue
+                # Ready postings can lose positive flags; retain the panel policy for
+                # the same physical instances, without changing native cis_market.
+                for key, fields in req.items():
+                    for field in ("cis", "gtd"):
+                        if old.requirements.get(key, {}).get(field):
+                            fields[field] = True
+                            fields["unknown"] = [f for f in fields["unknown"] if f != field]
             row.requirements, row.signature = req, policy.signature(snapshot.products, req)
             row.encrypted_snapshot = self.s._seal(payload)
             row.status, row.checked_at, row.error = "ready", datetime.now(UTC), None
@@ -221,17 +249,28 @@ class InstanceJobs:
                 else client.posting(manifest.posting_number)
             )
             self._posting_matches(posting, manifest)
-            if set_started or all(
-                policy.same_unit(got, want, check_id=True)
-                for p in fresh.products
-                for got, want in zip(
-                    p["exemplars"],
-                    next(
-                        q["exemplars"]
-                        for q in payload["products"]
-                        if str(q["product_id"]) == str(p["product_id"])
-                    ),
-                    strict=True,
+            # create-or-get can initialize an empty unit with is_gtd_absent=true.
+            # That default is not proof that the packer's explicit choice was sent.
+            declaration_needed = any(
+                req[str(p["product_id"])]["gtd"] and e.get("is_gtd_absent") is True
+                for p in payload["products"]
+                for e in p["exemplars"]
+            )
+            if (
+                set_started
+                or not declaration_needed
+                and all(
+                    policy.same_unit(got, want, check_id=True)
+                    for p in fresh.products
+                    for got, want in zip(
+                        p["exemplars"],
+                        next(
+                            q["exemplars"]
+                            for q in payload["products"]
+                            if str(q["product_id"]) == str(p["product_id"])
+                        ),
+                        strict=True,
+                    )
                 )
             ):
                 data = client.status(manifest.posting_number)
@@ -263,11 +302,14 @@ class InstanceJobs:
                 if set_started:
                     self.wait(job)
                     return
-            validation = client.validate(policy.validation_request(payload))
-            errors = policy.checked_validation(validation, payload, unit_ids)
-            if errors:
-                self.reject(job, errors)
-                return
+            # validate checks markings, not the explicit absence declaration for GTD.
+            # Include native UIN/IMEI marks too: the complete packet must be preserved.
+            if any(e.get("marks") for p in payload["products"] for e in p["exemplars"]):
+                validation = client.validate(policy.validation_request(payload))
+                errors = policy.checked_validation(validation, payload, unit_ids)
+                if errors:
+                    self.reject(job, errors)
+                    return
             # A final revision/lease/source fence and durable intent before the only set.
             self._send(job, client, "set", payload)
         self.wait(job)
@@ -286,6 +328,14 @@ class InstanceJobs:
             self.s.marking.transmissions(
                 tx, batch.id, [UUID(v) for v in packet["assignments"].values()], "accepted"
             )
+            self.s.marking.finalize_replacements(
+                tx, row.shipment_id, [UUID(v) for v in packet["assignments"].values()], packet["request"]
+            )
+            for detail in self.s._details(tx, row):
+                stored = tx.get(UnitDetail, detail.unit_id)
+                values = dict(detail.values)
+                values["base_gtd"] = values.get("gtd")
+                stored.encrypted_values = self.s._seal(values)
             Queue.finish_in(tx, job)
             tx.add(
                 AuditEvent(

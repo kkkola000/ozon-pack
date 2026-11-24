@@ -38,6 +38,7 @@ class MarkingAssignment(Record, Base):
     posting_number: Mapped[str] = mapped_column(String(256))
     actor_id: Mapped[UUID | None] = mapped_column(ForeignKey("pack_v2.users.id"))
     revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     release_reason: Mapped[str | None] = mapped_column(String(40))
     __table_args__ = (
@@ -66,7 +67,10 @@ class MarkingAssignment(Record, Base):
             postgresql_where=text("released_at IS NULL"),
         ),
         Index(
-            "uq_marking_current_unit", "unit_id", unique=True, postgresql_where=text("released_at IS NULL")
+            "uq_marking_current_unit",
+            "unit_id",
+            unique=True,
+            postgresql_where=text("released_at IS NULL AND retired_at IS NULL"),
         ),
         Index("ix_marking_assignment_shipment", "shipment_id", "released_at"),
         CheckConstraint("revision >= 0", name="revision"),
@@ -79,6 +83,7 @@ class MarkingTransmission(Record, Base):
     assignment_id: Mapped[UUID] = mapped_column(ForeignKey("pack_v2.marking_assignments.id"))
     batch_id: Mapped[UUID] = mapped_column(ForeignKey("pack_v2.instance_submissions.id"))
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    assignment_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     __table_args__ = (
         UniqueConstraint("assignment_id", "batch_id"),
         CheckConstraint("status IN ('pending','accepted','rejected','unknown')", name="status"),

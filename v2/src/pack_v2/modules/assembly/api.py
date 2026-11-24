@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pack_v2.web.deps import check_csrf, current
 from pack_v2.web.query import AccountFilter, msk
@@ -37,7 +37,14 @@ class Heartbeat(BaseModel):
 
 class Gtd(SessionCommand):
     unit_id: UUID
-    value: str = Field(min_length=1, max_length=100)
+    value: str = Field(default="", max_length=100)
+    absent: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def gtd_choice(self):
+        if bool(self.value.strip()) == self.absent:
+            raise ValueError("Выберите «Не указывать» либо укажите номер ГТД")
+        return self
 
 
 class Layout(SessionCommand):
@@ -204,6 +211,7 @@ def build_router():
                 payload.revision,
                 payload.unit_id,
                 payload.value,
+                absent=payload.absent,
             )
         )
 

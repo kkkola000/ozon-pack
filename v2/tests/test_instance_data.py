@@ -125,7 +125,7 @@ def test_open_requires_real_discovery_before_scans_and_flags_are_separate(pipeli
         row = tx.scalar(select(InstanceContext))
         assert row.requirements["634662543"]["cis_market"] == "optional"
         assert row.requirements["634662543"]["cis"] and row.requirements["634662543"]["gtd"]
-        assert row.policy_version == 1 and row.checked_at
+        assert row.policy_version == 2 and row.checked_at
         assert b"mandatory_mark" not in row.encrypted_snapshot
 
 

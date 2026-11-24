@@ -157,7 +157,12 @@ def prove(service, client, evidence, groups, snapshots):
                 flags["cis"]
                 and not any(m["mark_type"] == "mandatory_mark" for m in e["marks"])
                 or flags["gtd"]
-                and (not e.get("gtd") or e.get("is_gtd_absent"))
+                and not (
+                    e.get("gtd")
+                    and not e.get("is_gtd_absent")
+                    or e.get("is_gtd_absent") is True
+                    and not e.get("gtd")
+                )
                 for e in p["exemplars"]
             ):
                 raise Conflict("В новом отправлении отсутствуют обязательные данные")
@@ -212,6 +217,7 @@ def accept(service, tx, children, proofs, source):
             "multi_box_qty": fresh.multi_box_qty,
         }
         context = InstanceContext(
+            policy_version=policy.POLICY_VERSION,
             id=context_id,
             account_id=child.account_id,
             order_id=child.order_id,
@@ -247,7 +253,12 @@ def accept(service, tx, children, proofs, source):
             )
             detail.exemplar_id = entry["exemplar_id"]
             gtd = slot.get("gtd") if not slot.get("is_gtd_absent") else None
-            detail.encrypted_values = service._seal({"base_gtd": gtd, **({"gtd": gtd} if gtd else {})})
+            detail.encrypted_values = service._seal(
+                {
+                    "base_gtd": gtd,
+                    **({"gtd": gtd} if gtd or slot.get("is_gtd_absent") is True else {}),
+                }
+            )
             detail.revision += 1
             detail.input_errors = []
             service.marking.relocate(

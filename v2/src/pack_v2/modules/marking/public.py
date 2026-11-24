@@ -75,11 +75,17 @@ class Marking:
         )
         if occupied:
             if occupied.unit_id == binding.unit_id and occupied.shipment_id == binding.shipment_id:
-                return occupied.id, False
-            raise Conflict("Данный Честный знак уже используется в заказе: " + occupied.posting_number)
+                if occupied.retired_at is None:
+                    return occupied.id, False
+            else:
+                raise Conflict("Данный Честный знак уже используется в заказе: " + occupied.posting_number)
         previous = tx.scalar(
             select(MarkingAssignment)
-            .where(MarkingAssignment.unit_id == binding.unit_id, MarkingAssignment.released_at.is_(None))
+            .where(
+                MarkingAssignment.unit_id == binding.unit_id,
+                MarkingAssignment.released_at.is_(None),
+                MarkingAssignment.retired_at.is_(None),
+            )
             .with_for_update()
         )
         if previous:
@@ -87,9 +93,13 @@ class Marking:
                 raise Conflict(
                     "К этой единице уже привязан Честный знак. Сначала требуется сверка прежнего кода"
                 )
-            previous.released_at, previous.release_reason = datetime.now(UTC), "provider_rejected"
-            previous.revision += 1
+            self.retire(tx, previous.id, actor_id, "replacement_pending")
+        if occupied:
+            occupied.retired_at = None
+            occupied.revision += 1
+            tx.add(AuditEvent(actor_id=actor_id, kind="marking_reactivated", subject_id=occupied.id))
             tx.flush()
+            return occupied.id, True
         assignment = MarkingAssignment(
             id=uuid4(),
             mark_id=mark.id,
@@ -121,6 +131,7 @@ class Marking:
                 MarkingAssignment.shipment_id == shipment_id,
                 MarkingAssignment.unit_id.in_(unit_ids),
                 MarkingAssignment.released_at.is_(None),
+                MarkingAssignment.retired_at.is_(None),
             )
         ).all()
         return {
@@ -131,11 +142,93 @@ class Marking:
         }
 
     @staticmethod
+    def retire(tx, assignment_id, actor_id, reason):
+        """Remove from the current packet; keep the global reservation until proof."""
+        row = tx.get(MarkingAssignment, assignment_id, with_for_update=True)
+        if row.released_at is not None or row.retired_at is not None:
+            return
+        row.retired_at = datetime.now(UTC)
+        row.revision += 1
+        tx.add(
+            AuditEvent(
+                actor_id=actor_id,
+                kind="marking_retired",
+                subject_id=row.id,
+                details={"reason": reason, "shipment_id": str(row.shipment_id)},
+            )
+        )
+        tx.flush()
+
+    def finalize_replacements(self, tx, shipment_id, assignment_ids, payload):
+        """Called only after exact provider acceptance of the complete packet."""
+        current = list(
+            tx.scalars(
+                select(MarkingAssignment).where(
+                    MarkingAssignment.id.in_(assignment_ids),
+                    MarkingAssignment.shipment_id == shipment_id,
+                    MarkingAssignment.retired_at.is_(None),
+                    MarkingAssignment.released_at.is_(None),
+                )
+            )
+        )
+        native_codes = [
+            m["mark"]
+            for p in payload["products"]
+            for e in p["exemplars"]
+            for m in e.get("marks", [])
+            if m["mark_type"] == "mandatory_mark"
+        ]
+        old = tx.execute(
+            select(MarkingAssignment, MarkingUnit)
+            .join(MarkingUnit, MarkingUnit.id == MarkingAssignment.mark_id)
+            .where(
+                MarkingAssignment.shipment_id == shipment_id,
+                MarkingAssignment.unit_id.in_([a.unit_id for a in current]),
+                MarkingAssignment.retired_at.is_not(None),
+                MarkingAssignment.released_at.is_(None),
+            )
+            .with_for_update(of=MarkingAssignment)
+        ).all()
+        for row, mark in old:
+            raw = self.box.open(mark.encrypted_code).decode()
+            if any(equivalent(raw, code) for code in native_codes):
+                continue
+            row.released_at, row.release_reason = datetime.now(UTC), "replacement_confirmed"
+            row.revision += 1
+            tx.add(
+                AuditEvent(
+                    kind="marking_released",
+                    subject_id=row.id,
+                    details={"reason": row.release_reason, "shipment_id": str(shipment_id)},
+                )
+            )
+
+    @staticmethod
+    def accepted(tx, assignment_id):
+        return (
+            tx.scalar(
+                select(MarkingTransmission.id)
+                .join(MarkingAssignment, MarkingAssignment.id == MarkingTransmission.assignment_id)
+                .where(
+                    MarkingTransmission.assignment_id == assignment_id,
+                    MarkingTransmission.status == "accepted",
+                    MarkingTransmission.assignment_revision == MarkingAssignment.revision,
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    @staticmethod
     def relocate(tx, binding):
         """Only a confirmed split may transfer the reservation of the same physical unit."""
         old = tx.scalar(
             select(MarkingAssignment)
-            .where(MarkingAssignment.unit_id == binding.unit_id, MarkingAssignment.released_at.is_(None))
+            .where(
+                MarkingAssignment.unit_id == binding.unit_id,
+                MarkingAssignment.released_at.is_(None),
+                MarkingAssignment.retired_at.is_(None),
+            )
             .with_for_update()
         )
         if old is None:
@@ -175,12 +268,19 @@ class Marking:
     @staticmethod
     def transmissions(tx, batch_id, assignment_ids, status):
         for assignment_id in assignment_ids:
+            revision = tx.get(MarkingAssignment, assignment_id).revision
             tx.execute(
                 insert(MarkingTransmission)
-                .values(id=uuid4(), assignment_id=assignment_id, batch_id=batch_id, status=status)
+                .values(
+                    id=uuid4(),
+                    assignment_id=assignment_id,
+                    batch_id=batch_id,
+                    status=status,
+                    assignment_revision=revision,
+                )
                 .on_conflict_do_update(
                     index_elements=[MarkingTransmission.assignment_id, MarkingTransmission.batch_id],
-                    set_={"status": status},
+                    set_={"status": status, "assignment_revision": revision},
                 )
             )
 
@@ -188,10 +288,13 @@ class Marking:
     def proven(tx, batch_ids, assignment_ids):
         return set(
             tx.scalars(
-                select(MarkingTransmission.assignment_id).where(
+                select(MarkingTransmission.assignment_id)
+                .join(MarkingAssignment, MarkingAssignment.id == MarkingTransmission.assignment_id)
+                .where(
                     MarkingTransmission.batch_id.in_(batch_ids),
                     MarkingTransmission.assignment_id.in_(assignment_ids),
                     MarkingTransmission.status == "accepted",
+                    MarkingTransmission.assignment_revision == MarkingAssignment.revision,
                 )
             )
         )
