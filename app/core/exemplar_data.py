@@ -49,6 +49,7 @@ def context(saved: dict) -> dict:
     from . import marking
     result = json.loads(marking._open(saved['context']))
     result['_panel_details'] = values(saved)
+    result['_panel_rescan'] = bool(saved.get('rescan_requested') and saved['status'] in {'checking', 'not_recorded'})
     return result
 
 

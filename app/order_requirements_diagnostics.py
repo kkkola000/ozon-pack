@@ -13,12 +13,13 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-from .core import accounts, db
+from .core import accounts, db, exemplar_data, marking, marking_codes
 from .core.config import settings
 from .core.version import get_version
 from .markets.base import MarketError
 from .markets.ozon import client as ozon
 from .markets.yandex import client as yandex
+from .markets.yandex import cis_status, marking as yandex_marking
 
 OZON_FLAGS = ('is_mandatory_mark_needed', 'is_mandatory_mark_possible', 'is_gtd_needed',
               'is_rnpt_needed', 'is_weight_needed', 'has_imei')
@@ -50,13 +51,16 @@ def _error(exc: Exception) -> dict:
 
 
 def _local(account_id: int, order_id: str) -> dict:
-    row = db.query_one('SELECT id,status,products FROM marking_orders WHERE account_id=? AND order_id=?',
+    row = db.query_one('SELECT id,status,products,revision,submitted_revision,attempts,checked_at,rescan_requested FROM marking_orders WHERE account_id=? AND order_id=?',
                        (account_id, order_id))
     if not row:
         return {'marking_snapshot_present': False, 'products': []}
     counts = {r['item_key']: r['n'] for r in db.query('SELECT item_key,COUNT(*) AS n FROM marking_codes '
                                                     'WHERE marking_order_id=? AND active=1 GROUP BY item_key', (row['id'],))}
-    return {'marking_snapshot_present': True, 'status': row['status'], 'products': [
+    return {'marking_snapshot_present': True, 'status': row['status'], 'revision': row['revision'],
+            'submitted_revision': row['submitted_revision'], 'attempts': row['attempts'], 'checked_at': row['checked_at'],
+            'rescan_requested': bool(row['rescan_requested']),
+            'worker_enabled': settings.sync_enabled, 'products': [
         {'key': _id(p['key']), 'required': bool(p.get('required')), 'possible': bool(p.get('possible')),
          'stored_code_count': counts.get(p['key'], 0)} for p in json.loads(row['products'])]}
 
@@ -92,11 +96,35 @@ def _ozon(account: dict, order_id: str) -> dict:
     return result
 
 
+def _yandex_checks(data: dict, codes: list[dict]) -> dict:
+    """Preserve the useful shape/status of the API response, never CIS values."""
+    items = []
+    for item in (data.get('result') or {}).get('items') or []:
+        key = str(item.get('id'))
+        checks = []
+        for check in item.get('cis') or []:
+            description = cis_status.describe(check)
+            matches = [c for c in codes if c['item_key'] == key and
+                       (check.get('value') == marking_codes.short(c['raw']) or
+                        marking_codes.equivalent(check.get('value'), c['raw']))]
+            checks.append({'status': description['status'] or 'UNKNOWN',
+                           'substatus': description['substatus'],
+                           'value_present': bool(check.get('value')),
+                           'matching_local_units': [c['unit_no'] for c in matches],
+                           'full_value_matches_local': any(marking_codes.equivalent(check.get('value'), c['raw']) for c in matches)})
+        items.append({'item_id': _id(key), 'cis': checks})
+    outer = _enums([data.get('status')], {'OK', 'ERROR'})
+    return {'request_succeeded': True, 'response_status': outer[0] if outer else 'UNKNOWN',
+            'items': items}
+
+
 def _yandex(account: dict, order_id: str) -> dict:
-    raw = yandex.get_client(account).order_details(order_id)
+    api = yandex.get_client(account)
+    raw = api.order_details(order_id)
     if str(raw.get('orderId')) != order_id:
         return {'error': {'type': 'OrderNotConfirmed', 'http_status': None}}
     products = []
+    layout = yandex_marking._layout_instances(raw)
     for item in raw.get('items') or []:
         instances = item.get('instances') or []
         products.append({'item_id': _id(item.get('id')), 'offer_id': _id(item.get('offerId')),
@@ -105,10 +133,31 @@ def _yandex(account: dict, order_id: str) -> dict:
                          'instance_count': len(instances),
                          'cis_full_present_count': sum(bool(i.get('cisFull')) for i in instances),
                          'cis_present_count': sum(bool(i.get('cis')) for i in instances),
+                         'layout_full_code_count': len(layout.get(str(item.get('id')), [])),
                          'gtd_filled_count': sum(bool(i.get('gtd')) for i in instances),
                          'rnpt_filled_count': sum(bool(i.get('rnpt')) for i in instances)})
-    return {'remote_status': raw.get('status'), 'remote_substatus': raw.get('substatus'),
-            'program_type': raw.get('programType'), 'products': products}
+    result = {'remote_status': raw.get('status'), 'remote_substatus': raw.get('substatus'),
+              'program_type': raw.get('programType'), 'products': products}
+    saved = marking.order(account['id'], order_id)
+    codes = marking.codes(saved, full=True) if saved else []
+    if saved:
+        result['readback'] = {'active_code_count': len(codes),
+                              'all_full_codes_saved': yandex_marking._saved_codes(raw, codes),
+                              'all_instance_data_saved': yandex_marking._saved_data(raw, exemplar_data.context(saved), codes),
+                              'codes': [{'item_id': _id(c['item_key']), 'unit': c['unit_no'], 'local_status': c['status'],
+                                         'check_status': c['check_status'], 'check_substatus': c['check_substatus'],
+                                         'full_code_saved': not yandex_marking._missing_codes(raw, [c])} for c in codes]}
+    try:
+        campaign = str(raw.get('campaignId') or '')
+        if not campaign.isdigit():
+            raise ValueError('CampaignNotConfirmed')
+        data = api.identifiers_status(campaign, order_id)
+        result['identifiers_status'] = _yandex_checks(data, codes)
+        if codes:
+            result['identifiers_status']['panel_code_check'] = yandex_marking._code_checks(data, raw, codes)['status']
+    except (MarketError, ValueError) as exc:
+        result['identifiers_status'] = {'error': _error(exc)}
+    return result
 
 
 def inspect_order(account: dict, order_id: str) -> dict:

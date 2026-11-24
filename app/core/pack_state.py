@@ -106,6 +106,8 @@ def release(user: dict, *, event: str, reason: str = "manual") -> tuple[int, str
     with db.write() as conn:
         released = release_previous(conn, user)
         if released:
+            from . import report
+            report.cancel_assembly(conn, *released, user)
             db.log_event(
                 event, account_id=released[0], user=user, posting_number=released[1],
                 message=f"Сборка отменена ({reason})", conn=conn,

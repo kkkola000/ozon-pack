@@ -264,6 +264,15 @@ def purge() -> None:
 _SAVED_AT = ('COALESCE((SELECT MAX(c.saved_at) FROM cargo_labels c WHERE '
              'c.account_id=o.account_id AND c.order_id=o.order_id), v.saved_at, o.created_at)')
 
+_STATE_FILTERS = {
+    'error': 'o.error IS NOT NULL',
+    'pending': 'v.id IS NULL AND o.error IS NULL',
+    'saved': 'v.id IS NOT NULL',
+    'available': '(v.id IS NOT NULL OR EXISTS(SELECT 1 FROM marking_orders m JOIN marking_codes c '
+                 'ON c.marking_order_id=m.id WHERE m.archive_id=o.id AND c.active=1) '
+                 'OR EXISTS(SELECT 1 FROM marking_releases h WHERE h.archive_id=o.id))',
+}
+
 
 def _filters(account_id: int | None, market: str, q: str, since: str, until: str, state: str):
     conditions = ['(v.id IS NOT NULL OR o.created_at >= ?)']
@@ -304,12 +313,8 @@ def _filters(account_id: int | None, market: str, q: str, since: str, until: str
     if until:
         conditions.append(f'date({_SAVED_AT}, ?) <= ?')
         params += [f'{settings.timezone_offset:+d} hours', until]
-    if state == 'error':
-        conditions.append('o.error IS NOT NULL')
-    elif state == 'pending':
-        conditions.append('v.id IS NULL AND o.error IS NULL')
-    elif state == 'saved':
-        conditions.append('v.id IS NOT NULL')
+    if state in _STATE_FILTERS:
+        conditions.append(_STATE_FILTERS[state])
     return ' AND '.join(conditions), params
 
 

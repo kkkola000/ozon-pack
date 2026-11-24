@@ -78,6 +78,8 @@
             <span class="tag success">{{ r.status_label }}</span>
           {% elif r.status == 'unmatched' %}
             <span class="tag mark">{{ r.status_label }}</span>
+          {% elif r.status == 'cancelled' %}
+            <span class="tag">{{ r.status_label }}</span>
           {% else %}
             <span class="tag overdue">{{ r.status_label }}</span>
           {% endif %}

@@ -304,8 +304,11 @@ def _mark_scan(open_shop: dict | None, user: dict, code: str) -> dict:
     except Exception:
         return {'status': 'error', 'message': 'Пока не удалось сохранить Честный знак. Повторите скан.',
                 'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
+    snapshot = marking.order(open_shop['id'], number)
+    duplicate_message = ('Этот Честный знак уже подтверждался площадкой для заказа.' if snapshot['status'] == 'accepted' else
+                         'Честный знак сохранён в панели. Проверка его передачи на площадку возобновлена.')
     result = {'status': 'warning' if saved['duplicate'] else 'ok',
-              'message': 'Честный знак уже сохранён; повторная автопечать не запущена' if saved['duplicate'] else
+              'message': duplicate_message if saved['duplicate'] else
                          'Честный знак сохранён и связан с товаром и стикером отправления',
               'action': 'marking_saved', 'sound': 'ok',
               'state': _sign(marking.enrich(open_shop, current), open_shop), **_sign({}, open_shop)}
@@ -372,13 +375,13 @@ def _locked_scan(shop: dict, user: dict, code: str) -> dict:
         return _run(shop, _workspace(shop).scan, user, code)
     with order_lock.hold(shop['id'], number):
         result = _run(shop, _workspace(shop).scan, user, code)
-        if not active and not result.get('print') and result.get('state', {}).get('active'):
-            from . import board
+        if not active and result.get('status') == 'ok' and result.get('state', {}).get('active'):
             from .config import settings
 
             claim = _workspace(shop).owner(shop, user, code)
-            if result['state'].get('marking') and claim and claim[0] != 'label' and board.not_ready(shop, [number]):
-                result['deferred_label_print'] = settings.autoprint
+            if settings.autoprint and claim and claim[0] != 'label' and not result['state']['sticker_download']['ready']:
+                result['print'] = None
+                result['deferred_label_print'] = True
         return result
 
 

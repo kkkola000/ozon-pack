@@ -785,6 +785,8 @@ def init_db() -> None:
             from . import marking_returns
 
             marking_returns.backfill(conn)
+            from . import report
+            report.repair_cancellations(conn)
             # После правок площадок: отметка «в «Ожидает отгрузки» с …» для
             # заказов, лежавших там до обновления (core/labels.py).
             from . import labels as core_labels

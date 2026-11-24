@@ -85,7 +85,7 @@ def _date(value: str) -> str:
 
 @router.get('/reports/stickers', response_class=HTMLResponse)
 def archive_page(request: Request, account_id: str = '', market: str = '', q: str = '',
-                 since: str = '', until: str = '', state: str = 'saved', page: int = Query(1, ge=1, le=1000000),
+                 since: str = '', until: str = '', state: str = 'available', page: int = Query(1, ge=1, le=1000000),
                  user: dict = Depends(require_section('stickers'))):
     try:
         chosen = int(account_id) if account_id else None

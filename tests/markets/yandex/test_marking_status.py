@@ -23,6 +23,12 @@ def status_response(key, status='OK', value=None):
         {'id': int(key), 'cis': [{'value': value or code(), 'status': status}]}]}}
 
 
+def replace_box_instances(raw, instances):
+    for box in raw['delivery'].get('boxesLayout', []):
+        for item in box['items']:
+            item['instances'] = deepcopy(instances)
+
+
 @pytest.mark.parametrize('status', ['OK', 'INVALID', 'IN_PROGRESS', 'NOT_ON_VALIDATION', 'FAILED', 'UNKNOWN'])
 def test_each_cis_status_controls_acceptance(yandex_account, user, monkeypatch, status):
     api, number, key, context, codes = submitted(yandex_account, user)
@@ -42,8 +48,10 @@ def test_successful_check_cannot_replace_exact_order_readback(yandex_account, us
     raw = deepcopy(api._orders[number])
     if change == 'missing_full':
         raw['items'][0]['instances'] = []
+        replace_box_instances(raw, [])
     elif change == 'short_only':
         raw['items'][0]['instances'] = [{'cis': marking_codes.short(code())}]
+        replace_box_instances(raw, [{'cis': marking_codes.short(code())}])
     elif change == 'different_crypto':
         raw['items'][0]['instances'][0]['cisFull'] = code(tail='different-crypto')
     elif change == 'other_item':
@@ -230,3 +238,93 @@ def test_substatus_during_final_recheck_replaces_previous_success(yandex_account
     notice = packing.state(user)['marking']['notice']
     assert notice['substatus'] == 'WRONG_OWNER_INN'
     assert notice['message'] == 'Проверка не пройдена. ИНН владельца кода отличается от ИНН продавца.'
+
+
+@pytest.mark.parametrize('status', ['INVALID', 'IN_PROGRESS', 'NOT_ON_VALIDATION', 'FAILED', 'OK'])
+def test_missing_instances_do_not_hide_the_cis_check(yandex_account, user, monkeypatch, status):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    # The marketplace can report a rejected/pending code before exposing cisFull.
+    api._orders[number]['items'][0]['instances'] = []
+    replace_box_instances(api._orders[number], [])
+    data = status_response(key, status)
+    data['result']['items'][0]['cis'][0]['substatus'] = 'INVALID_CRYPTO_TAIL'
+    from unittest.mock import Mock
+    check = Mock(return_value=data)
+    monkeypatch.setattr(api, 'identifiers_status', check)
+    marking.process(yandex_account, number, force=True)
+    check.assert_called_once()
+    saved = marking.order(yandex_account['id'], number)
+    row = marking.codes(saved)[0]
+    assert row['check_status'] == status
+    assert saved['status'] != 'accepted'
+    assert packing.state(user)['items'][0]['marking']['status'] == ('error' if status == 'INVALID' else 'waiting')
+    if status == 'INVALID':
+        assert row['check_message'] == 'Криптоподпись не валидна.'
+    assert api._orders[number]['substatus'] == 'STARTED'
+
+
+@pytest.mark.parametrize('quantity', [1, 2])
+def test_full_codes_in_the_confirmed_box_layout_can_confirm_marking(yandex_account, user, monkeypatch, quantity):
+    api, number, key, _, codes = submitted(yandex_account, user, quantity=quantity)
+    api._orders[number]['items'][0]['instances'] = []
+    data = {'status': 'OK', 'result': {'items': [{'id': int(key), 'cis': [
+        {'value': c['raw'], 'status': 'OK'} for c in codes]}]}}
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: data)
+    marking.process(yandex_account, number, force=True)
+    assert marking.order(yandex_account['id'], number)['status'] == 'accepted'
+    assert packing.state(user)['items'][0]['marking']['status'] == 'accepted'
+
+
+@pytest.mark.parametrize('change', ['short_box_code', 'different_crypto', 'incomplete_count', 'extra_instance', 'conflicting_direct_short'])
+def test_box_layout_fallback_never_accepts_incomplete_or_conflicting_proof(yandex_account, user, monkeypatch, change):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    raw = api._orders[number]
+    raw['items'][0]['instances'] = []
+    entry = raw['delivery']['boxesLayout'][0]['items'][0]
+    if change == 'short_box_code':
+        entry['instances'][0]['cis'] = marking_codes.short(code())
+    elif change == 'different_crypto':
+        entry['instances'][0]['cis'] = code(tail='different-crypto')
+    elif change == 'incomplete_count':
+        entry['fullCount'] = 2
+    elif change == 'extra_instance':
+        entry['instances'].append({'cis': code('ABCDEF1234599')})
+    else:
+        raw['items'][0]['instances'] = [{'cis': marking_codes.short(code('ABCDEF1234599'))}]
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key))
+    marking.process(yandex_account, number, force=True)
+    assert marking.order(yandex_account['id'], number)['status'] != 'accepted'
+    assert packing.state(user)['items'][0]['marking']['status'] != 'accepted'
+
+
+def test_a_single_mark_in_two_partial_boxes_is_one_physical_unit(yandex_account, user):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    raw = deepcopy(api._orders[number])
+    raw['items'][0]['instances'] = []
+    raw['delivery']['boxesLayout'] = [
+        {'items': [{'id': int(key), 'partialCount': {'current': n, 'total': 2}, 'instances': [{'cis': code()}]}]}
+        for n in (1, 2)]
+    instances = yandex_marking._instances(raw)
+    assert len(instances[key]) == 1
+    assert marking_codes.equivalent(instances[key][0]['cisFull'], code())
+
+
+def test_an_old_code_remaining_in_boxes_is_not_released(yandex_account, user, monkeypatch):
+    from app.core import marking_replacements
+    from tests.core.test_marking_replacements import fingerprint, replaced
+    api, number, old, _ = replaced(yandex_account, user, monkeypatch, keep_legacy=True)
+    api._orders[number]['delivery']['boxesLayout'][0]['items'][0]['instances'] = [{'cis': old}]
+    assert marking_replacements.reconcile(yandex_account, number) == 0
+    from app.core import marking_registry
+    assert marking_registry.binding(fingerprint(old))['state'] == 'bound'
+
+
+def test_replacement_is_reconciled_using_the_full_box_layout(yandex_account, user, monkeypatch):
+    from app.core import marking_registry, marking_replacements
+    from tests.core.test_marking_replacements import fingerprint, replaced
+    api, number, old, current = replaced(yandex_account, user, monkeypatch, keep_legacy=True)
+    key = str(api._orders[number]['items'][0]['id'])
+    api._orders[number]['items'][0]['instances'] = []
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key, value=current))
+    assert marking_replacements.reconcile(yandex_account, number) == 1
+    assert marking_registry.binding(fingerprint(old))['state'] == 'released'

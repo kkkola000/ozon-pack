@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS marking_orders (
     attempts INTEGER NOT NULL DEFAULT 0,
     checked_at TEXT,
     replacements_checked_at TEXT,
+    rescan_requested INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     user_id INTEGER,
     UNIQUE(account_id, order_id)
@@ -378,6 +379,15 @@ def _check_gtin(parsed: marking_codes.Code, item: dict) -> None:
         raise ValueError('GTIN маркировки не совпадает с отсканированным товаром')
 
 
+def _resume_scan(saved: dict, user: dict) -> None:
+    if saved['status'] == 'accepted':
+        return
+    db.execute('UPDATE marking_orders SET rescan_requested=1,checked_at=NULL,attempts=0,user_id=? WHERE id=?', (user['id'], saved['id']))
+    exemplar_data.queue(order(saved['account_id'], saved['order_id']), user['id'])
+    if _worker:
+        _worker.wake.set()
+
+
 def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     parsed = marking_codes.parse(value)
     active = state.get('active') or {}
@@ -397,6 +407,7 @@ def save_scan(account: dict, user: dict, state: dict, value: str) -> dict:
     recycling = bool(owner and owner['state'] == 'released')
     if same:
         if same['marking_order_id'] == saved['id'] and same['active'] and marking_codes.equivalent(_open(same['code']), parsed.raw) and same['status'] != 'error':
+            _resume_scan(saved, user)
             return {'duplicate': True, 'id': same['id']}
         replacing_same = same['marking_order_id'] == saved['id'] and same['active'] and same['status'] == 'error'
         restoring = same['marking_order_id'] == saved['id'] and not same['active'] and same['status'] == 'removed'
@@ -448,7 +459,7 @@ def _store_scan(account, user, saved, parsed, fingerprint, product, unit, same):
                     'VALUES(?,?,?,?,?,?,?,?,?)', (saved['id'], product['key'], unit, fingerprint, _seal(parsed.raw),
                                                  parsed.gtin, parsed.serial, db.now_iso(), user['login'])).lastrowid
             marking_registry.claim(conn, fingerprint, account, saved, mark_id)
-            conn.execute("UPDATE marking_orders SET revision=revision+1,status='collecting',error=NULL,user_id=? "
+            conn.execute("UPDATE marking_orders SET revision=revision+1,status='collecting',error=NULL,rescan_requested=0,user_id=? "
                          'WHERE id = ?', (user['id'], saved['id']))
             db.log_event('marking_saved', account_id=account['id'], user=user, posting_number=order_id,
                          message=f'Честный знак сохранён: позиция {product["key"]}, единица {unit}', conn=conn)
@@ -578,7 +589,7 @@ def _submit(account, saved, provider, context, marks):
         db.execute("UPDATE marking_orders SET status='uncertain',submitted_revision=revision,checked_at=? WHERE id=?",
                    (db.now_iso(), saved['id']))
     provider.submit(account, saved['order_id'], context, marks, dispatch)
-    db.execute("UPDATE marking_orders SET status='checking',error=NULL,attempts=0,checked_at=? WHERE id=?",
+    db.execute("UPDATE marking_orders SET status='checking',error=NULL,attempts=0,rescan_requested=0,checked_at=? WHERE id=?",
                (db.now_iso(), saved['id']))
 
 
@@ -590,6 +601,13 @@ def _check(account, saved, provider, context, marks):
                 'Площадка отклонила данные. Исправьте отмеченное поле или повторно отсканируйте код «Честный знак».')
     elif outcome['status'] == 'accepted':
         _accept(account, saved, provider, context, marks)
+    elif outcome['status'] == 'retry' and saved.get('rescan_requested'):
+        # A fresh explicit scan must not inherit minutes of backoff from an
+        # abandoned attempt. Only the safe provider retry proof reaches here.
+        db.execute("UPDATE marking_orders SET status='queued',checked_at=NULL,attempts=0,error=? WHERE id=?",
+                   (outcome.get('message'), saved['id']))
+        if _worker:
+            _worker.wake.set()
     else:
         # Повтор записи допустим лишь после явного ответа, что проверка не
         # выполнена. Таймаут сам по себе не основание отправить код повторно.

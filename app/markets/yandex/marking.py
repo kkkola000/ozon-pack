@@ -53,7 +53,63 @@ def _same_items(left: dict, right: dict) -> bool:
 
 
 def _instances(raw: dict) -> dict[str, list[dict]]:
-    return {str(i['id']): i.get('instances') or [] for i in raw.get('items') or []}
+    layout = _layout_instances(raw)
+    result = {}
+    for item in raw.get('items') or []:
+        key = str(item['id'])
+        direct = item.get('instances') or []
+        boxed = layout.get(key, [])
+        # Never replace a conflicting direct full-code response with a nicer
+        # box response. A short direct CIS must also agree with the full layout.
+        if boxed and not any(i.get('cisFull') for i in direct):
+            short = Counter(i['cis'] for i in direct if i.get('cis'))
+            actual = Counter(marking_codes.short(i['cisFull']) for i in boxed)
+            if not short - actual:
+                direct = boxed
+        result[key] = direct
+    return result
+
+
+def _layout_instances(raw: dict) -> dict[str, list[dict]]:
+    """Full CIS from the documented box layout, with complete physical-unit coverage."""
+    if not (raw.get('delivery') or {}).get('boxesLayout'):
+        return {}
+    try:
+        return _complete_layout_instances(raw)
+    except (ValueError, KeyError, TypeError, IndexError):
+        return {}
+
+
+def _complete_layout_instances(raw):
+    layout = raw['delivery']['boxesLayout']
+    if any(e.get('instances') and len(e['instances']) != int(e.get('fullCount') or 1)
+           for box in layout for e in box.get('items') or []):
+        return {}
+    items = {str(i['id']): i for i in raw['items']}
+    slots = {key: [None] * int(item['count']) for key, item in items.items()}
+    positions = {}
+    for box in _boxes(raw, []):  # Validates all products, counts and partial boxes.
+        for entry in box['items']:
+            key = str(entry['id'])
+            start, count = _box_range(entry, items[key], positions, key)
+            instances = entry.get('instances') or []
+            if not instances:
+                continue
+            if len(instances) != count:
+                return {}
+            for offset, instance in enumerate(instances):
+                value = instance.get('cis')
+                if not value:
+                    continue
+                parsed = marking_codes.parse(value)  # Short CIS never proves crypto was stored.
+                full = {**instance, 'cisFull': parsed.raw}
+                unit = start + offset
+                previous = slots[key][unit]
+                if previous and (not marking_codes.equivalent(previous['cisFull'], full['cisFull']) or
+                                 any(previous.get(f) != full.get(f) for f in ('gtd', 'rnpt', 'countryCode'))):
+                    return {}
+                slots[key][unit] = full
+    return {key: values for key, values in slots.items() if all(values)}
 
 
 def _missing_codes(raw: dict, codes: list[dict]) -> list[dict]:
@@ -239,14 +295,38 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
         return {'status': 'error', 'errors': {c['item_key']: 'Состав заказа изменился' for c in codes}}
     if raw.get('status') != 'PROCESSING' or raw.get('programType') not in {'FBS', 'EXPRESS'}:
         raise ValueError('Маркет изменил состояние или схему работы заказа. Обновите заказ перед продолжением.')
-    # Доказываем, что проверяется именно последний полный код, не старый CIS.
+    # A rejected/pending CIS may not yet appear in instances. Read its check
+    # independently; absence of cisFull must never hide an INVALID response.
+    data = api.identifiers_status(context['campaign'], order_id) if codes else {}
+    outcome = _code_checks(data, raw, codes) if codes else None
+    if outcome and outcome['status'] == 'error':
+        return outcome
+    if codes and _retry_rescan(raw, context, codes, data, outcome):
+        return {**outcome, 'status': 'retry'}
+    # Acceptance still requires both the stored full code and its own OK.
     if not _saved_data(raw, context, codes):
         _closed_layout(raw, context, codes)
-        return {'status': 'checking'}
+        if outcome and outcome['status'] == 'retry':
+            return outcome
+        return {'status': 'checking', 'checks': outcome.get('checks') if outcome else None}
     if not codes:
         return {'status': 'accepted' if context.get('_panel_details') else 'checking'}
-    data = api.identifiers_status(context['campaign'], order_id)
-    return _code_checks(data, raw, codes)
+    return outcome
+
+
+def _retry_rescan(raw, context, codes, data, outcome):
+    # An explicit scan can resume a definitively acknowledged write that left
+    # no CIS behind. An uncertain dispatch never enables this context flag.
+    if (not context.get('_panel_rescan') or raw.get('substatus') != 'STARTED'
+            or data.get('status') != 'OK' or not _compatible_codes(raw, codes)):
+        return False
+    if not isinstance(data.get('result'), dict) or not isinstance(data['result'].get('items'), list):
+        return False
+    checks = [c for rows in _cis_by_item(data).values() for c in rows]
+    if not checks:
+        return bool(_missing_codes(raw, codes))
+    statuses = [c.get('status') for c in outcome['checks'].values()]
+    return all(s in {'OK', 'NOT_ON_VALIDATION'} for s in statuses) and 'NOT_ON_VALIDATION' in statuses
 
 
 def _cis_by_item(data):
@@ -303,19 +383,40 @@ def replacement_snapshot(account: dict, order_id: str, context: dict, codes: lis
             or raw.get('status') != 'PROCESSING' or raw.get('programType') not in {'FBS', 'EXPRESS'}
             or not _saved_data(raw, context, codes)):
         return None
-    identities = set()
+    actual = _instances(raw)
     for item in raw['items']:
-        instances = item.get('instances') or []
+        instances = actual[str(item['id'])]
         if len(instances) != int(item['count']):
             return None
         for instance in instances:
             if instance.get('cis') and not instance.get('cisFull'):
                 return None
-            if instance.get('cisFull'):
-                identities.add(marking._fingerprint(marking_codes.parse(instance['cisFull'])))
+    identities = _remote_cis_fingerprints(raw)
+    if identities is None:
+        return None
     if _code_checks(api.identifiers_status(context['campaign'], order_id), raw, codes)['status'] != 'accepted':
         return None
     return identities
+
+
+def _remote_cis_fingerprints(raw):
+    # For absence proofs inspect both sources, including conflicting box CIS.
+    # Never discard an old mark merely because the direct item has a newer one.
+    instances = [i for item in raw['items'] for i in item.get('instances') or []]
+    instances += [i for box in (raw.get('delivery') or {}).get('boxesLayout') or []
+                  for entry in box.get('items') or [] for i in entry.get('instances') or []]
+    full, short = {}, []
+    for instance in instances:
+        for value in (instance.get('cisFull'), instance.get('cis')):
+            if not value:
+                continue
+            try:
+                parsed = marking_codes.parse(value)
+            except ValueError:
+                short.append(value)
+            else:
+                full[marking_codes.short(parsed.raw)] = marking._fingerprint(parsed)
+    return set(full.values()) if all(value in full for value in short) else None
 
 
 def complete_local(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:

@@ -9,6 +9,7 @@ import httpx
 from app.core import db, marking
 from app import order_requirements_diagnostics as diagnostic
 from app.markets.ozon.client import OzonError
+from app.markets.yandex.client import YandexError
 from tests.core.test_marking import BARCODE, code, marked_ozon, marked_yandex, scan
 from tests.markets.ozon.test_ready_marking import ordinary_order
 
@@ -115,3 +116,48 @@ def test_account_ambiguity_requires_explicit_id(account, monkeypatch):
     with pytest.raises(ValueError, match='AccountNotConfirmed'):
         diagnostic._account('ozon', 'missing-order', None)
     assert diagnostic._account('ozon', 'missing-order', account['id'])['id'] == account['id']
+
+
+def test_yandex_reports_check_even_without_remote_instances(yandex_account, user, monkeypatch):
+    api, number, key = marked_yandex(yandex_account)
+    scan(yandex_account, user, BARCODE)
+    scan(yandex_account, user, code())
+    data = {'status': 'OK', 'secret-key': 'private-key', 'result': {'items': [
+        {'id': int(key), 'cis': [{'value': code(), 'status': 'INVALID', 'substatus': 'INVALID_CRYPTO_TAIL'}]}]}}
+    monkeypatch.setattr(api, 'identifiers_status', Mock(return_value=data))
+    before = [dict(r) for r in db.query('SELECT * FROM marking_codes')]
+    result = diagnostic.inspect_order(yandex_account, number)
+    assert result['products'][0]['instance_count'] == 0
+    assert result['readback']['all_full_codes_saved'] is False
+    assert result['readback']['codes'][0]['full_code_saved'] is False
+    check = result['identifiers_status']['items'][0]['cis'][0]
+    assert check == {'status': 'INVALID', 'substatus': 'INVALID_CRYPTO_TAIL', 'value_present': True,
+                     'matching_local_units': [1], 'full_value_matches_local': True}
+    assert result['identifiers_status']['panel_code_check'] == 'error'
+    assert [dict(r) for r in db.query('SELECT * FROM marking_codes')] == before
+    assert result['local']['attempts'] == 0
+    assert result['local']['worker_enabled'] is False
+    encoded = json.dumps(result)
+    assert code() not in encoded and 'private-key' not in encoded
+    assert 'ABCDEF1234567' not in encoded
+
+
+def test_yandex_diagnostic_separates_check_ok_from_full_code_readback(yandex_account, user, monkeypatch):
+    api, number, key = marked_yandex(yandex_account)
+    scan(yandex_account, user, BARCODE)
+    scan(yandex_account, user, code())
+    monkeypatch.setattr(api, 'identifiers_status', Mock(return_value={'status': 'OK', 'result': {'items': [
+        {'id': int(key), 'cis': [{'value': code(), 'status': 'OK'}]}]}}))
+    result = diagnostic.inspect_order(yandex_account, number)
+    assert result['identifiers_status']['panel_code_check'] == 'accepted'
+    assert result['readback']['all_full_codes_saved'] is False
+    assert marking.order(yandex_account['id'], number)['status'] == 'queued'
+
+
+def test_yandex_check_permission_error_is_reported_without_losing_order_details(yandex_account, monkeypatch):
+    api, number, _ = marked_yandex(yandex_account)
+    monkeypatch.setattr(api, 'identifiers_status', Mock(side_effect=YandexError('private-token-and-full-code', status=403)))
+    result = diagnostic.inspect_order(yandex_account, number)
+    assert result['remote_status'] == 'PROCESSING'
+    assert result['identifiers_status']['error'] == {'type': 'YandexError', 'http_status': 403}
+    assert 'private-token-and-full-code' not in json.dumps(result)

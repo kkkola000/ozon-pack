@@ -25,14 +25,17 @@ DEFAULT_CUTOFF = "18:00"
 STATUS_OK = "ok"
 STATUS_UNMATCHED = "unmatched"
 STATUS_ERROR = "error"
+STATUS_CANCELLED = "cancelled"
 
 STATUS_LABELS = {
     STATUS_OK: "Отгружен",
     STATUS_UNMATCHED: "Штрихкод не опознан",
     STATUS_ERROR: "Ошибка сборки",
+    STATUS_CANCELLED: "Сборка отменена",
 }
 
 REASON_LABELS = {
+    "assembly_cancelled": "Сборщик отменил сборку до её завершения",
     "wrong_product": "Товар не из этого отправления",
     "wrong_label": "Стикер другого отправления",
     "extra_product": "Лишний скан сверх количества",
@@ -111,6 +114,13 @@ def cutoff_hint() -> str:
 # ------------------------------------------------------------------ запись
 def _insert(conn, account: dict, user: dict, **row: Any) -> None:
     now = db.now_iso()
+    if row.get('status') != STATUS_ERROR:
+        # A cancelled attempt retains its row for audit, but a new scan must
+        # credit the current collector/day rather than hit INSERT OR IGNORE.
+        conn.execute("UPDATE shipped_items SET status=?,reason=?,barcode=?,user_id=?,login=?,scanned_at=?,report_date=? "
+                     "WHERE account_id=? AND posting_number=? AND item_key=? AND unit_no=? AND status='cancelled'",
+                     (row.get('status') or STATUS_OK, row.get('reason'), row.get('barcode'), (user or {}).get('id'), (user or {}).get('login'),
+                      now, report_date(now), account['id'], row.get('posting_number') or '', row['item_key'], row.get('unit_no') or 1))
     conn.execute(
         """
         INSERT OR IGNORE INTO shipped_items(
@@ -158,6 +168,44 @@ def record_shipped(conn, account: dict, user: dict, posting_number: str, item: d
     )
 
 
+_NOT_COMPLETED = """NOT EXISTS (
+ SELECT 1 FROM events done WHERE done.account_id=s.account_id AND done.posting_number=s.posting_number
+ AND done.kind IN ('pack_complete','yandex_pack_complete','avito_pack_complete') AND done.at>=s.scanned_at
+)"""
+
+
+def cancel_assembly(conn, account_id: int, order_id: str, user: dict) -> None:
+    from ..markets import registry
+    account = accounts.get(account_id)
+    market = registry.get(account['marketplace']) if account else None
+    board = market.orders if market else None
+    if not board:
+        return
+    order = conn.execute(f'SELECT local_state,claim_user_id FROM {board.table} WHERE account_id=? AND {board.key}=?',
+                         (account_id, order_id)).fetchone()
+    if not order or order['local_state'] == 'packed' or order['claim_user_id'] not in (None, user['id']):
+        return
+    conn.execute("UPDATE shipped_items AS s SET status='cancelled',reason='assembly_cancelled' "
+                 "WHERE s.account_id=? AND s.posting_number=? AND s.user_id=? AND s.status IN ('ok','unmatched') AND " + _NOT_COMPLETED,
+                 (account_id, order_id, user['id']))
+
+
+def repair_cancellations(conn) -> None:
+    """Repair old report rows only when an explicit cancellation proves it."""
+    from ..markets import registry
+    for market in registry.all_markets():
+        board = market.orders
+        if not board:
+            continue
+        conn.execute("UPDATE shipped_items AS s SET status='cancelled',reason='assembly_cancelled' "
+                     "WHERE s.marketplace=? AND s.status IN ('ok','unmatched') AND " + _NOT_COMPLETED +
+                     ' AND EXISTS(SELECT 1 FROM events cancelled WHERE cancelled.account_id=s.account_id '
+                     'AND cancelled.posting_number=s.posting_number AND cancelled.user_id=s.user_id '
+                     "AND cancelled.kind IN ('pack_release','yandex_pack_release','avito_pack_release') AND cancelled.at>=s.scanned_at) "
+                     f'AND EXISTS(SELECT 1 FROM {board.table} o WHERE o.account_id=s.account_id AND o.{board.key}=s.posting_number '
+                     "AND o.local_state<>'packed')", (market.code,))
+
+
 def record_unmatched(conn, account: dict, user: dict, posting_number: str, barcode: str,
                      name: str | None = None) -> None:
     """Штрихкода нет в справочнике (обычное дело для Avito) — пишем что есть."""
@@ -194,8 +242,8 @@ def record_error(conn, account: dict, user: dict, reason: str, *, posting_number
 def next_unit(account_id: int, posting_number: str, item_key: str) -> int:
     row = db.query_one(
         "SELECT COALESCE(MAX(unit_no), 0) AS n FROM shipped_items "
-        "WHERE account_id = ? AND posting_number = ? AND item_key = ? AND status <> ?",
-        (account_id, posting_number or "", item_key, STATUS_ERROR),
+        "WHERE account_id = ? AND posting_number = ? AND item_key = ? AND status NOT IN (?,?)",
+        (account_id, posting_number or "", item_key, STATUS_ERROR, STATUS_CANCELLED),
     )
     return int(row["n"]) + 1 if row else 1
 
@@ -214,8 +262,8 @@ def days(account_id: int | None = None, limit: int = 60) -> list[dict]:
                SUM(CASE WHEN s.status = 'ok' THEN 1 ELSE 0 END) AS shipped,
                SUM(CASE WHEN s.status = 'unmatched' THEN 1 ELSE 0 END) AS unmatched,
                SUM(CASE WHEN s.status = 'error' THEN 1 ELSE 0 END) AS errors,
-               COUNT(DISTINCT CASE WHEN s.status <> 'error' THEN s.posting_number END) AS postings,
-               COUNT(DISTINCT s.login) AS people
+               COUNT(DISTINCT CASE WHEN s.status IN ('ok','unmatched') THEN s.posting_number END) AS postings,
+               COUNT(DISTINCT CASE WHEN s.status<>'cancelled' THEN s.login END) AS people
         FROM shipped_items s
         WHERE {' AND '.join(where)}
         GROUP BY s.report_date
@@ -233,7 +281,7 @@ def rows(day: str, account_id: int | None = None, status: str | None = None) -> 
     if account_id:
         where.append("s.account_id = ?")
         params.append(account_id)
-    if status in {STATUS_OK, STATUS_UNMATCHED, STATUS_ERROR}:
+    if status in {STATUS_OK, STATUS_UNMATCHED, STATUS_ERROR, STATUS_CANCELLED}:
         where.append("s.status = ?")
         params.append(status)
     found = db.query(
@@ -321,4 +369,4 @@ def to_csv(day: str, account_id: int | None = None, status: str | None = None) -
             item["reason_label"],
             item.get("login") or "",
         )])
-    return "﻿".encode("utf-8") + buffer.getvalue().encode("utf-8")
+    return "﻿".encode() + buffer.getvalue().encode("utf-8")

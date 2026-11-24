@@ -107,6 +107,13 @@ def alter_remote_units(ozon, units, original, failure):
             units[0].pop('cisFull')
 
 
+def alter_remote_boxes(ozon, raw, original, failure):
+    if not ozon and failure in {'missing_unit', 'short_only'}:
+        from tests.markets.yandex.test_marking_status import replace_box_instances
+        instances = [{'cis': marking_codes.short(original)}] if failure == 'short_only' else []
+        replace_box_instances(raw, instances)
+
+
 @pytest.mark.parametrize('failure', ['403', 'missing_product', 'missing_unit', 'old_present', 'short_only', 'changed_identity', 'not_checked'])
 def test_incomplete_or_failed_proof_does_not_release_anything(shop, user, monkeypatch, failure):
     api, number, original, _ = replaced(shop, user, monkeypatch, keep_legacy=True)
@@ -131,6 +138,7 @@ def test_incomplete_or_failed_proof_does_not_release_anything(shop, user, monkey
                 raw['campaignId'] += 1
         else:
             alter_remote_units(ozon, units, original, failure)
+        alter_remote_boxes(ozon, raw, original, failure)
         return raw
 
     monkeypatch.setattr(api, read, response)

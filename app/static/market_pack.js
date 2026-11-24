@@ -46,8 +46,16 @@ let opened = null;       // состояние открытой сборки —
 const history = [];
 let markingPrintQueue = Promise.resolve();
 let markingPollBusy = false;
-const deferredLabels = new Set();
 const orderKey = (state) => `${state?.active?.account_id || ''}:${state?.market || ''}:${state?.active?.posting_number || state?.active?.id || ''}`;
+const autoLabels = new PackLabelQueue({
+  keyOf: orderKey,
+  print: (state, printWindow, current) => printLabel(
+    PACKS[state.market].activeId(state.active), printWindow,
+    () => current() && orderKey(opened) === orderKey(state),
+  ),
+  closeWindow: closeUnusedPrintWindow,
+  onError: (error) => toast(error.message, 'error', 12000),
+});
 // Распознаём текстовые GS для скрытия кода в истории и подготовки окна печати.
 // Сам скан отправляем без изменений: разделители проверяет сервер.
 const isMarkingCode = (code) => /^(?:\]d[28]|\x1d?01\d{14}21)/.test((code || '').replace(/\\?<gs>/gi, '\x1d'));
@@ -338,7 +346,10 @@ function paintModal(state) {
   foot.hidden = !details && !card.force;
 
   const print = document.getElementById('btn-print');
-  if (print) print.onclick = () => printLabel(pack.activeId(active), reservePrintWindow());
+  if (print) print.onclick = () => {
+    autoLabels.forget(state); // An explicit print takes ownership of any retry.
+    return printLabel(pack.activeId(active), reservePrintWindow(), () => orderKey(opened) === orderKey(state));
+  };
   document.getElementById('btn-release').onclick = releaseActive;
   const force = document.getElementById('btn-force');
   if (force) { force.onclick = forceComplete; force.disabled = Boolean(state.marking?.blocked || state.marking?.local_only) || CargoPack.editing()
@@ -372,10 +383,7 @@ function renderActive(state) {
   paintModal(state);
   paintZone();
   downloadOpenedSticker(state);
-  const key = orderKey(state);
-  if ((state.marking?.status === 'accepted' || state.marking?.local_only) && deferredLabels.delete(key)) {
-    printLabel(pack.activeId(state.active));
-  }
+  autoLabels.flush(state);
 }
 
 let stickerOpening = null;
@@ -419,8 +427,13 @@ function applyResult(result, code, printWindow = null) {
     : null;
   // Новый скан во время «Собрано» — сразу к нему: ждать две секунды незачем.
   if (doneTimer) closeModal();
-  if (result.action === 'released' || result.action === 'completed') deferredLabels.clear();
-  if (result.deferred_label_print) deferredLabels.add(orderKey(result.state));
+  if (result.action === 'released' || result.action === 'completed') autoLabels.clear();
+  const printer = PACKS[result.market]?.print;
+  const toPrint = printer && result.print?.[printer.key];
+  if (result.state?.active && (toPrint || result.deferred_label_print)) {
+    autoLabels.request(result.state, printWindow);
+    printWindow = null; // The pending label owns this window until it can print.
+  }
   if (result.marking_print) {
     const job = result.marking_print;
     const reserved = printWindow;
@@ -444,22 +457,21 @@ function applyResult(result, code, printWindow = null) {
   if (code) pushHistory(shownCode(code), result);
   /* Печатать наклейку умеет не всякая площадка, и ключ у каждой свой. Берём
      ту, чей заказ только что открылся: renderActive уже поставил её выше. */
-  const printer = PACKS[result.market]?.print;
-  const toPrint = printer && result.print?.[printer.key];
-  if (toPrint) {
-    printLabel(toPrint, printWindow);
-  } else if (printWindow) {
+  if (printWindow) {
     // Вкладка не понадобилась. Пустую закрываем, а вкладку с прошлым ярлыком
     // оставляем: оператор мог не успеть её напечатать. В обоих случаях
     // возвращаем фокус в панель — следующий скан должен попасть в поле ввода.
-    try {
-      if ((printWindow.location.href || 'about:blank') === 'about:blank') printWindow.close();
-    } catch (error) {
-      printWindow.close();
-    }
+    closeUnusedPrintWindow(printWindow);
     window.focus();
     input.focus();
   }
+}
+
+function closeUnusedPrintWindow(printWindow) {
+  if (!printWindow) return;
+  try {
+    if ((printWindow.location.href || 'about:blank') === 'about:blank') printWindow.close();
+  } catch (error) { /* An existing cross-origin PDF belongs to the operator. */ }
 }
 
 
@@ -519,10 +531,11 @@ async function forceComplete() {
   }
 }
 
-async function printLabel(id, printWindow = null) {
+async function printLabel(id, printWindow = null, allowed = () => true) {
   const currentPack = pack;
   if (!currentPack?.print) return;
   await markingPrintQueue;
+  if (!allowed()) return false;
   const ok = await printLabelDocument({
     pdfUrl: `${currentPack.print.url(id)}?with_products=true`,
     name: `${currentPack.words.label} ${id}`,
@@ -530,6 +543,7 @@ async function printLabel(id, printWindow = null) {
     kind: currentPack.print.kind,
   });
   if (ok) toast(`${currentPack.words.label} ${id} отправлен на печать`, 'ok', 3500);
+  return ok;
 }
 
 input.addEventListener('keydown', (event) => {
