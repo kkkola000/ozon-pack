@@ -104,14 +104,13 @@ def _yandex_checks(data: dict, codes: list[dict]) -> dict:
         checks = []
         for check in item.get('cis') or []:
             description = cis_status.describe(check)
-            matches = [c for c in codes if c['item_key'] == key and
-                       (check.get('value') == marking_codes.short(c['raw']) or
-                        marking_codes.equivalent(check.get('value'), c['raw']))]
+            full_value = yandex_marking._full_cis(check.get('value'))
+            matches = [c for c in codes if c['item_key'] == key and yandex_marking._cis_value_matches(check.get('value'), c['raw'])]
             checks.append({'status': description['status'] or 'UNKNOWN',
                            'substatus': description['substatus'],
                            'value_present': bool(check.get('value')),
                            'matching_local_units': [c['unit_no'] for c in matches],
-                           'full_value_matches_local': any(marking_codes.equivalent(check.get('value'), c['raw']) for c in matches)})
+                           'full_value_matches_local': bool(full_value and any(full_value.fields == marking_codes.parse(c['raw']).fields for c in matches))})
         items.append({'item_id': _id(key), 'cis': checks})
     outer = _enums([data.get('status')], {'OK', 'ERROR'})
     return {'request_succeeded': True, 'response_status': outer[0] if outer else 'UNKNOWN',
@@ -125,6 +124,7 @@ def _yandex(account: dict, order_id: str) -> dict:
         return {'error': {'type': 'OrderNotConfirmed', 'http_status': None}}
     products = []
     layout = yandex_marking._layout_instances(raw)
+    direct = {str(item['id']): item.get('instances') or [] for item in raw.get('items') or []}
     for item in raw.get('items') or []:
         instances = item.get('instances') or []
         products.append({'item_id': _id(item.get('id')), 'offer_id': _id(item.get('offerId')),
@@ -146,7 +146,11 @@ def _yandex(account: dict, order_id: str) -> dict:
                               'all_instance_data_saved': yandex_marking._saved_data(raw, exemplar_data.context(saved), codes),
                               'codes': [{'item_id': _id(c['item_key']), 'unit': c['unit_no'], 'local_status': c['status'],
                                          'check_status': c['check_status'], 'check_substatus': c['check_substatus'],
-                                         'full_code_saved': not yandex_marking._missing_codes(raw, [c])} for c in codes]}
+                                         'full_code_saved': not yandex_marking._missing_codes(raw, [c]),
+                                         'direct_cis_matches_local': any(yandex_marking._cis_value_matches(i.get('cisFull') or i.get('cis'), c['raw'])
+                                             for i in direct.get(c['item_key'], [])),
+                                         'layout_full_matches_local': any(marking_codes.equivalent(i.get('cisFull'), c['raw'])
+                                             for i in layout.get(c['item_key'], []))} for c in codes]}
     try:
         campaign = str(raw.get('campaignId') or '')
         if not campaign.isdigit():

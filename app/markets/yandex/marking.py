@@ -52,20 +52,76 @@ def _same_items(left: dict, right: dict) -> bool:
     return shape(left) == shape(right)
 
 
+def _cis_text(value):
+    if not isinstance(value, str):
+        return None
+    value = value.rstrip('\r\n')
+    if value.startswith((']d2', ']d8')):
+        value = value[3:]
+    return value.removeprefix(marking_codes.GS).removesuffix(marking_codes.GS)
+
+
+def _full_cis(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        return marking_codes.parse(value)
+    except ValueError:
+        try:
+            return marking_codes.parse(_cis_text(value))
+        except ValueError:
+            return None
+
+
+def _short_forms(parsed):
+    return {'01' + parsed.gtin + '21' + parsed.serial, parsed.gtin + parsed.serial}
+
+
+def _cis_value_matches(value, full_code):
+    expected = marking_codes.parse(full_code)
+    actual = _full_cis(value)
+    if actual:
+        return actual.fields == expected.fields  # Never ignore a different crypto tail.
+    return _cis_text(value) in _short_forms(expected)
+
+
+def _read_instance(instance):
+    value = instance.get('cisFull') or instance.get('cis')
+    parsed = _full_cis(value)
+    return {**instance, 'cisFull': parsed.raw} if parsed else instance
+
+
+def _short_readback_agrees(direct, boxed):
+    forms, remaining = {}, Counter()
+    for instance in boxed:
+        parsed = marking_codes.parse(instance['cisFull'])
+        remaining[parsed.fields] += 1
+        for form in _short_forms(parsed):
+            forms.setdefault(form, set()).add(parsed.fields)
+    for instance in direct:
+        if not instance.get('cis'):
+            continue
+        candidates = forms.get(_cis_text(instance['cis']), set())
+        if len(candidates) != 1:
+            return False
+        match = next(iter(candidates))
+        if not remaining[match]:
+            return False
+        remaining[match] -= 1
+    return True
+
+
 def _instances(raw: dict) -> dict[str, list[dict]]:
     layout = _layout_instances(raw)
     result = {}
     for item in raw.get('items') or []:
         key = str(item['id'])
-        direct = item.get('instances') or []
+        direct = [_read_instance(i) for i in item.get('instances') or []]
         boxed = layout.get(key, [])
         # Never replace a conflicting direct full-code response with a nicer
         # box response. A short direct CIS must also agree with the full layout.
-        if boxed and not any(i.get('cisFull') for i in direct):
-            short = Counter(i['cis'] for i in direct if i.get('cis'))
-            actual = Counter(marking_codes.short(i['cisFull']) for i in boxed)
-            if not short - actual:
-                direct = boxed
+        if boxed and not any(i.get('cisFull') for i in direct) and _short_readback_agrees(direct, boxed):
+            direct = boxed
         result[key] = direct
     return result
 
@@ -101,7 +157,9 @@ def _complete_layout_instances(raw):
                 value = instance.get('cis')
                 if not value:
                     continue
-                parsed = marking_codes.parse(value)  # Short CIS never proves crypto was stored.
+                parsed = _full_cis(value)  # Short CIS never proves crypto was stored.
+                if not parsed:
+                    return {}
                 full = {**instance, 'cisFull': parsed.raw}
                 unit = start + offset
                 previous = slots[key][unit]
@@ -126,13 +184,17 @@ def _missing_codes(raw: dict, codes: list[dict]) -> list[dict]:
 
 
 def _saved_codes(raw: dict, codes: list[dict]) -> bool:
-    return not _missing_codes(raw, codes)
+    instances = _instances(raw)
+    return not _missing_codes(raw, codes) and all(len(instances[str(i['id'])]) <= int(i['count']) for i in raw['items'])
 
 
 def _compatible_codes(raw: dict, codes: list[dict]) -> bool:
     wanted = Counter((c['item_key'], marking_codes.comparison_key(c['raw'])) for c in codes)
     keys = {c['item_key'] for c in codes}
-    instances = [(key, instance) for key, rows in _instances(raw).items() if key in keys for instance in rows]
+    by_item = _instances(raw)
+    if any(len(by_item[str(i['id'])]) > int(i['count']) for i in raw['items']):
+        return False
+    instances = [(key, instance) for key, rows in by_item.items() if key in keys for instance in rows]
     if any(instance.get('cis') and not instance.get('cisFull') for _, instance in instances):
         return False  # A short CIS alone cannot prove which full code the marketplace holds.
     actual = Counter((key, marking_codes.comparison_key(instance['cisFull']))
@@ -346,8 +408,7 @@ def _code_checks(data, raw, codes):
     failed = False
     for code in codes:
         key = f'{code["item_key"]}:{code["unit_no"]}'
-        found = [c for c in by_item.get(code['item_key'], [])
-                 if c.get('value') == marking_codes.short(code['raw']) or marking_codes.equivalent(c.get('value'), code['raw'])]
+        found = [c for c in by_item.get(code['item_key'], []) if _cis_value_matches(c.get('value'), code['raw'])]
         checks[key] = cis_status.describe(found[0] if len(found) == 1 else {})
         if len(found) != 1:
             pending = True
@@ -410,13 +471,15 @@ def _remote_cis_fingerprints(raw):
         for value in (instance.get('cisFull'), instance.get('cis')):
             if not value:
                 continue
-            try:
-                parsed = marking_codes.parse(value)
-            except ValueError:
-                short.append(value)
+            parsed = _full_cis(value)
+            if parsed:
+                for form in _short_forms(parsed):
+                    full.setdefault(form, set()).add(marking._fingerprint(parsed))
             else:
-                full[marking_codes.short(parsed.raw)] = marking._fingerprint(parsed)
-    return set(full.values()) if all(value in full for value in short) else None
+                short.append(_cis_text(value))
+    if any(len(full.get(value, set())) != 1 for value in short):
+        return None
+    return {fingerprint for matches in full.values() for fingerprint in matches}
 
 
 def complete_local(account: dict, order_id: str, context: dict, codes: list[dict]) -> None:

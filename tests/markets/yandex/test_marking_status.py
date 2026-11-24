@@ -275,6 +275,78 @@ def test_full_codes_in_the_confirmed_box_layout_can_confirm_marking(yandex_accou
     assert packing.state(user)['items'][0]['marking']['status'] == 'accepted'
 
 
+@pytest.mark.parametrize('profile', ['full_in_cis', 'full_in_cis_gs', 'short_with_gs', 'short_with_aim', 'bare_cis', 'bare_cis_gs'])
+def test_verified_code_is_not_blocked_by_the_direct_cis_representation(yandex_account, user, monkeypatch, profile):
+    from unittest.mock import Mock
+    from app import order_requirements_diagnostics as diagnostic
+
+    api, number, key, _, _ = submitted(yandex_account, user)
+    parsed = marking_codes.parse(code())
+    bare = parsed.gtin + parsed.serial
+    values = {'full_in_cis': code(), 'full_in_cis_gs': code() + '\x1d', 'short_with_gs': marking_codes.short(code()) + '\x1d',
+              'short_with_aim': ']d2' + marking_codes.short(code()),
+              'bare_cis': bare, 'bare_cis_gs': bare + '\x1d'}
+    api._orders[number]['items'][0]['instances'] = [{'cis': values[profile]}]
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key))
+    writer = Mock(side_effect=AssertionError('the verified CIS must not be transmitted again'))
+    monkeypatch.setattr(api, 'order_boxes', writer)
+
+    result = diagnostic.inspect_order(yandex_account, number)
+    assert result['products'][0]['instance_count'] == 1
+    assert result['products'][0]['cis_full_present_count'] == 0
+    assert result['products'][0]['layout_full_code_count'] == 1
+    assert result['identifiers_status']['panel_code_check'] == 'accepted'
+    assert result['identifiers_status']['items'][0]['cis'][0]['full_value_matches_local'] is True
+    assert result['readback']['all_full_codes_saved'] is True
+    assert result['readback']['codes'][0]['direct_cis_matches_local'] is True
+    assert result['readback']['codes'][0]['layout_full_matches_local'] is True
+
+    marking.process(yandex_account, number, force=True)
+    assert marking.order(yandex_account['id'], number)['status'] == 'accepted'
+    assert packing.state(user)['items'][0]['marking']['status'] == 'accepted'
+    writer.assert_not_called()
+
+
+@pytest.mark.parametrize('change', ['crypto', 'serial', 'bare_serial', 'short_serial', 'double_escape', 'text_gs', 'extra_code', 'duplicate_code'])
+def test_direct_cis_normalization_never_hides_conflicts(yandex_account, user, monkeypatch, change):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    other = code('ABCDEF1234599')
+    parsed_other = marking_codes.parse(other)
+    profiles = {'crypto': [{'cis': code(tail='different-crypto')}], 'serial': [{'cis': other}],
+                'bare_serial': [{'cis': parsed_other.gtin + parsed_other.serial}],
+                'short_serial': [{'cis': marking_codes.short(other) + '\x1d'}],
+                'double_escape': [{'cis': marking_codes.short(code()) + r'\u001d'}],
+                'text_gs': [{'cis': marking_codes.short(code()) + '<gs>'}],
+                'extra_code': [{'cis': code()}, {'cis': other}],
+                'duplicate_code': [{'cis': code()}, {'cis': code()}]}
+    api._orders[number]['items'][0]['instances'] = profiles[change]
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key))
+    marking.process(yandex_account, number, force=True)
+    assert marking.order(yandex_account['id'], number)['status'] != 'accepted'
+    assert packing.state(user)['items'][0]['marking']['status'] != 'accepted'
+
+
+@pytest.mark.parametrize('status', ['OK', 'INVALID', 'FAILED', 'IN_PROGRESS', 'NOT_ON_VALIDATION'])
+def test_full_value_in_cis_still_requires_its_own_successful_check(yandex_account, user, monkeypatch, status):
+    api, number, key, _, _ = submitted(yandex_account, user)
+    api._orders[number]['items'][0]['instances'] = [{'cis': code()}]
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key, status))
+    marking.process(yandex_account, number, force=True)
+    expected = 'accepted' if status == 'OK' else 'error' if status == 'INVALID' else 'waiting'
+    assert packing.state(user)['items'][0]['marking']['status'] == expected
+    assert (marking.order(yandex_account['id'], number)['status'] == 'accepted') is (status == 'OK')
+
+
+@pytest.mark.parametrize('profile', ['bare', 'gs', 'aim', 'different_crypto'])
+def test_cis_check_value_formats_keep_identity_and_crypto_matching(yandex_account, user, monkeypatch, profile):
+    api, number, key, context, codes = submitted(yandex_account, user)
+    parsed = marking_codes.parse(code())
+    values = {'bare': parsed.gtin + parsed.serial, 'gs': marking_codes.short(code()) + '\x1d',
+              'aim': ']d2' + marking_codes.short(code()), 'different_crypto': code(tail='different-crypto')}
+    monkeypatch.setattr(api, 'identifiers_status', lambda *_: status_response(key, value=values[profile]))
+    assert (yandex_marking.poll(yandex_account, number, context, codes)['status'] == 'accepted') is (profile != 'different_crypto')
+
+
 @pytest.mark.parametrize('change', ['short_box_code', 'different_crypto', 'incomplete_count', 'extra_instance', 'conflicting_direct_short'])
 def test_box_layout_fallback_never_accepts_incomplete_or_conflicting_proof(yandex_account, user, monkeypatch, change):
     api, number, key, _, _ = submitted(yandex_account, user)
