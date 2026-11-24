@@ -72,6 +72,45 @@ def test_ozon_error_does_not_expose_raw_api_message(account, monkeypatch):
     assert 'token-and-full-code-secret' not in json.dumps(result)
 
 
+@pytest.mark.parametrize('changed', [False, True])
+def test_ozon_diagnostic_distinguishes_empty_mark_preflight_and_changed_ids(account, user, monkeypatch, changed):
+    from tests.core.test_exemplar_data import require_ozon
+    from tests.core.test_gtd_omission import omit
+    api, number, key = require_ozon(account, cz=False)
+    scan(account, user, BARCODE)
+    omit(account, user, number, key)
+    original = api.exemplars_get
+
+    def read(order_id):
+        data = original(order_id)
+        if changed:
+            data['products'][0]['exemplars'][0]['exemplar_id'] += 1
+        return data
+
+    monkeypatch.setattr(api, 'exemplars_get', read)
+    for method in ('exemplars_validate', 'exemplars_set', 'exemplars_update', 'ship'):
+        monkeypatch.setattr(api, method, Mock(side_effect=AssertionError('Diagnostics must not write or validate')))
+    before = [dict(r) for r in db.query('SELECT * FROM marking_orders')]
+    result = diagnostic.inspect_order(account, number)
+    assert result['submission'] == {
+        'current_revision_dispatched': False, 'exemplar_ids_match_snapshot': not changed,
+        'mark_prevalidation_needed': False,
+        'gtd_choices': [{'product_id': key, 'unit': 1, 'choice': 'omit'}]}
+    assert [dict(r) for r in db.query('SELECT * FROM marking_orders')] == before
+
+
+def test_ozon_submission_report_does_not_expose_gtd_or_cz(account, user):
+    from tests.core.test_exemplar_data import GTD, enter, require_ozon
+    _, number, key = require_ozon(account)
+    scan(account, user, BARCODE)
+    scan(account, user, code())
+    enter(account, user, number, key, {'gtd': GTD})
+    result = diagnostic.inspect_order(account, number)
+    assert result['submission']['mark_prevalidation_needed'] is True
+    assert result['submission']['gtd_choices'] == [{'product_id': key, 'unit': 1, 'choice': 'number'}]
+    assert code() not in json.dumps(result) and GTD not in json.dumps(result)
+
+
 @pytest.mark.parametrize('substatus', ['STARTED', 'READY_TO_SHIP'])
 def test_yandex_reports_cis_optional_and_gtd_in_both_stages(yandex_account, monkeypatch, substatus):
     api, number, _key = marked_yandex(yandex_account)

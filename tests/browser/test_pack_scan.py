@@ -6,15 +6,17 @@ Every HTTP request is routed to TestClient or aborted; marketplaces are fakes.
 import re
 import shutil
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core import marking
+from app.core import db, marking
 from app.main import app
 from tests.core.test_exemplar_data import GTD, require_ozon
 from tests.core.test_marking import BARCODE, finish_job, marked_yandex
+from tests.core.test_gtd_omission import omit
 
 playwright = pytest.importorskip('playwright.sync_api')
 
@@ -128,3 +130,27 @@ def test_cancelling_unsent_omission_does_not_block_reopening(pack_browser, gtd_o
     assert scan(page, BARCODE)['status'] == 'ok'
     playwright.expect(page.locator('#pack-modal')).to_be_visible()
     playwright.expect(page.get_by_label('Не указывать ГТД')).not_to_be_checked()
+
+
+def test_ozon_failed_gtd_only_order_can_be_resubmitted_without_cancelling(pack_browser, account, user, monkeypatch):
+    from app.core import packing
+    api, number, key = require_ozon(account, status='awaiting_deliver', cz=False)
+    api._postings[number]['substatus'] = 'posting_transferring_to_delivery'
+    assert packing.scan([account], user, BARCODE)['status'] == 'ok'
+    omit(account, user, number, key)
+    saved = marking.order(account['id'], number)
+    # A persisted pre-dispatch rejection from the previous panel version.
+    db.execute("UPDATE marking_orders SET status='error',submitted_revision=NULL,error=? WHERE id=?",
+               ('Площадка отклонила данные экземпляров', saved['id']))
+    monkeypatch.setattr(api, 'exemplars_validate', Mock(side_effect=AssertionError('No marks to prevalidate')))
+    page, _ = pack_browser
+    page.evaluate('refreshState()')
+    playwright.expect(page.locator('#pack-modal')).to_be_visible()
+    playwright.expect(page.get_by_label('Не указывать ГТД')).to_be_checked()
+    save_gtd(page, (account, number, key))
+    updated = marking.order(account['id'], number)
+    assert updated['revision'] > saved['revision']
+    assert updated['submitted_revision'] == updated['revision']
+    assert not api.exemplars_validate.called
+    assert scan(page, number)['action'] == 'completed'
+    playwright.expect(page.locator('#pack-done')).to_be_visible()

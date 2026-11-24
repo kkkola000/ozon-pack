@@ -88,8 +88,10 @@ def test_failed_gtd_check_polls_without_resending_already_saved_cz(account, user
 
 @pytest.mark.parametrize('bad_response', ['missing_unit', 'duplicate_product'])
 def test_incomplete_gtd_validation_does_not_dispatch_any_write(account, user, monkeypatch, bad_response):
-    api, number, key = require_ozon(account, quantity=2, cz=False)
-    scan(account, user, BARCODE)
+    api, number, key = require_ozon(account, quantity=2)
+    for serial in ('ABCDEF1234567', 'ABCDEF1234568'):
+        scan(account, user, BARCODE)
+        scan(account, user, code(serial))
     omit(account, user, number, key, unit=1)
     enter(account, user, number, key, {'gtd': GTD}, unit=2)
     original = api.exemplars_validate

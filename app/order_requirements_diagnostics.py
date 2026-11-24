@@ -18,6 +18,7 @@ from .core.config import settings
 from .core.version import get_version
 from .markets.base import MarketError
 from .markets.ozon import client as ozon
+from .markets.ozon import marking as ozon_marking
 from .markets.yandex import client as yandex
 from .markets.yandex import cis_status, marking as yandex_marking
 
@@ -77,6 +78,22 @@ def _ozon_product(product: dict) -> dict:
             'rnpt_filled_count': sum(bool(e.get('rnpt')) for e in exemplars)}
 
 
+def _ozon_submission(saved: dict, fresh: dict) -> dict:
+    context = exemplar_data.context(saved)
+    def signature(data):
+        return {(str(p['product_id']), tuple(str(e.get('exemplar_id')) for e in p.get('exemplars') or []))
+                for p in data.get('products') or []}
+    products = ozon_marking._payload({**fresh, '_panel_details': context['_panel_details']},
+                                     marking.codes(saved, full=True), validate=True)
+    return {'current_revision_dispatched': saved['submitted_revision'] == saved['revision'],
+            'exemplar_ids_match_snapshot': signature(context) == signature(fresh),
+            'mark_prevalidation_needed': any(e.get('marks') for p in products for e in p['exemplars']),
+            'gtd_choices': [{'product_id': _id(key), 'unit': int(unit),
+                             'choice': 'omit' if fields['gtd'] is None else 'number'}
+                            for key, units in context['_panel_details'].items() for unit, fields in units.items()
+                            if 'gtd' in fields]}
+
+
 def _ozon(account: dict, order_id: str) -> dict:
     api = ozon.get_client(account)
     raw = api.posting_get(order_id, with_exemplars=True)
@@ -91,6 +108,9 @@ def _ozon(account: dict, order_id: str) -> dict:
         data = api.exemplars_get(order_id)
         result['exemplars'] = {'posting_number_matches': str(data.get('posting_number')) == order_id,
                                'products': [_ozon_product(p) for p in data.get('products') or []]}
+        saved = marking.order(account['id'], order_id)
+        if saved:
+            result['submission'] = _ozon_submission(saved, data)
     except (MarketError, ValueError) as exc:
         result['exemplars'] = {'error': _error(exc)}
     return result

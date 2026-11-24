@@ -192,19 +192,15 @@ def _validation_complete(result: list[dict], products: list[dict]) -> bool:
                     for p in result))
 
 
-def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispatch) -> None:
-    api = client.get_client(account)
-    fresh = api.exemplars_get(order_id)
-    baseline = {(str(p['product_id']), tuple(str(e['exemplar_id']) for e in p['exemplars'])) for p in context['products']}
-    actual = {(str(p['product_id']), tuple(str(e['exemplar_id']) for e in p.get('exemplars') or []))
-              for p in fresh.get('products') or []}
-    if baseline != actual:
-        raise marking.Rejected({c['item_key']: 'Состав экземпляров Ozon изменился. Требуется сверка заказа.' for c in codes})
-    # Берём свежие ГТД/РНПТ/IMEI/вес, не затирая изменения в кабинете Ozon.
-    fresh['_panel_details'] = context.get('_panel_details', {})
-    validation = api.exemplars_validate(order_id, _payload(fresh, codes, validate=True))
+def _validate(api, order_id: str, context: dict, codes: list[dict]):
+    products = _payload(context, codes, validate=True)
+    if not any(e.get('marks') for p in products for e in p['exemplars']):
+        # GTD-only updates have no marking codes to prevalidate. In particular,
+        # validate cannot express is_gtd_absent; set/status handle that choice.
+        return
+    validation = api.exemplars_validate(order_id, products)
     result = validation.get('products') or []
-    if not result or not _validation_complete(result, fresh['products']):
+    if not result or not _validation_complete(result, context['products']):
         raise ValueError('Ozon не вернул полный результат валидации')
     errors = {}
     for product in result:
@@ -221,6 +217,19 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
             errors[f'data:{key}:1' if context.get('_panel_details', {}).get(key) else key] = 'Данные товара не соответствуют требованиям Ozon'
     if errors:
         raise marking.Rejected(errors)
+
+
+def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispatch) -> None:
+    api = client.get_client(account)
+    fresh = api.exemplars_get(order_id)
+    baseline = {(str(p['product_id']), tuple(str(e['exemplar_id']) for e in p['exemplars'])) for p in context['products']}
+    actual = {(str(p['product_id']), tuple(str(e['exemplar_id']) for e in p.get('exemplars') or []))
+              for p in fresh.get('products') or []}
+    if baseline != actual:
+        raise marking.Rejected({c['item_key']: 'Состав экземпляров Ozon изменился. Требуется сверка заказа.' for c in codes})
+    # Берём свежие ГТД/РНПТ/IMEI/вес, не затирая изменения в кабинете Ozon.
+    fresh['_panel_details'] = context.get('_panel_details', {})
+    _validate(api, order_id, fresh, codes)
     payload = {'posting_number': order_id, 'products': _payload(fresh, codes)}
     if fresh.get('multi_box_qty') is not None:
         payload['multi_box_qty'] = fresh['multi_box_qty']
