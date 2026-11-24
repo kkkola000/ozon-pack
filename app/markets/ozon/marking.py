@@ -183,6 +183,15 @@ def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> lis
     return out
 
 
+def _validation_complete(result: list[dict], products: list[dict]) -> bool:
+    counts = {str(p['product_id']): len(p['exemplars']) for p in products}
+    # An explicit product rejection may lack exemplars; keep its field error.
+    # A successful validation must cover every unit before any write is sent.
+    return (len(result) == len(counts) and {str(p.get('product_id')) for p in result} == set(counts)
+            and all(p.get('valid') is not True or len(p.get('exemplars') or []) == counts[str(p['product_id'])]
+                    for p in result))
+
+
 def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispatch) -> None:
     api = client.get_client(account)
     fresh = api.exemplars_get(order_id)
@@ -195,7 +204,7 @@ def submit(account: dict, order_id: str, context: dict, codes: list[dict], dispa
     fresh['_panel_details'] = context.get('_panel_details', {})
     validation = api.exemplars_validate(order_id, _payload(fresh, codes, validate=True))
     result = validation.get('products') or []
-    if not result or {str(p.get('product_id')) for p in result} != {str(p['product_id']) for p in fresh['products']}:
+    if not result or not _validation_complete(result, fresh['products']):
         raise ValueError('Ozon не вернул полный результат валидации')
     errors = {}
     for product in result:
@@ -234,7 +243,9 @@ def _checks(data, context):
                 status = str(exemplar.get(field + '_check_status') or '').lower()
                 if exemplar.get(field + '_error_codes') or status in {'error', 'invalid'}:
                     errors[f'data:{key}:{unit}:{field}'] = 'Ozon отклонил данные поля'
-                failed = failed or status == 'failed'
+                # A failed GTD check is not proof that saved CIS were rejected.
+                # Continue reading status instead of dispatching all marks again.
+                failed = failed or field != 'gtd' and status == 'failed'
             for mark in exemplar.get('marks') or []:
                 if mark.get('mark_type') not in {'mandatory_mark', 'imei'}:
                     continue
@@ -276,8 +287,13 @@ def poll(account: dict, order_id: str, context: dict, codes: list[dict]) -> dict
 
 
 def _checked_details(data: dict, context: dict) -> tuple[bool, dict]:
-    actual = {(str(p['product_id']), str(e.get('exemplar_id'))): e for p in data.get('products') or []
-              for e in p.get('exemplars') or []}
+    rows = [(str(p['product_id']), str(e.get('exemplar_id')), e) for p in data.get('products') or []
+            for e in p.get('exemplars') or []]
+    actual = {(key, exemplar_id): e for key, exemplar_id, e in rows}
+    if context.get('_panel_details'):
+        expected = {(str(p['product_id']), str(e['exemplar_id'])) for p in context['products'] for e in p['exemplars']}
+        if len(actual) != len(rows) or set(actual) != expected:
+            return False, {}  # Partial or duplicated readback cannot confirm GTD.
     good, errors = True, {}
     for product in context['products']:
         key = str(product['product_id'])
