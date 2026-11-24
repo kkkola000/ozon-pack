@@ -146,6 +146,20 @@ def _seed_details(data, products):
     return details
 
 
+def _apply_fields(exemplar: dict, fields: dict, *, validate: bool):
+    for field, value in fields.items():
+        if field in {'gtd', 'rnpt', 'weight'}:
+            if value is None:
+                exemplar.pop(field, None)
+            else:
+                exemplar[field] = value
+            if field != 'weight' and not validate:
+                exemplar['is_' + field + '_absent'] = value is None
+        elif field == 'imei':
+            exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'imei']
+            exemplar['marks'].append({'mark': value, 'mark_type': 'imei'})
+
+
 def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> list[dict]:
     out = []
     values = {(c['item_key'], c['unit_no']): c['raw'] for c in codes}
@@ -160,14 +174,7 @@ def _payload(context: dict, codes: list[dict], *, validate: bool = False) -> lis
             else:
                 exemplar.pop('is_gtd_absent', None)
                 exemplar.pop('is_rnpt_absent', None)
-            for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
-                if field in {'gtd', 'rnpt', 'weight'}:
-                    exemplar[field] = value
-                    if field != 'weight' and not validate:
-                        exemplar['is_' + field + '_absent'] = False
-                elif field == 'imei':
-                    exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'imei']
-                    exemplar['marks'].append({'mark': value, 'mark_type': 'imei'})
+            _apply_fields(exemplar, exemplar_data.at(context.get('_panel_details', {}), key, unit), validate=validate)
             if (key, unit) in values:
                 exemplar['marks'] = [m for m in exemplar.get('marks', []) if m.get('mark_type') != 'mandatory_mark']
                 exemplar['marks'].append({'mark': values[key, unit], 'mark_type': 'mandatory_mark'})
@@ -277,16 +284,19 @@ def _checked_details(data: dict, context: dict) -> tuple[bool, dict]:
         for unit, e in enumerate(product['exemplars'], 1):
             got = actual.get((key, str(e['exemplar_id'])), {})
             for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
+                absent = field == 'gtd' and value is None
                 if field in {'gtd', 'rnpt', 'weight'}:
                     status = got.get(field + '_check_status')
-                    matches = got.get(field) == value and not got.get('is_' + field + '_absent')
+                    matches = (got.get('is_gtd_absent') is True and not got.get('gtd')) if absent else (
+                        got.get(field) == value and not got.get('is_' + field + '_absent'))
                     bad = got.get(field + '_error_codes')
                 else:
                     mark = next((m for m in got.get('marks') or [] if m.get('mark_type') == 'imei' and m.get('mark') == value), {})
                     status, matches, bad = mark.get('check_status'), bool(mark), mark.get('error_codes')
                 if bad or str(status).lower() in {'error', 'invalid'}:
                     errors[f'data:{key}:{unit}:{field}'] = 'Площадка отклонила значение поля'
-                if not matches or str(status).lower() not in {'passed', 'success'}:
+                checked = str(status).lower() in {'passed', 'success'} or absent and status in (None, '')
+                if not matches or not checked:
                     good = False
     return good, errors
 
@@ -305,6 +315,9 @@ def _applied(raw: dict, codes: list[dict], context: dict | None = None) -> bool:
             for field, value in exemplar_data.at(context.get('_panel_details', {}), key, unit).items():
                 if field == 'imei':
                     if value not in (row.get('imei') or []):
+                        return False
+                elif field == 'gtd' and value is None:
+                    if not row or row.get('is_gtd_absent') is not True or row.get('gtd'):
                         return False
                 elif row.get(field) != value or row.get('is_' + field + '_absent'):
                     return False

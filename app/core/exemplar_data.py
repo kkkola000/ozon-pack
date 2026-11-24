@@ -31,6 +31,26 @@ def at(details: dict, key: str, unit: int) -> dict:
     return {f: v for f, v in details.get(str(key), {}).get(str(unit), {}).items() if f in LABELS}
 
 
+def supplied(fields: dict, field: str) -> bool:
+    # An explicit null GTD is the saved operator choice, never a missing key.
+    return bool(fields.get(field)) or field == 'gtd' and field in fields and fields[field] is None
+
+
+def overlay(instance: dict, fields: dict) -> dict:
+    result = dict(instance)
+    for field, value in fields.items():
+        if field == 'gtd' and value is None:
+            result.pop(field, None)
+        else:
+            result[field] = value
+    return result
+
+
+def matches(instance: dict, fields: dict) -> bool:
+    return all(not instance.get(field) if field == 'gtd' and value is None else instance.get(field) == value
+               for field, value in fields.items())
+
+
 def required(saved: dict | None) -> bool:
     from . import marking
     return bool(saved and any(p.get('fields') for p in marking.products(saved)))
@@ -41,7 +61,7 @@ def ready(saved: dict) -> bool:
     present = {(m['item_key'], m['unit_no']) for m in marking.codes(saved) if m['status'] != 'error'}
     details = values(saved)
     return all((not p.get('required') or (p['key'], u) in present) and
-               all(at(details, p['key'], u).get(f) for f in p.get('fields', []))
+               all(supplied(at(details, p['key'], u), f) for f in p.get('fields', []))
                for p in marking.products(saved) for u in range(1, int(p['quantity']) + 1))
 
 
@@ -69,7 +89,8 @@ def public(saved: dict, key: str) -> dict | None:
     errors = json.loads(saved.get('field_errors') or '{}')
     return {'key': key, 'revision': saved['revision'], 'status': saved['status'],
             'units': [{'unit': u, 'fields': [
-                {'name': f, 'label': LABELS[f], 'value': at(details, key, u).get(f, ''),
+                {'name': f, 'label': LABELS[f], 'value': at(details, key, u).get(f) or '',
+                 'can_omit': f == 'gtd', 'omitted': f == 'gtd' and 'gtd' in at(details, key, u) and at(details, key, u)['gtd'] is None,
                  'error': errors.get(f'data:{key}:{u}:{f}') or errors.get(f'data:{key}:{u}')}
                 for f in product['fields']]} for u in range(1, int(product['quantity']) + 1)]}
 
@@ -139,7 +160,13 @@ def _merge_rows(saved, rows):
         fields = row.get('fields')
         if not isinstance(fields, dict) or set(fields) != set(product.get('fields', [])):
             raise ValueError('Заполните только требуемые поля товара')
-        details.setdefault(key, {})[str(unit)] = {f: _clean(f, v, product) for f, v in fields.items()}
+        absent = row.get('gtd_absent', False)
+        if type(absent) is not bool or absent and 'gtd' not in fields:
+            raise ValueError('Отсутствие ГТД можно указать только для поля ГТД')
+        if absent and fields['gtd'] not in ('', None):
+            raise ValueError('Выберите номер ГТД или «Не указывать»')
+        details.setdefault(key, {})[str(unit)] = {f: None if f == 'gtd' and absent else _clean(f, v, product)
+                                               for f, v in fields.items()}
         seen.add((key, unit))
     if not seen:
         raise ValueError('Нет данных для передачи')

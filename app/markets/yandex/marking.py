@@ -222,7 +222,7 @@ def with_details(raw: dict, details: dict, *, layout: bool = True) -> dict:
         while len(instances) < int(item['count']):
             instances.append({})
         for unit in range(1, int(item['count']) + 1):
-            instances[unit - 1].update(exemplar_data.at(details, key, unit))
+            instances[unit - 1] = exemplar_data.overlay(instances[unit - 1], exemplar_data.at(details, key, unit))
     if not layout:
         return raw
     # boxesLayout.instances can contain older values: overlay by the same
@@ -238,8 +238,8 @@ def with_details(raw: dict, details: dict, *, layout: bool = True) -> dict:
             prior = entry.get('instances') or item.get('instances') or []
             if not entry.get('instances'):
                 prior = prior[start:start + count]
-            entry['instances'] = [{**(prior[n] if n < len(prior) else {}),
-                                   **exemplar_data.at(details, key, start + n + 1)} for n in range(count)]
+            entry['instances'] = [exemplar_data.overlay(prior[n] if n < len(prior) else {},
+                                  exemplar_data.at(details, key, start + n + 1)) for n in range(count)]
     return raw
 
 
@@ -249,10 +249,13 @@ def _saved_data(raw: dict, context: dict, codes: list[dict]) -> bool:
     details = context.get('_panel_details', {})
     for key, rows in details.items():
         actual = list(_instances(raw).get(key, []))
-        for unit, fields in rows.items():
+        # Match populated instances first: Yandex may drop entirely empty ones.
+        for unit, fields in sorted(rows.items(), key=lambda row: row[1] == {'gtd': None}):
             mark = next((c['raw'] for c in codes if c['item_key'] == key and c['unit_no'] == int(unit)), None)
-            match = next((i for i in actual if all(i.get(f) == v for f, v in fields.items()) and
+            match = next((i for i in actual if exemplar_data.matches(i, fields) and
                           (not mark or marking_codes.equivalent(i.get('cisFull'), mark))), None)
+            if fields == {'gtd': None} and not mark and not actual:
+                continue  # Yandex can omit the entire empty instance after GTD was omitted.
             if match is None:
                 return False
             actual.remove(match)

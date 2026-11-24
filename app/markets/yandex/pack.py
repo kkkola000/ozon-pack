@@ -24,8 +24,6 @@
 """
 from __future__ import annotations
 
-from contextlib import suppress
-
 import io
 import json
 import logging
@@ -944,9 +942,22 @@ def ready_order(account: dict, user: dict, order_id: str) -> None:
         raise ValueError('Заказ Маркета уже вне сборки')
     if raw['substatus'] == NOT_YET:
         # Даже при таймауте запрос мог пройти. Проверяем чтением.
-        with suppress(YandexError):
+        failure = None
+        try:
             readiness.attempt(account, order_id, lambda: api.ready_to_ship(str(row['campaign_id']), order_id))
+        except YandexError as exc:
+            failure = exc
         raw = api.order_details(order_id)
+        if raw.get('substatus') == NOT_YET and failure and failure.status in {400, 409, 422}:
+            # A definite readiness rejection must let the operator correct an
+            # explicitly omitted GTD; a timeout must remain a read-only retry.
+            from ...core import exemplar_data, marking
+            details = exemplar_data.values(marking.order(account['id'], order_id))
+            errors = {f'data:{key}:{unit}:gtd': 'Маркет отклонил готовность заказа. Проверьте ГТД и укажите номер.'
+                      for key, units in details.items() for unit, fields in units.items()
+                      if 'gtd' in fields and fields['gtd'] is None}
+            if errors:
+                raise marking.Rejected(errors)
     if raw.get('status') != 'PROCESSING' or raw.get('substatus') != PACKABLE:
         raise ValueError('Маркет пока не подтвердил статус «Готов к отгрузке»')
     with db.write() as conn:
