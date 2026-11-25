@@ -111,8 +111,12 @@ class SplitExecution:
                 for u in tx.scalars(select(AssemblyUnit).where(AssemblyUnit.session_id == session.id))
             }
             result = []
+            if self.r.documents:
+                self.r.documents.invalidate(tx, row.shipment_id)
             for child, observed, units, run_id in children:
                 child_manifest = self.r.orders.packing_manifest(tx, child.id)
+                if self.r.documents:
+                    self.r.documents.request(tx, source, child.id)
                 proof_session = AssemblySession(
                     id=uuid4(),
                     user_id=session.user_id,

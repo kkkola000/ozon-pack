@@ -18,6 +18,7 @@ from pack_v2.infrastructure.database import Database
 from pack_v2.integrations.api import build_router as connections_router
 from pack_v2.integrations.contracts import AccessChecker
 from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.ozon.documents import OzonLabelAdapter
 from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
@@ -28,6 +29,8 @@ from pack_v2.modules.assembly.public import Assembly
 from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.api import build_router as catalog_router
 from pack_v2.modules.catalog.public import Catalog
+from pack_v2.modules.documents.api import build_router as documents_router
+from pack_v2.modules.documents.public import Documents
 from pack_v2.modules.identity.public import Identity
 from pack_v2.modules.instance_data.public import InstanceData
 from pack_v2.modules.marking.public import Marking
@@ -40,7 +43,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0009_marking"
+SCHEMA_REVISION = "0010_labels"
 
 
 def create_app(
@@ -49,6 +52,7 @@ def create_app(
     reader_factory: ReaderFactory | None = None,
     instance_factory=None,
     shipping_factory=None,
+    label_factory=None,
 ) -> FastAPI:
     settings = settings or load_settings()
     load_models()
@@ -76,6 +80,7 @@ def create_app(
         reader_factory if reader_factory is not None else OzonReadAdapter,
         instance_factory if instance_factory is not None else OzonInstanceAdapter,
         shipping_factory if shipping_factory is not None else OzonShippingAdapter,
+        label_factory if label_factory is not None else OzonLabelAdapter,
     )
     app.state.catalog = Catalog(db, app.state.connections)
     app.state.orders = Orders(
@@ -86,12 +91,16 @@ def create_app(
     app.state.instance_data = InstanceData(
         db, app.state.connections, app.state.orders, app.state.marking, box
     )
+    app.state.documents = Documents(
+        db, app.state.connections, app.state.orders, box, label_size=settings.ozon_label_size
+    )
     app.state.readiness = Readiness(
         db,
         app.state.connections,
         app.state.orders,
         app.state.instance_data,
         auto_split=settings.split_orders_on_pack,
+        documents=app.state.documents,
     )
     app.state.assembly = Assembly(
         db,
@@ -101,6 +110,7 @@ def create_app(
         settings.secret_key.get_secret_value(),
         instance_data=app.state.instance_data,
         readiness=app.state.readiness,
+        documents=app.state.documents,
     )
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
@@ -193,4 +203,5 @@ def create_app(
     app.include_router(catalog_router())
     app.include_router(orders_router())
     app.include_router(assembly_router())
+    app.include_router(documents_router())
     return app

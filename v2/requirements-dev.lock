@@ -80,6 +80,8 @@ pygments==2.21.0
     # via pytest
 pytest==9.1.1
     # via ozon-pack-v2 (pyproject.toml)
+pypdf==6.16.2
+    # via ozon-pack-v2 (pyproject.toml)
 python-dotenv==1.2.4
     # via pydantic-settings
 python-multipart==0.0.32

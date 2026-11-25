@@ -19,9 +19,10 @@ WAITING = "Ozon обрабатывает сборку. Ожидаем подтв
 
 
 class Readiness:
-    def __init__(self, db, connections, orders, instance_data, *, auto_split=False):
+    def __init__(self, db, connections, orders, instance_data, *, auto_split=False, documents=None):
         self.db, self.connections, self.orders, self.instances = db, connections, orders, instance_data
         self.auto_split = auto_split
+        self.documents = documents
 
     @staticmethod
     def find(tx, session):
@@ -354,6 +355,8 @@ class Readiness:
 
             def accept(tx, row, session, source, manifest, evidence):
                 self.orders.packing_confirm_ready(tx, manifest, observed_at, posting.get("substatus"))
+                if self.documents:
+                    self.documents.request(tx, source, row.shipment_id)
                 row.status, row.finished_at, row.error = "accepted", datetime.now(UTC), None
                 if session.status != "cancelled":
                     session.status, session.finished_at, session.message = "ready", datetime.now(UTC), None

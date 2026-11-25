@@ -543,3 +543,8 @@ body.assembly-is-open { overflow: hidden; }
 .assembly-layout-save { display: block; margin: 12px auto; }
 .assembly-layout-result { display: inline-block; margin: 8px 8px 0 0; }
 .assembly-layout-dragging .assembly-gtd input { pointer-events: none; }
+
+.assembly-header-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.assembly-document-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.assembly-label-status { flex-basis: 100%; margin: 0; text-align: right; }
+@media(max-width:700px) { .assembly-header-actions { justify-content: flex-start; } .assembly-label-status { text-align: left; } }

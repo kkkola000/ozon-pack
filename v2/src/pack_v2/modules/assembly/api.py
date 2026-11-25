@@ -215,6 +215,15 @@ def build_router():
             )
         )
 
+    @router.post("/api/v2/assembly/{session_id}/retry_label")
+    def retry_label(request: Request, session_id: UUID, payload: SessionCommand):
+        saved = _actor(request, write=True)
+        return _response(
+            request.app.state.assembly.retry_label(
+                saved.user, payload.command_id, session_id, payload.lease_token, payload.revision
+            )
+        )
+
     @router.post("/api/v2/assembly/{session_id}/check_data")
     def check_data(request: Request, session_id: UUID, payload: SessionCommand):
         saved = _actor(request, write=True)

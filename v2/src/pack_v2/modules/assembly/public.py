@@ -42,13 +42,24 @@ def _scan_code(value):
 
 class Assembly:
     def __init__(
-        self, db, connections, orders, box, secret, *, instance_data, readiness=None, lease_seconds=180
+        self,
+        db,
+        connections,
+        orders,
+        box,
+        secret,
+        *,
+        instance_data,
+        readiness=None,
+        documents=None,
+        lease_seconds=180,
     ):
         self.db, self.connections, self.orders, self.box = db, connections, orders, box
         self.secret = secret.encode()
         self.lease_seconds = lease_seconds
         self.instances = instance_data
         self.readiness = readiness
+        self.documents = documents
 
     def _until(self):
         return datetime.now(UTC) + timedelta(seconds=self.lease_seconds)
@@ -190,6 +201,12 @@ class Assembly:
             "need": sum(i["need"] for i in items),
             "data": data,
             "readiness": readiness,
+            "labels": self.documents.view(
+                tx,
+                [UUID(c["shipment_id"]) for c in readiness["children"]] if split_done else [row.shipment_id],
+            )
+            if self.documents and status in ("scanning", "preparing", "ready") and not split_pending
+            else [],
             "layout": {
                 "editable": status == "scanning"
                 and manifest.state == "awaiting_assembly"
@@ -657,6 +674,10 @@ class Assembly:
                 )
             row.basis, row.source_revision = manifest.basis, manifest.assembly_revision
             row.status, row.message, row.lease_until = "scanning", None, self._until()
+            if self.documents:
+                self.documents.request(
+                    tx, AccountSource(row.account_id, "ozon", row.credential_revision), row.shipment_id
+                )
             row.revision += 1
             tx.flush()
             if row.initial_code:
@@ -1016,6 +1037,37 @@ class Assembly:
                 "value": value,
                 **({"absent": True} if absent else {}),
             },
+            operation,
+        )
+
+    def retry_label(self, actor, command_id, session_id, token, revision):
+        def operation(tx):
+            row = self._owned(tx, actor, session_id)
+            source = AccountSource(row.account_id, "ozon", row.credential_revision)
+            self.connections.lock_source(tx, source)
+            self.orders.packing_lock(tx, row.shipment_id)
+            row = self._owned(tx, actor, session_id, lock=True)
+            if row.lease_token != token or row.revision != revision:
+                return row, _result(False, "Окно сборки изменилось. Обновите страницу", "revision_conflict")
+            if not self.documents or row.status not in ("scanning", "ready"):
+                return row, _result(False, "Откройте актуальную сборку для получения стикера", "not_scanning")
+            view = self._view(tx, actor, row)
+            if view["status"] not in ("scanning", "ready"):
+                return row, _result(False, "Отправление изменилось. Повторите сверку", "stale")
+            targets = [UUID(c["shipment_id"]) for c in (view.get("readiness") or {}).get("children", [])] or [
+                row.shipment_id
+            ]
+            for shipment_id in targets:
+                self.orders.packing_lock(tx, shipment_id)
+                self.documents.request(tx, source, shipment_id, retry=True)
+            row.revision += 1
+            return row, _result(True, "Получаем стикер Ozon", "label_queued")
+
+        return self._execute(
+            actor,
+            command_id,
+            "retry_label",
+            {"session_id": session_id, "token": token, "revision": revision},
             operation,
         )
 

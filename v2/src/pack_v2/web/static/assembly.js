@@ -9,6 +9,12 @@
   const drafts = new Map();
   const omissionDrafts = new Map();
   const queuedValues = new Map();
+  const labelQueue = [];
+  const labelQueued = new Set();
+  const labelAttempts = new Map();
+  const downloadedLabels = new Set();
+  const labelErrors = new Map();
+  let labelBusy = false;
   let lastIssue = null;
   let rendering = false;
   let session = JSON.parse(root.dataset.session);
@@ -55,6 +61,7 @@
     find('assembly-account').textContent = `Ozon · ${session.account_title}`;
     find('assembly-number').textContent = session.posting_number;
     find('assembly-stage').textContent = stages[session.status] || session.status;
+    renderLabels();
     find('assembly-stage').className = `badge ${['verified', 'ready'].includes(session.status) ? 'ok' : session.status === 'opening' ? 'accent' : ''}`;
     const scanner = find('scanner-state');
     scanner.textContent = session.status === 'opening' ? 'Проверяем…' : paused ? 'Нет связи' : session.status === 'scanning' ? 'Сканер готов' : stages[session.status];
@@ -150,6 +157,8 @@
       for (const child of session.readiness?.children || []) {
         const link = make('a', 'btn assembly-layout-result', child.posting_number);
         link.href = `/pack?shipment_id=${encodeURIComponent(child.shipment_id)}`; container.append(link);
+        const label = (session.labels || []).find(l => l.shipment_id === child.shipment_id && l.status === 'ready');
+        if (label) { const pdf = make('a', 'btn small', 'Открыть PDF'); pdf.href = label.url; pdf.target = '_blank'; pdf.rel = 'noopener'; container.append(pdf); }
       }
       if (editing) {
         const field = root.querySelector(`[data-gtd-${editingAbsent ? 'absent' : 'unit'}="${editing}"]`);
@@ -176,6 +185,59 @@
     }
     input().placeholder = session.status === 'scanning' ? session.data?.pending_unit_id ? 'Сканируйте код «Честный знак» этого товара…' : session.scanned === session.need && session.data?.can_verify ? 'Сканируйте стикер отправления или завершите сборку…' : 'Сканируйте товар…' : stages[session.status];
     if (['prepared', 'checking'].includes(session.data?.status)) { scanner.textContent = 'Проверяем данные…'; scanner.className = 'badge accent is-loading'; }
+  }
+  function labelReceipt(label) { return `pack-v2:label:${root.dataset.user}:${label.key}`; }
+  function wasDownloaded(label) {
+    if (downloadedLabels.has(label.key)) return true;
+    try { return sessionStorage.getItem(labelReceipt(label)) === 'done'; } catch (_) { return false; }
+  }
+  function renderLabels() {
+    const labels = session.labels || [], ready = labels.filter(l => l.status === 'ready');
+    const buttons = find('label-buttons'); buttons.replaceChildren();
+    if (labels.length === 1 && ready.length) {
+      const pdf = make('a', 'btn', 'Открыть PDF'); pdf.href = ready[0].url; pdf.target = '_blank'; pdf.rel = 'noopener'; buttons.append(pdf);
+    }
+    if (labels.length) {
+      const download = make('button', 'btn', labels.length > 1 ? 'Скачать стикеры' : 'Скачать стикер');
+      download.type = 'button'; download.dataset.labelDownloadAll = ''; download.disabled = !ready.length; buttons.append(download);
+    }
+    if (labels.some(l => l.status === 'failed')) {
+      const retry = make('button', 'btn', 'Повторить загрузку'); retry.type = 'button'; retry.dataset.assemblyAction = 'retry_label';
+      retry.disabled = busy || paused; buttons.append(retry);
+    }
+    const failedDownload = ready.some(l => labelErrors.has(l.key));
+    const status = find('label-status'); status.hidden = !labels.length;
+    status.textContent = failedDownload ? 'Стикер получен. Не удалось скачать файл — нажмите «Скачать стикер».' : labels.length === 1 ? labels[0].message :
+      `Получено стикеров: ${ready.length} из ${labels.length}${labels.some(l => l.status === 'failed') ? '. Повторите загрузку недостающих.' : ''}`;
+    for (const label of ready) {
+      if (!wasDownloaded(label) && (labelAttempts.get(label.key) || 0) < 3) queueLabel(label, true);
+    }
+  }
+  function queueLabel(label, automatic) {
+    if (labelQueued.has(label.key)) return;
+    labelQueued.add(label.key); labelQueue.push({ label, automatic }); downloadLabel();
+  }
+  async function downloadLabel() {
+    if (labelBusy || !labelQueue.length) return;
+    const { label, automatic } = labelQueue.shift(); labelBusy = true;
+    try {
+      const current = (session?.labels || []).find(l => l.key === label.key && l.status === 'ready');
+      if (!current || automatic && wasDownloaded(label)) return;
+      labelAttempts.set(label.key, (labelAttempts.get(label.key) || 0) + 1);
+      const response = await fetch(label.url + '?download=true', { signal: AbortSignal.timeout(20000) });
+      if (!response.ok || !response.headers.get('content-type')?.startsWith('application/pdf')) throw new Error('Label unavailable');
+      const file = await response.blob();
+      if (!file.size || file.size > 8388608 || await file.slice(0, 5).text() !== '%PDF-') throw new Error('Invalid label');
+      // An old result can arrive after a different assembly has opened.
+      if (!(session?.labels || []).some(l => l.key === label.key && l.status === 'ready')) return;
+      const url = URL.createObjectURL(file), anchor = document.createElement('a');
+      anchor.href = url; anchor.download = `ozon-${label.posting_number.replace(/[^a-zA-Z0-9_-]/g, '')}.pdf`;
+      document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadedLabels.add(label.key);
+      try { sessionStorage.setItem(labelReceipt(label), 'done'); } catch (_) { /* The manual button remains available. */ }
+      labelErrors.delete(label.key);
+    } catch (_) { labelErrors.set(label.key, true); }
+    finally { labelBusy = false; labelQueued.delete(label.key); downloadLabel(); }
   }
   function apply(next) {
     if (next && session?.id === next.id && next.revision < session.revision) return;
@@ -281,6 +343,10 @@
     draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render();
   });
   root.addEventListener('click', event => {
+    if (event.target.closest('[data-label-download-all]')) {
+      for (const label of session?.labels || []) if (label.status === 'ready') queueLabel(label, false);
+    }
+    if (event.target.closest('[data-assembly-action=retry_label]') && !busy && !paused && session) { queue.push({ action: 'retry_label' }); drain(); }
     if (event.target.closest('[data-save-layout]') && layoutDraft && !busy && !paused) {
       queue.push({ action: 'layout', code: layoutDraft.map(group => [...group]) }); drain();
     }
@@ -369,7 +435,7 @@
     } catch (_) { paused = true; notice('Не удалось проверить предыдущий запрос. Повторите попытку.', true); }
   }
   async function poll() {
-    if (!busy && !paused && session && !document.hidden && (['opening', 'scanning', 'blocked', 'preparing'].includes(session.status) || ['queued', 'checking'].includes(session.readiness?.status))) {
+    if (!busy && !paused && session && !document.hidden && (['opening', 'scanning', 'blocked', 'preparing'].includes(session.status) || ['queued', 'checking'].includes(session.readiness?.status) || (session.labels || []).some(l => ['queued', 'processing'].includes(l.status)))) {
       try {
         const response = await fetch(`/api/v2/assembly/${session.id}`);
         if (response.ok) {
@@ -378,7 +444,7 @@
         }
       } catch (_) { /* Read failures never advance the product counter. */ }
     }
-    setTimeout(poll, ['opening', 'preparing'].includes(session?.status) || ['prepared', 'checking'].includes(session?.data?.status) ? 1000 : 5000);
+    setTimeout(poll, ['opening', 'preparing'].includes(session?.status) || ['prepared', 'checking'].includes(session?.data?.status) || (session?.labels || []).some(l => ['queued', 'processing'].includes(l.status)) ? 1000 : 5000);
   }
   setInterval(async () => {
     if (!session || busy || paused || document.hidden || !['opening', 'scanning', 'blocked', 'preparing'].includes(session.status)) return;

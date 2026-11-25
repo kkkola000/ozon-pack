@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ozon-pack-v2"
-version = "2.0.0a10"
+version = "2.0.0a11"
 description = "Modular foundation for the warehouse panel"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
   "alembic==1.20.1", "psycopg[binary]==3.3.9", "argon2-cffi==25.1.0",
   "pydantic-settings==2.16.3", "jinja2==3.1.6", "python-multipart==0.0.32",
   "itsdangerous==2.2.0", "cryptography==50.0.1",
-  "httpx==0.28.1",
+  "httpx==0.28.1", "pypdf==6.16.2",
 ]
 
 [project.optional-dependencies]

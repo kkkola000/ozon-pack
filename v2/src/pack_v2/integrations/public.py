@@ -17,6 +17,7 @@ from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 
 from . import repository as store
 from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials, SyncView
+from .documents import LabelFactory
 from .instances import InstanceFactory, InstanceSnapshot, OutcomeUnknown
 from .models import AccountCheck, MarketplaceAccount
 from .reading import (
@@ -75,11 +76,13 @@ class Connections:
         reader_factory: ReaderFactory | None = None,
         instance_factory: InstanceFactory | None = None,
         shipping_factory: ShippingFactory | None = None,
+        label_factory: LabelFactory | None = None,
     ):
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
         self.instance_factory = instance_factory
         self.shipping_factory = shipping_factory
+        self.label_factory = label_factory
 
     def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
         if not actor.can(section):
@@ -157,6 +160,18 @@ class Connections:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
         with self.shipping_factory(source, credentials) as client:
+            yield client
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+
+    @contextmanager
+    def label_client(self, source: AccountSource):
+        if self.label_factory is None:
+            raise DomainError("Адаптер стикеров не настроен")
+        with self.db.transaction() as tx:
+            self.lock_source(tx, source)
+            credentials = self._credentials(tx, source.account_id)
+        with self.label_factory(source, credentials) as client:
             yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)

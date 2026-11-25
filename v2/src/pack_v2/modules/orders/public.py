@@ -96,6 +96,12 @@ class Orders:
         else:
             store.complete(tx, run)
 
+    @staticmethod
+    def label_target(tx, shipment_id):
+        from . import documents
+
+        return documents.target(tx, shipment_id)
+
     def packing_manifest(self, tx, shipment_id):
         return packing.manifest(tx, shipment_id, self.catalog)
 

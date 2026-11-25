@@ -23,12 +23,14 @@ from pack_v2.infrastructure.crypto import SecretBox
 from pack_v2.infrastructure.database import Database
 from pack_v2.infrastructure.jobs import Queue, enqueue
 from pack_v2.integrations.ozon.access import OzonAccessChecker
+from pack_v2.integrations.ozon.documents import OzonLabelAdapter
 from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.public import Catalog
+from pack_v2.modules.documents.public import Documents
 from pack_v2.modules.identity.public import Identity
 from pack_v2.modules.instance_data.public import InstanceData
 from pack_v2.modules.marking.public import Marking
@@ -79,6 +81,7 @@ def worker(
     orders_minutes: int = 5,
     instance_data: InstanceData | None = None,
     readiness: Readiness | None = None,
+    documents: Documents | None = None,
 ) -> None:
     # Instance writes use durable dispatch intents and reconcile ambiguous outcomes.
     queue, stopped = Queue(db), threading.Event()
@@ -112,6 +115,7 @@ def worker(
                 "instances.discover": instance_data,
                 "instances.submit": instance_data,
                 "assembly.ready": readiness,
+                "documents.label": documents,
             }.get(job.kind)
             if service:
                 with queue.keep_alive(job):
@@ -179,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                     OzonReadAdapter,
                     OzonInstanceAdapter,
                     OzonShippingAdapter,
+                    OzonLabelAdapter,
                 )
                 catalog = Catalog(db, connections)
                 orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)
@@ -186,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 instance_data = InstanceData(
                     db, connections, orders, Marking(box, settings.secret_key.get_secret_value()), box
                 )
+                documents = Documents(db, connections, orders, box, label_size=settings.ozon_label_size)
                 worker(
                     db,
                     Identity(db, settings),
@@ -196,8 +202,14 @@ def main(argv: list[str] | None = None) -> int:
                     settings.orders_sync_minutes,
                     instance_data,
                     Readiness(
-                        db, connections, orders, instance_data, auto_split=settings.split_orders_on_pack
+                        db,
+                        connections,
+                        orders,
+                        instance_data,
+                        auto_split=settings.split_orders_on_pack,
+                        documents=documents,
                     ),
+                    documents,
                 )
         finally:
             db.close()
