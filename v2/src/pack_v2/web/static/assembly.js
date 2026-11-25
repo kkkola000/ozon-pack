@@ -59,7 +59,7 @@
     root.querySelectorAll('[data-scan-input]').forEach(node => { node.readOnly = paused || waiting || Boolean(layoutDraft) || Boolean(session && session.status !== 'scanning'); });
     root.querySelectorAll('[data-network-retry]').forEach(node => { node.hidden = !paused; });
     if (!session) return;
-    find('assembly-account').textContent = `Ozon · ${session.account_title}`;
+    find('assembly-account').textContent = `${session.market_title || 'Ozon'} · ${session.account_title}`;
     find('assembly-number').textContent = session.posting_number;
     find('assembly-stage').textContent = stages[session.status] || session.status;
     renderLabels();
@@ -120,11 +120,12 @@
         if (extra ? extra.cis : item.marking_hint) {
           const state = extra?.mark_status || 'pending';
           const mark = make('span', `assembly-mark ${state}`, 'М');
-          mark.title = state === 'accepted' ? 'Честный знак принят Ozon' : state === 'rejected' ? 'Честный знак не прошёл проверку' : 'Честный знак не проверен';
+          mark.title = state === 'accepted' ? session.marketplace === 'yandex' ? 'Честный знак принят Яндекс Маркетом' : 'Честный знак принят Ozon' : state === 'rejected' ? 'Честный знак не прошёл проверку' : 'Честный знак не проверен';
           mark.setAttribute('aria-label', mark.title); card.append(mark);
         }
         for (const [index, unit] of (extra?.units || []).entries()) {
           if (item._unitId && unit.id !== item._unitId) continue;
+          if (unit.market_cis_message) description.append(make('div', `small ${unit.cis_status === 'rejected' ? 'access-error' : unit.cis_status === 'accepted' ? 'access-ok' : 'muted'}`, unit.market_cis_message));
           if (!unit.gtd_required) continue;
           const form = make('form', 'assembly-gtd'); form.dataset.gtdForm = unit.id;
           const field = make('input'); field.type = 'text'; field.autocomplete = 'off'; field.maxLength = 100;
@@ -138,8 +139,8 @@
           const checkbox = make('input'); checkbox.type = 'checkbox'; checkbox.dataset.gtdAbsent = unit.id;
           checkbox.checked = Boolean(omitted); checkbox.disabled = disabled;
           choice.append(checkbox, document.createTextNode('Не указывать'));
-          form.append(field, choice);
-          const label = unit.gtd_status === 'accepted' ? 'ГТД принята Ozon' : unit.gtd_status === 'rejected' ? 'Ozon не принял ГТД' : unit.gtd_omitted ? 'Выбор «Не указывать» сохранён' : unit.gtd ? 'ГТД сохранена' : 'Введите ГТД и нажмите Enter';
+          form.append(field); if (unit.gtd_omission_allowed !== false) form.append(choice);
+          const label = unit.gtd_status === 'accepted' ? session.marketplace === 'yandex' ? 'ГТД принята Яндекс Маркетом' : 'ГТД принята Ozon' : unit.gtd_status === 'rejected' ? 'Площадка не приняла ГТД' : unit.gtd_omitted ? 'Выбор «Не указывать» сохранён' : unit.gtd ? 'ГТД сохранена' : 'Введите ГТД и нажмите Enter';
           form.append(make('span', `small ${unit.gtd_status === 'accepted' ? 'access-ok' : unit.gtd_status === 'rejected' ? 'access-error' : 'muted'}`, label));
           description.append(form);
         }
@@ -166,25 +167,27 @@
         if (field && !field.disabled) { field.focus(); if (selection) field.setSelectionRange(...selection); }
       }
     } finally { rendering = false; }
-    const verify = root.querySelector('[data-assembly-action=complete]');
-    verify.hidden = !['scanning', 'verified'].includes(session.status);
+    const verify = root.querySelector('[data-assembly-action=complete], [data-assembly-action=verify]');
+    verify.dataset.assemblyAction = session.shipping_supported === false ? 'verify' : 'complete';
+    verify.textContent = session.shipping_supported === false ? 'Проверить товары' : 'Завершить сборку';
+    verify.hidden = !['scanning', ...(session.shipping_supported === false ? [] : ['verified'])].includes(session.status);
     verify.disabled = busy || paused || Boolean(layoutDraft) || queue.length > 0 || session.need === 0 || session.scanned !== session.need || session.data?.can_verify === false;
     root.querySelector('[data-assembly-action=retry]').hidden = session.status !== 'blocked';
     root.querySelector('[data-assembly-action=check_data]').hidden = !['uncertain', 'rejected'].includes(session.data?.status);
     root.querySelector('[data-assembly-action=cancel]').disabled = busy || paused || queue.length > 0;
     root.querySelector('[data-assembly-action=check_ready]').hidden = !session.readiness?.can_recheck;
-    find('assembly-queue').hidden = !['ready', 'cancelled'].includes(session.status) && !['uncertain', 'rejected', 'stale'].includes(session.readiness?.status);
+    find('assembly-queue').hidden = !['ready', 'cancelled', ...(session.shipping_supported === false ? ['verified'] : [])].includes(session.status) && !['uncertain', 'rejected', 'stale'].includes(session.readiness?.status);
     if (!paused) {
-      if (session.status === 'opening') notice(session.refresh_status === 'retrying' ? 'Ozon временно недоступен. Повторяем проверку…' : 'Получаем актуальный состав и состояние отправления…');
+      if (session.status === 'opening') notice(session.refresh_status === 'retrying' ? 'Площадка временно недоступна. Повторяем проверку…' : 'Получаем актуальный состав и состояние отправления…');
       else if (session.status === 'ready' || session.readiness?.status === 'accepted') notice('Ozon подтвердил готовность отправления к отгрузке.');
       else if (session.readiness?.message) notice(session.readiness.message, ['rejected', 'stale'].includes(session.readiness.status));
-      else if (session.status === 'verified') notice('Товары проверены. Завершите сборку для подтверждения готовности Ozon.');
+      else if (session.status === 'verified') notice(session.shipping_supported === false ? 'Товары и дополнительные данные проверены. Готовность и ярлыки Яндекс Маркета будут подключены следующим этапом.' : 'Товары проверены. Завершите сборку для подтверждения готовности Ozon.');
       else if (lastIssue) notice(lastIssue, true);
       else if (session.message) notice(session.message, session.status === 'stale');
       else if (session.data?.message) notice(session.data.message, ['rejected', 'uncertain', 'blocked'].includes(session.data.status));
       else if (session.data?.status === 'accepted') notice('');
     }
-    input().placeholder = session.status === 'scanning' ? session.data?.pending_unit_id ? 'Сканируйте код «Честный знак» этого товара…' : session.scanned === session.need && session.data?.can_verify ? 'Сканируйте стикер отправления или завершите сборку…' : 'Сканируйте товар…' : stages[session.status];
+    input().placeholder = session.status === 'scanning' ? session.data?.pending_unit_id ? 'Сканируйте код «Честный знак» этого товара…' : session.scanned === session.need && session.data?.can_verify ? session.shipping_supported === false ? 'Нажмите «Проверить товары»…' : 'Сканируйте стикер отправления или завершите сборку…' : 'Сканируйте товар…' : stages[session.status];
     if (['prepared', 'checking'].includes(session.data?.status)) { scanner.textContent = 'Проверяем данные…'; scanner.className = 'badge accent is-loading'; }
   }
   function labelReceipt(label) { return `pack-v2:label:${root.dataset.user}:${label.key}`; }

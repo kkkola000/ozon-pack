@@ -10,7 +10,6 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from pack_v2.infrastructure.models import AuditEvent
-from pack_v2.integrations.public import AccountSource
 from pack_v2.shared.errors import Conflict, DomainError, NotFound
 
 from .models import ACTIVE, AssemblyCommand, AssemblyLine, AssemblySession, AssemblyUnit
@@ -185,6 +184,9 @@ class Assembly:
             "shipment_id": str(row.shipment_id),
             "account_id": str(row.account_id),
             "account_title": label.title,
+            "marketplace": label.marketplace,
+            "market_title": "Яндекс Маркет" if label.marketplace == "yandex" else "Ozon",
+            "shipping_supported": label.marketplace == "ozon",
             "posting_number": row.posting_number,
             "status": status,
             "revision": row.revision,
@@ -208,11 +210,17 @@ class Assembly:
             if self.documents and status in ("scanning", "preparing", "ready") and not split_pending
             else [],
             "layout": {
-                "editable": status == "scanning"
+                "editable": label.marketplace == "ozon"
+                and status == "scanning"
                 and manifest.state == "awaiting_assembly"
                 and len(physical) > 1,
                 "groups": self.orders.packing_layout(
-                    tx, manifest, physical, automatic=bool(self.readiness and self.readiness.auto_split)
+                    tx,
+                    manifest,
+                    physical,
+                    automatic=bool(
+                        label.marketplace == "ozon" and self.readiness and self.readiness.auto_split
+                    ),
                 )
                 if status == "scanning" and manifest.eligible and row.basis == manifest.basis and physical
                 else [],
@@ -238,7 +246,9 @@ class Assembly:
         """Authorized read boundary for printing; never starts readiness or changes scans."""
         actor.require("pack")
         row = self._owned(tx, actor, session_id)
-        self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+        self.connections.lock_source(
+            tx, self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
+        )
         self.orders.packing_lock(tx, row.shipment_id)
         row = self._owned(tx, actor, session_id, lock=True)
         view = self._view(tx, actor, row)
@@ -263,7 +273,7 @@ class Assembly:
         labels = {
             a.id: a
             for a in self.connections.account_labels(actor, section="pack")
-            if a.active and a.marketplace == "ozon"
+            if a.active and a.marketplace in ("ozon", "yandex")
         }
         with self.db.transaction() as tx:
             _, rows = self.orders.packing_candidates(tx, account_id=account_id, account_ids=labels, limit=50)
@@ -378,7 +388,7 @@ class Assembly:
         labels = {
             a.id: a.credential_revision
             for a in self.connections.account_labels(actor, section="pack")
-            if a.active and a.marketplace == "ozon" and (account_id is None or a.id == account_id)
+            if a.active and a.marketplace in ("ozon", "yandex") and (account_id is None or a.id == account_id)
         }
 
         def operation(tx):
@@ -557,7 +567,7 @@ class Assembly:
                 )
             )
             tx.flush()
-            return row, _result(True, "Проверяем отправление в Ozon", "opening")
+            return row, _result(True, "Проверяем отправление на площадке", "opening")
 
         return self._execute(
             actor,
@@ -569,10 +579,9 @@ class Assembly:
 
     def _locked(self, tx, actor, session_id, token, revision=None):
         row = self._owned(tx, actor, session_id)
-        source = AccountSource(row.account_id, "ozon", row.credential_revision)
         source_error = None
         try:
-            self.connections.lock_source(tx, source)
+            self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
         except DomainError as error:
             source_error = str(error)
         self.orders.packing_lock(tx, row.shipment_id)
@@ -620,7 +629,7 @@ class Assembly:
                 tx, row.refresh_run_id, row.account_id, row.shipment_id
             )
             if status in ("queued", "running", "retrying"):
-                return row, _result(False, "Ozon проверяет отправление", "waiting", pending=True)
+                return row, _result(False, "Площадка проверяет отправление", "waiting", pending=True)
             if status != "succeeded" or not manifest.eligible:
                 row.status, row.message = (
                     "blocked",
@@ -642,7 +651,7 @@ class Assembly:
             if data_status != "ready":
                 row.status, row.message = (
                     "blocked",
-                    data_error or "Не удалось получить требования Ozon. Повторите сверку",
+                    data_error or "Не удалось получить требования площадки. Повторите сверку",
                 )
                 row.revision += 1
                 return row, _result(False, row.message, "blocked")
@@ -695,7 +704,9 @@ class Assembly:
             row.status, row.message, row.lease_until = "scanning", None, self._until()
             if self.documents:
                 self.documents.request(
-                    tx, AccountSource(row.account_id, "ozon", row.credential_revision), row.shipment_id
+                    tx,
+                    self.connections.source_at_revision(tx, row.account_id, row.credential_revision),
+                    row.shipment_id,
                 )
             row.revision += 1
             tx.flush()
@@ -746,7 +757,12 @@ class Assembly:
             row.lease_until = self._until()
             return _result(
                 True,
-                "Честный знак сохранён. Ожидаем подтверждения Ozon"
+                "Честный знак сохранён. Ожидаем подтверждения "
+                + (
+                    "Яндекс Маркета"
+                    if self.connections.account_label(tx, row.account_id).marketplace == "yandex"
+                    else "Ozon"
+                )
                 if saved["changed"]
                 else "Честный знак уже сохранён",
                 "mark_saved" if saved["changed"] else "mark_duplicate",
@@ -838,7 +854,7 @@ class Assembly:
                 return row, _result(
                     False,
                     data.get("message")
-                    or "Сначала передайте Честный знак и ГТД и дождитесь подтверждения Ozon",
+                    or "Сначала передайте Честный знак и ГТД и дождитесь подтверждения площадки",
                     "instance_data_required",
                     pending=data["status"] in ("prepared", "checking"),
                 )
@@ -867,6 +883,13 @@ class Assembly:
         )
 
     def _begin_ready(self, tx, row):
+        source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
+        if source.marketplace != "ozon":
+            return row, _result(
+                False,
+                "Товары и данные Яндекс Маркета можно проверить. Перевод в готовность и печать ярлыков будут подключены следующим этапом",
+                "unsupported",
+            )
         manifest = self.orders.packing_manifest(tx, row.shipment_id)
         if (
             not manifest.eligible
@@ -897,7 +920,9 @@ class Assembly:
     def complete(self, actor, command_id, session_id, token, revision):
         def operation(tx):
             row = self._owned(tx, actor, session_id)
-            self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+            self.connections.lock_source(
+                tx, self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
+            )
             self.orders.packing_lock(tx, row.shipment_id)
             row = self._owned(tx, actor, session_id, lock=True)
             if row.lease_token != token or row.revision != revision:
@@ -927,6 +952,12 @@ class Assembly:
                 return row, _result(
                     False, "Распределение меняется только до отправки сборки Ozon", "not_scanning"
                 )
+            if self.connections.account_label(tx, row.account_id).marketplace != "ozon":
+                return row, _result(
+                    False,
+                    "Изменение грузомест Яндекс Маркета будет подключено следующим этапом",
+                    "unsupported",
+                )
             old = self.readiness.find(tx, row) if self.readiness else None
             if old and old.ship_started_at:
                 return row, _result(False, "Результат предыдущей сборки требует сверки", "readiness_pending")
@@ -947,11 +978,17 @@ class Assembly:
     def check_ready(self, actor, command_id, session_id, token, revision):
         def operation(tx):
             row = self._owned(tx, actor, session_id)
-            self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+            self.connections.lock_source(
+                tx, self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
+            )
             self.orders.packing_lock(tx, row.shipment_id)
             row = self._owned(tx, actor, session_id, lock=True)
             if row.lease_token != token or row.revision != revision:
                 return row, _result(False, "Окно сборки устарело. Обновите его", "revision_conflict")
+            if self.connections.account_label(tx, row.account_id).marketplace != "ozon":
+                return row, _result(
+                    False, "Проверка готовности Яндекс Маркета пока не подключена", "unsupported"
+                )
             if self.readiness is None:
                 raise DomainError("Операция готовности не настроена")
             self.readiness.recheck(tx, row)
@@ -1008,7 +1045,7 @@ class Assembly:
             row, _, error = self._locked(tx, actor, session_id, token, revision)
             if error:
                 return row, error
-            source = AccountSource(row.account_id, "ozon", row.credential_revision)
+            source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
             row.refresh_run_id = self.orders.packing_refresh(tx, source, row.shipment_id, actor.id)
             row.instance_context_id = None
             row.status, row.message = "opening", None
@@ -1062,7 +1099,7 @@ class Assembly:
     def retry_label(self, actor, command_id, session_id, token, revision):
         def operation(tx):
             row = self._owned(tx, actor, session_id)
-            source = AccountSource(row.account_id, "ozon", row.credential_revision)
+            source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
             self.connections.lock_source(tx, source)
             self.orders.packing_lock(tx, row.shipment_id)
             row = self._owned(tx, actor, session_id, lock=True)

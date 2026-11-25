@@ -21,7 +21,9 @@ def digest(value):
 
 
 def product_key(item):
-    keys = [value for kind, value in item.references if kind == "sku"]
+    keys = [value for kind, value in item.references if kind == "item_id"] or [
+        value for kind, value in item.references if kind == "sku"
+    ]
     if len(keys) != 1:
         raise Conflict("Не подтверждён SKU товара для данных экземпляров")
     return keys[0]
@@ -32,7 +34,7 @@ def requirements(manifest, snapshot):
     if len(local) != len(manifest.items) or {
         str(p["product_id"]): p["quantity"] for p in snapshot.products
     } != {k: i.quantity for k, i in local.items()}:
-        raise Conflict("Состав экземпляров Ozon не совпадает с отправлением. Обновите заказ")
+        raise Conflict("Состав экземпляров площадки не совпадает с отправлением. Обновите заказ")
     result = {}
     for product in snapshot.products:
         key = str(product["product_id"])
@@ -40,7 +42,9 @@ def requirements(manifest, snapshot):
         required = set(product.get("required_fields", item.required_fields))
         optional = set(product.get("optional_fields", item.optional_fields))
         cis_positive = bool(
-            product.get("is_mandatory_mark_needed")
+            snapshot.source.marketplace == "yandex"
+            and getattr(item, "marking_hint", False)
+            or product.get("is_mandatory_mark_needed")
             or product.get("is_mandatory_mark_possible")
             or "cis" in required | optional
             or any(m["mark_type"] == "mandatory_mark" for e in product["exemplars"] for m in e["marks"])

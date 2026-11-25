@@ -56,6 +56,8 @@ class Documents:
             .with_for_update()
         )
         same = row and row.basis == target.basis and row.credential_revision == source.credential_revision
+        if same and source.marketplace == "yandex" and row.status == "waiting_ready":
+            return row.id
         if same and row.status == "waiting_ready" and target.state == "awaiting_assembly":
             return row.id
         if same and row.status == "ready" and target.state == "awaiting_dispatch":
@@ -88,7 +90,7 @@ class Documents:
         for field in ("task_id", "encrypted_pdf", "checksum", "byte_count", "received_at", "error", "job_id"):
             setattr(row, field, None)
         row.status = "waiting_ready"
-        if target.state == "awaiting_dispatch":
+        if target.state == "awaiting_dispatch" and source.marketplace == "ozon":
             row.status = "queued"
             row.job_id = enqueue(
                 tx, "documents.label", f"documents.label:{row.id}:{row.generation}", {"label_id": str(row.id)}
@@ -149,6 +151,10 @@ class Documents:
                 "stale": "Данные стикера изменились. Откройте отправление заново",
                 "expired": "Срок хранения стикера истёк",
             }
+            if source.marketplace == "yandex" and status == "waiting_ready":
+                messages["waiting_ready"] = (
+                    "История Честного знака сохранена. Ярлыки Яндекс Маркета будут подключены следующим этапом"
+                )
             result.append(
                 {
                     "id": str(row.id),

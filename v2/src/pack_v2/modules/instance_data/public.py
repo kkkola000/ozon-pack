@@ -12,7 +12,7 @@ from pack_v2.infrastructure.models import AuditEvent, Job
 from pack_v2.modules.marking.public import UnitBinding
 from pack_v2.shared.errors import Conflict, DomainError
 
-from . import policy
+from . import policy, yandex_policy
 from .models import InstanceContext, Submission, UnitDetail
 
 IN_FLIGHT = ("prepared", "checking", "uncertain")
@@ -153,10 +153,10 @@ class InstanceData:
         row = self._context(tx, context_id)
         self._guard_context(row, manifest)
         if any(r["unknown"] for r in row.requirements.values()):
-            raise Conflict("Ozon вернул неполные требования к Честному знаку или ГТД. Повторите сверку")
+            raise Conflict("Площадка вернула неполные требования к Честному знаку или ГТД. Повторите сверку")
         if any(r["unsupported_missing"] for r in row.requirements.values()):
             raise Conflict(
-                "Ozon требует дополнительные сведения (РНПТ, вес, IMEI или страну). Укажите их в кабинете и повторите сверку"
+                "Площадка требует дополнительные сведения (РНПТ, вес, IMEI или страну). Укажите их в кабинете и повторите сверку"
             )
         snapshot = self._open(row.encrypted_snapshot)
         by_item = {i.item_id: i for i in manifest.items}
@@ -164,8 +164,11 @@ class InstanceData:
             d.unit_id: d
             for d in tx.scalars(select(UnitDetail).where(UnitDetail.shipment_id == row.shipment_id))
         }
-        source = {str(p["product_id"]): p["exemplars"] for p in snapshot["products"]}
         current_marks = self.marking.values(tx, row.shipment_id, existing)
+        if snapshot.get("marketplace") == "yandex":
+            yandex_policy.align_snapshot(snapshot, planned, by_item, existing, current_marks)
+            row.encrypted_snapshot = self._seal(snapshot)
+        source = {str(p["product_id"]): p["exemplars"] for p in snapshot["products"]}
         for item_id, item in by_item.items():
             units = sorted((u for u in planned if u.item_id == item_id), key=lambda u: u.ordinal)
             key = policy.product_key(item)
@@ -221,6 +224,14 @@ class InstanceData:
                     (m["mark"] for m in slot.get("marks", []) if m["mark_type"] == "mandatory_mark"), None
                 )
                 local_mark = current_marks.get(unit.unit_id)
+                # Yandex can return only the short CIS. Its identity still proves that
+                # a previously accepted assignment has not been removed remotely.
+                if (
+                    local_mark
+                    and snapshot.get("marketplace") == "yandex"
+                    and yandex_policy.matches(slot.get("native_short_cis"), local_mark.raw)
+                ):
+                    remote_mark = local_mark.raw
                 if local_mark and (
                     not remote_mark or not self.marking.equivalent(remote_mark, local_mark.raw)
                 ):
@@ -299,7 +310,12 @@ class InstanceData:
             )
         )
         if ongoing:
-            raise Conflict("Данные уже передаются или результат не подтверждён. Дождитесь проверки Ozon")
+            raise Conflict("Данные уже передаются или результат не подтверждён. Дождитесь проверки площадки")
+
+    def _request(self, row, details, marks):
+        snapshot = self._open(row.encrypted_snapshot)
+        builder = yandex_policy.to_request if snapshot.get("marketplace") == "yandex" else policy.to_request
+        return builder(snapshot, details, marks)
 
     def prepare(self, tx, row):
         fingerprint, details, marks = self._fingerprint(tx, row)
@@ -311,7 +327,7 @@ class InstanceData:
         if old:
             return old.id
         self._editable(tx, row)
-        request = policy.to_request(self._open(row.encrypted_snapshot), details, marks)
+        request = self._request(row, details, marks)
         unit_ids = {d.product_id + ":" + d.exemplar_id: str(d.unit_id) for d in details}
         packet = {
             "request": request,
@@ -392,6 +408,8 @@ class InstanceData:
         row = self._context(tx, context_id)
         self._guard_context(row, manifest)
         self._editable(tx, row)
+        if absent and self._open(row.encrypted_snapshot).get("marketplace") == "yandex":
+            raise DomainError("Яндекс Маркет требует номер ГТД. Укажите его в поле под товаром")
         value = value.strip()
         if type(absent) is not bool or absent and value:
             raise DomainError("Выберите «Не указывать» либо укажите номер ГТД")
@@ -484,6 +502,11 @@ class InstanceData:
                         "id": str(d.unit_id),
                         "scanned": d.unit_id in scanned,
                         "gtd_required": bool(req.get("gtd")),
+                        "gtd_omission_allowed": self._open(row.encrypted_snapshot).get("marketplace")
+                        != "yandex",
+                        "market_cis_status": proof.get("cis_status"),
+                        "market_cis_substatus": proof.get("cis_substatus"),
+                        "market_cis_message": proof.get("cis_message"),
                         "gtd": d.values.get("gtd") or "",
                         "gtd_omitted": "gtd" in d.values and d.values["gtd"] is None,
                         "gtd_status": "rejected"
@@ -539,7 +562,7 @@ class InstanceData:
             "status": status,
             "message": batch.error
             if batch and batch.error
-            else "Проверяем данные экземпляров в Ozon"
+            else "Проверяем данные экземпляров на площадке"
             if status in ("prepared", "checking")
             else "",
             "can_verify": status == "accepted" and current and self._complete(row, details, marks),
@@ -558,7 +581,7 @@ class InstanceData:
         )
         if ongoing:
             raise Conflict(
-                "Данные заказа передаются или результат не подтверждён. Дождитесь сверки Ozon перед отвязкой"
+                "Данные заказа передаются или результат не подтверждён. Дождитесь сверки площадки перед отвязкой"
             )
 
     @staticmethod
@@ -578,7 +601,7 @@ class InstanceData:
         return fingerprint, {
             "baseline": self._open(row.encrypted_snapshot),
             "requirements": row.requirements,
-            "request": policy.to_request(self._open(row.encrypted_snapshot), details, marks),
+            "request": self._request(row, details, marks),
             "unit_ids": {(d.product_id, d.exemplar_id): str(d.unit_id) for d in details},
             "has_fields": self._has_fields(row),
         }

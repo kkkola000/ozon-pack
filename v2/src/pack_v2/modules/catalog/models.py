@@ -34,6 +34,7 @@ class Offer(Record, Base):
     article: Mapped[str | None] = mapped_column(String(256))
     image_url: Mapped[str | None] = mapped_column(String(4096))
     archived: Mapped[bool | None]
+    marking_declared: Mapped[bool | None]
     source_present: Mapped[bool] = mapped_column(default=True, server_default="true")
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

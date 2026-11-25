@@ -10,8 +10,9 @@ from .reading import AccountSource
 
 
 class OutcomeUnknown(DomainError):
-    def __init__(self):
-        super().__init__("Результат передачи Ozon не подтверждён. Проверяем сохранённые данные")
+    def __init__(self, marketplace="ozon"):
+        title = "Яндекс Маркет" if marketplace == "yandex" else "Ozon"
+        super().__init__(f"Результат передачи {title} не подтверждён. Проверяем сохранённые данные")
 
 
 @dataclass(frozen=True)

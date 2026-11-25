@@ -103,6 +103,7 @@ class Catalog:
                 "card": cards[r.id],
                 "codes": tuple(sorted(set(cards[r.id].codes) | codes.get(r.product_id, set()))),
                 "has_components": r.product_id in components,
+                "marking_declared": r.marking_declared is True,
                 "gtins": tuple(sorted(own_gtins.get(r.id, set()) | gtins.get(r.product_id, set()))),
             }
             for r in rows

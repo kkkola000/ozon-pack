@@ -28,6 +28,9 @@ from pack_v2.integrations.ozon.instances import OzonInstanceAdapter
 from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
+from pack_v2.integrations.yandex.access import YandexAccessChecker
+from pack_v2.integrations.yandex.instances import YandexInstanceAdapter
+from pack_v2.integrations.yandex.reader import YandexReadAdapter
 from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.documents.archive import StickerArchive
@@ -189,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
                     OzonInstanceAdapter,
                     OzonShippingAdapter,
                     OzonLabelAdapter,
+                    yandex_checker=YandexAccessChecker(),
+                    yandex_reader_factory=YandexReadAdapter,
+                    yandex_instance_factory=YandexInstanceAdapter,
                 )
                 catalog = Catalog(db, connections)
                 orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)

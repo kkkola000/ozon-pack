@@ -41,12 +41,12 @@ def apply_page(tx: Session, account_id: UUID, run_id: UUID, snapshots: tuple[Off
             saved = Offer(
                 id=uuid4(),
                 account_id=account_id,
-                name=snapshot.name or "Товар Ozon " + snapshot.source_id,
+                name=snapshot.name or "Товар " + snapshot.source_id,
                 revision=0,
             )
             tx.add(saved)
         changed = fresh or not saved.source_present
-        for field in ("name", "article", "image_url", "archived"):
+        for field in ("name", "article", "image_url", "archived", "marking_declared"):
             if field in snapshot.fields_present:
                 value = getattr(snapshot, field)
                 if field == "name" and not value:
@@ -73,16 +73,17 @@ def apply_page(tx: Session, account_id: UUID, run_id: UUID, snapshots: tuple[Off
         if "barcodes" in snapshot.fields_present:
             codes = saved_codes.get(saved.id, [])
             incoming_codes = {(c.kind, c.value, c.origin) for c in snapshot.barcodes}
-            if any(origin != "ozon" for _, _, origin in incoming_codes):
+            origin = snapshot.source.marketplace
+            if any(source != origin for _, _, source in incoming_codes):
                 raise DomainError("Источник штрихкода не соответствует площадке")
-            manual = {(c.kind, c.value) for c in codes if c.origin != "ozon"}
+            manual = {(c.kind, c.value) for c in codes if c.origin != origin}
             incoming_codes = {
                 (kind, value, origin) for kind, value, origin in incoming_codes if (kind, value) not in manual
             }
-            current = {(c.kind, c.value, c.origin) for c in codes if c.origin == "ozon"}
+            current = {(c.kind, c.value, c.origin) for c in codes if c.origin == origin}
             if current != incoming_codes:
                 for row in codes:
-                    if row.origin == "ozon" and (row.kind, row.value, row.origin) not in incoming_codes:
+                    if row.origin == origin and (row.kind, row.value, row.origin) not in incoming_codes:
                         tx.delete(row)
                 for kind, value, origin in incoming_codes - current:
                     new_codes.append(OfferCode(offer_id=saved.id, kind=kind, value=value, origin=origin))
@@ -102,7 +103,7 @@ def apply_page(tx: Session, account_id: UUID, run_id: UUID, snapshots: tuple[Off
             )
         ).first()
         if conflicts:
-            raise Conflict("Один идентификатор Ozon указан у разных карточек. Загрузка остановлена")
+            raise Conflict("Один идентификатор площадки указан у разных карточек. Загрузка остановлена")
     tx.add_all([*new_refs, *new_codes])
     tx.flush()
 

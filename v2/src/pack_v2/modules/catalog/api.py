@@ -49,6 +49,9 @@ def build_router() -> APIRouter:
             result=result,
             accounts=accounts,
             account_names={a.id: a.title for a in accounts},
+            account_markets={
+                a.id: "Яндекс Маркет" if a.marketplace == "yandex" else "Ozon" for a in accounts
+            },
             syncs=catalog.sync_status(saved.user),
             sync_statuses=SYNC_STATUSES,
             states=STATES,

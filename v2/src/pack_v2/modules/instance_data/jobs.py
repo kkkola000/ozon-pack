@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from pack_v2.infrastructure.jobs import LeaseLost, Queue
 from pack_v2.infrastructure.models import AuditEvent
-from pack_v2.integrations.public import AccountSource, OutcomeUnknown, ReadError, SourceChanged
+from pack_v2.integrations.public import OutcomeUnknown, ReadError, SourceChanged
 from pack_v2.shared.errors import Conflict, DomainError
 
 from . import policy
@@ -29,8 +29,7 @@ class InstanceJobs:
             if batch is None:
                 raise SourceChanged("Пакет передачи не найден")
             row = self.s._context(tx, batch.context_id)
-        source = AccountSource(row.account_id, "ozon", row.credential_revision)
-        self.s.connections.lock_source(tx, source)
+        source = self.s.connections.source_at_revision(tx, row.account_id, row.credential_revision)
         Queue.owned(tx, job)
         self.s.orders.packing_lock(tx, row.shipment_id)
         row = tx.scalar(
@@ -113,6 +112,9 @@ class InstanceJobs:
                 "products": snapshot.products,
                 "multi_box_qty": snapshot.multi_box_qty,
             }
+
+        if source.marketplace == "yandex":
+            payload.update(marketplace="yandex", native=snapshot.posting["yandex"])
 
         def save(tx, row, batch, source, manifest):
             if row.status != "reading":
@@ -228,6 +230,10 @@ class InstanceJobs:
         if saved is None:
             return
         source, manifest, baseline, req, signature, packet, set_started, update_started = saved
+        if source.marketplace == "yandex":
+            from .yandex_jobs import submit
+
+            return submit(self, job, saved)
         payload = packet["request"]
         unit_ids = {tuple(k.split(":")): v for k, v in packet["unit_ids"].items()}
         with self.s.connections.instance_client(source) as client:
@@ -314,17 +320,21 @@ class InstanceJobs:
             self._send(job, client, "set", payload)
         self.wait(job)
 
-    def accept(self, job):
+    def accept(self, job, results=None):
         def save(tx, row, batch, source, manifest):
             batch.status, batch.finished_at, batch.error = "accepted", datetime.now(UTC), None
             packet = self.s._open(batch.encrypted_payload)
-            batch.field_results = {
-                uid: {
-                    **({"cis": "accepted"} if uid in packet["assignments"] else {}),
-                    **({"gtd": "accepted"} if row.requirements[key.split(":")[0]]["gtd"] else {}),
+            batch.field_results = (
+                results
+                if results is not None
+                else {
+                    uid: {
+                        **({"cis": "accepted"} if uid in packet["assignments"] else {}),
+                        **({"gtd": "accepted"} if row.requirements[key.split(":")[0]]["gtd"] else {}),
+                    }
+                    for key, uid in packet["unit_ids"].items()
                 }
-                for key, uid in packet["unit_ids"].items()
-            }
+            )
             self.s.marking.transmissions(
                 tx, batch.id, [UUID(v) for v in packet["assignments"].values()], "accepted"
             )
@@ -347,12 +357,12 @@ class InstanceJobs:
 
         self.write(job, save)
 
-    def reject(self, job, errors, results=None):
+    def reject(self, job, errors, results=None, message=None):
         def save(tx, row, batch, source, manifest):
             batch.status, batch.finished_at, batch.error = (
                 "rejected",
                 datetime.now(UTC),
-                "Ozon не принял данные экземпляра. Проверьте Честный знак и ГТД",
+                message or "Ozon не принял данные экземпляра. Проверьте Честный знак и ГТД",
             )
             batch.field_errors = errors
             batch.field_results = results or {}

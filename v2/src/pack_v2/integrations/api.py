@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, model_validator
 
 from pack_v2.shared.errors import DomainError
 from pack_v2.web.deps import manager
@@ -18,10 +18,19 @@ class Revision(BaseModel):
 
 class CreateAccount(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-    marketplace: Literal["ozon"] = "ozon"
+    marketplace: Literal["ozon", "yandex"] = "ozon"
     title: str = Field(min_length=1, max_length=200)
-    client_id: str = Field(min_length=1, max_length=32)
+    client_id: str | None = Field(default=None, min_length=1, max_length=32)
+    business_id: str | None = Field(default=None, min_length=1, max_length=32)
     api_key: SecretStr
+
+    @model_validator(mode="after")
+    def identity(self):
+        if (self.marketplace == "ozon" and (not self.client_id or self.business_id is not None)) or (
+            self.marketplace == "yandex" and (not self.business_id or self.client_id is not None)
+        ):
+            raise ValueError("Укажите Client-Id для Ozon или Business ID для Яндекс Маркета")
+        return self
 
 
 class UpdateAccount(Revision):
@@ -49,7 +58,11 @@ def build_router() -> APIRouter:
     def create(request: Request, payload: CreateAccount):
         saved = manager(request, request.headers.get("x-csrf-token", ""))
         account_id = request.app.state.connections.create(
-            saved.user, payload.title, payload.client_id, payload.api_key
+            saved.user,
+            payload.title,
+            payload.business_id if payload.marketplace == "yandex" else payload.client_id,
+            payload.api_key,
+            marketplace=payload.marketplace,
         )
         return {"id": str(account_id)}
 
@@ -80,18 +93,20 @@ def build_router() -> APIRouter:
         title: Annotated[str, Form(max_length=200)],
         client_id: Annotated[str, Form(max_length=32)],
         api_key: Annotated[str, Form()],
-        marketplace: Annotated[Literal["ozon"], Form()] = "ozon",
+        marketplace: Annotated[Literal["ozon", "yandex"], Form()] = "ozon",
     ):
         saved = manager(request, csrf)
         try:
-            request.app.state.connections.create(saved.user, title, client_id, SecretStr(api_key))
+            request.app.state.connections.create(
+                saved.user, title, client_id, SecretStr(api_key), marketplace=marketplace
+            )
         except DomainError as exc:
             return settings_page(
                 request,
                 saved,
                 "accounts",
                 error=str(exc),
-                form={"title": title, "client_id": client_id},
+                form={"title": title, "client_id": client_id, "marketplace": marketplace},
                 status=400,
             )
         return _done("saved")

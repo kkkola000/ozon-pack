@@ -20,7 +20,9 @@ WORKING_STATES = ("awaiting_assembly", "awaiting_dispatch")
 
 
 class ReadError(DomainError):
-    def __init__(self, kind: str, *, status: int | None = None, retry_after: float | None = None):
+    def __init__(
+        self, kind: str, *, status: int | None = None, retry_after: float | None = None, marketplace="ozon"
+    ):
         messages = {
             "unauthorized": "Ozon не принял Client-Id или Api-Key (HTTP 401)",
             "denied": "Нет доступа у API-ключа. Проверьте его права в Ozon (HTTP 403)",
@@ -32,7 +34,12 @@ class ReadError(DomainError):
             "incomplete": "Ozon вернул неполный набор данных. Повторите загрузку",
             "pagination": "Не удалось полностью прочитать страницы Ozon. Повторите загрузку",
         }
-        super().__init__(messages.get(kind, messages["invalid_response"]))
+        message = messages.get(kind, messages["invalid_response"])
+        if marketplace == "yandex":
+            message = message.replace("Ozon", "Яндекс Маркет").replace(
+                "Client-Id или Api-Key", "Business ID или Api-Key"
+            )
+        super().__init__(message)
         self.kind, self.status, self.retry_after = kind, status, retry_after
         self.retryable = kind in {"rate_limited", "unavailable", "incomplete", "pagination"}
 
@@ -71,6 +78,7 @@ class OfferSnapshot:
     archived: bool | None
     fields_present: frozenset[str]
     observed_at: datetime = field(compare=False, repr=False)
+    marking_declared: bool | None = None
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,7 @@ from pack_v2.modules.identity.public import Principal
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden
 
 from . import repository as store
-from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials, SyncView
+from .contracts import AccessChecker, AccountLabel, AccountView, OzonCredentials, SyncView, YandexCredentials
 from .documents import LabelFactory
 from .instances import InstanceFactory, InstanceSnapshot, OutcomeUnknown
 from .models import AccountCheck, MarketplaceAccount
@@ -48,10 +48,21 @@ def _title(value: str) -> str:
     return value
 
 
-def _client_id(value: str) -> str:
+def _client_id(value: str, marketplace="ozon") -> str:
     value = value.strip()
-    if not value.isascii() or not value.isdigit() or len(value) > 32 or not value.strip("0"):
-        raise DomainError("Client-Id должен содержать положительный числовой идентификатор Ozon")
+    if (
+        not value.isascii()
+        or not value.isdigit()
+        or len(value) > 32
+        or not value.strip("0")
+        or marketplace == "yandex"
+        and int(value) >= 2**63
+    ):
+        raise DomainError(
+            "Business ID должен содержать положительный числовой идентификатор Яндекс Маркета"
+            if marketplace == "yandex"
+            else "Client-Id должен содержать положительный числовой идентификатор Ozon"
+        )
     return value
 
 
@@ -77,12 +88,19 @@ class Connections:
         instance_factory: InstanceFactory | None = None,
         shipping_factory: ShippingFactory | None = None,
         label_factory: LabelFactory | None = None,
+        *,
+        yandex_checker=None,
+        yandex_reader_factory=None,
+        yandex_instance_factory=None,
     ):
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
         self.instance_factory = instance_factory
         self.shipping_factory = shipping_factory
         self.label_factory = label_factory
+        self.yandex_checker = yandex_checker
+        self.yandex_reader_factory = yandex_reader_factory
+        self.yandex_instance_factory = yandex_instance_factory
 
     def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
         if not actor.can(section):
@@ -108,7 +126,8 @@ class Connections:
                 AccountSource(a.id, a.marketplace, a.credential_revision)
                 for a in tx.scalars(
                     select(MarketplaceAccount).where(
-                        MarketplaceAccount.active.is_(True), MarketplaceAccount.marketplace == "ozon"
+                        MarketplaceAccount.active.is_(True),
+                        MarketplaceAccount.marketplace.in_(("ozon", "yandex")),
                     )
                 )
             ]
@@ -123,9 +142,15 @@ class Connections:
         saved = store.account(tx, account_id, lock=True)
         if not saved.active:
             raise SourceChanged("Кабинет отключён")
-        if saved.marketplace != "ozon":
+        if saved.marketplace not in ("ozon", "yandex"):
             raise DomainError("Адаптер этой площадки ещё не подключён")
         return AccountSource(saved.id, saved.marketplace, saved.credential_revision)
+
+    def source_at_revision(self, tx, account_id, revision):
+        current = self.source_for_sync(tx, account_id)
+        if current.credential_revision != revision:
+            raise SourceChanged("Ключи кабинета изменились. Повторите загрузку")
+        return current
 
     def lock_source(self, tx: Session, source: AccountSource) -> None:
         current = self.source_for_sync(tx, source.account_id)
@@ -135,30 +160,34 @@ class Connections:
     @contextmanager
     def reader_for_sync(self, source: AccountSource):
         """Trusted backend entry point: source comes from a persisted, authorized job."""
-        if self.reader_factory is None:
+        factory = self.yandex_reader_factory if source.marketplace == "yandex" else self.reader_factory
+        if factory is None:
             raise DomainError("Адаптер чтения не настроен")
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
-        with self.reader_factory(source, credentials) as reader:
+        with factory(source, credentials) as reader:
             yield reader
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
 
     @contextmanager
     def instance_client(self, source: AccountSource):
-        if self.instance_factory is None:
+        factory = self.yandex_instance_factory if source.marketplace == "yandex" else self.instance_factory
+        if factory is None:
             raise DomainError("Адаптер данных экземпляров не настроен")
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
-        with self.instance_factory(source, credentials) as client:
+        with factory(source, credentials) as client:
             yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
 
     @contextmanager
     def shipping_client(self, source: AccountSource):
+        if source.marketplace != "ozon":
+            raise DomainError("Перевод готовности этой площадки ещё не подключён")
         if self.shipping_factory is None:
             raise DomainError("Адаптер сборки не настроен")
         with self.db.transaction() as tx:
@@ -171,6 +200,8 @@ class Connections:
 
     @contextmanager
     def label_client(self, source: AccountSource):
+        if source.marketplace != "ozon":
+            raise DomainError("Получение ярлыков этой площадки ещё не подключено")
         if self.label_factory is None:
             raise DomainError("Адаптер стикеров не настроен")
         with self.db.transaction() as tx:
@@ -195,11 +226,12 @@ class Connections:
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
 
-    def _credentials(self, tx, account_id: UUID) -> OzonCredentials:
+    def _credentials(self, tx, account_id: UUID) -> OzonCredentials | YandexCredentials:
         values = store.secrets_for(tx, account_id)
+        yandex = store.account(tx, account_id).marketplace == "yandex"
         try:
-            return OzonCredentials(
-                self.box.open(values["client_id"]).decode("ascii"),
+            return (YandexCredentials if yandex else OzonCredentials)(
+                self.box.open(values["business_id" if yandex else "client_id"]).decode("ascii"),
                 SecretStr(self.box.open(values["api_key"]).decode("ascii")),
             )
         except (KeyError, InvalidToken, UnicodeError):
@@ -207,14 +239,18 @@ class Connections:
                 "Не удалось прочитать ключи кабинета. Проверьте ключ шифрования панели"
             ) from None
 
-    def create(self, actor: Principal, title: str, client_id: str, api_key: SecretStr) -> UUID:
+    def create(
+        self, actor: Principal, title: str, client_id: str, api_key: SecretStr, *, marketplace="ozon"
+    ) -> UUID:
         _manager(actor)
-        title, client_id, api_key_bytes = _title(title), _client_id(client_id), _key(api_key)
-        fingerprint = hashlib.sha256(("ozon\0" + client_id.lstrip("0")).encode("ascii")).hexdigest()
+        if marketplace not in ("ozon", "yandex"):
+            raise DomainError("Площадка не поддерживается")
+        title, client_id, api_key_bytes = _title(title), _client_id(client_id, marketplace), _key(api_key)
+        fingerprint = hashlib.sha256((marketplace + "\0" + client_id.lstrip("0")).encode("ascii")).hexdigest()
         try:
             with self.db.transaction() as tx:
                 saved = MarketplaceAccount(
-                    marketplace="ozon",
+                    marketplace=marketplace,
                     title=title,
                     active=True,
                     identity_fingerprint=fingerprint,
@@ -222,12 +258,18 @@ class Connections:
                 )
                 tx.add(saved)
                 tx.flush()
-                store.save_secret(tx, saved.id, "client_id", self.box.seal(client_id.encode("ascii")))
+                store.save_secret(
+                    tx,
+                    saved.id,
+                    "business_id" if marketplace == "yandex" else "client_id",
+                    self.box.seal(client_id.encode("ascii")),
+                )
                 store.save_secret(tx, saved.id, "api_key", self.box.seal(api_key_bytes))
                 store.audit(tx, actor.id, saved.id, "account_created")
                 return saved.id
         except IntegrityError as exc:
-            raise Conflict("Кабинет с этим Client-Id уже добавлен. Найдите его в списке кабинетов") from exc
+            name = "Business ID" if marketplace == "yandex" else "Client-Id"
+            raise Conflict(f"Кабинет с этим {name} уже добавлен. Найдите его в списке кабинетов") from exc
 
     def update(
         self, actor: Principal, account_id: UUID, revision: int, title: str, api_key: SecretStr | None = None
@@ -242,10 +284,14 @@ class Connections:
             if raw is not None:
                 try:
                     # Do not mix keys from different encryption configurations.
-                    self.box.open(store.secrets_for(tx, account_id)["client_id"])
+                    self.box.open(
+                        store.secrets_for(tx, account_id)[
+                            "business_id" if saved.marketplace == "yandex" else "client_id"
+                        ]
+                    )
                 except (KeyError, InvalidToken) as exc:
                     raise DomainError(
-                        "Не удалось прочитать Client-Id. Проверьте ключ шифрования панели"
+                        "Не удалось прочитать идентификатор кабинета. Проверьте ключ шифрования панели"
                     ) from exc
                 store.save_secret(tx, saved.id, "api_key", self.box.seal(raw))
                 saved.credential_revision += 1
@@ -267,12 +313,14 @@ class Connections:
             accounts, secrets, checks = store.listing(tx)
             for saved in accounts:
                 values, checked = secrets.get(saved.id, {}), checks.get(saved.id)
-                client_id, error = None, None
+                client_id, business_id, error = None, None, None
                 try:
                     if "client_id" in values:
                         client_id = self.box.open(values["client_id"]).decode("ascii")
+                    if "business_id" in values:
+                        business_id = self.box.open(values["business_id"]).decode("ascii")
                 except (InvalidToken, UnicodeError):
-                    error = "Не удалось прочитать Client-Id. Проверьте ключ шифрования панели"
+                    error = "Не удалось прочитать идентификатор кабинета. Проверьте ключ шифрования панели"
                 status, checked_at, details = "unverified", None, []
                 if (
                     checked
@@ -283,7 +331,11 @@ class Connections:
                     if status == "checking" and checked.lease_until <= now:
                         status = "unavailable"
                     checked_at, details = checked.finished_at, checked.results
-                if error or not client_id or "api_key" not in values:
+                if (
+                    error
+                    or not (business_id if saved.marketplace == "yandex" else client_id)
+                    or "api_key" not in values
+                ):
                     status, checked_at, details = "unverified", None, []
                 result.append(
                     AccountView(
@@ -298,6 +350,7 @@ class Connections:
                         checked_at,
                         details,
                         error,
+                        business_id,
                     )
                 )
         return result
@@ -308,7 +361,8 @@ class Connections:
         with self.db.transaction() as tx:
             saved = store.account(tx, account_id, lock=True)
             self._revision(saved, revision)
-            if saved.marketplace != "ozon":
+            checker = self.yandex_checker if saved.marketplace == "yandex" else self.checker
+            if saved.marketplace not in ("ozon", "yandex") or checker is None:
                 raise DomainError("Проверка этой площадки ещё не подключена")
             pending = store.running(tx, account_id)
             if pending and pending.lease_until > now:
@@ -323,9 +377,15 @@ class Connections:
             tx.add(check)
             tx.flush()
             check_id, credential_revision = check.id, saved.credential_revision
-        # All network work is outside the database transaction and account lock.
-        results = [asdict(item) for item in self.checker.check(credentials)]
-        if len(results) != 3 or {r["code"] for r in results} != {"orders", "products", "returns"}:
+            # All network work is outside the database transaction and account lock.
+            yandex = saved.marketplace == "yandex"
+        results = [asdict(item) for item in checker.check(credentials)]
+        expected = (
+            ("orders", "Заказы FBS"),
+            ("products", "Товары"),
+            ("campaigns", "Магазины") if yandex else ("returns", "Возвраты"),
+        )
+        if len(results) != 3 or {r["code"] for r in results} != {c for c, _ in expected}:
             results = [
                 {
                     "code": code,
@@ -333,7 +393,7 @@ class Connections:
                     "status": "invalid_response",
                     "message": "Проверка вернула неполный результат. Повторите позже",
                 }
-                for code, title in (("orders", "Заказы FBS"), ("products", "Товары"), ("returns", "Возвраты"))
+                for code, title in expected
             ]
         now = datetime.now(UTC)
         with self.db.transaction() as tx:

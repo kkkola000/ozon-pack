@@ -64,6 +64,9 @@ def build_router():
             result=result,
             accounts=accounts,
             account_names={a.id: a.title for a in accounts},
+            account_markets={
+                a.id: "Яндекс Маркет" if a.marketplace == "yandex" else "Ozon" for a in accounts
+            },
             selected_account=account_id,
             q=q,
             state=state,
@@ -96,6 +99,9 @@ def build_router():
             money=money,
             msk=msk,
             account_names={a.id: a.title for a in accounts},
+            account_markets={
+                a.id: "Яндекс Маркет" if a.marketplace == "yandex" else "Ozon" for a in accounts
+            },
         )
 
     @router.get("/api/v2/orders")

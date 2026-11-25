@@ -208,8 +208,7 @@ class AccountSync:
         run = tx.get(self.model, run_id)
         if run is None or run.job_id != job.id:
             raise DomainError("Задание загрузки не найдено")
-        source = AccountSource(run.account_id, "ozon", run.credential_revision)
-        self.connections.lock_source(tx, source)
+        source = self.connections.source_at_revision(tx, run.account_id, run.credential_revision)
         Queue.owned(tx, job)
         run = tx.scalar(
             select(self.model)

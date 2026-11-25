@@ -15,6 +15,12 @@ class OzonCredentials:
 
 
 @dataclass(frozen=True)
+class YandexCredentials:
+    business_id: str
+    api_key: SecretStr
+
+
+@dataclass(frozen=True)
 class CapabilityCheck:
     code: str
     title: str
@@ -39,6 +45,7 @@ class AccountView:
     checked_at: datetime | None
     results: list[dict]
     configuration_error: str | None = None
+    business_id: str | None = None
 
 
 @dataclass(frozen=True)

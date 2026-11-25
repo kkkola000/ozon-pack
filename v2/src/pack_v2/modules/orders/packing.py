@@ -63,7 +63,9 @@ def manifest(tx, shipment_id, catalog, *, allow_ship_failed=False):
                 tuple((r["kind"], r["value"]) for r in row.references),
                 card["codes"] if card else (),
                 card["card"].image_url if card else None,
-                "cis" in row.required_fields or "cis" in row.optional_fields,
+                "cis" in row.required_fields
+                or "cis" in row.optional_fields
+                or bool(card and card["marking_declared"]),
                 card["has_components"] if card else False,
                 tuple(row.required_fields),
                 tuple(row.optional_fields),
