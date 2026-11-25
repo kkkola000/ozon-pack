@@ -132,15 +132,7 @@ def build_router() -> APIRouter:
     @router.get("/settings/printing")
     def printing(request: Request):
         saved = current(request)
-        saved.user.require("printing")
-        return render(
-            request,
-            "section.html",
-            saved=saved,
-            title="Принтеры",
-            active_tab="settings",
-            description="Профили принтеров будут перенесены вместе с модулем печати. Сейчас задания на печать не создаются.",
-        )
+        return settings_page(request, saved, "printing", printing_only=not saved.user.can("settings"))
 
     @router.get("/api/v2/me")
     def me(request: Request):

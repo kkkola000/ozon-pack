@@ -11,6 +11,7 @@ from cryptography.fernet import InvalidToken
 from pypdf import PdfReader
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import defer
 
 from pack_v2.infrastructure.jobs import LeaseLost, Queue, enqueue
 from pack_v2.infrastructure.models import AuditEvent, Job
@@ -114,9 +115,9 @@ class Documents:
         for shipment_id in dict.fromkeys(shipment_ids):
             target = self.orders.label_target(tx, shipment_id)
             row = tx.scalar(
-                select(ShipmentLabel).where(
-                    ShipmentLabel.shipment_id == shipment_id, ShipmentLabel.size == self.label_size
-                )
+                select(ShipmentLabel)
+                .options(defer(ShipmentLabel.encrypted_pdf))
+                .where(ShipmentLabel.shipment_id == shipment_id, ShipmentLabel.size == self.label_size)
             )
             if row is None:
                 continue
@@ -156,6 +157,7 @@ class Documents:
                     "status": status,
                     "message": messages[status],
                     "key": f"{row.id}:{row.generation}",
+                    "generation": row.generation,
                     "url": f"/api/v2/documents/labels/{row.id}/{row.generation}/pdf"
                     if status == "ready"
                     else None,
@@ -194,6 +196,37 @@ class Documents:
         if len(pdf) != row.byte_count or hashlib.sha256(pdf).hexdigest() != row.checksum:
             raise DomainError("Не удалось проверить сохранённый стикер. Повторите загрузку")
         return pdf
+
+    def print_source(self, tx, label_id, generation, *, archived=False, content=True):
+        """Trusted print port; archived reads retain history after delivery/disabled account."""
+        from .archive import cutoff
+
+        row = tx.scalar(
+            select(ShipmentLabel)
+            .options(defer(ShipmentLabel.encrypted_pdf))
+            .where(ShipmentLabel.id == label_id)
+        )
+        if row is None or (row.received_at or row.created_at) < cutoff(datetime.now(UTC)):
+            raise NotFound("Стикер не найден или срок хранения истёк")
+        if row.generation != generation or row.status != "ready":
+            raise Conflict("Стикер обновлён или ещё не получен. Обновите окно")
+        target = self.orders.label_target(tx, row.shipment_id)
+        if row.basis != target.basis:
+            raise Conflict("Состав стикера изменился. Откройте отправление заново")
+        if not archived:
+            source = self.connections.account_label(tx, row.account_id)
+            if (
+                not source.active
+                or source.credential_revision != row.credential_revision
+                or not target.eligible
+                or target.state != "awaiting_dispatch"
+            ):
+                raise Conflict("Данные отправления изменились. Обновите окно сборки")
+        return {
+            "shipment_id": row.shipment_id,
+            "posting_number": target.posting_number,
+            "data": self.content(row) if content else None,
+        }
 
     def _write(self, job, callback):
         with self.db.transaction() as tx:

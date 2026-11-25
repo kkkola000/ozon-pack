@@ -26,7 +26,13 @@ click==8.5.1
     # via uvicorn
 cryptography==50.0.1
     # via ozon-pack-v2 (pyproject.toml)
+defusedxml==0.7.1
+    # via fpdf2
 fastapi==0.141.1
+    # via ozon-pack-v2 (pyproject.toml)
+fonttools==4.68.0
+    # via fpdf2
+fpdf2==2.8.8
     # via ozon-pack-v2 (pyproject.toml)
 greenlet==3.5.6
     # via
@@ -58,6 +64,8 @@ markupsafe==3.0.4
     #   mako
 packaging==26.3
     # via pytest
+pillow==13.0.0
+    # via fpdf2
 playwright==1.65.2
     # via ozon-pack-v2 (pyproject.toml)
 pluggy==1.7.0
@@ -78,9 +86,9 @@ pydantic-settings==2.16.3
     # via ozon-pack-v2 (pyproject.toml)
 pygments==2.21.0
     # via pytest
-pytest==9.1.1
-    # via ozon-pack-v2 (pyproject.toml)
 pypdf==6.16.2
+    # via ozon-pack-v2 (pyproject.toml)
+pytest==9.1.1
     # via ozon-pack-v2 (pyproject.toml)
 python-dotenv==1.2.4
     # via pydantic-settings
@@ -112,4 +120,6 @@ typing-inspection==0.4.5
     #   pydantic
     #   pydantic-settings
 uvicorn==0.52.4
+    # via ozon-pack-v2 (pyproject.toml)
+zxing-cpp==3.0.0
     # via ozon-pack-v2 (pyproject.toml)

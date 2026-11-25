@@ -26,6 +26,26 @@ STATES = {
 
 
 class Orders:
+    def print_codes(self, tx, shipment_id, prefix="OZN"):
+        from .models import ShipmentItem
+
+        rows = list(
+            tx.scalars(
+                select(ShipmentItem)
+                .where(ShipmentItem.shipment_id == shipment_id, ShipmentItem.source_present.is_(True))
+                .order_by(ShipmentItem.source_line_id)
+            )
+        )
+        codes = self.catalog.print_codes(tx, {r.offer_id for r in rows if r.offer_id}, prefix)
+        result = []
+        for row in rows:
+            code = codes.get(row.offer_id)
+            if code:
+                if len(result) + row.quantity > 500:
+                    raise DomainError("За один раз можно напечатать не больше 500 товарных штрихкодов")
+                result.extend([code] * row.quantity)
+        return result
+
     def __init__(self, db, connections, catalog: Catalog, *, lookback_days=30):
         self.db, self.connections, self.catalog = db, connections, catalog
         self.lookback_days = lookback_days

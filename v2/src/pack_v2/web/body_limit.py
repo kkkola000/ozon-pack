@@ -12,6 +12,7 @@ class AuthBodyLimit:
         protected |= scope.get("path", "").startswith(
             (
                 "/api/v2/stickers",
+                "/api/v2/printing",
                 "/reports/stickers/search",
                 "/api/v2/assembly",
                 "/api/v2/accounts",

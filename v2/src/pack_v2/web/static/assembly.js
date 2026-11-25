@@ -15,6 +15,7 @@
   const downloadedLabels = new Set();
   const labelErrors = new Map();
   let labelBusy = false;
+  let manualPrintBusy = false;
   let lastIssue = null;
   let rendering = false;
   let session = JSON.parse(root.dataset.session);
@@ -198,6 +199,8 @@
       const pdf = make('a', 'btn', 'Открыть PDF'); pdf.href = ready[0].url; pdf.target = '_blank'; pdf.rel = 'noopener'; buttons.append(pdf);
     }
     if (labels.length) {
+      const print = make('button', 'btn', labels.length > 1 ? 'Печать стикеров' : 'Печать стикера');
+      print.type = 'button'; print.dataset.labelPrintAll = ''; print.disabled = !ready.length || manualPrintBusy; buttons.append(print);
       const download = make('button', 'btn', labels.length > 1 ? 'Скачать стикеры' : 'Скачать стикер');
       download.type = 'button'; download.dataset.labelDownloadAll = ''; download.disabled = !ready.length; buttons.append(download);
     }
@@ -245,6 +248,12 @@
     if (session?.id !== next?.id || next?.status !== 'scanning') { layoutDraft = null; draggingUnit = null; }
     session = next;
     render();
+    window.PackPrinting?.sync(session, printNotice);
+  }
+  function printNotice(text, state) {
+    let note = root.querySelector('[data-print-status]');
+    if (!note) { note = make('p', 'muted small printing-status'); note.dataset.printStatus = ''; note.setAttribute('role','status'); root.querySelector('.assembly-header-actions').append(note); }
+    note.textContent = text; note.className = `muted small printing-status ${state || ''}`;
   }
   async function decode(response) {
     const data = await response.json();
@@ -343,6 +352,12 @@
     draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render();
   });
   root.addEventListener('click', event => {
+    const printButton = event.target.closest('[data-label-print-all]');
+    if (printButton && !printButton.disabled && !manualPrintBusy) {
+      manualPrintBusy = true; printButton.disabled = true;
+      const current = session;
+      Promise.all((current.labels || []).filter(l => l.status === 'ready').map(label => window.PackPrinting.label(label,current.id,(text,state) => { if (session?.id === current.id) printNotice(text,state); }))).finally(() => { manualPrintBusy = false; if (session) renderLabels(); });
+    }
     if (event.target.closest('[data-label-download-all]')) {
       for (const label of session?.labels || []) if (label.status === 'ready') queueLabel(label, false);
     }
@@ -467,6 +482,7 @@
     }
   });
   render();
+  window.PackPrinting?.sync(session, printNotice);
   recover().then(() => {
     if (!recovery && root.dataset.open && !session) { queue.push({ action: 'open', target: root.dataset.open }); drain(); }
     focus(); poll();

@@ -5,6 +5,13 @@
   const dialog = document.querySelector('[data-marking-dialog]');
   const rows = dialog.querySelector('[data-marking-rows]');
   const error = dialog.querySelector('[data-marking-error]');
+  const printReport = (node, text, state='') => { node.hidden = !text; node.textContent = text; node.className = `notice ${state}`; };
+  async function printMarks(marks) {
+    if (busy || !labelId) return;
+    busy = true; rows.querySelectorAll('button').forEach(n => { n.disabled = true; });
+    try { await window.PackPrinting.marking(labelId, marks.map(m => ({id:m.id,revision:m.revision})), (text,state) => printReport(dialog.querySelector('[data-marking-print-notice]'),text,state)); }
+    finally { busy = false; rows.querySelectorAll('button').forEach(n => { n.disabled = false; }); }
+  }
   let labelId = null, busy = false, requestVersion = 0;
   const make = (tag, cls, text) => {
     const node = document.createElement(tag);
@@ -29,6 +36,10 @@
       const check = make('td'), status = checks[mark.check] || checks.unknown;
       check.append(make('span',`badge ${status[1]}`,status[0]));
       const actions = make('td','stickers-actions');
+      if (mark.binding === 'bound' && mark.check !== 'rejected') {
+        const print = make('button','btn small','Печать'); print.type = 'button'; print.disabled = busy;
+        print.addEventListener('click', () => printMarks([mark])); actions.append(print);
+      }
       if (mark.can_release) {
         const button = make('button','btn small','Отвязать'); button.type = 'button'; button.disabled = busy;
         button.addEventListener('click', () => release(mark)); actions.append(button);
@@ -36,6 +47,9 @@
       row.append(product,identity,binding,check,actions); rows.append(row);
     }
     if (!data.marks.length) { const row = make('tr'), cell = make('td','muted','Коды не найдены'); cell.colSpan = 5; row.append(cell); rows.append(row); }
+    const all = dialog.querySelector('[data-marking-print-all]'); all.replaceChildren();
+    const printable = data.marks.filter(m => m.binding === 'bound' && m.check !== 'rejected');
+    if (printable.length > 1) { const print = make('button','btn small','Печать всех кодов «Честный знак»'); print.type = 'button'; print.addEventListener('click',() => printMarks(printable)); all.append(print); }
     const archiveRow = archive.querySelector(`[data-sticker-row="${labelId}"]`);
     const note = archiveRow?.querySelector('[data-marking-bound]');
     if (note) note.textContent = data.marks.some(m => m.binding !== 'unbound') ? 'Есть привязанные коды' : 'Коды отвязаны';
@@ -43,6 +57,7 @@
   async function open(id) {
     labelId = id; const version = ++requestVersion;
     showError(''); rows.replaceChildren();
+    dialog.querySelector('[data-marking-print-notice]').hidden = true;
     document.getElementById('marking-title').textContent = 'Честный знак';
     dialog.querySelector('[data-marking-release-help]').hidden = true;
     if (!dialog.open) dialog.showModal();
@@ -71,6 +86,12 @@
     finally { busy = false; rows.querySelectorAll('button').forEach(button => { button.disabled = false; }); }
   }
   archive.addEventListener('click', event => {
+    const print = event.target.closest('[data-sticker-print]');
+    if (print && !print.disabled) {
+      print.disabled = true;
+      const row = print.closest('[data-sticker-row]');
+      window.PackPrinting.label({id:row.dataset.stickerRow,generation:Number(row.dataset.stickerGeneration)},null,(text,state) => printReport(archive.querySelector('[data-stickers-notice]'),text,state)).finally(() => { print.disabled = false; });
+    }
     const button = event.target.closest('[data-sticker-marking]');
     if (button && !busy) open(button.dataset.stickerMarking);
   });

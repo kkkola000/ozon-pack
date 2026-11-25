@@ -130,12 +130,12 @@ def label_job(pipeline):
     return job
 
 
-def ready_open(pipeline, owner, db):
+def ready_open(pipeline, owner, db, *, code=MUFT):
     assembly, _, remote, account = pipeline
     remote.postings[0].update(status="awaiting_deliver", substatus="posting_formed")
     remote.make_context(remote.postings[0])
     execute(assembly.orders, owner, account, db)
-    return open_window(pipeline, owner, code=MUFT)
+    return open_window(pipeline, owner, code=code)
 
 
 def finish_labels(pipeline, owner, view):

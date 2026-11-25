@@ -38,6 +38,8 @@ from pack_v2.modules.instance_data.public import InstanceData
 from pack_v2.modules.marking.public import Marking
 from pack_v2.modules.orders.api import build_router as orders_router
 from pack_v2.modules.orders.public import Orders
+from pack_v2.modules.printing.api import build_router as printing_router
+from pack_v2.modules.printing.public import Printing
 from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound, RateLimited
 from pack_v2.web.body_limit import AuthBodyLimit
 from pack_v2.web.routes import build_router
@@ -45,7 +47,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0011_archive"
+SCHEMA_REVISION = "0012_printing"
 
 
 def create_app(
@@ -127,6 +129,15 @@ def create_app(
     app.state.login_signer = URLSafeTimedSerializer(
         settings.secret_key.get_secret_value(), salt="pack-v2-login"
     )
+    app.state.printing = Printing(
+        db,
+        app.state.assembly,
+        app.state.documents,
+        app.state.sticker_archive,
+        app.state.marking,
+        app.state.orders,
+        box,
+    )
     web = Path(__file__).resolve().parents[1] / "web"
     app.state.templates = Jinja2Templates(directory=web / "templates")
     app.state.templates.env.globals["version"] = __version__
@@ -141,7 +152,9 @@ def create_app(
         response.headers["Referrer-Policy"] = "same-origin"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; "
-            "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+            "object-src 'self' blob:; frame-src 'self' blob:; "
+            "connect-src 'self' ws://localhost:* wss://localhost:*; "
+            "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
         )
         if not request.url.path.startswith("/static-v2/"):
             response.headers["Cache-Control"] = "no-store"
@@ -217,4 +230,5 @@ def create_app(
     app.include_router(assembly_router())
     app.include_router(documents_router())
     app.include_router(archive_router())
+    app.include_router(printing_router())
     return app

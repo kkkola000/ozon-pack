@@ -1,0 +1,4 @@
+qz-tray.js: QZ Tray Connector, version 2.3.0
+Project: https://github.com/qzind/tray
+License: LGPL-2.1-only (see COPYING.LGPL-2.1).
+The connector is distributed unchanged, including its original license header.

@@ -229,6 +229,11 @@ class StickerArchive:
                 "can_manage": actor.role in ("owner", "admin"),
             }
 
+    def printing_context(self, tx, actor, label_id):
+        self._authorize(actor)
+        row = self._label(tx, label_id)
+        return {"shipment_id": row.shipment_id, "generation": row.generation}
+
     def file(self, actor, label_id, generation=None):
         self._authorize(actor)
         with self.db.transaction() as tx:

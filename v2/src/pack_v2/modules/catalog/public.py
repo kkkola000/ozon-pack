@@ -125,6 +125,41 @@ class Catalog:
             query = query.where(Offer.account_id == account_id)
         return direct | set(tx.scalars(query))
 
+    @staticmethod
+    def print_codes(tx, offer_ids, prefix):
+        """Prefer this offer's marketplace code; warehouse fallback excludes OZN/MRKT."""
+        offers = list(tx.scalars(select(Offer).where(Offer.id.in_(offer_ids))))
+        own, fallback = {}, {}
+        products = {o.product_id for o in offers if o.product_id}
+
+        def printable(value):
+            return bool(value) and len(value) <= 200 and all(32 <= ord(c) <= 126 for c in value)
+
+        for code in tx.scalars(
+            select(OfferCode).where(OfferCode.offer_id.in_(offer_ids)).order_by(OfferCode.value)
+        ):
+            if printable(code.value):
+                own.setdefault(code.offer_id, []).append(code.value)
+        for code in tx.scalars(
+            select(ProductCode).where(ProductCode.product_id.in_(products)).order_by(ProductCode.value)
+        ):
+            if printable(code.value) and not code.value.upper().startswith(("OZN", "MRKT")):
+                fallback.setdefault(code.product_id, []).append(code.value)
+        for code, product_id in tx.execute(
+            select(OfferCode, Offer.product_id)
+            .join(Offer, Offer.id == OfferCode.offer_id)
+            .where(Offer.product_id.in_(products))
+            .order_by(OfferCode.value)
+        ):
+            if printable(code.value) and not code.value.upper().startswith(("OZN", "MRKT")):
+                fallback.setdefault(product_id, []).append(code.value)
+        result = {}
+        for offer in offers:
+            codes = own.get(offer.id, [])
+            selected = next((c for c in codes if c.upper().startswith(prefix)), None)
+            result[offer.id] = selected or next(iter(codes or fallback.get(offer.product_id, [])), None)
+        return result
+
     def sync_status(self, actor: Principal) -> list[SyncView]:
         return self.sync.sync_status(actor)
 

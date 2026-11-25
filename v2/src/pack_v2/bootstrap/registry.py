@@ -18,6 +18,6 @@ MODULES = (
     Module("marking", "Честный знак", "assignments"),
     Module("returns", "Возвраты", "planned"),
     Module("documents", "Документы и стикеры", "sticker_archive"),
-    Module("printing", "Печать", "planned"),
+    Module("printing", "Печать", "local_dispatch"),
     Module("reports", "Отчёты", "planned"),
 )

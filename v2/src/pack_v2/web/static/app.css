@@ -550,6 +550,28 @@ body.assembly-is-open { overflow: hidden; }
 @media(max-width:700px) { .assembly-header-actions { justify-content: flex-start; } .assembly-label-status { text-align: left; } }
 
 .stickers-filters { align-items: flex-end; margin-bottom: 16px; }
+.printing-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 24px; margin-bottom: 20px; }
+.printing-policy > label { flex: 1; min-width: 260px; }
+.printing-policy label span { display: block; padding: 10px 0 0 32px; }
+.printing-policy input[type=checkbox] { accent-color: var(--accent); width: 18px; height: 18px; vertical-align: middle; margin-right: 8px; }
+.printing-policy > p { flex-basis: 100%; margin: 0; }
+.printing-check, .printing-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.printing-help { margin-bottom: 18px; }
+.printing-help summary { color: var(--accent); cursor: pointer; }
+.printing-table { min-width: 960px; }
+.printing-table select { width: 100%; min-width: 140px; }
+.printing-table select, .printing-table input { padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5; }
+.printing-table td:nth-child(3) { width: 28%; }
+.printing-custom, .printing-calibration-fields { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.printing-custom input, .printing-calibration-fields input { display: block; width: 90px; margin-top: 6px; }
+.printing-calibration { margin-top: 8px; }
+.printing-frame { position: fixed; width: 1px; height: 1px; bottom: 0; left: -10000px; border: 0; }
+.printing-status { flex-basis: 100%; margin: 0; text-align: right; }
+.printing-status.warn { color: var(--warn); }
+.printing-status.error { color: var(--err); }
+.printing-check .access-warning { color: var(--warn); }
+.notice.warn { color: var(--warn); background: var(--warn-soft); }
+@media(max-width:700px) { .printing-policy > label { min-width: 0; flex-basis: 100%; } .printing-status { text-align: left; } }
 .stickers-table { min-width: 920px; }
 .stickers-period { border: 0; padding: 0; margin: 0; min-width: 0; }
 .stickers-period legend { font-size: 14px; color: var(--muted); margin-bottom: 6px; }

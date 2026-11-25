@@ -18,7 +18,7 @@ REPORTS = (
 TABS = {
     "printing": (
         "Сборка и печать",
-        "Параметры сборки и принтеров будут доступны после подключения рабочих операций.",
+        "",
     ),
     "accounts": ("Кабинеты", ""),
     "returns": ("Возвраты", "Параметры возвратов будут перенесены вместе с приёмкой и актами."),
@@ -65,15 +65,17 @@ def settings_page(
     error: str | None = None,
     form: dict | None = None,
     status: int = 200,
+    printing_only: bool = False,
 ):
-    saved.user.require("settings")
-    selected = tab if tab in TABS else "printing"
+    saved.user.require("printing" if printing_only else "settings")
+    selected = "printing" if printing_only else tab if tab in TABS else "printing"
     accounts = request.app.state.connections.list_accounts(saved.user) if selected == "accounts" else []
     response = render(
         request,
         "settings.html",
         saved=saved,
-        tabs=TABS,
+        tabs={"printing": TABS["printing"]} if printing_only else TABS,
+        printing=request.app.state.printing.settings(saved.user) if selected == "printing" else None,
         selected=selected,
         title="Настройки",
         active_tab="settings",

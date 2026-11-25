@@ -303,6 +303,61 @@ class Marking:
     def archive_shipments():
         return select(MarkingAssignment.shipment_id)
 
+    def print_candidates(self, tx, actor_id, unit_ids):
+        rows = list(
+            tx.scalars(
+                select(MarkingAssignment)
+                .where(
+                    MarkingAssignment.unit_id.in_(unit_ids),
+                    MarkingAssignment.actor_id == actor_id,
+                    MarkingAssignment.released_at.is_(None),
+                    MarkingAssignment.retired_at.is_(None),
+                )
+                .order_by(MarkingAssignment.created_at, MarkingAssignment.id)
+            )
+        )
+        result = []
+        for row in rows:
+            latest = tx.scalar(
+                select(MarkingTransmission)
+                .where(
+                    MarkingTransmission.assignment_id == row.id,
+                    MarkingTransmission.assignment_revision == row.revision,
+                )
+                .order_by(MarkingTransmission.created_at.desc(), MarkingTransmission.id.desc())
+                .limit(1)
+            )
+            if not latest or latest.status != "rejected":
+                result.append(
+                    {"id": row.id, "revision": row.revision, "key": f"mark:{row.mark_id}:{row.unit_id}"}
+                )
+        return result
+
+    def print_source(self, tx, assignment_id, revision=None):
+        row = tx.get(MarkingAssignment, assignment_id)
+        if row is None:
+            raise NotFound("Честный знак не найден")
+        if row.released_at or row.retired_at or revision is not None and row.revision != revision:
+            raise Conflict("Привязка Честного знака изменилась. Обновите список")
+        latest = tx.scalar(
+            select(MarkingTransmission)
+            .where(
+                MarkingTransmission.assignment_id == row.id,
+                MarkingTransmission.assignment_revision == row.revision,
+            )
+            .order_by(MarkingTransmission.created_at.desc(), MarkingTransmission.id.desc())
+            .limit(1)
+        )
+        if latest and latest.status == "rejected":
+            raise Conflict("Площадка отклонила Честный знак. Замените код перед печатью")
+        mark = tx.get(MarkingUnit, row.mark_id)
+        return {
+            "id": row.id,
+            "revision": row.revision,
+            "shipment_id": row.shipment_id,
+            "raw": self.box.open(mark.encrypted_code).decode(),
+        }
+
     def archive_search(self, query):
         conditions = []
         if query.isascii() and query.isdigit() and len(query) in (8, 12, 13, 14):

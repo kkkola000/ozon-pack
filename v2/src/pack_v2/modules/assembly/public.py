@@ -234,6 +234,25 @@ class Assembly:
             )
             return self._view(tx, actor, row)
 
+    def printing_context(self, tx, actor, session_id):
+        """Authorized read boundary for printing; never starts readiness or changes scans."""
+        actor.require("pack")
+        row = self._owned(tx, actor, session_id)
+        self.connections.lock_source(tx, AccountSource(row.account_id, "ozon", row.credential_revision))
+        self.orders.packing_lock(tx, row.shipment_id)
+        row = self._owned(tx, actor, session_id, lock=True)
+        view = self._view(tx, actor, row)
+        if view["status"] not in ("scanning", "preparing", "ready"):
+            raise Conflict("Печать недоступна: откройте актуальное окно сборки")
+        units = list(
+            tx.scalars(
+                select(AssemblyUnit.unit_id).where(
+                    AssemblyUnit.session_id == row.id, AssemblyUnit.scanned_at.is_not(None)
+                )
+            )
+        )
+        return {"labels": view["labels"], "unit_ids": units}
+
     def session(self, actor, session_id):
         actor.require("pack")
         with self.db.transaction() as tx:
