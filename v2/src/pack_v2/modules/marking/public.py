@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from pack_v2.infrastructure.models import AuditEvent
-from pack_v2.shared.errors import Conflict, DomainError
+from pack_v2.shared.errors import Conflict, DomainError, Forbidden, NotFound
 
 from .codes import equivalent, looks_like, parse
 from .models import MarkingAssignment, MarkingTransmission, MarkingUnit
@@ -298,6 +298,148 @@ class Marking:
                 )
             )
         )
+
+    @staticmethod
+    def archive_shipments():
+        return select(MarkingAssignment.shipment_id)
+
+    def archive_search(self, query):
+        conditions = []
+        if query.isascii() and query.isdigit() and len(query) in (8, 12, 13, 14):
+            conditions.append(MarkingUnit.gtin == query.zfill(14))
+        elif looks_like(query):
+            try:
+                parsed = parse(query)
+            except ValueError:
+                return select(MarkingAssignment.shipment_id).where(False)
+            conditions.extend(
+                (
+                    MarkingUnit.identity == self._digest([parsed.gtin, parsed.serial]),
+                    MarkingUnit.full_fingerprint == self._digest(parsed.fields),
+                )
+            )
+        else:
+            return select(MarkingAssignment.shipment_id).where(False)
+        return (
+            select(MarkingAssignment.shipment_id)
+            .join(MarkingUnit, MarkingUnit.id == MarkingAssignment.mark_id)
+            .where(*conditions)
+        )
+
+    @staticmethod
+    def archive_counts(tx, shipment_ids):
+        return {
+            sid: (count, bound)
+            for sid, count, bound in tx.execute(
+                select(
+                    MarkingAssignment.shipment_id,
+                    func.count(),
+                    func.sum(case((MarkingAssignment.released_at.is_(None), 1), else_=0)),
+                )
+                .where(MarkingAssignment.shipment_id.in_(shipment_ids))
+                .group_by(MarkingAssignment.shipment_id)
+            )
+        }
+
+    def archive_history(self, tx, shipment_ids, *, reveal=False):
+        rows = tx.execute(
+            select(MarkingAssignment, MarkingUnit)
+            .join(MarkingUnit, MarkingUnit.id == MarkingAssignment.mark_id)
+            .where(MarkingAssignment.shipment_id.in_(shipment_ids))
+            .order_by(MarkingAssignment.created_at, MarkingAssignment.id)
+        ).all()
+        transmissions = {}
+        for value in tx.scalars(
+            select(MarkingTransmission)
+            .where(MarkingTransmission.assignment_id.in_([a.id for a, _ in rows]))
+            .order_by(MarkingTransmission.created_at, MarkingTransmission.id)
+        ):
+            transmissions[value.assignment_id] = value
+        result = {}
+        for assignment, mark in rows:
+            transmission = transmissions.get(assignment.id)
+            historical = assignment.released_at is not None or assignment.retired_at is not None
+            check = (
+                transmission.status
+                if transmission and (historical or transmission.assignment_revision == assignment.revision)
+                else "pending"
+            )
+            value = {
+                "id": str(assignment.id),
+                "unit_id": str(assignment.unit_id),
+                "revision": assignment.revision,
+                "gtin": mark.gtin,
+                "serial": mark.serial,
+                "binding": "unbound"
+                if assignment.released_at
+                else "retired"
+                if assignment.retired_at
+                else "bound",
+                "check": check,
+                "released_at": assignment.released_at,
+                "release_reason": assignment.release_reason,
+            }
+            if reveal:
+                value["code"] = self.box.open(mark.encrypted_code).decode().replace("\x1d", "<GS>")
+            result.setdefault(assignment.shipment_id, []).append(value)
+        return result
+
+    def release_admin(self, tx, actor, shipment_id, assignment_id, expected_revision):
+        if actor.role not in ("owner", "admin"):
+            raise Forbidden("Отвязка доступна только администратору")
+        row = tx.scalar(
+            select(MarkingAssignment).where(
+                MarkingAssignment.id == assignment_id, MarkingAssignment.shipment_id == shipment_id
+            )
+        )
+        if row is None:
+            raise NotFound("Привязка Честного знака не найдена")
+        tx.get(MarkingUnit, row.mark_id, with_for_update=True)
+        tx.refresh(row, with_for_update=True)
+        if row.released_at is not None:
+            return False, row.unit_id, False
+        if row.revision != expected_revision:
+            raise Conflict("Привязка изменилась. Откройте список Честного знака заново")
+        was_current = row.retired_at is None
+        row.released_at, row.release_reason = datetime.now(UTC), "manual_admin"
+        row.revision += 1
+        tx.add(
+            AuditEvent(
+                actor_id=actor.id,
+                kind="marking_released_admin",
+                subject_id=row.id,
+                details={
+                    "shipment_id": str(shipment_id),
+                    "unit_id": str(row.unit_id),
+                    "revision": row.revision,
+                },
+            )
+        )
+        tx.flush()
+        return True, row.unit_id, was_current
+
+    def assert_native_import(self, tx, shipment_id, unit_id, raw):
+        try:
+            parsed = parse(raw)
+        except ValueError as error:
+            raise DomainError(str(error)) from None
+        mark_id = tx.scalar(
+            select(MarkingUnit.id).where(MarkingUnit.identity == self._digest([parsed.gtin, parsed.serial]))
+        )
+        blocked = tx.scalar(
+            select(MarkingAssignment.id)
+            .where(
+                MarkingAssignment.shipment_id == shipment_id,
+                MarkingAssignment.unit_id == unit_id,
+                MarkingAssignment.mark_id == mark_id,
+                MarkingAssignment.release_reason == "manual_admin",
+            )
+            .limit(1)
+        )
+        if blocked:
+            raise Conflict(
+                "Честный знак был отвязан администратором. Сверьте и удалите прежний код в кабинете Ozon перед новой сборкой"
+            )
 
     @staticmethod
     def equivalent(left, right):

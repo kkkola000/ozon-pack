@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="section-heading"><h1>Стикеры</h1></div>
+<section class="panel" data-sticker-archive>
+<form action="/reports/stickers/search" method="post" class="catalog-filters stickers-filters" data-pending>
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>Кабинет<select name="account_id"><option value="">Все кабинеты</option>{% for account in accounts %}<option value="{{ account.id }}" {% if account.id|string == result.filters.account_id %}selected{% endif %}>{{ account.title }}{% if not account.active %} · отключён{% endif %}</option>{% endfor %}</select></label>
+<fieldset class="stickers-period"><legend>Дата</legend><div class="stickers-period-inputs">
+<div class="stickers-date" data-date-empty="{{ 'false' if result.filters.since else 'true' }}"><span aria-hidden="true">—</span><input type="date" name="since" value="{{ result.filters.since }}" aria-label="Дата с"></div><span class="muted">—</span>
+<div class="stickers-date" data-date-empty="{{ 'false' if result.filters.until else 'true' }}"><span aria-hidden="true">—</span><input type="date" name="until" value="{{ result.filters.until }}" aria-label="Дата по"></div>
+</div></fieldset>
+<label class="catalog-search">Поиск<input type="text" name="q" value="{{ result.filters.query }}" placeholder="Отправление, ii…, GTIN или полный Честный знак" maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false"></label><button class="btn" type="submit" data-pending-text="Ищем…">Найти</button>
+</form>
+<p class="notice error" data-stickers-notice hidden role="status"></p>
+<div class="table-scroll"><table class="stickers-table"><thead><tr><th>Дата</th><th>Отправление / товары</th><th>Кабинет</th><th>Стикер</th><th>Честный знак</th></tr></thead><tbody data-stickers-rows>
+{% for entry in result['items'] %}<tr data-sticker-row="{{ entry.id }}">
+<td class="stickers-timestamp">{{ msk(entry.received_at) }}</td>
+<td><b class="shipment-number">{{ entry.snapshot.posting_number or '—' }}</b><div class="muted small">Заказ {{ entry.snapshot.order_number or '—' }}</div>{% for kind,value in entry.snapshot.references if kind == 'label_barcode' and value.lower().startswith('ii') %}<div class="small code-value">{{ value }}</div>{% endfor %}{% for item in entry.snapshot['items'] %}<div class="small stickers-product">{{ item.name }} · {{ item.quantity }} шт.<span class="muted"> {{ item.article or '' }}</span></div>{% endfor %}</td>
+<td>{{ account_names.get(entry.account_id,'—') }}<div class="muted small">Ozon</div></td>
+<td>{% if entry.has_pdf %}<div class="stickers-actions"><a class="btn small" href="/api/v2/stickers/{{ entry.id }}/pdf?generation={{ entry.generation }}" target="_blank" rel="noopener">Открыть PDF</a><a class="btn small" href="/api/v2/stickers/{{ entry.id }}/pdf?generation={{ entry.generation }}&amp;download=true">Скачать</a></div><div class="muted small">{{ '58×40 мм' if entry.size == 'small' else 'Большой стикер' }}</div>{% else %}<span class="muted small">Не сохранён</span>{% endif %}</td>
+<td>{% if entry.mark_count %}<button class="btn small" type="button" data-sticker-marking="{{ entry.id }}">Честный знак <span class="badge">{{ entry.mark_count }}</span></button><div class="muted small" data-marking-bound>{{ 'Есть привязанные коды' if entry.bound_count else 'Коды отвязаны' }}</div>{% else %}<span class="muted">—</span>{% endif %}</td>
+</tr>{% else %}<tr data-stickers-empty><td colspan="5" class="muted">Стикеры за выбранный период не найдены.</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="catalog-pagination"><span class="muted small" data-stickers-count>Показано: {{ result['items']|length }}</span>{% if next_url %}<a class="btn" href="{{ next_url }}" data-stickers-more>Ещё</a>{% endif %}</div>
+</section>
+<dialog class="stickers-mark-modal" data-marking-dialog aria-labelledby="marking-title"><div class="stickers-modal-heading"><h2 id="marking-title">Честный знак</h2><button type="button" class="btn" data-marking-close aria-label="Закрыть">×</button></div><p class="notice error" data-marking-error role="status" hidden></p><div class="table-scroll"><table><thead><tr><th>Товар</th><th>GTIN / серия</th><th>Привязка</th><th>Проверка площадкой</th><th>Действия</th></tr></thead><tbody data-marking-rows></tbody></table></div><p class="muted small" data-marking-release-help hidden>Отвязка снимает привязку в панели и освобождает код для другого заказа. Данные в кабинете площадки остаются.</p></dialog>
+{% endblock %}

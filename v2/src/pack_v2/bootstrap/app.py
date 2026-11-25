@@ -30,6 +30,8 @@ from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.api import build_router as catalog_router
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.documents.api import build_router as documents_router
+from pack_v2.modules.documents.archive import StickerArchive
+from pack_v2.modules.documents.archive_api import build_router as archive_router
 from pack_v2.modules.documents.public import Documents
 from pack_v2.modules.identity.public import Identity
 from pack_v2.modules.instance_data.public import InstanceData
@@ -43,7 +45,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0010_labels"
+SCHEMA_REVISION = "0011_archive"
 
 
 def create_app(
@@ -101,6 +103,16 @@ def create_app(
         app.state.instance_data,
         auto_split=settings.split_orders_on_pack,
         documents=app.state.documents,
+    )
+    app.state.sticker_archive = StickerArchive(
+        db,
+        app.state.connections,
+        app.state.orders,
+        app.state.documents,
+        app.state.marking,
+        app.state.instance_data,
+        app.state.readiness,
+        settings.secret_key.get_secret_value(),
     )
     app.state.assembly = Assembly(
         db,
@@ -204,4 +216,5 @@ def create_app(
     app.include_router(orders_router())
     app.include_router(assembly_router())
     app.include_router(documents_router())
+    app.include_router(archive_router())
     return app

@@ -6,6 +6,7 @@
   <title>{{ title or 'Pack' }}</title>
   <link rel="stylesheet" href="/static-v2/app.css?v={{ version }}">
   <script src="/static-v2/app.js?v={{ version }}" defer></script>
+  {% if active_tab=='stickers' %}<script src="/static-v2/stickers.js?v={{ version }}" defer></script>{% endif %}
   {% if active_tab=='pack' %}<script src="/static-v2/assembly.js?v={{ version }}" defer></script>{% endif %}
 </head>
 <body>

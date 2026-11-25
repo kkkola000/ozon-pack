@@ -146,6 +146,7 @@ class Documents:
                 "ready": "Стикер получен",
                 "failed": row.error or "Не удалось получить стикер. Повторите загрузку",
                 "stale": "Данные стикера изменились. Откройте отправление заново",
+                "expired": "Срок хранения стикера истёк",
             }
             result.append(
                 {
@@ -181,14 +182,18 @@ class Documents:
                 or row.basis != target.basis
             ):
                 raise Conflict("Стикер ещё не готов или состав отправления изменился. Обновите окно сборки")
-            try:
-                pdf = self.box.open(row.encrypted_pdf)
-            except InvalidToken:
-                raise DomainError("Не удалось прочитать стикер. Проверьте ключ шифрования панели") from None
-            if len(pdf) != row.byte_count or hashlib.sha256(pdf).hexdigest() != row.checksum:
-                raise DomainError("Не удалось проверить сохранённый стикер. Повторите загрузку")
+            pdf = self.content(row)
             number = "".join(c for c in target.posting_number if c.isascii() and (c.isalnum() or c in "-_"))
             return pdf, f"ozon-{number or row.id}.pdf"
+
+    def content(self, row):
+        try:
+            pdf = self.box.open(row.encrypted_pdf)
+        except (InvalidToken, TypeError):
+            raise DomainError("Не удалось прочитать стикер. Проверьте ключ шифрования панели") from None
+        if len(pdf) != row.byte_count or hashlib.sha256(pdf).hexdigest() != row.checksum:
+            raise DomainError("Не удалось проверить сохранённый стикер. Повторите загрузку")
+        return pdf
 
     def _write(self, job, callback):
         with self.db.transaction() as tx:
@@ -288,6 +293,7 @@ class Documents:
                 hashlib.sha256(pdf).hexdigest(),
                 len(pdf),
             )
+            row.archive_snapshot = self.orders.archive_info(tx, [row.shipment_id])[row.shipment_id]
             row.received_at, row.status, row.error = datetime.now(UTC), "ready", None
             Queue.finish_in(tx, job)
             tx.add(

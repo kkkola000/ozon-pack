@@ -548,3 +548,27 @@ body.assembly-is-open { overflow: hidden; }
 .assembly-document-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .assembly-label-status { flex-basis: 100%; margin: 0; text-align: right; }
 @media(max-width:700px) { .assembly-header-actions { justify-content: flex-start; } .assembly-label-status { text-align: left; } }
+
+.stickers-filters { align-items: flex-end; margin-bottom: 16px; }
+.stickers-table { min-width: 920px; }
+.stickers-period { border: 0; padding: 0; margin: 0; min-width: 0; }
+.stickers-period legend { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+.stickers-period-inputs { display: flex; align-items: center; gap: 8px; }
+.stickers-date { position: relative; }
+.stickers-date input { min-width: 140px; width: 156px; border: 1px solid var(--line-strong); border-radius: 12px; padding: 10px; font: inherit; line-height: 1.5; color: var(--accent); background: var(--bg); color-scheme: light; }
+.stickers-date input::-webkit-calendar-picker-indicator { cursor: pointer; filter: invert(27%) sepia(99%) saturate(4574%) hue-rotate(215deg); }
+.stickers-date > span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--accent); }
+.stickers-date[data-date-empty=false] > span, .stickers-date:focus-within > span { display: none; }
+.stickers-date[data-date-empty=true]:not(:focus-within) input::-webkit-datetime-edit { color: transparent; }
+.stickers-timestamp { color: var(--accent); white-space: nowrap; }
+.stickers-product { margin-top: 5px; }
+.stickers-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stickers-actions .btn { white-space: nowrap; }
+.stickers-mark-modal { width: min(1120px,calc(100vw - 32px)); max-height: calc(100dvh - 32px); border: 1px solid var(--line); border-radius: 24px; padding: 24px; color: var(--text); background: var(--bg); box-shadow: var(--shadow); }
+.stickers-mark-modal::backdrop { background: rgba(0,26,52,.48); }
+.stickers-modal-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.stickers-modal-heading h2 { margin: 0; }
+.stickers-full-code { margin-top: 8px; max-width: 340px; }
+.stickers-full-code summary { cursor: pointer; color: var(--accent); }
+.stickers-full-code code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
+@media(max-width:700px) { .stickers-filters > label, .stickers-period { width: 100%; } .stickers-date { flex: 1; min-width: 0; } .stickers-date input { min-width: 0; width: 100%; } .stickers-mark-modal { padding: 16px; border-radius: 18px; } }

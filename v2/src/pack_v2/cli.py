@@ -30,6 +30,7 @@ from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.public import Catalog
+from pack_v2.modules.documents.archive import StickerArchive
 from pack_v2.modules.documents.public import Documents
 from pack_v2.modules.identity.public import Identity
 from pack_v2.modules.instance_data.public import InstanceData
@@ -82,6 +83,7 @@ def worker(
     instance_data: InstanceData | None = None,
     readiness: Readiness | None = None,
     documents: Documents | None = None,
+    archive: StickerArchive | None = None,
 ) -> None:
     # Instance writes use durable dispatch intents and reconcile ambiguous outcomes.
     queue, stopped = Queue(db), threading.Event()
@@ -95,6 +97,8 @@ def worker(
         if today != scheduled_date:
             with db.transaction() as tx:
                 enqueue(tx, "identity.cleanup", "identity.cleanup:" + today)
+            if archive:
+                archive.schedule()
             scheduled_date = today
         for service, minutes, kind in (
             (catalog, catalog_minutes, "catalog.sync"),
@@ -116,6 +120,7 @@ def worker(
                 "instances.submit": instance_data,
                 "assembly.ready": readiness,
                 "documents.label": documents,
+                "documents.cleanup": archive,
             }.get(job.kind)
             if service:
                 with queue.keep_alive(job):
@@ -192,6 +197,24 @@ def main(argv: list[str] | None = None) -> int:
                     db, connections, orders, Marking(box, settings.secret_key.get_secret_value()), box
                 )
                 documents = Documents(db, connections, orders, box, label_size=settings.ozon_label_size)
+                readiness = Readiness(
+                    db,
+                    connections,
+                    orders,
+                    instance_data,
+                    auto_split=settings.split_orders_on_pack,
+                    documents=documents,
+                )
+                archive = StickerArchive(
+                    db,
+                    connections,
+                    orders,
+                    documents,
+                    instance_data.marking,
+                    instance_data,
+                    readiness,
+                    settings.secret_key.get_secret_value(),
+                )
                 worker(
                     db,
                     Identity(db, settings),
@@ -201,15 +224,9 @@ def main(argv: list[str] | None = None) -> int:
                     orders,
                     settings.orders_sync_minutes,
                     instance_data,
-                    Readiness(
-                        db,
-                        connections,
-                        orders,
-                        instance_data,
-                        auto_split=settings.split_orders_on_pack,
-                        documents=documents,
-                    ),
+                    readiness,
                     documents,
+                    archive,
                 )
         finally:
             db.close()

@@ -22,7 +22,7 @@ class MarkingUnit(Record, Base):
     __tablename__ = "marking_units"
     identity: Mapped[str] = mapped_column(String(64), unique=True)
     full_fingerprint: Mapped[str] = mapped_column(String(64))
-    gtin: Mapped[str] = mapped_column(String(14))
+    gtin: Mapped[str] = mapped_column(String(14), index=True)
     serial: Mapped[str] = mapped_column(String(20))
     encrypted_code: Mapped[bytes] = mapped_column(LargeBinary)
 

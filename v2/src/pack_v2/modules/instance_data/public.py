@@ -244,6 +244,7 @@ class InstanceData:
                         "Честный знак на площадке отличается от привязанного к единице товара. Нужна сверка"
                     )
                 if remote_mark and not local_mark:
+                    self.marking.assert_native_import(tx, manifest.shipment_id, unit.unit_id, remote_mark)
                     self.marking.capture(
                         tx,
                         None,
@@ -546,6 +547,26 @@ class InstanceData:
             "pending_unit_id": str(pending) if pending else None,
             "batch_id": str(batch.id) if batch else None,
         }
+
+    def guard_marking_release(self, tx, shipment_id):
+        manifest = self.orders.packing_manifest(tx, shipment_id)
+        ongoing = tx.scalar(
+            select(Submission.id)
+            .join(InstanceContext, InstanceContext.id == Submission.context_id)
+            .where(InstanceContext.order_id == manifest.order_id, Submission.status.in_(IN_FLIGHT))
+            .limit(1)
+        )
+        if ongoing:
+            raise Conflict(
+                "Данные заказа передаются или результат не подтверждён. Дождитесь сверки Ozon перед отвязкой"
+            )
+
+    @staticmethod
+    def marking_released(tx, unit_id):
+        row = tx.get(UnitDetail, unit_id)
+        if row:
+            row.revision += 1
+            row.input_errors = [e for e in row.input_errors if e != "cis"]
 
     def dispatch_evidence(self, tx, context_id, manifest):
         """Trusted backend port: current, confirmed full data; never an API projection."""

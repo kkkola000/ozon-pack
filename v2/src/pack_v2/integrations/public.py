@@ -113,6 +113,11 @@ class Connections:
                 )
             ]
 
+    @staticmethod
+    def archive_account_lock(tx, account_id):
+        saved = store.account(tx, account_id, lock=True)
+        return AccountLabel(saved.id, saved.title, saved.marketplace, saved.active, saved.credential_revision)
+
     def source_for_sync(self, tx: Session, account_id: UUID) -> AccountSource:
         """Backend UoW boundary; callers authorize the command before entering here."""
         saved = store.account(tx, account_id, lock=True)

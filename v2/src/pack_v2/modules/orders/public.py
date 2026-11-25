@@ -102,6 +102,18 @@ class Orders:
 
         return documents.target(tx, shipment_id)
 
+    @staticmethod
+    def archive_info(tx, shipment_ids):
+        from . import documents
+
+        return documents.archive_info(tx, shipment_ids)
+
+    @staticmethod
+    def archive_search(query):
+        from . import documents
+
+        return documents.archive_search(query)
+
     def packing_manifest(self, tx, shipment_id):
         return packing.manifest(tx, shipment_id, self.catalog)
 

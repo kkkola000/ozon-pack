@@ -24,6 +24,19 @@ class Readiness:
         self.auto_split = auto_split
         self.documents = documents
 
+    def guard_marking_release(self, tx, shipment_id):
+        manifest = self.orders.packing_manifest(tx, shipment_id)
+        pending = tx.scalar(
+            select(AssemblyDispatch.id)
+            .where(
+                AssemblyDispatch.order_id == manifest.order_id,
+                AssemblyDispatch.status.in_(PENDING),
+            )
+            .limit(1)
+        )
+        if pending:
+            raise Conflict("Ozon ещё обрабатывает сборку. Дождитесь подтверждения перед отвязкой")
+
     @staticmethod
     def find(tx, session):
         return tx.scalar(

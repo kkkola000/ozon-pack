@@ -17,7 +17,7 @@ MODULES = (
     Module("instance_data", "Данные экземпляров", "ozon_submission"),
     Module("marking", "Честный знак", "assignments"),
     Module("returns", "Возвраты", "planned"),
-    Module("documents", "Документы и стикеры", "ozon_acquisition"),
+    Module("documents", "Документы и стикеры", "sticker_archive"),
     Module("printing", "Печать", "planned"),
     Module("reports", "Отчёты", "planned"),
 )
