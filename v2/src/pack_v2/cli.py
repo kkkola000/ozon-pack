@@ -29,8 +29,10 @@ from pack_v2.integrations.ozon.reader import OzonReadAdapter
 from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.integrations.yandex.access import YandexAccessChecker
+from pack_v2.integrations.yandex.documents import YandexLabelAdapter
 from pack_v2.integrations.yandex.instances import YandexInstanceAdapter
 from pack_v2.integrations.yandex.reader import YandexReadAdapter
+from pack_v2.integrations.yandex.shipping import YandexShippingAdapter
 from pack_v2.modules.assembly.readiness import Readiness
 from pack_v2.modules.catalog.public import Catalog
 from pack_v2.modules.documents.archive import StickerArchive
@@ -195,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
                     yandex_checker=YandexAccessChecker(),
                     yandex_reader_factory=YandexReadAdapter,
                     yandex_instance_factory=YandexInstanceAdapter,
+                    yandex_shipping_factory=YandexShippingAdapter,
+                    yandex_label_factory=YandexLabelAdapter,
                 )
                 catalog = Catalog(db, connections)
                 orders = Orders(db, connections, catalog, lookback_days=settings.orders_lookback_days)
@@ -203,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
                     db, connections, orders, Marking(box, settings.secret_key.get_secret_value()), box
                 )
                 documents = Documents(db, connections, orders, box, label_size=settings.ozon_label_size)
+                instance_data.documents = documents
+                documents.instances = instance_data
                 readiness = Readiness(
                     db,
                     connections,

@@ -61,7 +61,7 @@
     if (!session) return;
     find('assembly-account').textContent = `${session.market_title || 'Ozon'} · ${session.account_title}`;
     find('assembly-number').textContent = session.posting_number;
-    find('assembly-stage').textContent = stages[session.status] || session.status;
+    find('assembly-stage').textContent = session.status === 'preparing' && session.marketplace === 'yandex' ? 'Яндекс Маркет обрабатывает сборку' : stages[session.status] || session.status;
     renderLabels();
     find('assembly-stage').className = `badge ${['verified', 'ready'].includes(session.status) ? 'ok' : session.status === 'opening' ? 'accent' : ''}`;
     const scanner = find('scanner-state');
@@ -78,13 +78,16 @@
       const editingAbsent = Boolean(document.activeElement?.dataset.gtdAbsent);
       const selection = editing && !editingAbsent ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
       container.replaceChildren();
-      const editable = session.layout?.editable && session.status === 'scanning';
+      const yandex = session.marketplace === 'yandex';
+      const canEdit = session.layout?.editable && session.status === 'scanning' && !['prepared', 'checking', 'uncertain'].includes(session.data?.status);
+      const editable = canEdit && (!yandex || Boolean(layoutDraft));
       const groups = layoutDraft || session.layout?.groups || [];
       const display = [];
-      if (editable && groups.length) {
+      if ((editable || yandex && groups.length > 1) && groups.length) {
         groups.forEach((group, index) => {
           const zone = make('section', 'assembly-layout-group'); zone.dataset.layoutGroup = index;
-          zone.append(make('h3', 'small', `Отправление ${index + 1}`)); container.append(zone);
+          zone.append(make('h3', 'small', `${yandex ? 'Грузоместо' : 'Отправление'} ${index + 1}`)); container.append(zone);
+          if (!group.length) zone.append(make('span', 'muted small', 'Перетащите товар сюда'));
           for (const uid of group) {
             const unit = session.layout.units.find(u => u.id === uid);
             const item = session.items.find(i => i.id === unit?.item_id);
@@ -100,9 +103,9 @@
         const card = make('article', `assembly-item ${complete ? 'complete' : selected ? 'selected' : ''}`);
         card.dataset.itemId = item.id;
         if (item._unitId) {
-          card.draggable = !busy && !paused && !queue.length; card.dataset.layoutUnit = item._unitId;
+          card.draggable = editable && !busy && !paused && !queue.length; card.dataset.layoutUnit = item._unitId;
           const grip = make('button', 'assembly-layout-handle', '⠿'); grip.type = 'button'; grip.draggable = card.draggable;
-          grip.title = 'Перетащите товар в другое отправление. Клавиатура: Ctrl + стрелка вправо или влево';
+          grip.title = yandex ? 'Перетащите товар в грузоместо. Alt при переносе — часть товара; Ctrl + стрелка — перенос с клавиатуры' : 'Перетащите товар в другое отправление. Клавиатура: Ctrl + стрелка вправо или влево';
           grip.setAttribute('aria-label', `Переместить ${item.name}`); grip.disabled = !card.draggable; card.append(grip);
         }
         const info = make('div', 'product-name');
@@ -118,7 +121,8 @@
         info.append(description); card.append(info);
         const extra = session.data?.items?.[item.id];
         if (extra ? extra.cis : item.marking_hint) {
-          const state = extra?.mark_status || 'pending';
+          const physicalStatus = item._unitId ? extra?.units?.find(unit => unit.id === item._unitId)?.cis_status : null;
+          const state = physicalStatus ? ['accepted', 'rejected'].includes(physicalStatus) ? physicalStatus : 'pending' : extra?.mark_status || 'pending';
           const mark = make('span', `assembly-mark ${state}`, 'М');
           mark.title = state === 'accepted' ? session.marketplace === 'yandex' ? 'Честный знак принят Яндекс Маркетом' : 'Честный знак принят Ozon' : state === 'rejected' ? 'Честный знак не прошёл проверку' : 'Честный знак не проверен';
           mark.setAttribute('aria-label', mark.title); card.append(mark);
@@ -149,8 +153,11 @@
       }
       if (editable && groups.length < Math.min(session.layout.units.length, 100)) {
         const drop = make('section', 'assembly-layout-new'); drop.dataset.layoutGroup = groups.length;
-        drop.append(make('b', '', `Новое отправление ${groups.length + 1}`), make('span', 'muted small', 'Перетащите товар сюда'));
+        drop.append(make('b', '', `${yandex ? 'Новое грузоместо' : 'Новое отправление'} ${groups.length + 1}`), make('span', 'muted small', 'Перетащите товар сюда'));
         container.append(drop);
+      }
+      if (yandex && canEdit && !layoutDraft) {
+        const add = make('button', 'btn small assembly-layout-save', 'Добавить грузоместо'); add.type = 'button'; add.dataset.addYandexBox = ''; add.disabled = busy || paused || queue.length > 0; container.append(add);
       }
       if (layoutDraft) {
         const save = make('button', 'btn small assembly-layout-save', 'Сохранить'); save.type = 'button';
@@ -179,7 +186,7 @@
     find('assembly-queue').hidden = !['ready', 'cancelled', ...(session.shipping_supported === false ? ['verified'] : [])].includes(session.status) && !['uncertain', 'rejected', 'stale'].includes(session.readiness?.status);
     if (!paused) {
       if (session.status === 'opening') notice(session.refresh_status === 'retrying' ? 'Площадка временно недоступна. Повторяем проверку…' : 'Получаем актуальный состав и состояние отправления…');
-      else if (session.status === 'ready' || session.readiness?.status === 'accepted') notice('Ozon подтвердил готовность отправления к отгрузке.');
+      else if (session.status === 'ready' || session.readiness?.status === 'accepted') notice(`${session.market_title} подтвердил готовность отправления к отгрузке.`);
       else if (session.readiness?.message) notice(session.readiness.message, ['rejected', 'stale'].includes(session.readiness.status));
       else if (session.status === 'verified') notice(session.shipping_supported === false ? 'Товары и дополнительные данные проверены. Готовность и ярлыки Яндекс Маркета будут подключены следующим этапом.' : 'Товары проверены. Завершите сборку для подтверждения готовности Ozon.');
       else if (lastIssue) notice(lastIssue, true);
@@ -237,7 +244,7 @@
       // An old result can arrive after a different assembly has opened.
       if (!(session?.labels || []).some(l => l.key === label.key && l.status === 'ready')) return;
       const url = URL.createObjectURL(file), anchor = document.createElement('a');
-      anchor.href = url; anchor.download = `ozon-${label.posting_number.replace(/[^a-zA-Z0-9_-]/g, '')}.pdf`;
+      anchor.href = url; anchor.download = `${session.marketplace || 'ozon'}-${label.posting_number.replace(/[^a-zA-Z0-9_-]/g, '')}.pdf`;
       document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
       downloadedLabels.add(label.key);
       try { sessionStorage.setItem(labelReceipt(label), 'done'); } catch (_) { /* The manual button remains available. */ }
@@ -313,14 +320,18 @@
     const request = task.request || build(task.action, task.code, task.target);
     send(request);
   }
-  function moveUnit(uid, target) {
+  function moveUnit(uid, target, partial = false) {
     if (!session?.layout?.editable || session.status !== 'scanning' || busy || paused || queue.length) return;
     const groups = (layoutDraft || session.layout.groups).map(group => [...group]);
     if (!session.layout.units.some(u => u.id === uid) || target < 0 || target > groups.length || target >= 100) return;
     if (groups[target]?.includes(uid)) return;
     const destination = groups[target] || [];
     if (target === groups.length) groups.push(destination);
-    groups.forEach(group => { const at = group.indexOf(uid); if (at >= 0) group.splice(at, 1); });
+    const makePart = partial && session.marketplace === 'yandex';
+    if (makePart) {
+      const source = groups.find(g => g.includes(uid));
+      if (source && source.length > 1) { source.splice(source.indexOf(uid), 1); groups.push([uid]); }
+    } else groups.forEach(group => { const at = group.indexOf(uid); if (at >= 0) group.splice(at, 1); });
     destination.push(uid); layoutDraft = groups.filter(group => group.length);
     render(); notice('Сохраните распределение товаров');
   }
@@ -335,7 +346,7 @@
     const zone = event.target.closest('[data-layout-group]');
     if (!draggingUnit) return;
     event.preventDefault(); const uid = draggingUnit; draggingUnit = null; root.classList.remove('assembly-layout-dragging');
-    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup)); else render();
+    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup), event.altKey); else render();
   });
   root.addEventListener('dragend', () => { draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render(); });
   root.addEventListener('pointerdown', event => {
@@ -347,7 +358,7 @@
     if (event.pointerType === 'mouse' || !draggingUnit) return;
     const zone = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-layout-group]');
     const uid = draggingUnit; draggingUnit = null; root.classList.remove('assembly-layout-dragging');
-    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup)); else render();
+    if (zone) moveUnit(uid, Number(zone.dataset.layoutGroup), event.altKey); else render();
   });
   root.addEventListener('pointercancel', event => {
     // Native mouse drag cancels the pointer stream; rebuilding its source aborts HTML drag-and-drop.
@@ -355,6 +366,12 @@
     draggingUnit = null; root.classList.remove('assembly-layout-dragging'); render();
   });
   root.addEventListener('click', event => {
+    if (event.target.closest('[data-add-yandex-box]') && session && !busy && !paused) {
+      const groups = session.layout.groups.map(g => [...g]);
+      if (session.layout.units.length === 1) groups.push([...groups[0]]);
+      else groups.push([]);
+      layoutDraft = groups; render(); notice('Перетащите товары и нажмите «Сохранить». Для разделения товара удерживайте Alt при переносе.');
+    }
     const printButton = event.target.closest('[data-label-print-all]');
     if (printButton && !printButton.disabled && !manualPrintBusy) {
       manualPrintBusy = true; printButton.disabled = true;
@@ -373,7 +390,7 @@
     const grip = event.target.closest('.assembly-layout-handle');
     if (!grip || !event.ctrlKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault(); const card = grip.closest('[data-layout-unit]');
-    moveUnit(card.dataset.layoutUnit, Number(card.closest('[data-layout-group]').dataset.layoutGroup) + (event.key === 'ArrowRight' ? 1 : -1));
+    moveUnit(card.dataset.layoutUnit, Number(card.closest('[data-layout-group]').dataset.layoutGroup) + (event.key === 'ArrowRight' ? 1 : -1), event.altKey);
     root.querySelector(`[data-layout-unit="${card.dataset.layoutUnit}"] .assembly-layout-handle`)?.focus();
   });
   root.querySelectorAll('[data-scan-form]').forEach(form => form.addEventListener('submit', event => {

@@ -1,5 +1,7 @@
 """Official business API snapshots; buyer/address/payment data is not retained."""
 
+import hashlib
+import json
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -38,6 +40,26 @@ def count(value):
     if type(value) is not int or not 1 <= value <= 1000:
         raise error("invalid_response")
     return value
+
+
+def layout_digest(raw):
+    boxes = (raw.get("delivery") or {}).get("boxesLayout") or []
+    clean = [
+        {
+            "id": b.get("boxId"),
+            "barcode": b.get("barcode"),
+            "items": [
+                {k: e[k] for k in ("id", "fullCount", "partialCount") if k in e} for e in b.get("items", [])
+            ],
+        }
+        for b in boxes
+    ]
+    for box in clean:
+        box["items"].sort(key=lambda value: json.dumps(value, sort_keys=True))
+    clean.sort(key=lambda value: json.dumps(value, sort_keys=True))
+    shipment_id = ((raw.get("delivery") or {}).get("shipment") or {}).get("id")
+    value = {"shipment_id": str(shipment_id) if shipment_id is not None else None, "boxes": clean}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def order_state(raw):
@@ -220,10 +242,11 @@ class YandexReadAdapter:
         delivery = raw.get("delivery") or {}
         if not isinstance(delivery, dict):
             raise error("invalid_response")
-        refs = [Ref("posting_number", number, True), Ref("campaign_id", campaign, True)]
+        refs = [Ref("posting_number", number, True), Ref("campaign_id", campaign)]
         boxes = delivery.get("boxesLayout") or []
         if not isinstance(boxes, list) or len(boxes) > 1000:
             raise error("invalid_response")
+        refs.append(Ref("layout_digest", layout_digest(raw), origin="boxesLayout"))
         for box in boxes:
             if box.get("barcode"):
                 refs.append(Ref("label_barcode", text(box["barcode"], 512), origin="boxesLayout"))

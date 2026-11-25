@@ -33,6 +33,8 @@ class Detail:
 class InstanceData:
     def __init__(self, db, connections, orders, marking, box):
         self.db, self.connections, self.orders, self.marking, self.box = db, connections, orders, marking, box
+        self.documents = None
+        self.edit_guard = None
 
     def _seal(self, value):
         return self.box.seal(json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode())
@@ -159,6 +161,9 @@ class InstanceData:
                 "Площадка требует дополнительные сведения (РНПТ, вес, IMEI или страну). Укажите их в кабинете и повторите сверку"
             )
         snapshot = self._open(row.encrypted_snapshot)
+        if snapshot.get("marketplace") == "yandex" and not snapshot["native"].get("has_layout", True):
+            snapshot["layout_requested"] = True
+            row.encrypted_snapshot = self._seal(snapshot)
         by_item = {i.item_id: i for i in manifest.items}
         existing = {
             d.unit_id: d
@@ -292,9 +297,10 @@ class InstanceData:
         ]
         return policy.digest(value), details, marks
 
-    @staticmethod
-    def _has_fields(row):
-        return any(r["cis"] or r["gtd"] for r in row.requirements.values())
+    def _has_fields(self, row):
+        return any(r["cis"] or r["gtd"] for r in row.requirements.values()) or bool(
+            self._open(row.encrypted_snapshot).get("layout_requested")
+        )
 
     def _complete(self, row, details, marks):
         return len(details) == sum(r["quantity"] for r in row.requirements.values()) and all(
@@ -304,6 +310,8 @@ class InstanceData:
         )
 
     def _editable(self, tx, row):
+        if self.edit_guard and self._open(row.encrypted_snapshot).get("marketplace") == "yandex":
+            self.edit_guard(tx, row.shipment_id)
         ongoing = tx.scalar(
             select(Submission).where(
                 Submission.shipment_id == row.shipment_id, Submission.status.in_(IN_FLIGHT)
@@ -590,6 +598,142 @@ class InstanceData:
         if row:
             row.revision += 1
             row.input_errors = [e for e in row.input_errors if e != "cis"]
+
+    def yandex_layout(self, tx, context_id, manifest, units):
+        row = self._context(tx, context_id)
+        if row.status != "ready" or not row.encrypted_snapshot:
+            return [[str(u.unit_id) for u in units]] if units else []
+        snapshot = self._open(row.encrypted_snapshot)
+        if snapshot.get("layout_groups") is not None:
+            return snapshot["layout_groups"]
+        details = self._details(tx, row)
+        index = {(d.product_id, d.exemplar_id): str(d.unit_id) for d in details}
+        groups = []
+        for box in snapshot["native"]["boxes"]:
+            group = [
+                index[(str(e["id"]), str(slot))]
+                for e in box["items"]
+                for slot in e["slots"]
+                if (str(e["id"]), str(slot)) in index
+            ]
+            if group:
+                groups.append(group)
+        return groups
+
+    def save_yandex_layout(self, tx, actor, context_id, manifest, groups):
+        row = self._context(tx, context_id)
+        self._guard_context(row, manifest)
+        self._editable(tx, row)
+        snapshot = self._open(row.encrypted_snapshot)
+        if (
+            snapshot.get("marketplace") != "yandex"
+            or manifest.state != "awaiting_assembly"
+            or snapshot["native"]["status"] != "PROCESSING"
+            or snapshot["native"]["substatus"] != "STARTED"
+        ):
+            raise Conflict("Грузоместа Яндекс Маркета меняются до статуса «Готов к отгрузке»")
+        details = self._details(tx, row)
+        groups = yandex_policy.validate_groups(groups, details)
+        if groups == self.yandex_layout(tx, row.id, manifest, self.orders.packing_plan(tx, manifest)):
+            return None
+        snapshot["layout_groups"], snapshot["layout_requested"] = groups, True
+        snapshot["layout_revision"] = snapshot.get("layout_revision", 0) + 1
+        row.encrypted_snapshot = self._seal(snapshot)
+        row.signature = policy.digest(
+            [policy.signature(snapshot["products"], row.requirements), groups, snapshot["layout_revision"]]
+        )
+        if self.documents:
+            self.documents.invalidate(tx, row.shipment_id)
+        tx.add(
+            AuditEvent(
+                actor_id=actor.id,
+                kind="yandex_layout_saved",
+                subject_id=row.shipment_id,
+                details={"packages": len(groups)},
+            )
+        )
+        tx.flush()
+        return self.prepare(tx, row)
+
+    def observe_yandex(self, tx, row, manifest, fresh):
+        snapshot = self._open(row.encrypted_snapshot)
+        snapshot.update(
+            products=fresh.products, native=fresh.posting["yandex"], multi_box_qty=fresh.multi_box_qty
+        )
+        details = self._details(tx, row)
+        marks = self.marking.values(tx, row.shipment_id, [d.unit_id for d in details])
+        planned = self.orders.packing_plan(tx, manifest)
+        yandex_policy.align_snapshot(
+            snapshot, planned, {i.item_id: i for i in manifest.items}, {d.unit_id: d for d in details}, marks
+        )
+        if "layout_groups" in snapshot:
+            index = {(d.product_id, d.exemplar_id): str(d.unit_id) for d in details}
+            snapshot["layout_groups"] = [
+                [index[(str(e["id"]), str(slot))] for e in box["items"] for slot in e["slots"]]
+                for box in snapshot["native"]["boxes"]
+            ]
+        row.encrypted_snapshot = self._seal(snapshot)
+
+    def observe_yandex_dispatch(self, tx, context_id, manifest, fresh):
+        row = self._context(tx, context_id)
+        self._guard_context(row, manifest)
+        self.observe_yandex(tx, row, manifest, fresh)
+
+    def label_units(self, tx, shipment_id, layout_digest):
+        row = tx.scalar(
+            select(InstanceContext)
+            .where(InstanceContext.shipment_id == shipment_id, InstanceContext.status == "ready")
+            .order_by(InstanceContext.created_at.desc(), InstanceContext.id.desc())
+            .limit(1)
+        )
+        if row is None:
+            raise Conflict("Откройте сборку для сверки грузомест")
+        snapshot = self._open(row.encrypted_snapshot)
+        manifest = self.orders.packing_manifest(tx, shipment_id)
+        if (
+            snapshot.get("marketplace") != "yandex"
+            or snapshot["native"].get("layout_digest") != layout_digest
+            or not self.view(tx, row.id, manifest)["can_verify"]
+        ):
+            raise Conflict("Данные грузомест изменились. Повторите сверку перед получением ярлыков")
+        return self.yandex_layout(tx, row.id, manifest, self.orders.packing_plan(tx, manifest))
+
+    def check_yandex_dispatch(self, client, manifest, evidence):
+        fresh = client.discover(manifest.posting_number)
+        if (
+            fresh.source.account_id != manifest.account_id
+            or fresh.posting["yandex"]["campaign_id"] != evidence["request"]["campaign_id"]
+        ):
+            raise Conflict("Кампания или кабинет заказа изменились. Повторите сверку")
+        if fresh.posting["yandex"]["status"] != "PROCESSING" or fresh.posting["yandex"]["substatus"] not in (
+            "STARTED",
+            "READY_TO_SHIP",
+        ):
+            raise Conflict("Яндекс Маркет изменил состояние заказа. Повторите сверку")
+        if not policy.compatible(
+            fresh, evidence["baseline"], evidence["requirements"], policy.requirements(manifest, fresh)
+        ) or not yandex_policy.fresh_matches(fresh, evidence["baseline"], evidence["request"]):
+            raise Conflict("Товары, данные экземпляров или грузоместа изменились в Яндекс Маркете")
+        payload = evidence["request"]
+        status = (
+            client.status(manifest.posting_number)
+            if any(yandex_policy.mark_of(e) for p in payload["products"] for e in p["exemplars"])
+            else {"items": []}
+        )
+        passed, errors, _ = yandex_policy.checked(
+            fresh, payload, evidence["requirements"], evidence["unit_ids"], status
+        )
+        if not passed or errors:
+            raise Conflict("Дождитесь подтверждения Честного знака, ГТД и грузомест Яндекс Маркета")
+        observed = client.get_shipment(manifest.posting_number)
+        if (
+            observed is None
+            or observed.source != fresh.source
+            or next((r.value for r in observed.references if r.kind == "layout_digest"), None)
+            != fresh.posting["yandex"]["layout_digest"]
+        ):
+            raise Conflict("Раскладка Яндекс Маркета изменилась во время проверки")
+        return fresh, observed
 
     def dispatch_evidence(self, tx, context_id, manifest):
         """Trusted backend port: current, confirmed full data; never an API projection."""

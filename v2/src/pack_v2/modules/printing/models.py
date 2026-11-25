@@ -42,6 +42,7 @@ class PrintJob(Record, Base):
     automatic_key: Mapped[str | None] = mapped_column(String(160), unique=True)
     section: Mapped[str] = mapped_column(String(16))
     session_id: Mapped[UUID | None] = mapped_column(ForeignKey("pack_v2.assembly_sessions.id"))
+    page_index: Mapped[int | None] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(32))
     label_id: Mapped[UUID | None] = mapped_column(ForeignKey("pack_v2.shipment_labels.id"))
     generation: Mapped[int | None] = mapped_column(Integer)
@@ -57,7 +58,7 @@ class PrintJob(Record, Base):
     __table_args__ = (
         UniqueConstraint("user_id", "request_id"),
         CheckConstraint("section IN ('pack','stickers','test')", name="section"),
-        CheckConstraint("kind IN ('ozon:label','marking:duplicate')", name="kind"),
+        CheckConstraint("kind IN ('ozon:label','yandex:label','marking:duplicate')", name="kind"),
         CheckConstraint(
             "state IN ('prepared','dispatching','submitted','browser','uncertain','failed')", name="state"
         ),

@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from pack_v2.infrastructure.jobs import LeaseLost, Queue, enqueue
 from pack_v2.infrastructure.models import AuditEvent, Job
-from pack_v2.integrations.public import AccountSource, OutcomeUnknown, ReadError, SourceChanged
+from pack_v2.integrations.public import OutcomeUnknown, ReadError, SourceChanged
 from pack_v2.shared.errors import Conflict, DomainError
 
 from .models import AssemblyDispatch, AssemblySession, AssemblyUnit
@@ -23,6 +23,7 @@ class Readiness:
         self.db, self.connections, self.orders, self.instances = db, connections, orders, instance_data
         self.auto_split = auto_split
         self.documents = documents
+        self.instances.edit_guard = self.guard_marking_release
 
     def guard_marking_release(self, tx, shipment_id):
         manifest = self.orders.packing_manifest(tx, shipment_id)
@@ -35,7 +36,14 @@ class Readiness:
             .limit(1)
         )
         if pending:
-            raise Conflict("Ozon ещё обрабатывает сборку. Дождитесь подтверждения перед отвязкой")
+            raise Conflict(
+                (
+                    "Яндекс Маркет"
+                    if self.connections.account_label(tx, manifest.account_id).marketplace == "yandex"
+                    else "Ozon"
+                )
+                + " ещё обрабатывает сборку. Дождитесь подтверждения перед изменением данных"
+            )
 
     @staticmethod
     def find(tx, session):
@@ -86,10 +94,21 @@ class Readiness:
             "status": status,
             "message": "Распределение отправлений изменилось. Обновите заказы и выполните сверку"
             if status == "stale" and row.split_result
-            else row.error or (WAITING if status in PENDING else ""),
+            else row.error
+            or (
+                (
+                    "Яндекс Маркет обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке"
+                    if self.connections.account_label(tx, row.account_id).marketplace == "yandex"
+                    else WAITING
+                )
+                if status in PENDING
+                else ""
+            ),
             "can_recheck": status in ("uncertain", "rejected"),
             "children": row.split_result if status == "accepted" else [],
-            "package_count": len(row.layout) or 1,
+            "package_count": (self.orders.label_target(tx, row.shipment_id).package_count or 1)
+            if self.connections.account_label(tx, row.account_id).marketplace == "yandex"
+            else len(row.layout) or 1,
         }
 
     def request(self, tx, session, manifest):
@@ -101,9 +120,10 @@ class Readiness:
                 .order_by(AssemblyUnit.item_id, AssemblyUnit.ordinal)
             )
         )
+        market = self.connections.account_label(tx, session.account_id).marketplace
         groups = (
             self.orders.packing_layout(tx, manifest, units, automatic=self.auto_split)
-            if manifest.state == "awaiting_assembly"
+            if manifest.state == "awaiting_assembly" and market == "ozon"
             else []
         )
         frozen = None
@@ -212,8 +232,7 @@ class Readiness:
         row = tx.get(AssemblyDispatch, UUID(job.payload["dispatch_id"]))
         if row is None:
             raise LeaseLost("Операция сборки не найдена")
-        source = AccountSource(row.account_id, "ozon", row.credential_revision)
-        self.connections.lock_source(tx, source)
+        source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
         Queue.owned(tx, job)
         self.orders.packing_lock(tx, row.shipment_id)
         row = tx.scalar(
@@ -320,7 +339,7 @@ class Readiness:
         except (SourceChanged, Conflict) as error:
             self.fail(job, str(error), stale=True)
         except OutcomeUnknown:
-            self.fail(job, WAITING, retry=True)
+            self.fail(job, self.waiting(job), retry=True)
         except ReadError as error:
             self.fail(job, str(error), retry=error.retryable, delay=error.retry_after)
         except DomainError as error:
@@ -330,6 +349,13 @@ class Readiness:
         except Exception as error:
             logging.error("readiness job stopped; job=%s; type=%s", job.id, type(error).__name__)
             self.fail(job, "Проверка готовности прервана. Проверьте результат")
+
+    def waiting(self, job):
+        with self.db.transaction() as tx:
+            row = tx.get(AssemblyDispatch, UUID(job.payload["dispatch_id"]))
+            if row and self.connections.account_label(tx, row.account_id).marketplace == "yandex":
+                return "Яндекс Маркет обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке"
+        return WAITING
 
     def run(self, job):
         def begin(tx, row, session, source, manifest, evidence):
@@ -352,6 +378,10 @@ class Readiness:
         if saved is None:
             return
         source, manifest, evidence, started, count, cancelled, layout, targets = saved
+        if source.marketplace == "yandex":
+            from .yandex_readiness import run
+
+            return run(self, job, source, manifest, evidence, started, cancelled)
         if len(layout) > 1:
             from .splitting import SplitExecution
 

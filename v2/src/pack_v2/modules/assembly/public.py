@@ -186,7 +186,7 @@ class Assembly:
             "account_title": label.title,
             "marketplace": label.marketplace,
             "market_title": "Яндекс Маркет" if label.marketplace == "yandex" else "Ozon",
-            "shipping_supported": label.marketplace == "ozon",
+            "shipping_supported": label.marketplace in ("ozon", "yandex"),
             "posting_number": row.posting_number,
             "status": status,
             "revision": row.revision,
@@ -210,11 +210,13 @@ class Assembly:
             if self.documents and status in ("scanning", "preparing", "ready") and not split_pending
             else [],
             "layout": {
-                "editable": label.marketplace == "ozon"
-                and status == "scanning"
+                "marketplace": label.marketplace,
+                "editable": status == "scanning"
                 and manifest.state == "awaiting_assembly"
-                and len(physical) > 1,
-                "groups": self.orders.packing_layout(
+                and (label.marketplace == "yandex" or len(physical) > 1),
+                "groups": self.instances.yandex_layout(tx, row.instance_context_id, manifest, physical)
+                if label.marketplace == "yandex" and row.instance_context_id and physical
+                else self.orders.packing_layout(
                     tx,
                     manifest,
                     physical,
@@ -707,6 +709,8 @@ class Assembly:
                     tx,
                     self.connections.source_at_revision(tx, row.account_id, row.credential_revision),
                     row.shipment_id,
+                    defer=self.connections.account_label(tx, row.account_id).marketplace == "yandex"
+                    and not self.instances.view(tx, row.instance_context_id, manifest)["can_verify"],
                 )
             row.revision += 1
             tx.flush()
@@ -883,13 +887,6 @@ class Assembly:
         )
 
     def _begin_ready(self, tx, row):
-        source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
-        if source.marketplace != "ozon":
-            return row, _result(
-                False,
-                "Товары и данные Яндекс Маркета можно проверить. Перевод в готовность и печать ярлыков будут подключены следующим этапом",
-                "unsupported",
-            )
         manifest = self.orders.packing_manifest(tx, row.shipment_id)
         if (
             not manifest.eligible
@@ -913,7 +910,9 @@ class Assembly:
         row.revision += 1
         return row, _result(
             True,
-            "Ozon обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке",
+            "Яндекс Маркет обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке"
+            if self.connections.account_label(tx, row.account_id).marketplace == "yandex"
+            else "Ozon обрабатывает сборку. Ожидаем подтверждения готовности к отгрузке",
             "readiness_queued",
         )
 
@@ -952,11 +951,22 @@ class Assembly:
                 return row, _result(
                     False, "Распределение меняется только до отправки сборки Ozon", "not_scanning"
                 )
-            if self.connections.account_label(tx, row.account_id).marketplace != "ozon":
+            if self.connections.account_label(tx, row.account_id).marketplace == "yandex":
+                try:
+                    with tx.begin_nested():
+                        batch_id = self.instances.save_yandex_layout(
+                            tx, actor, row.instance_context_id, manifest, groups
+                        )
+                except DomainError as error:
+                    return row, _result(False, str(error), "layout_error")
+                row.revision += 1
+                row.lease_until = self._until()
                 return row, _result(
-                    False,
-                    "Изменение грузомест Яндекс Маркета будет подключено следующим этапом",
-                    "unsupported",
+                    True,
+                    "Передаём грузоместа Яндекс Маркету. Используйте новые ярлыки после подтверждения"
+                    if batch_id
+                    else "Грузоместа сохранены",
+                    "layout_saved",
                 )
             old = self.readiness.find(tx, row) if self.readiness else None
             if old and old.ship_started_at:
@@ -985,10 +995,6 @@ class Assembly:
             row = self._owned(tx, actor, session_id, lock=True)
             if row.lease_token != token or row.revision != revision:
                 return row, _result(False, "Окно сборки устарело. Обновите его", "revision_conflict")
-            if self.connections.account_label(tx, row.account_id).marketplace != "ozon":
-                return row, _result(
-                    False, "Проверка готовности Яндекс Маркета пока не подключена", "unsupported"
-                )
             if self.readiness is None:
                 raise DomainError("Операция готовности не настроена")
             self.readiness.recheck(tx, row)

@@ -1,12 +1,14 @@
 """FBS boxes write client. Native identifiers are scoped through the business order API."""
 
+import hashlib
+import json
 from copy import deepcopy
 
 from pack_v2.integrations.instances import InstanceSnapshot
 from pack_v2.shared.errors import DomainError
 from pack_v2.shared.gs1 import parse
 
-from .reader import YandexReadAdapter, count
+from .reader import YandexReadAdapter, count, layout_digest
 from .transport import body, error, positive
 
 IDENTIFIERS = {"cis", "cisFull", "gtd", "rnpt", "uin", "countryCode"}
@@ -133,6 +135,8 @@ def layout(raw, items):
         incoming = [{"items": [{"id": int(key), "fullCount": item["count"]} for key, item in items.items()]}]
     if not isinstance(incoming, list) or len(incoming) > 1000:
         raise error("invalid_response")
+    if all(box.get("boxId") is not None for box in incoming):
+        incoming = sorted(incoming, key=lambda box: int(positive(box["boxId"])))
     positions = {key: 0 for key in items}
     parts = {}
     out = []
@@ -297,7 +301,26 @@ def normalized(raw, source):
         "substatus": raw["substatus"],
         "items": list(items.values()),
         "boxes": boxes,
+        "has_layout": bool((raw.get("delivery") or {}).get("boxesLayout")),
+        "box_keys": sorted(
+            [
+                [positive(b["boxId"]), b.get("barcode")]
+                for b in (raw.get("delivery") or {}).get("boxesLayout", [])
+                if b.get("boxId") is not None
+            ],
+            key=lambda pair: int(pair[0]),
+        ),
+        "layout_digest": layout_digest(raw),
     }
+    proof = []
+    for product in sorted(products, key=lambda p: str(p["product_id"])):
+        value = {k: v for k, v in product.items() if k != "exemplars"}
+        value["exemplars"] = sorted(
+            json.dumps({k: v for k, v in e.items() if k != "exemplar_id"}, sort_keys=True)
+            for e in product["exemplars"]
+        )
+        proof.append(value)
+    native["data_digest"] = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
     posting = {
         "posting_number": native["order_id"],
         "status": "awaiting_packaging"

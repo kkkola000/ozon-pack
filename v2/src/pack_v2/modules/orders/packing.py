@@ -181,7 +181,11 @@ def candidates(
             )
         ).all()
         if not labels:
-            labels = tx.scalars(select(ShipmentRef.shipment_id).where(ShipmentRef.value == code)).all()
+            labels = tx.scalars(
+                select(ShipmentRef.shipment_id).where(
+                    ShipmentRef.value == code, ShipmentRef.kind.not_in(("campaign_id", "layout_digest"))
+                )
+            ).all()
         if labels:
             kind = "label"
             query = query.where(Shipment.id.in_(labels))

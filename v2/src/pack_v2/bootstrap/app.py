@@ -25,8 +25,10 @@ from pack_v2.integrations.ozon.shipping import OzonShippingAdapter
 from pack_v2.integrations.public import Connections
 from pack_v2.integrations.reading import ReaderFactory
 from pack_v2.integrations.yandex.access import YandexAccessChecker
+from pack_v2.integrations.yandex.documents import YandexLabelAdapter
 from pack_v2.integrations.yandex.instances import YandexInstanceAdapter
 from pack_v2.integrations.yandex.reader import YandexReadAdapter
+from pack_v2.integrations.yandex.shipping import YandexShippingAdapter
 from pack_v2.modules.assembly.api import build_router as assembly_router
 from pack_v2.modules.assembly.public import Assembly
 from pack_v2.modules.assembly.readiness import Readiness
@@ -50,7 +52,7 @@ from pack_v2.web.views import render
 
 from .models import load_models
 
-SCHEMA_REVISION = "0013_yandex"
+SCHEMA_REVISION = "0014_yandex_fulfillment"
 
 
 def create_app(
@@ -91,6 +93,8 @@ def create_app(
         yandex_checker=YandexAccessChecker(),
         yandex_reader_factory=YandexReadAdapter,
         yandex_instance_factory=YandexInstanceAdapter,
+        yandex_shipping_factory=YandexShippingAdapter,
+        yandex_label_factory=YandexLabelAdapter,
     )
     app.state.catalog = Catalog(db, app.state.connections)
     app.state.orders = Orders(
@@ -104,6 +108,8 @@ def create_app(
     app.state.documents = Documents(
         db, app.state.connections, app.state.orders, box, label_size=settings.ozon_label_size
     )
+    app.state.instance_data.documents = app.state.documents
+    app.state.documents.instances = app.state.instance_data
     app.state.readiness = Readiness(
         db,
         app.state.connections,

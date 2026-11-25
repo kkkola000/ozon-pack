@@ -21,11 +21,13 @@ def submit(jobs, job, saved):
             raise SourceChanged("Яндекс Маркет изменил состав или требования. Повторите сверку")
         if fresh.posting["yandex"]["campaign_id"] != payload["campaign_id"]:
             raise SourceChanged("Кампания заказа изменилась. Повторите сверку")
-        consistent = yp.fresh_matches(fresh, baseline, payload) or (
-            packet.get("previous_rejected") and yp.fresh_matches(fresh, packet["previous_rejected"], payload)
+        consistent = yp.fresh_matches(fresh, baseline, payload, after_write=started) or (
+            packet.get("previous_rejected")
+            and yp.fresh_matches(fresh, packet["previous_rejected"], payload, after_write=started)
         )
         if (
-            yp.shape(fresh.posting["yandex"]) != yp.shape(baseline["native"])
+            yp.shape(fresh.posting["yandex"])
+            not in (yp.shape(baseline["native"]), yp.shape({"boxes": payload["boxes"]}))
             or not started
             and not consistent
         ):
@@ -41,7 +43,15 @@ def submit(jobs, job, saved):
         if passed:
             if not consistent:
                 raise SourceChanged("Данные экземпляров изменились в Яндекс Маркете. Повторите сверку")
-            jobs.accept(job, results)
+            observed = client.get_shipment(manifest.posting_number)
+            if (
+                observed is None
+                or observed.source != source
+                or next((r.value for r in observed.references if r.kind == "layout_digest"), None)
+                != fresh.posting["yandex"]["layout_digest"]
+            ):
+                raise SourceChanged("Раскладка Яндекс Маркета изменилась во время проверки")
+            jobs.accept(job, results, fresh=fresh, observed=observed)
             return
         if started and errors:
             jobs.reject(job, errors, results, yp.message(results))

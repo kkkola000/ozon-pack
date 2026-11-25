@@ -110,8 +110,8 @@ def test_reader_official_shapes_price_identity_and_privacy():
 
 def test_pipeline_full_write_status_readback_and_no_shipping(pipeline, owner, db):
     view = fill(pipeline, owner)
-    assert view["marketplace"] == "yandex" and not view["shipping_supported"]
-    assert not view["layout"]["editable"] and not view["data"]["can_verify"]
+    assert view["marketplace"] == "yandex" and view["shipping_supported"]
+    assert view["layout"]["editable"] and not view["data"]["can_verify"]
     assert not unit(view)["gtd_omission_allowed"]
     view = settle(pipeline, owner, view)
     assert view["data"]["status"] == "checking"
@@ -128,7 +128,6 @@ def test_pipeline_full_write_status_readback_and_no_shipping(pipeline, owner, db
     }
     assert b"\\u001d" in writes[0][3] and b"\\\\u001d" not in writes[0][3]
     assert all("/ship" not in c[1] for c in pipeline[2].calls)
-    assert call(pipeline[0], owner, view, "complete")["code"] == "unsupported"
     assert call(pipeline[0], owner, view, "verify")["ok"]
     with db.transaction() as tx:
         batch = tx.scalar(select(Submission))

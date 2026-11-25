@@ -13,7 +13,7 @@ class Strict(BaseModel):
 
 
 class Profile(Strict):
-    kind: Literal["ozon:label", "marking:duplicate"]
+    kind: Literal["ozon:label", "yandex:label", "marking:duplicate"]
     size: Literal["58x40", "75x120", "100x150", "a4", "custom"] = "58x40"
     printer: str = Field(default="", max_length=200)
     orientation: Literal["", "portrait", "landscape"] = ""
@@ -28,7 +28,7 @@ class Setup(Strict):
     revision: int = Field(ge=0, strict=True)
     product_barcodes: bool = Field(strict=True)
     marking_duplicates: bool = Field(strict=True)
-    profiles: list[Profile] = Field(min_length=2, max_length=5)
+    profiles: list[Profile] = Field(min_length=2, max_length=9)
 
 
 class Command(Strict):

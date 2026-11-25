@@ -46,6 +46,39 @@ class Orders:
                 result.extend([code] * row.quantity)
         return result
 
+    def print_unit_codes(self, tx, shipment_id, unit_ids, prefix="OZN"):
+        from .models import OrderLine, OrderUnit, ShipmentItem, ShipmentUnit
+
+        units = list(
+            tx.execute(
+                select(OrderUnit, OrderLine)
+                .join(OrderLine, OrderLine.id == OrderUnit.line_id)
+                .join(ShipmentUnit, ShipmentUnit.unit_id == OrderUnit.id)
+                .where(
+                    ShipmentUnit.shipment_id == shipment_id,
+                    ShipmentUnit.released_at.is_(None),
+                    OrderUnit.id.in_([UUID(v) for v in unit_ids]),
+                )
+            )
+        )
+        items = {
+            "packing:" + r.source_line_id: r
+            for r in tx.scalars(
+                select(ShipmentItem).where(
+                    ShipmentItem.shipment_id == shipment_id, ShipmentItem.source_present.is_(True)
+                )
+            )
+        }
+        offers = {
+            items[line.external_line_id].offer_id for _, line in units if line.external_line_id in items
+        }
+        codes = self.catalog.print_codes(tx, offers, prefix)
+        return [
+            codes[item.offer_id]
+            for _, line in units
+            if (item := items.get(line.external_line_id)) and item.offer_id in codes
+        ]
+
     def __init__(self, db, connections, catalog: Catalog, *, lookback_days=30):
         self.db, self.connections, self.catalog = db, connections, catalog
         self.lookback_days = lookback_days
@@ -216,11 +249,40 @@ class Orders:
         return (
             tx.scalar(
                 select(ShipmentRef.value)
-                .where(ShipmentRef.shipment_id == shipment_id, ShipmentRef.value == code)
+                .where(
+                    ShipmentRef.shipment_id == shipment_id,
+                    ShipmentRef.value == code,
+                    ShipmentRef.kind.not_in(("campaign_id", "layout_digest")),
+                )
                 .limit(1)
             )
             is not None
         )
+
+    def packing_observe(self, tx, source, snapshot):
+        """Persist a provider observation obtained under the caller's account/order fences."""
+        from uuid import uuid4
+
+        from pack_v2.infrastructure.jobs import enqueue
+        from pack_v2.infrastructure.models import Job
+
+        now = datetime.now(UTC)
+        run = OrderSync(
+            id=uuid4(),
+            account_id=source.account_id,
+            credential_revision=source.credential_revision,
+            mode="working",
+            since=now,
+            until=now,
+            status="succeeded",
+            finished_at=now,
+        )
+        run.job_id = enqueue(tx, "orders.sync", "orders.observed:" + str(run.id), {"run_id": str(run.id)})
+        tx.get(Job, run.job_id).status = "succeeded"
+        tx.add(run)
+        tx.flush()
+        store.apply_page(tx, run, (snapshot,), self.catalog)
+        tx.flush()
 
     @staticmethod
     def packing_confirm_ready(tx, manifest, observed_at, substatus):

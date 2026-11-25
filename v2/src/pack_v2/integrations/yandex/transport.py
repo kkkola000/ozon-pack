@@ -57,6 +57,7 @@ def _constant(value):
 
 class YandexTransport:
     def __init__(self, credentials, *, transport=None, attempts=3, wait=time.sleep, instances=False):
+        self.shipping = False
         self.business = positive(credentials.business_id)
         self.orders_path = f"/v1/businesses/{self.business}/orders"
         self.catalog_path = f"/v2/businesses/{self.business}/offer-mappings"
@@ -93,7 +94,19 @@ class YandexTransport:
             r"/v2/campaigns/[1-9][0-9]*/orders/[1-9][0-9]*/identifiers/status", path
         )
         change = method == "PUT" and re.fullmatch(r"/v2/campaigns/[1-9][0-9]*/orders/[1-9][0-9]*/boxes", path)
-        if not (read and not write or self.instances and (check and not write or change and write)):
+        ship = (
+            self.shipping
+            and method == "PUT"
+            and re.fullmatch(r"/v2/campaigns/[1-9][0-9]*/orders/[1-9][0-9]*/status", path)
+        )
+        if not (
+            read
+            and not write
+            or self.instances
+            and (check and not write or change and write)
+            or ship
+            and write
+        ):
             raise ValueError("Undeclared Yandex operation")
         try:
             with self.client.stream(method, path, json=payload, params=params) as response:

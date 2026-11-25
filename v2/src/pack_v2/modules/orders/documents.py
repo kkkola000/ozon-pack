@@ -40,7 +40,7 @@ class LabelTarget:
                 {
                     (r.kind, r.value)
                     for r in snapshot.references
-                    if r.kind in ("posting_number", "label_barcode")
+                    if r.kind in ("posting_number", "label_barcode", "layout_digest")
                 }
             )
         )
@@ -61,7 +61,7 @@ def target(tx, shipment_id):
         sorted(
             (r.kind, r.value)
             for r in tx.scalars(select(ShipmentRef).where(ShipmentRef.shipment_id == shipment_id))
-            if r.kind in ("posting_number", "label_barcode")
+            if r.kind in ("posting_number", "label_barcode", "layout_digest")
         )
     )
     numbers = [value for kind, value in refs if kind == "posting_number"]

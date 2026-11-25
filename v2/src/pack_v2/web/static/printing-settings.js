@@ -17,10 +17,10 @@
     input.setAttribute('aria-label',title); input.addEventListener('input', () => { row[key] = Number(input.value); }); label.append(input); return label;
   }
   function render() {
-    body.replaceChildren(); let labelNumber = 0;
+    body.replaceChildren(); const labelNumbers = {};
     rows.forEach((row, index) => {
       const line = make('tr'), doc = make('td');
-      doc.append(make('b','',row.kind === 'ozon:label' ? 'Ozon: стикеры' : 'Дубликаты «Честный знак»'));
+      doc.append(make('b','',row.kind === 'ozon:label' ? 'Ozon: стикеры' : row.kind === 'yandex:label' ? 'Яндекс Маркет: ярлыки' : 'Дубликаты «Честный знак»'));
       if (row.kind === 'marking:duplicate') doc.append(make('div','muted small','Один общий принтер для всех площадок.'));
       const paper = make('td'); paper.append(select(Object.entries(sizes),row.size,value => {
         row.size = value; if (papers[value]) [row.width,row.height] = papers[value]; render();
@@ -35,12 +35,12 @@
       test.addEventListener('click',async () => { if (busy) return; test.disabled = true; await api.test(row,report); test.disabled = false; }); buttons.append(test);
       const calibration = make('details','printing-calibration'); calibration.append(make('summary','btn small','⚙ Подгонка'));
       const fields = make('div','printing-calibration-fields'); fields.append(number(row,'gap','Зазор, мм',0,20),number(row,'x','Сдвиг X, мм',-30,30),number(row,'y','Сдвиг Y, мм',-30,30)); calibration.append(fields);
-      if (row.kind === 'ozon:label') {
-        labelNumber++;
-        if (labelNumber > 1) { const remove = make('button','btn small','Убрать размер'); remove.type = 'button'; remove.addEventListener('click',() => { rows.splice(index,1); render(); }); buttons.append(remove); }
+      if (row.kind.endsWith(':label')) {
+        labelNumbers[row.kind] = (labelNumbers[row.kind] || 0) + 1;
+        if (labelNumbers[row.kind] > 1) { const remove = make('button','btn small','Убрать размер'); remove.type = 'button'; remove.addEventListener('click',() => { rows.splice(index,1); render(); }); buttons.append(remove); }
       }
       actions.append(buttons,calibration); line.append(doc,paper,printer,orientation,actions); body.append(line);
-      if (row.kind === 'ozon:label' && rows[index + 1]?.kind !== 'ozon:label' && labelNumber < 4) {
+      if (row.kind.endsWith(':label') && rows[index + 1]?.kind !== row.kind && labelNumbers[row.kind] < 4) {
         const extra = make('tr'), cell = make('td'); cell.colSpan = 5;
         const add = make('button','btn small','+ ещё размер'); add.type = 'button';
         add.addEventListener('click',() => { const used = new Set(rows.filter(r => r.kind === row.kind).map(r => r.size)); const size = Object.keys(papers).find(s => !used.has(s)) || 'custom'; rows.splice(index + 1,0,{...row,size,width:(papers[size] || [60,40])[0],height:(papers[size] || [60,40])[1]}); render(); });

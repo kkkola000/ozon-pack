@@ -3,11 +3,15 @@ from math import isfinite
 from pack_v2.shared.errors import DomainError
 
 PAPER = {"58x40": (58, 40), "75x120": (75, 120), "100x150": (100, 150), "a4": (210, 297)}
-KINDS = {"ozon:label": "Ozon: стикеры", "marking:duplicate": "Дубликаты «Честный знак» — все площадки"}
+KINDS = {
+    "ozon:label": "Ozon: стикеры",
+    "marking:duplicate": "Дубликаты «Честный знак» — все площадки",
+    "yandex:label": "Яндекс Маркет: ярлыки",
+}
 
 
 def default_profiles():
-    return [profile(kind) for kind in KINDS]
+    return [profile(kind, size="75x120") if kind == "yandex:label" else profile(kind) for kind in KINDS]
 
 
 def number(value, low, high):
@@ -46,7 +50,7 @@ def profile(kind, *, size="58x40", printer="", orientation="", width=58, height=
 
 
 def validate(values):
-    if not isinstance(values, list) or not 2 <= len(values) <= 5:
+    if not isinstance(values, list) or not 2 <= len(values) <= 9:
         raise DomainError("Настройте стикеры Ozon и один общий принтер Честного знака")
     try:
         rows = [profile(**value) for value in values]
@@ -54,9 +58,12 @@ def validate(values):
         raise DomainError("Проверьте строки принтеров") from None
     if sum(r["kind"] == "marking:duplicate" for r in rows) != 1:
         raise DomainError("Для Честного знака используется один общий принтер")
-    labels = [r for r in rows if r["kind"] == "ozon:label"]
-    if not 1 <= len(labels) <= 4 or len({(r["width"], r["height"]) for r in labels}) != len(labels):
-        raise DomainError("Укажите от одного до четырёх разных размеров стикеров Ozon")
+    if not any(r["kind"] == "yandex:label" for r in rows):
+        rows.append(profile("yandex:label", size="75x120"))
+    for kind in ("ozon:label", "yandex:label"):
+        labels = [r for r in rows if r["kind"] == kind]
+        if not 1 <= len(labels) <= 4 or len({(r["width"], r["height"]) for r in labels}) != len(labels):
+            raise DomainError("Укажите от одного до четырёх разных размеров ярлыков каждой площадки")
     return rows
 
 

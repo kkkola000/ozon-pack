@@ -92,6 +92,8 @@ class Connections:
         yandex_checker=None,
         yandex_reader_factory=None,
         yandex_instance_factory=None,
+        yandex_shipping_factory=None,
+        yandex_label_factory=None,
     ):
         self.db, self.box, self.checker = db, box, checker
         self.reader_factory = reader_factory
@@ -101,6 +103,8 @@ class Connections:
         self.yandex_checker = yandex_checker
         self.yandex_reader_factory = yandex_reader_factory
         self.yandex_instance_factory = yandex_instance_factory
+        self.yandex_shipping_factory = yandex_shipping_factory
+        self.yandex_label_factory = yandex_label_factory
 
     def account_labels(self, actor: Principal, section: str = "products") -> list[AccountLabel]:
         if not actor.can(section):
@@ -186,28 +190,26 @@ class Connections:
 
     @contextmanager
     def shipping_client(self, source: AccountSource):
-        if source.marketplace != "ozon":
-            raise DomainError("Перевод готовности этой площадки ещё не подключён")
-        if self.shipping_factory is None:
+        factory = self.yandex_shipping_factory if source.marketplace == "yandex" else self.shipping_factory
+        if factory is None:
             raise DomainError("Адаптер сборки не настроен")
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
-        with self.shipping_factory(source, credentials) as client:
+        with factory(source, credentials) as client:
             yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
 
     @contextmanager
     def label_client(self, source: AccountSource):
-        if source.marketplace != "ozon":
-            raise DomainError("Получение ярлыков этой площадки ещё не подключено")
-        if self.label_factory is None:
+        factory = self.yandex_label_factory if source.marketplace == "yandex" else self.label_factory
+        if factory is None:
             raise DomainError("Адаптер стикеров не настроен")
         with self.db.transaction() as tx:
             self.lock_source(tx, source)
             credentials = self._credentials(tx, source.account_id)
-        with self.label_factory(source, credentials) as client:
+        with factory(source, credentials) as client:
             yield client
         with self.db.transaction() as tx:
             self.lock_source(tx, source)

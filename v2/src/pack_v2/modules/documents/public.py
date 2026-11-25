@@ -16,7 +16,7 @@ from sqlalchemy.orm import defer
 from pack_v2.infrastructure.jobs import LeaseLost, Queue, enqueue
 from pack_v2.infrastructure.models import AuditEvent, Job
 from pack_v2.integrations.documents import MAX_LABEL_BYTES
-from pack_v2.integrations.public import AccountSource, ReadError, SourceChanged
+from pack_v2.integrations.public import ReadError, SourceChanged
 from pack_v2.shared.errors import Conflict, DomainError, NotFound
 
 from .models import ShipmentLabel
@@ -42,8 +42,9 @@ class Documents:
             raise ValueError("Invalid label size")
         self.db, self.connections, self.orders, self.box = db, connections, orders, box
         self.label_size = label_size
+        self.instances = None
 
-    def request(self, tx, source, shipment_id, *, retry=False):
+    def request(self, tx, source, shipment_id, *, retry=False, defer=False):
         """Called under the account/order locks, after an authorized assembly refresh."""
         target = self.orders.label_target(tx, shipment_id)
         if target.account_id != source.account_id:
@@ -56,11 +57,20 @@ class Documents:
             .with_for_update()
         )
         same = row and row.basis == target.basis and row.credential_revision == source.credential_revision
-        if same and source.marketplace == "yandex" and row.status == "waiting_ready":
+        if same and row.status == "waiting_ready" and defer:
             return row.id
-        if same and row.status == "waiting_ready" and target.state == "awaiting_assembly":
+        if (
+            same
+            and row.status == "waiting_ready"
+            and target.state == "awaiting_assembly"
+            and source.marketplace == "ozon"
+        ):
             return row.id
-        if same and row.status == "ready" and target.state == "awaiting_dispatch":
+        if (
+            same
+            and row.status == "ready"
+            and (target.state == "awaiting_dispatch" or source.marketplace == "yandex")
+        ):
             return row.id
         if same and row.status in ("queued", "processing"):
             pending = tx.get(Job, row.job_id)
@@ -90,7 +100,7 @@ class Documents:
         for field in ("task_id", "encrypted_pdf", "checksum", "byte_count", "received_at", "error", "job_id"):
             setattr(row, field, None)
         row.status = "waiting_ready"
-        if target.state == "awaiting_dispatch" and source.marketplace == "ozon":
+        if not defer and (target.state == "awaiting_dispatch" or source.marketplace == "yandex"):
             row.status = "queued"
             row.job_id = enqueue(
                 tx, "documents.label", f"documents.label:{row.id}:{row.generation}", {"label_id": str(row.id)}
@@ -132,7 +142,7 @@ class Documents:
                 or source.credential_revision != row.credential_revision
             ):
                 status = "stale"
-            elif status == "ready" and target.state != "awaiting_dispatch":
+            elif status == "ready" and target.state != "awaiting_dispatch" and source.marketplace == "ozon":
                 status = "waiting_ready"
             elif status in ("queued", "processing"):
                 pending = tx.get(Job, row.job_id)
@@ -151,10 +161,8 @@ class Documents:
                 "stale": "Данные стикера изменились. Откройте отправление заново",
                 "expired": "Срок хранения стикера истёк",
             }
-            if source.marketplace == "yandex" and status == "waiting_ready":
-                messages["waiting_ready"] = (
-                    "История Честного знака сохранена. Ярлыки Яндекс Маркета будут подключены следующим этапом"
-                )
+            if source.marketplace == "yandex":
+                messages = {k: v.replace("Ozon", "Яндекс Маркета") for k, v in messages.items()}
             result.append(
                 {
                     "id": str(row.id),
@@ -164,6 +172,7 @@ class Documents:
                     "message": messages[status],
                     "key": f"{row.id}:{row.generation}",
                     "generation": row.generation,
+                    "box_units": row.archive_snapshot.get("box_units", []),
                     "url": f"/api/v2/documents/labels/{row.id}/{row.generation}/pdf"
                     if status == "ready"
                     else None,
@@ -177,7 +186,7 @@ class Documents:
             row = tx.get(ShipmentLabel, label_id)
             if row is None:
                 raise NotFound("Стикер не найден")
-            source = AccountSource(row.account_id, "ozon", row.credential_revision)
+            source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
             self.connections.lock_source(tx, source)
             self.orders.packing_lock(tx, row.shipment_id)
             tx.refresh(row)
@@ -186,13 +195,18 @@ class Documents:
                 row.generation != generation
                 or row.status != "ready"
                 or not target.eligible
-                or target.state != "awaiting_dispatch"
+                or target.state
+                not in (
+                    ("awaiting_assembly", "awaiting_dispatch")
+                    if source.marketplace == "yandex"
+                    else ("awaiting_dispatch",)
+                )
                 or row.basis != target.basis
             ):
                 raise Conflict("Стикер ещё не готов или состав отправления изменился. Обновите окно сборки")
             pdf = self.content(row)
             number = "".join(c for c in target.posting_number if c.isascii() and (c.isalnum() or c in "-_"))
-            return pdf, f"ozon-{number or row.id}.pdf"
+            return pdf, f"{source.marketplace}-{number or row.id}.pdf"
 
     def content(self, row):
         try:
@@ -225,10 +239,17 @@ class Documents:
                 not source.active
                 or source.credential_revision != row.credential_revision
                 or not target.eligible
-                or target.state != "awaiting_dispatch"
+                or target.state
+                not in (
+                    ("awaiting_assembly", "awaiting_dispatch")
+                    if source.marketplace == "yandex"
+                    else ("awaiting_dispatch",)
+                )
             ):
                 raise Conflict("Данные отправления изменились. Обновите окно сборки")
         return {
+            "box_units": row.archive_snapshot.get("box_units", []),
+            "marketplace": self.connections.account_label(tx, row.account_id).marketplace,
             "shipment_id": row.shipment_id,
             "posting_number": target.posting_number,
             "data": self.content(row) if content else None,
@@ -239,7 +260,7 @@ class Documents:
             row = tx.get(ShipmentLabel, UUID(job.payload["label_id"]))
             if row is None:
                 raise LeaseLost("Стикер не найден")
-            source = AccountSource(row.account_id, "ozon", row.credential_revision)
+            source = self.connections.source_at_revision(tx, row.account_id, row.credential_revision)
             self.connections.lock_source(tx, source)
             Queue.owned(tx, job)
             self.orders.packing_lock(tx, row.shipment_id)
@@ -280,7 +301,10 @@ class Documents:
                 return None
             pending = tx.get(Job, job.id)
             if datetime.now(UTC) - pending.created_at > timedelta(minutes=3):
-                raise DomainError("Ozon не подготовил стикер за отведённое время. Повторите загрузку")
+                raise DomainError(
+                    ("Яндекс Маркет" if source.marketplace == "yandex" else "Ozon")
+                    + " не подготовил стикер за отведённое время. Повторите загрузку"
+                )
             row.status = "processing"
             return source, target, row.task_id, row.size
 
@@ -288,17 +312,26 @@ class Documents:
         if saved is None:
             return
         source, target, task_id, size = saved
+        market = "Яндекс Маркет" if source.marketplace == "yandex" else "Ozon"
         with self.connections.reader_for_sync(source) as reader:
             before = reader.get_shipment(target.posting_number)
         if before is None or before.source != source or not target.matches(before):
-            raise SourceChanged("Ozon изменил отправление. Стикер нужно получить после сверки заказа")
-        if before.state == "awaiting_assembly":
+            raise SourceChanged(f"{market} изменил отправление. Стикер нужно получить после сверки заказа")
+        if before.state == "awaiting_assembly" and source.marketplace == "ozon":
             self._write(
                 job, lambda tx, row, *_: (setattr(row, "status", "waiting_ready"), Queue.finish_in(tx, job))
             )
             return
-        if before.state != "awaiting_dispatch" or before.source_substatus == "ship_failed":
-            raise SourceChanged("Ozon не подтвердил доступность стикера этого отправления")
+        if (
+            before.state
+            not in (
+                ("awaiting_assembly", "awaiting_dispatch")
+                if source.marketplace == "yandex"
+                else ("awaiting_dispatch",)
+            )
+            or before.source_substatus == "ship_failed"
+        ):
+            raise SourceChanged(f"{market} не подтвердил доступность стикера этого отправления")
         with self.connections.label_client(source) as client:
             if task_id is None:
                 # Repeating PDF generation after a lost response is safe: it does
@@ -313,18 +346,34 @@ class Documents:
                 return
             if remote.state != "ready" or not remote.url:
                 raise ReadError("invalid_response")
+            if source.marketplace == "yandex" and remote.identity_digest != next(
+                (value for kind, value in target.references if kind == "layout_digest"), None
+            ):
+                raise SourceChanged(
+                    "Яндекс Маркет изменил отгрузку или грузоместа. Повторите сверку перед печатью"
+                )
             pdf = client.download(remote.url)
         validate_pdf(pdf)
+        if (
+            source.marketplace == "yandex"
+            and len(PdfReader(io.BytesIO(pdf)).pages) != before.package_count_hint
+        ):
+            raise ReadError("invalid_response", marketplace="yandex")
         with self.connections.reader_for_sync(source) as reader:
             after = reader.get_shipment(target.posting_number)
         if (
             after is None
             or after.source != source
             or not target.matches(after)
-            or after.state != "awaiting_dispatch"
+            or after.state
+            not in (
+                ("awaiting_assembly", "awaiting_dispatch")
+                if source.marketplace == "yandex"
+                else ("awaiting_dispatch",)
+            )
             or after.source_substatus == "ship_failed"
         ):
-            raise SourceChanged("Ozon изменил отправление во время получения стикера. Требуется сверка")
+            raise SourceChanged(f"{market} изменил отправление во время получения стикера. Требуется сверка")
 
         def complete(tx, row, *_):
             row.encrypted_pdf, row.checksum, row.byte_count = (
@@ -332,7 +381,11 @@ class Documents:
                 hashlib.sha256(pdf).hexdigest(),
                 len(pdf),
             )
-            row.archive_snapshot = self.orders.archive_info(tx, [row.shipment_id])[row.shipment_id]
+            snapshot = self.orders.archive_info(tx, [row.shipment_id])[row.shipment_id]
+            if source.marketplace == "yandex" and self.instances:
+                digest = next(r.value for r in after.references if r.kind == "layout_digest")
+                snapshot["box_units"] = self.instances.label_units(tx, row.shipment_id, digest)
+            row.archive_snapshot = snapshot
             row.received_at, row.status, row.error = datetime.now(UTC), "ready", None
             Queue.finish_in(tx, job)
             tx.add(

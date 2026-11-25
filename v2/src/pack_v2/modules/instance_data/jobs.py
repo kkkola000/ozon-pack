@@ -320,7 +320,7 @@ class InstanceJobs:
             self._send(job, client, "set", payload)
         self.wait(job)
 
-    def accept(self, job, results=None):
+    def accept(self, job, results=None, *, fresh=None, observed=None):
         def save(tx, row, batch, source, manifest):
             batch.status, batch.finished_at, batch.error = "accepted", datetime.now(UTC), None
             packet = self.s._open(batch.encrypted_payload)
@@ -346,6 +346,12 @@ class InstanceJobs:
                 values = dict(detail.values)
                 values["base_gtd"] = values.get("gtd")
                 stored.encrypted_values = self.s._seal(values)
+            if fresh is not None:
+                self.s.observe_yandex(tx, row, manifest, fresh)
+            if observed is not None:
+                self.s.orders.packing_observe(tx, source, observed)
+                if self.s.documents:
+                    self.s.documents.request(tx, source, row.shipment_id)
             Queue.finish_in(tx, job)
             tx.add(
                 AuditEvent(

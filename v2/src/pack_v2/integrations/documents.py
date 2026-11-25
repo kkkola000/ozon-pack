@@ -13,6 +13,7 @@ MAX_LABEL_BYTES = 8 * 1024 * 1024
 class LabelTask:
     state: str
     url: str | None = field(default=None, repr=False)
+    identity_digest: str | None = None
 
 
 class LabelClient(Protocol):

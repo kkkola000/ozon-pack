@@ -19,6 +19,17 @@ def measure(data):
     return float(page.mediabox.width) / MM, float(page.mediabox.height) / MM
 
 
+def page(data, index):
+    reader = PdfReader(io.BytesIO(data))
+    if type(index) is not int or not 0 <= index < len(reader.pages):
+        raise DomainError("Страница ярлыка изменилась. Обновите сборку")
+    writer = PdfWriter()
+    writer.add_page(reader.pages[index])
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
 def barcode_image(code, *, marking=False):
     import zxingcpp
 

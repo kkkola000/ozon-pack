@@ -126,26 +126,54 @@ class Printing:
         return self._view(saved)
 
     def _label(
-        self, tx, actor, request_id, label_id, generation, section, session_id=None, automatic_key=None
+        self,
+        tx,
+        actor,
+        request_id,
+        label_id,
+        generation,
+        section,
+        session_id=None,
+        automatic_key=None,
+        page_index=None,
     ):
-        fingerprint = self._fingerprint(["label", label_id, generation, section, session_id])
+        identity = ["label", label_id, generation, section, session_id]
+        if page_index is not None:
+            identity.append(page_index)
+        fingerprint = self._fingerprint(identity)
         old = self._existing(tx, actor, request_id, fingerprint)
         if old:
             return self._view(old)
         setup = self._settings(tx)
         source = self.documents.print_source(tx, label_id, generation, archived=section == "stickers")
-        codes = self.orders.print_codes(tx, source["shipment_id"]) if setup.product_barcodes else []
-        row = profiles.pick(setup.profiles, "ozon:label", pdf.measure(source["data"]))
+        market = source.get("marketplace", "ozon")
+        kind = market + ":label"
+        codes = (
+            self.orders.print_codes(tx, source["shipment_id"], prefix="MRKT" if market == "yandex" else "OZN")
+            if setup.product_barcodes
+            else []
+        )
+        if page_index is not None:
+            groups = source.get("box_units") or []
+            if not 0 <= page_index < len(groups):
+                raise Conflict("Грузоместо изменилось. Обновите сборку")
+            codes = (
+                self.orders.print_unit_codes(tx, source["shipment_id"], groups[page_index], prefix="MRKT")
+                if setup.product_barcodes
+                else []
+            )
+        row = profiles.pick(setup.profiles, kind, pdf.measure(source["data"]))
         return self._create(
             tx,
             actor,
             request_id,
             fingerprint,
-            "ozon:label",
+            kind,
             section,
             row,
             label_id=label_id,
             generation=generation,
+            page_index=page_index,
             product_codes=codes,
             session_id=session_id,
             automatic_key=automatic_key,
@@ -180,19 +208,33 @@ class Printing:
             context = self.assembly.printing_context(tx, actor, session_id)
             setup = self._settings(tx)
             jobs = []
-            candidates = [
-                ("label:" + item["key"], item)
-                for item in context["labels"]
-                if item["status"] == "ready" and context["unit_ids"]
-            ]
-            for key, item in candidates:
+            candidates = []
+            scanned = {str(uid) for uid in context["unit_ids"]}
+            for item in context["labels"]:
+                if item["status"] != "ready" or not scanned:
+                    continue
+                if item.get("box_units"):
+                    for index, group in enumerate(item["box_units"]):
+                        if group and set(group) <= scanned:
+                            candidates.append(("label:" + item["key"] + ":" + str(index), item, index))
+                else:
+                    candidates.append(("label:" + item["key"], item, None))
+            for key, item, page_index in candidates:
                 old = tx.scalar(select(PrintJob).where(PrintJob.automatic_key == key))
                 if old:
                     if old.user_id == actor.id:
                         jobs.append(self._view(old))
                     continue
                 job = self._label(
-                    tx, actor, uuid4(), UUID(item["id"]), item["generation"], "pack", session_id, key
+                    tx,
+                    actor,
+                    uuid4(),
+                    UUID(item["id"]),
+                    item["generation"],
+                    "pack",
+                    session_id,
+                    key,
+                    page_index,
                 )
                 if job:
                     jobs.append(job)
@@ -290,10 +332,12 @@ class Printing:
         if row.session_id:
             self.assembly.printing_context(tx, actor, row.session_id)
         source = None
-        if row.label_id and row.kind == "ozon:label":
+        if row.label_id and row.kind in ("ozon:label", "yandex:label"):
             source = self.documents.print_source(
                 tx, row.label_id, row.generation, archived=row.section == "stickers", content=content
             )
+        if row.page_index is not None and not 0 <= row.page_index < len(source.get("box_units") or []):
+            raise Conflict("Грузоместо изменилось. Обновите сборку")
         codes = []
         context = (
             self.archive.printing_context(tx, actor, row.label_id)
@@ -313,12 +357,20 @@ class Printing:
         with self.db.transaction() as tx:
             row = self._job(tx, actor, job_id)
             source, codes = self._guard(tx, actor, row, content=True)
-            profile, kind, section, products = row.profile, row.kind, row.section, row.product_codes
+            profile, kind, section, products, page_index = (
+                row.profile,
+                row.kind,
+                row.section,
+                row.product_codes,
+                row.page_index,
+            )
+        if page_index is not None:
+            source["data"] = pdf.page(source["data"], page_index)
         data = (
             pdf.sample(profile)
             if section == "test"
             else pdf.prepend(source["data"], products)
-            if kind == "ozon:label"
+            if kind in ("ozon:label", "yandex:label")
             else pdf.labels(codes, profile["width"], profile["height"], marking=True)
         )
         return pdf.fit(data, profile)

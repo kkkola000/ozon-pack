@@ -246,7 +246,9 @@ class StickerArchive:
             number = "".join(
                 c for c in info.get("posting_number", "") if c.isascii() and (c.isalnum() or c in "-_")
             )
-            return self.documents.content(row), f"ozon-{number or row.id}.pdf"
+            return self.documents.content(
+                row
+            ), f"{self.connections.account_label(tx, row.account_id).marketplace}-{number or row.id}.pdf"
 
     def release(self, actor, label_id, assignment_id, revision):
         self._authorize(actor)

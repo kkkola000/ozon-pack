@@ -103,12 +103,19 @@ def box_values(boxes):
     return tuple(out)
 
 
-def fresh_matches(fresh, baseline, desired):
-    if shape(fresh.posting["yandex"]) != shape(baseline["native"]):
+def fresh_matches(fresh, baseline, desired, *, after_write=False):
+    if shape(fresh.posting["yandex"]) not in (shape(baseline["native"]), shape({"boxes": desired["boxes"]})):
         return False
-    if box_values(fresh.posting["yandex"]["boxes"]) not in (
-        box_values(baseline.get("boxes", baseline["native"]["boxes"])),
-        box_values(desired["boxes"]),
+    native = fresh.posting["yandex"]
+    same_boxes = native.get("box_keys") and native["box_keys"] == baseline["native"].get("box_keys")
+    compare = (
+        (lambda boxes: Counter(box_values(boxes)))
+        if after_write or native.get("box_keys") and not same_boxes
+        else box_values
+    )
+    if compare(native["boxes"]) not in (
+        compare(baseline.get("boxes", baseline["native"]["boxes"])),
+        compare(desired["boxes"]),
     ):
         return False
     old = {str(p["product_id"]): p for p in baseline["products"]}
@@ -166,7 +173,80 @@ def to_request(context, details, marks):
             entries.append(clean)
         boxes.append({"items": entries})
     wanted["boxes"] = boxes
+    if context.get("layout_groups") is not None:
+        wanted["boxes"] = build_boxes(context["layout_groups"], details, wanted)
     return wanted
+
+
+def validate_groups(groups, details):
+    if not isinstance(groups, list) or not 1 <= len(groups) <= 100:
+        raise Conflict("Укажите от одного до ста грузомест")
+    expected = {str(d.unit_id) for d in details}
+    counts = Counter()
+    for group in groups:
+        if (
+            not isinstance(group, list)
+            or not group
+            or len(group) != len(set(group))
+            or not set(group) <= expected
+        ):
+            raise Conflict(
+                "Проверьте товары в грузоместах: пустые места и повторы внутри места не допускаются"
+            )
+        counts.update(group)
+    if set(counts) != expected:
+        raise Conflict("Каждый товар должен находиться в грузоместе")
+    for uid, copies in counts.items():
+        if copies > 1:
+            if any(uid in g and len(g) != 1 for g in groups):
+                raise Conflict("Часть товара должна занимать отдельное грузоместо")
+            product = next(d.product_id for d in details if str(d.unit_id) == uid)
+            if sum(d.product_id == product for d in details) > 1:
+                raise Conflict(
+                    "Несколько одинаковых многоместных товаров требуют сверки в кабинете Яндекс Маркета"
+                )
+    return groups
+
+
+def build_boxes(groups, details, payload):
+    validate_groups(groups, details)
+    lookup = {str(d.unit_id): (d.product_id, d.exemplar_id) for d in details}
+    products = {
+        str(p["product_id"]): {str(e["exemplar_id"]): e for e in p["exemplars"]} for p in payload["products"]
+    }
+    totals = Counter(uid for g in groups for uid in g)
+    positions = Counter()
+    boxes = []
+    for group in groups:
+        entries = {}
+        for uid in group:
+            key, slot = lookup[uid]
+            unit = products[key][slot]
+            entry = entries.setdefault(key, {"id": int(key), "fullCount": 0, "instances": []})
+            if totals[uid] > 1:
+                positions[uid] += 1
+                entry.pop("fullCount", None)
+                entry["partialCount"] = {"current": positions[uid], "total": totals[uid]}
+            else:
+                entry["fullCount"] += 1
+            value = {k: unit[k] for k in ("gtd", "rnpt", "uin", "countryCode") if unit.get(k)}
+            code = mark_of(unit) or unit.get("native_short_cis")
+            if code:
+                value["cis"] = code
+            entry["instances"].append(value)
+        for entry in entries.values():
+            if not any(entry["instances"]):
+                entry.pop("instances")
+            elif not all(entry["instances"]):
+                raise Conflict("Заполните данные всех экземпляров товара перед сохранением грузомест")
+        boxes.append({"items": list(entries.values())})
+    return boxes
+
+
+def layout_matches(fresh, payload):
+    return fresh.posting["yandex"].get("has_layout", True) and box_values(
+        fresh.posting["yandex"]["boxes"]
+    ) == box_values(payload["boxes"])
 
 
 def checked(fresh, payload, req, unit_ids, status):
@@ -192,7 +272,7 @@ def checked(fresh, payload, req, unit_ids, status):
         index[key] = rows
     available = {str(p["product_id"]): p["exemplars"] for p in fresh.products}
     errors, results = {}, {}
-    ready = True
+    ready = bool(layout_matches(fresh, payload)) if "boxes" in payload else True
     for product in payload["products"]:
         key = str(product["product_id"])
         pool = list(available.get(key, []))
