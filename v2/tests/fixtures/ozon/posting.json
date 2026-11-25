@@ -1,0 +1,21 @@
+{
+  "posting_number": "59511155-0034-1", "order_id": 59511155, "order_number": "59511155-0034",
+  "status": "awaiting_packaging", "substatus": "awaiting_approve",
+  "tracking_number": "00054321", "scanit": "ii50082908916",
+  "barcodes": {"upper_barcode": "59511155-0034-1", "lower_barcode": "00054321"},
+  "shipment_date": "2026-11-22T12:00:00+03:00", "in_process_at": "2026-11-21T06:30:00Z",
+  "delivery_method": {"warehouse_id": 4001, "warehouse": "Тестовый склад"},
+  "parent_posting_number": "59511155-0034-0",
+  "related_postings": {"related_posting_numbers": ["59511155-0034-2", "59511155-0034-1"]},
+  "multi_box_qty": 2,
+  "requirements": {"products_requiring_gtd": [634662543], "products_requiring_mandatory_mark": []},
+  "optional": {"products_with_possible_mandatory_mark": [634662543]},
+  "products": [
+    {"sku": 634662543, "offer_id": "PF-M02", "name": "Тестовые муфты", "quantity": 1,
+     "price": {"amount": "1234.50", "currency": "RUB"}, "mandatory_mark": ["synthetic-private-mark"]},
+    {"sku": 6225436164, "offer_id": "PF-F02", "name": "Тестовый конверт", "quantity": 2,
+     "price": "2300.10", "currency_code": "RUB"}
+  ],
+  "customer": {"name": "synthetic-private-buyer", "phone": "synthetic-private-phone"},
+  "addressee": {"address": "synthetic-private-address"}
+}

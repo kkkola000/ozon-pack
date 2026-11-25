@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf }}">
+  <title>{{ title or 'Pack' }}</title>
+  <link rel="stylesheet" href="/static-v2/app.css?v={{ version }}">
+  <script src="/static-v2/app.js?v={{ version }}" defer></script>
+  {% if user and (active_tab in ('pack','stickers') or selected|default('') == 'printing') %}<script src="/static-v2/printing.js?v={{ version }}" defer></script>{% endif %}
+  {% if selected|default('') == 'printing' %}<script src="/static-v2/printing-settings.js?v={{ version }}" defer></script>{% endif %}
+  {% if active_tab=='stickers' %}<script src="/static-v2/stickers.js?v={{ version }}" defer></script>{% endif %}
+  {% if active_tab=='pack' %}<script src="/static-v2/assembly.js?v={{ version }}" defer></script>{% endif %}
+</head>
+<body>
+{% if user %}
+<header class="topbar">
+  <nav aria-label="Основные разделы">
+    {% for section,label,href in nav %}<a href="{{ href }}" class="{{ 'active' if active_tab == section }}">{{ label }}</a>{% endfor %}
+    {% if reports_nav %}<details class="dropdown reports-menu">
+      <summary class="{{ 'active' if active_tab in ('reports','logs','stickers') }}">Отчёты <span aria-hidden="true">⌄</span></summary>
+      <div class="menu-list">{% for section,label,href in reports_nav %}<a href="{{ href }}" {% if active_tab == section %}aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</div>
+    </details>{% endif %}
+  </nav>
+  <details class="dropdown account-menu">
+    <summary aria-label="Аккаунт {{ user.login }}"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" aria-hidden="true"><circle cx="12" cy="12" r="9.4"/><circle cx="12" cy="9" r="3"/><path d="M5.8 19c.8-3 3-4.5 6.2-4.5s5.4 1.5 6.2 4.5"/></svg></summary>
+    <div class="menu-list"><div class="account-caption"><b>{{ user.login }}</b><span>{{ roles[user.role] }}</span></div>
+      <a href="{{ '/settings' if user.can('settings') else '/settings/printing' }}">Настройки</a>
+      <form action="/logout" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><button type="submit">Выйти</button></form>
+    </div>
+  </details>
+</header>
+{% endif %}
+<main class="wrap {% block wrap_class %}{% endblock %}">{% block content %}{% endblock %}</main>
+<footer class="wrap muted small">Pack {{ version }} · Новая версия · Разработка</footer>
+</body></html>

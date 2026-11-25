@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="section-heading"><h1>Заказы</h1>{% if user.can('settings') %}<form action="/orders/sync" method="post" data-pending><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="account_id" value="{{ selected_account or '' }}"><button class="btn primary" type="submit" data-pending-text="Ставим в очередь…">Обновить заказы</button></form>{% endif %}</div>
+{% if queued %}<p class="notice success" role="status">{% if queued == '0' %}Новых заданий нет. Проверьте кабинеты и состояние загрузки.{% else %}Загрузка запрошена. Состояние показано ниже.{% endif %}</p>{% endif %}
+{% include '_sync_status.html' %}
+<section class="panel">
+<form action="/orders" method="get" class="catalog-filters">
+<label>Кабинет<select name="account_id"><option value="">Все кабинеты</option>{% for account in accounts %}<option value="{{ account.id }}" {% if account.id == selected_account %}selected{% endif %}>{{ account.title }}{% if not account.active %} · отключён{% endif %}</option>{% endfor %}</select></label>
+<label>Состояние<select name="state">{% for value,label in states.items() %}<option value="{{ value }}" {% if value == state %}selected{% endif %}>{{ label[0] }}</option>{% endfor %}</select></label>
+<label class="catalog-search">Поиск<input type="text" name="q" value="{{ q }}" maxlength="512" placeholder="Номер, стикер ii…, товар или штрихкод"></label><button class="btn" type="submit">Найти</button><a class="btn" href="/orders">Сбросить</a>
+</form>
+<p class="muted small">Отправлений: {{ result.total }}</p>
+<div class="table-scroll"><table class="orders-table"><thead><tr><th>Отправление</th><th>Товары</th><th>Кабинет / склад</th><th>Отгрузка до</th><th>Состояние</th><th></th></tr></thead><tbody>
+{% for shipment in result.items %}<tr data-shipment-id="{{ shipment.id }}"><td><a class="shipment-number" href="/orders/{{ shipment.id }}">{{ shipment.posting_number }}</a><div class="muted small">Заказ {{ shipment.order_number or '—' }}</div>{% for kind,value in shipment.references if kind == 'label_barcode' and value.startswith('ii') %}<div class="muted small code-value">{{ value }}</div>{% endfor %}</td>
+<td>{% for item in shipment.items %}<div class="order-line-preview"><b>{{ item.name }}</b> · {{ item.quantity }} шт.<div class="muted small">{{ item.article or '—' }}{% if item.match_state != 'matched' %} · {{ 'Проверьте сопоставление' if item.match_state == 'conflict' else 'Нет в каталоге' }}{% endif %}</div></div>{% endfor %}</td>
+<td>{{ account_names.get(shipment.account_id,'—') }}<div class="muted small">{{ account_markets.get(shipment.account_id, '—') }} · {{ shipment.warehouse_name or '—' }}</div></td><td>{{ msk(shipment.deadline) }}</td>
+{% set status = 'review' if shipment.needs_review else shipment.state %}<td><span class="badge {{ states.get(status,states['unknown'])[1] }}">{{ states.get(status,states['unknown'])[0] }}</span>{% if shipment.transition_failed %}<div class="muted small">Готовность не подтверждена</div>{% endif %}</td><td><a class="btn" href="/orders/{{ shipment.id }}">Открыть</a></td></tr>
+{% else %}<tr><td colspan="6" class="muted">{% if not accounts %}Добавьте кабинет площадки в настройках.{% elif q or state != 'all' %}Отправления по выбранным условиям не найдены.{% else %}Заказы появятся после загрузки.{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="catalog-pagination"><span>Страница {{ result.page }} из {{ result.pages }}</span><div>{% if result.page > 1 %}<a class="btn" href="{{ page_url(result.page-1) }}">Назад</a>{% endif %}{% if result.page < result.pages %}<a class="btn" href="{{ page_url(result.page+1) }}">Ещё</a>{% endif %}</div></div>
+</section>
+{% endblock %}

@@ -1,0 +1,20 @@
+name: ozon-pack-v2
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pack_v2
+      POSTGRES_USER: pack_v2
+      POSTGRES_PASSWORD: ${PACK_V2_POSTGRES_PASSWORD:?Generate .env.v2 first}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres_v2:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pack_v2 -d pack_v2"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  postgres_v2:

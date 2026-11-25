@@ -1,0 +1,14 @@
+{% if accounts %}
+<div class="sync-grid" data-sync-status data-sync-labels='{{ sync_statuses|tojson }}' data-sync-url="{{ sync_endpoint|default('/api/v2/catalog/sync') }}" data-sync-unit="{{ sync_unit|default('Карточек') }}" data-refresh-id="{{ sync_refresh|default('catalog-refresh') }}" data-sync-caption="{{ sync_caption|default('Последняя полная загрузка') }}">
+{% for account in accounts if not selected_account or account.id == selected_account %}
+{% set sync = syncs|selectattr('account_id','equalto',account.id)|first %}
+<section class="panel sync-card" data-account-id="{{ account.id }}" data-run-status="{{ sync.status if sync else '' }}" data-run-id="{{ sync.id if sync else '' }}">
+  <div class="account-heading"><b>{{ account.title }}</b><span class="badge {{ sync_statuses[sync.status][1] if sync else '' }}" data-sync-badge>{{ sync_statuses[sync.status][0] if sync else 'Ещё не загружен' }}</span></div>
+  {% if not account.active %}<p class="muted small">Кабинет отключён</p>{% endif %}
+  <p class="muted small" data-sync-progress>{% if sync %}{{ sync_unit|default('Карточек') }}: {{ sync.items }} · Страниц: {{ sync.pages }}{% else %}Данные ещё не загружены{% endif %}</p>
+  <p class="muted small" data-sync-time>{{ sync_caption|default('Последняя полная загрузка') }}: {{ msk(sync.last_success_at) if sync else '—' }}</p>
+  <p class="small {{ 'access-error' if sync and sync.status == 'failed' else 'muted' }}" data-sync-error {% if not sync or not sync.error %}hidden{% endif %}>{{ sync.error if sync and sync.error else '' }}</p>
+</section>{% endfor %}
+</div>
+{% endif %}
+<p><a class="btn" id="{{ sync_refresh|default('catalog-refresh') }}" href="{{ page_url(result.page) }}" hidden>Данные обновлены — показать список</a></p>

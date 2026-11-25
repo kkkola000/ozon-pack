@@ -1,0 +1,25 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="section-heading"><h1>Товары</h1>{% if user.can('settings') %}
+<form action="/products/sync" method="post" data-pending><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="account_id" value="{{ selected_account or '' }}"><button class="btn primary" type="submit" data-pending-text="Ставим в очередь…">Обновить товары</button></form>{% endif %}</div>
+{% if queued %}<p class="notice success" role="status">{% if queued == '0' %}Новых заданий нет. Проверьте кабинеты и состояние загрузки.{% else %}Загрузка запрошена. Состояние показано ниже.{% endif %}</p>{% endif %}
+{% include "_sync_status.html" %}
+<section class="panel">
+<form action="/products" method="get" class="catalog-filters">
+  <label>Кабинет<select name="account_id"><option value="">Все кабинеты</option>{% for account in accounts %}<option value="{{ account.id }}" {% if account.id == selected_account %}selected{% endif %}>{{ account.title }}{% if not account.active %} · отключён{% endif %}</option>{% endfor %}</select></label>
+  <label>Состояние<select name="state">{% for value,label in states.items() %}<option value="{{ value }}" {% if value == state %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+  <label class="catalog-search">Поиск<input type="text" name="q" value="{{ q }}" maxlength="512" placeholder="Название, артикул, SKU или штрихкод"></label>
+  <button class="btn" type="submit">Найти</button><a class="btn" href="/products">Сбросить</a>
+</form>
+<p class="muted small">Найдено товаров: {{ result.total }}</p>
+<div class="table-scroll"><table class="catalog-table"><thead><tr><th>Товар</th><th>Кабинет</th><th>SKU / ID площадки</th><th>Штрихкоды</th><th>Состояние</th></tr></thead><tbody>
+{% for item in result.items %}<tr data-offer-id="{{ item.id }}"><td><div class="product-name">{% if item.image_url and item.image_url.startswith('https://') %}<img src="{{ item.image_url }}" width="48" height="48" loading="lazy" alt="" referrerpolicy="no-referrer">{% endif %}<div><b>{{ item.name }}</b><div class="muted small">Артикул {{ item.article or '—' }}</div></div></div></td>
+<td>{{ account_names.get(item.account_id,'—') }}<div class="muted small">{{ account_markets.get(item.account_id, '—') }}</div></td>
+<td>{% for kind,value in item.references if kind == 'sku' %}<div class="code-value">{{ value }}</div>{% endfor %}{% for kind,value in item.references if kind == 'product_id' %}<div class="muted small">ID {{ value }}</div>{% endfor %}</td>
+<td><div class="catalog-codes">{% for code in item.codes[:3] %}<span class="code-value">{{ code }}</span>{% else %}<span class="muted">—</span>{% endfor %}{% if item.codes|length > 3 %}<details><summary>Ещё {{ item.codes|length - 3 }}</summary>{% for code in item.codes[3:] %}<div class="code-value">{{ code }}</div>{% endfor %}</details>{% endif %}</div></td>
+<td><span class="badge {{ 'warn' if not item.source_present else '' if item.archived is none or item.archived else 'ok' }}">{{ 'Нет в последней загрузке' if not item.source_present else 'Не уточнено' if item.archived is none else 'В архиве' if item.archived else 'Активен' }}</span><div class="muted small">{{ msk(item.observed_at) }}</div></td></tr>
+{% else %}<tr><td colspan="5" class="muted">{% if not accounts %}Добавьте кабинет площадки в настройках.{% elif q or state != 'all' %}Товары по выбранным условиям не найдены.{% else %}Товары появятся после загрузки каталога.{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="catalog-pagination"><span>Страница {{ result.page }} из {{ result.pages }}</span><div>{% if result.page > 1 %}<a class="btn" href="{{ page_url(result.page-1) }}">Назад</a>{% endif %}{% if result.page < result.pages %}<a class="btn" href="{{ page_url(result.page+1) }}">Ещё</a>{% endif %}</div></div>
+</section>
+{% endblock %}

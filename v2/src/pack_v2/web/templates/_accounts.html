@@ -1,0 +1,42 @@
+{% if notice %}<p class="notice success" role="status">{{ notice }}</p>{% endif %}
+{% if error %}<p class="notice error" role="alert">{{ error }}</p>{% endif %}
+{% for account in accounts %}
+<section class="panel account-card" data-account-id="{{ account.id }}">
+  <div class="account-heading"><div><h2>{{ account.title }}</h2><span class="muted">{{ 'Яндекс Маркет' if account.marketplace == 'yandex' else 'Ozon' }} · {{ 'Business ID' if account.marketplace == 'yandex' else 'Client-Id' }}: {{ account.business_id or account.client_id or 'не указан' }}</span></div>
+    <div class="account-badges"><span class="badge">{{ 'Включён' if account.active else 'Отключён' }}</span><span class="badge {{ account_statuses[account.status][1] }}">{{ account_statuses[account.status][0] }}</span></div>
+  </div>
+  {% if account.configuration_error %}<p class="notice error">{{ account.configuration_error }}</p>{% endif %}
+  {% if account.results %}<ul class="account-access">{% for result in account.results %}<li><b>{{ result.title }}</b><span class="{{ 'access-ok' if result.status == 'passed' else 'access-error' if result.status in ('denied','unauthorized') else 'muted' }}">{{ result.message }}</span></li>{% endfor %}</ul>{% endif %}
+  {% if account.checked_at %}<p class="muted small">Проверено {{ msk(account.checked_at) }} МСК</p>{% endif %}
+  <div class="account-actions">
+    <form action="/settings/accounts/{{ account.id }}/check" method="post" data-pending>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ account.revision }}">
+      <button class="btn" type="submit" data-pending-text="Проверяем…" {% if account.status == 'checking' or not account.key_saved or not (account.client_id or account.business_id) %}disabled{% endif %}>Проверить доступ</button>
+    </form>
+    <form action="/settings/accounts/{{ account.id }}/active" method="post" data-pending>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ account.revision }}"><input type="hidden" name="active" value="{{ 'false' if account.active else 'true' }}">
+      <button class="btn" type="submit">{{ 'Отключить' if account.active else 'Включить' }}</button>
+    </form>
+  </div>
+  <details class="account-editor"><summary>Настроить</summary>
+    <form action="/settings/accounts/{{ account.id }}/edit" method="post" class="account-form" data-pending>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="revision" value="{{ account.revision }}">
+      <label>Название кабинета<input type="text" name="title" value="{{ account.title }}" maxlength="200" required></label>
+      <label>Новый Api-Key<input type="password" name="api_key" autocomplete="new-password" maxlength="512" placeholder="Оставьте пустым, чтобы сохранить прежний ключ"></label>
+      <p class="muted small account-form-note">Ключ сохранён в зашифрованном виде. Для другого Client-Id / Business ID добавьте отдельный кабинет.</p>
+      <button class="btn primary" type="submit" data-pending-text="Сохраняем…">Сохранить</button>
+    </form>
+  </details>
+</section>
+{% else %}<section class="panel"><p class="muted">Кабинеты ещё не добавлены.</p></section>{% endfor %}
+<section class="panel account-add"><details id="add-account" {% if not accounts or form %}open{% endif %}><summary>Добавить кабинет</summary>
+  <form action="/settings/accounts" method="post" class="account-form" data-pending>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Площадка<select name="marketplace" data-marketplace><option value="ozon">Ozon</option><option value="yandex" {% if form.get('marketplace') == 'yandex' %}selected{% endif %}>Яндекс Маркет</option></select></label>
+    <label>Название кабинета<input type="text" name="title" value="{{ form.get('title', '') }}" maxlength="200" required></label>
+    <label><span data-account-identifier>Client-Id / Business ID</span><input type="text" name="client_id" value="{{ form.get('client_id', '') }}" inputmode="numeric" pattern="[0-9]+" maxlength="32" required autocomplete="off"></label>
+    <label>Api-Key<input type="password" name="api_key" autocomplete="new-password" maxlength="512" required></label>
+    <button class="btn primary" type="submit" data-pending-text="Сохраняем…">Сохранить</button>
+  </form>
+</details></section>
+<p class="muted small">Проверяется чтение заказов и товаров; для Ozon — также возвратов. Для передачи маркировки нужны права на изменение заказов. У Яндекс Маркета укажите Business ID, у Ozon — Client-Id.</p>
